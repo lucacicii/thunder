@@ -67,6 +67,9 @@ impl LLMClientTrait for MockLLMClient {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize structured logging (controlled via RUST_LOG environment variable)
+    init_logger();
+
     let args: Vec<String> = env::args().collect();
     let prompt = if args.len() > 1 && !args[1].starts_with("--") {
         args[1].clone()
@@ -125,6 +128,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AgentEvent::TurnEnd { finish_reason, stats, .. } => {
                     println!("\n🏁 [Turn Finished: reason='{}', duration={}ms]", finish_reason, stats.duration_ms);
                 }
+                AgentEvent::Error { turn, message, .. } => {
+                    eprintln!("\n❌ [Error in Turn {:?}: {}]", turn, message);
+                }
                 _ => {}
             }
         }
@@ -138,6 +144,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Total Turns:   {}", res.stats.total_turns);
     println!("   Tool Calls:    {}", res.stats.total_tool_executions);
     println!("   Total Time:    {} ms", res.stats.total_duration_ms);
+
+    if let Some(final_text) = &res.final_content {
+        println!("\n📋 [Final Answer]:\n{}", final_text);
+    } else {
+        println!("\n(No final text output)");
+    }
 
     Ok(())
 }

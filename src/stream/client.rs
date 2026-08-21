@@ -8,6 +8,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT
 use serde_json::json;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub enum LLMStreamChunk {
@@ -47,6 +48,7 @@ pub struct LLMClient {
     api_base: String,
     default_model: String,
     headers: HeaderMap,
+    max_retries: usize,
 }
 
 impl LLMClient {
@@ -79,6 +81,7 @@ impl LLMClient {
             api_base: config.api_base.trim_end_matches('/').to_string(),
             default_model: config.model.clone(),
             headers,
+            max_retries: 3,
         }
     }
 }
@@ -96,8 +99,7 @@ impl LLMClientTrait for LLMClient {
         let mut payload = json!({
             "model": model,
             "messages": options.messages,
-            "stream": true,
-            "stream_options": { "include_usage": true }
+            "stream": true
         });
 
         if !options.tools.is_empty() {
@@ -115,122 +117,201 @@ impl LLMClientTrait for LLMClient {
             payload["max_tokens"] = json!(max_tokens);
         }
 
-        let request = self
-            .client
-            .post(&url)
-            .headers(self.headers.clone())
-            .json(&payload);
-
-        let response = tokio::select! {
-            res = request.send() => {
-                res.map_err(|e| format!("HTTP request failed: {}", e))?
-            }
-            _ = cancel_token.cancelled() => {
-                return Err("Request cancelled".to_string());
-            }
-        };
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("LLM API returned HTTP {}: {}", status, body));
-        }
-
         let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let client = self.client.clone();
+        let headers = self.headers.clone();
+        let max_retries = self.max_retries;
 
         tokio::spawn(async move {
-            let mut byte_stream = response.bytes_stream();
-            let mut parser = SSEStreamParser::new();
-            let mut accumulated_content = String::new();
-            let mut last_finish_reason = "stop".to_string();
-            let mut prompt_tokens = None;
-            let mut completion_tokens = None;
+            let mut attempt = 0;
 
-            loop {
-                tokio::select! {
+            while attempt <= max_retries {
+                attempt += 1;
+                debug!(
+                    attempt = attempt,
+                    url = %url,
+                    model = %model,
+                    "Dispatching streaming LLM request"
+                );
+
+                let request = client.post(&url).headers(headers.clone()).json(&payload);
+
+                let response_res = tokio::select! {
+                    res = request.send() => res,
                     _ = cancel_token.cancelled() => {
-                        let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
-                        break;
+                        let _ = tx.send(Err("Request cancelled by user".to_string())).await;
+                        return;
                     }
-                    chunk_opt = byte_stream.next() => {
-                        match chunk_opt {
-                            Some(Ok(bytes)) => {
-                                for delta in parser.feed_chunk(&bytes) {
-                                    if let Some(text) = delta.content_delta {
-                                        accumulated_content.push_str(&text);
-                                        if tx.send(Ok(LLMStreamChunk::Token(text))).await.is_err() {
-                                            return;
-                                        }
-                                    }
+                };
 
-                                    if let Some(tc_deltas) = delta.tool_calls_delta {
-                                        for tc in tc_deltas {
-                                            if tx.send(Ok(LLMStreamChunk::ToolCallChunk(tc))).await.is_err() {
+                let response = match response_res {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        warn!(
+                            attempt = attempt,
+                            error = %err,
+                            "Network connection failed during LLM request"
+                        );
+                        if attempt <= max_retries {
+                            let backoff = Duration::from_millis(500 * (1 << (attempt - 1)));
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        } else {
+                            let _ = tx.send(Err(format!("HTTP connection failed after {} attempts: {}", max_retries, err))).await;
+                            return;
+                        }
+                    }
+                };
+
+                let status = response.status();
+                if !status.is_success() {
+                    let error_body = response.text().await.unwrap_or_default();
+                    warn!(
+                        status = %status,
+                        attempt = attempt,
+                        body = %error_body,
+                        "LLM API returned error response"
+                    );
+
+                    // Transient errors eligible for retry: 429, 500, 502, 503, 504
+                    if (status.as_u16() == 429 || status.is_server_error()) && attempt <= max_retries {
+                        let backoff = Duration::from_millis(1000 * (1 << (attempt - 1)));
+                        info!(backoff_ms = backoff.as_millis(), "Retrying after transient error");
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+
+                    let _ = tx
+                        .send(Err(format!("LLM API returned HTTP {}: {}", status, error_body)))
+                        .await;
+                    return;
+                }
+
+                // Stream response body
+                let mut byte_stream = response.bytes_stream();
+                let mut parser = SSEStreamParser::new();
+                let mut accumulated_content = String::new();
+                let mut last_finish_reason = "stop".to_string();
+                let mut prompt_tokens = None;
+                let mut completion_tokens = None;
+                let mut stream_failed_midway = false;
+
+                loop {
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
+                            return;
+                        }
+                        chunk_opt = byte_stream.next() => {
+                            match chunk_opt {
+                                Some(Ok(bytes)) => {
+                                    for delta in parser.feed_chunk(&bytes) {
+                                        if let Some(text) = delta.content_delta {
+                                            accumulated_content.push_str(&text);
+                                            if tx.send(Ok(LLMStreamChunk::Token(text))).await.is_err() {
                                                 return;
                                             }
                                         }
-                                    }
 
-                                    if let Some(fr) = delta.finish_reason {
-                                        last_finish_reason = fr;
-                                    }
+                                        if let Some(tc_deltas) = delta.tool_calls_delta {
+                                            for tc in tc_deltas {
+                                                if tx.send(Ok(LLMStreamChunk::ToolCallChunk(tc))).await.is_err() {
+                                                    return;
+                                                }
+                                            }
+                                        }
 
-                                    if delta.prompt_tokens.is_some() {
-                                        prompt_tokens = delta.prompt_tokens;
-                                    }
-                                    if delta.completion_tokens.is_some() {
-                                        completion_tokens = delta.completion_tokens;
+                                        if let Some(fr) = delta.finish_reason {
+                                            last_finish_reason = fr;
+                                        }
+
+                                        if delta.prompt_tokens.is_some() {
+                                            prompt_tokens = delta.prompt_tokens;
+                                        }
+                                        if delta.completion_tokens.is_some() {
+                                            completion_tokens = delta.completion_tokens;
+                                        }
                                     }
                                 }
-                            }
-                            Some(Err(err)) => {
-                                let _ = tx.send(Err(format!("Network stream error: {}", err))).await;
-                                return;
-                            }
-                            None => {
-                                break;
+                                Some(Err(err)) => {
+                                    warn!(
+                                        attempt = attempt,
+                                        error = %err,
+                                        "Stream interrupted or decoding failed midway"
+                                    );
+                                    stream_failed_midway = true;
+                                    break;
+                                }
+                                None => {
+                                    break;
+                                }
                             }
                         }
                     }
                 }
+
+                if stream_failed_midway {
+                    if attempt <= max_retries {
+                        let backoff = Duration::from_millis(750 * (1 << (attempt - 1)));
+                        info!(backoff_ms = backoff.as_millis(), "Auto-recovering from broken network stream");
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    } else {
+                        let _ = tx
+                            .send(Err(format!(
+                                "Network stream error after {} attempts: connection dropped or response decoding failed",
+                                max_retries
+                            )))
+                            .await;
+                        return;
+                    }
+                }
+
+                if let Some(flushed) = parser.flush() {
+                    if let Some(text) = flushed.content_delta {
+                        accumulated_content.push_str(&text);
+                        let _ = tx.send(Ok(LLMStreamChunk::Token(text))).await;
+                    }
+                    if let Some(fr) = flushed.finish_reason {
+                        last_finish_reason = fr;
+                    }
+                    if flushed.prompt_tokens.is_some() {
+                        prompt_tokens = flushed.prompt_tokens;
+                    }
+                    if flushed.completion_tokens.is_some() {
+                        completion_tokens = flushed.completion_tokens;
+                    }
+                }
+
+                let tool_calls = parser.get_completed_tool_calls();
+                if !tool_calls.is_empty() && last_finish_reason == "stop" {
+                    last_finish_reason = "tool_calls".to_string();
+                }
+
+                let content = if accumulated_content.is_empty() {
+                    None
+                } else {
+                    Some(accumulated_content)
+                };
+
+                debug!(
+                    has_content = content.is_some(),
+                    tool_calls_count = tool_calls.len(),
+                    finish_reason = %last_finish_reason,
+                    "Streaming chunk response completed"
+                );
+
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Completed {
+                        content,
+                        tool_calls,
+                        finish_reason: last_finish_reason,
+                        prompt_tokens,
+                        completion_tokens,
+                    }))
+                    .await;
+                return;
             }
-
-            if let Some(flushed) = parser.flush() {
-                if let Some(text) = flushed.content_delta {
-                    accumulated_content.push_str(&text);
-                    let _ = tx.send(Ok(LLMStreamChunk::Token(text))).await;
-                }
-                if let Some(fr) = flushed.finish_reason {
-                    last_finish_reason = fr;
-                }
-                if flushed.prompt_tokens.is_some() {
-                    prompt_tokens = flushed.prompt_tokens;
-                }
-                if flushed.completion_tokens.is_some() {
-                    completion_tokens = flushed.completion_tokens;
-                }
-            }
-
-            let tool_calls = parser.get_completed_tool_calls();
-            if !tool_calls.is_empty() && last_finish_reason == "stop" {
-                last_finish_reason = "tool_calls".to_string();
-            }
-
-            let content = if accumulated_content.is_empty() {
-                None
-            } else {
-                Some(accumulated_content)
-            };
-
-            let _ = tx
-                .send(Ok(LLMStreamChunk::Completed {
-                    content,
-                    tool_calls,
-                    finish_reason: last_finish_reason,
-                    prompt_tokens,
-                    completion_tokens,
-                }))
-                .await;
         });
 
         Ok(rx)

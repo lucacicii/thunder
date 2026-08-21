@@ -36,12 +36,16 @@ struct OpenAIStreamChunk {
 #[derive(Debug, Deserialize)]
 struct OpenAIChoice {
     delta: Option<OpenAIDelta>,
+    message: Option<OpenAIDelta>,
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAIDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
+    reasoning: Option<String>,
+    text: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
 }
 
@@ -127,12 +131,19 @@ impl SSEStreamParser {
         None
     }
 
-    /// Collect fully aggregated tool calls
+    /// Collect fully aggregated tool calls, guaranteeing fallback IDs for providers omitting `id`
     pub fn get_completed_tool_calls(&self) -> Vec<ToolCall> {
         self.accumulated_tools
-            .values()
-            .filter(|acc| !acc.id.is_empty() && !acc.name.is_empty())
-            .map(|acc| ToolCall::new_function(&acc.id, &acc.name, &acc.arguments))
+            .iter()
+            .filter(|(_, acc)| !acc.name.is_empty())
+            .map(|(index, acc)| {
+                let id = if acc.id.is_empty() {
+                    format!("call_{}", index)
+                } else {
+                    acc.id.clone()
+                };
+                ToolCall::new_function(id, &acc.name, &acc.arguments)
+            })
             .collect()
     }
 
@@ -144,10 +155,19 @@ impl SSEStreamParser {
         let mut finish_reason = None;
 
         if let Some(choice) = parsed.choices.and_then(|c| c.into_iter().next()) {
-            if let Some(delta) = choice.delta {
+            let delta_opt = choice.delta.or(choice.message);
+            if let Some(delta) = delta_opt {
                 if let Some(c) = delta.content {
                     if !c.is_empty() {
                         content_delta = Some(c);
+                    }
+                } else if let Some(r) = delta.reasoning_content.or(delta.reasoning) {
+                    if !r.is_empty() {
+                        content_delta = Some(r);
+                    }
+                } else if let Some(t) = delta.text {
+                    if !t.is_empty() {
+                        content_delta = Some(t);
                     }
                 }
 

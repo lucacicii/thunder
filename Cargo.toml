@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["thunder-luc"]
 description = "Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust"
-license = "Apache-2.0"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
@@ -16,6 +16,8 @@ bytes = "1.9"
 async-trait = "0.1"
 parking_lot = "0.12"
 tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["full", "test-util"] }
