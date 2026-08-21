@@ -3,7 +3,7 @@
 > **Ultra-lightweight, High-Performance, Minimal-Resource Agent Loop Engine in Rust**
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
 
 [English](README_en.md) | [简体中文](README.md)
@@ -217,4 +217,4 @@ src/
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [Apache License 2.0](LICENSE).

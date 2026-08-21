@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["thunder-luc"]
 description = "Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
