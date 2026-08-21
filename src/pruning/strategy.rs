@@ -1,3 +1,4 @@
+use crate::core::utf8::{safe_slice_from, safe_slice_to};
 use crate::core::context::ContextBuffer;
 use crate::types::config::{ContextPruningConfig, PruningStrategy};
 use crate::types::message::{ChatMessage, Role};
@@ -82,10 +83,11 @@ impl ContextPruner {
                 } = &entry.message
                 {
                     if content.len() > 250 {
+                        // UTF-8 safe slicing (prevents panics on multi-byte characters)
                         let shortened = format!(
                             "{}\n[... Older tool output trimmed by ContextPruner ...]\n{}",
-                            &content[..80.min(content.len())],
-                            &content[content.len().saturating_sub(80)..]
+                            safe_slice_to(content, 80),
+                            safe_slice_from(content, content.len().saturating_sub(80))
                         );
                         let updated = ChatMessage::Tool {
                             tool_call_id: tool_call_id.clone(),
@@ -117,10 +119,11 @@ impl ContextPruner {
                 } = &entry.message
                 {
                     if content.len() > 300 {
+                        // UTF-8 safe slicing (prevents panics on multi-byte characters)
                         let shortened = format!(
                             "{}\n[... Tool output compressed for token budget ...]\n{}",
-                            &content[..80.min(content.len())],
-                            &content[content.len().saturating_sub(80)..]
+                            safe_slice_to(content, 80),
+                            safe_slice_from(content, content.len().saturating_sub(80))
                         );
                         let updated = ChatMessage::Tool {
                             tool_call_id: tool_call_id.clone(),
