@@ -49,8 +49,15 @@ impl AgentTool for BashTool {
         let mut child = Command::new("bash")
             .arg("-c")
             .arg(command)
+            .stdin(Stdio::null()) // Prevent interactive hanging on user stdin prompts
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // Injected non-interactive safe environment variables
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .env("CI", "true")
+            .env("TERM", "dumb")
+            .env("PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .spawn()
             .map_err(|e| format!("Failed to spawn bash process: {}", e))?;
 

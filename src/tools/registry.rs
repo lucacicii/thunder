@@ -1,3 +1,4 @@
+use crate::tools::sanitizer::sanitize_tool_output;
 use crate::types::message::ToolCall;
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
 use std::collections::HashMap;
@@ -73,7 +74,7 @@ impl ToolRegistry {
                 Err(err) => {
                     return ToolExecutionResult::error(
                         format!(
-                            "Error: Failed to parse JSON arguments for '{}': {}. Raw: {}",
+                            "Error: Failed to parse JSON arguments for '{}': {}. Raw arguments: {}",
                             tool_name, err, call.function.arguments
                         ),
                         start.elapsed(),
@@ -103,8 +104,14 @@ impl ToolRegistry {
 
         let duration = start.elapsed();
         match result {
-            Ok(output) => self.format_and_truncate(output, false, duration),
-            Err(err_msg) => ToolExecutionResult::error(err_msg, duration),
+            Ok(output) => {
+                let sanitized = sanitize_tool_output(output);
+                self.format_and_truncate(sanitized, false, duration)
+            }
+            Err(err_msg) => {
+                let sanitized = sanitize_tool_output(err_msg);
+                ToolExecutionResult::error(sanitized, duration)
+            }
         }
     }
 

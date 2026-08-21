@@ -1,5 +1,6 @@
 use crate::core::context::ContextBuffer;
 use crate::core::state::{AgentStateTracker, LoopStatus};
+use crate::loop_engine::guard::LoopGuard;
 use crate::loop_engine::hooks::AgentEventDispatcher;
 use crate::pruning::strategy::ContextPruner;
 use crate::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
@@ -12,6 +13,7 @@ use crate::types::tool::AgentTool;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct AgentRunResult {
@@ -125,6 +127,7 @@ impl AgentLoop {
             let mut tracker = AgentStateTracker::new();
             tracker.set_status(LoopStatus::Running);
 
+            let mut guard = LoopGuard::default();
             let mut final_content = None;
             let loop_finish_reason: FinishReason;
 
@@ -138,6 +141,7 @@ impl AgentLoop {
                 // Check optional max_turns safeguard
                 if let Some(max) = config.max_turns {
                     if tracker.current_turn() >= max {
+                        warn!(max_turns = max, "Reached configured max_turns threshold");
                         loop_finish_reason = FinishReason::MaxTurnsExceeded;
                         break;
                     }
@@ -145,15 +149,46 @@ impl AgentLoop {
 
                 // Check cancellation
                 if cancel_token.is_cancelled() {
+                    info!("Agent loop execution cancelled by token");
                     loop_finish_reason = FinishReason::Cancelled;
                     break;
                 }
 
+                // Check cascading failure circuit breaker
+                if guard.is_circuit_broken() {
+                    let err_msg = format!(
+                        "Circuit breaker triggered: {} consecutive tool execution failures. Aborting loop to protect budget.",
+                        guard.consecutive_errors()
+                    );
+                    error!(%err_msg);
+                    emit(AgentEvent::Error {
+                        turn: Some(tracker.current_turn()),
+                        message: err_msg,
+                        recoverable: false,
+                    });
+                    loop_finish_reason = FinishReason::Error;
+                    break;
+                }
+
                 // 1. Context Pruning Check & Token Budget Guard
-                pruner.prune(&mut context);
+                let prune_res = pruner.prune(&mut context);
+                if prune_res.pruned {
+                    debug!(
+                        tokens_before = prune_res.tokens_before,
+                        tokens_after = prune_res.tokens_after,
+                        messages_removed = prune_res.messages_removed,
+                        tools_truncated = prune_res.tool_outputs_truncated,
+                        "Context successfully pruned"
+                    );
+                }
 
                 if let Some(budget) = config.max_tokens_budget {
                     if context.estimated_tokens() > budget {
+                        warn!(
+                            estimated = context.estimated_tokens(),
+                            budget = budget,
+                            "Token budget exceeded limit"
+                        );
                         loop_finish_reason = FinishReason::BudgetExceeded;
                         break;
                     }
@@ -166,6 +201,7 @@ impl AgentLoop {
                     .unwrap_or_default()
                     .as_secs();
 
+                info!(turn = turn, estimated_tokens = context.estimated_tokens(), "Turn started");
                 emit(AgentEvent::TurnStart {
                     turn,
                     timestamp: now_ts,
@@ -185,6 +221,7 @@ impl AgentLoop {
                 let mut stream_rx = match stream_res {
                     Ok(rx) => rx,
                     Err(err) => {
+                        error!(turn = turn, error = %err, "Failed to initiate stream chat");
                         emit(AgentEvent::Error {
                             turn: Some(turn),
                             message: err.clone(),
@@ -230,6 +267,7 @@ impl AgentLoop {
                             completed_chunk = Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens));
                         }
                         Err(stream_err) => {
+                            error!(turn = turn, error = %stream_err, "Stream execution error");
                             emit(AgentEvent::Error {
                                 turn: Some(turn),
                                 message: stream_err,
@@ -243,6 +281,7 @@ impl AgentLoop {
                 let (chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens) = match completed_chunk {
                     Some(c) => c,
                     None => {
+                        error!(turn = turn, "Turn terminated without completion payload");
                         loop_finish_reason = FinishReason::Error;
                         break;
                     }
@@ -260,18 +299,34 @@ impl AgentLoop {
                 };
                 tracker.record_turn_stats(turn_stats.clone());
 
+                let effective_content = if let Some(c) = chunk_content {
+                    Some(c)
+                } else if !assistant_content.is_empty() {
+                    Some(assistant_content.clone())
+                } else {
+                    None
+                };
+
                 // Append assistant message to context
                 let assistant_msg = ChatMessage::Assistant {
-                    content: chunk_content.clone(),
+                    content: effective_content.clone(),
                     tool_calls: if has_tool_calls { Some(tool_calls.clone()) } else { None },
                     refusal: None,
                     name: None,
                 };
                 context.push(assistant_msg);
 
-                if let Some(c) = chunk_content {
-                    final_content = Some(c);
+                if let Some(ref c) = effective_content {
+                    final_content = Some(c.clone());
                 }
+
+                info!(
+                    turn = turn,
+                    duration_ms = turn_duration_ms,
+                    tool_calls = tool_calls.len(),
+                    finish_reason = %finish_reason,
+                    "Turn finished"
+                );
 
                 emit(AgentEvent::TurnEnd {
                     turn,
@@ -284,6 +339,7 @@ impl AgentLoop {
                 // When LLM does not request tool calls (or signals 'stop'), the task is done.
                 // =========================================================================
                 if !has_tool_calls || finish_reason == "stop" {
+                    info!("LLM concluded the task autonomously (no more tool calls)");
                     loop_finish_reason = FinishReason::Done;
                     break;
                 }
@@ -292,6 +348,7 @@ impl AgentLoop {
                 tracker.set_status(LoopStatus::ExecutingTools);
 
                 for tc in &tool_calls {
+                    debug!(tool = %tc.function.name, id = %tc.id, "Tool call scheduled");
                     emit(AgentEvent::ToolCallReady {
                         turn,
                         tool_call: tc.clone(),
@@ -309,6 +366,35 @@ impl AgentLoop {
 
                 for executed in exec_results {
                     tracker.record_tool_execution(executed.result.duration_ms);
+                    guard.record_tool_result(executed.result.is_error);
+
+                    info!(
+                        tool = %executed.tool_call.function.name,
+                        duration_ms = executed.result.duration_ms,
+                        is_error = executed.result.is_error,
+                        truncated = executed.result.truncated,
+                        "Tool executed"
+                    );
+
+                    let mut final_tool_output = executed.result.output.clone();
+
+                    // Check for repetitive action patterns
+                    if let Some(repetition_warning) = guard.record_and_check_repetition(
+                        &executed.tool_call.function.name,
+                        &executed.tool_call.function.arguments,
+                    ) {
+                        warn!(tool = %executed.tool_call.function.name, "Repetitive action pattern detected");
+                        final_tool_output = format!("{}\n\n{}", final_tool_output, repetition_warning);
+                    }
+
+                    // Check if truncated by LLM length limit
+                    if finish_reason == "length" && executed.result.is_error && executed.result.output.contains("Failed to parse JSON") {
+                        warn!("Tool arguments were truncated by length limit");
+                        final_tool_output = format!(
+                            "{}\n\n[Diagnostic Note: Generation was truncated by token limit. Please perform this operation in smaller chunks.]",
+                            final_tool_output
+                        );
+                    }
 
                     emit(AgentEvent::ToolExecResult {
                         turn,
@@ -320,7 +406,7 @@ impl AgentLoop {
                     // Append tool output to context
                     let tool_msg = ChatMessage::Tool {
                         tool_call_id: executed.tool_call.id,
-                        content: executed.result.output,
+                        content: final_tool_output,
                         name: Some(executed.tool_call.function.name),
                     };
                     context.push(tool_msg);
@@ -336,6 +422,14 @@ impl AgentLoop {
             });
 
             let stats = tracker.get_stats();
+
+            info!(
+                total_turns = stats.total_turns,
+                total_duration_ms = stats.total_duration_ms,
+                total_tool_executions = stats.total_tool_executions,
+                finish_reason = ?loop_finish_reason,
+                "Loop execution completed"
+            );
 
             emit(AgentEvent::LoopComplete {
                 finish_reason: loop_finish_reason.clone(),

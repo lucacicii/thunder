@@ -50,7 +50,7 @@ pub enum ChatMessage {
         name: Option<String>,
     },
     Assistant {
-        #[serde(skip_serializing_if = "Option::is_none")]
+        // Must ALWAYS serialize content (null if None) to satisfy OpenAI/DeepSeek API standards
         content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,

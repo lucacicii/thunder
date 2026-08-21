@@ -139,6 +139,7 @@ impl ContextPruner {
         truncated_count
     }
 
+    /// Atomic sliding window pruning that never leaves orphaned Tool Calls or Tool Messages
     fn prune_sliding_window(&self, context: &mut ContextBuffer) -> usize {
         let mut removed_count = 0;
         let has_pinned_system = self.config.pin_system_prompt
@@ -148,10 +149,45 @@ impl ContextPruner {
         let min_keep = self.config.preserve_last_turns * 2;
 
         while context.len() > start_idx + min_keep && context.estimated_tokens() > self.config.max_context_tokens {
-            if context.remove_at(start_idx).is_some() {
-                removed_count += 1;
-            } else {
-                break;
+            let entry = match context.get_entry(start_idx) {
+                Some(e) => e.clone(),
+                None => break,
+            };
+
+            match &entry.message {
+                ChatMessage::Assistant {
+                    tool_calls: Some(calls),
+                    ..
+                } if !calls.is_empty() => {
+                    // Remove the assistant message
+                    context.remove_at(start_idx);
+                    removed_count += 1;
+
+                    // Atomically remove all matching tool message responses immediately following it
+                    let expected_tool_count = calls.len();
+                    let mut removed_tools = 0;
+                    while removed_tools < expected_tool_count && start_idx < context.len() {
+                        if let Some(next_entry) = context.get_entry(start_idx) {
+                            if matches!(next_entry.message, ChatMessage::Tool { .. }) {
+                                context.remove_at(start_idx);
+                                removed_count += 1;
+                                removed_tools += 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    // Regular User / Assistant message / Orphaned Tool
+                    if context.remove_at(start_idx).is_some() {
+                        removed_count += 1;
+                    } else {
+                        break;
+                    }
+                }
             }
         }
 
