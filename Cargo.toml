@@ -1,0 +1,33 @@
+[package]
+name = "thunder-agent-loop"
+version = "0.1.0"
+edition = "2021"
+authors = ["thunder-luc"]
+description = "Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+bytes = "1.9"
+async-trait = "0.1"
+parking_lot = "0.12"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
