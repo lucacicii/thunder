@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default)]
 pub struct StreamDelta {
     pub content_delta: Option<String>,
+    /// Reasoning / chain-of-thought tokens (DeepSeek-R1, o1 series). Kept separate
+    /// from `content_delta` so thinking output never pollutes the final answer.
+    pub reasoning_delta: Option<String>,
     pub tool_calls_delta: Option<Vec<StreamToolCallDelta>>,
     pub finish_reason: Option<String>,
     pub prompt_tokens: Option<usize>,
@@ -151,23 +154,24 @@ impl SSEStreamParser {
         let parsed: OpenAIStreamChunk = serde_json::from_str(json_str).ok()?;
 
         let mut content_delta = None;
+        let mut reasoning_delta = None;
         let mut tool_calls_delta = None;
         let mut finish_reason = None;
 
         if let Some(choice) = parsed.choices.and_then(|c| c.into_iter().next()) {
             let delta_opt = choice.delta.or(choice.message);
             if let Some(delta) = delta_opt {
-                if let Some(c) = delta.content {
+                // Reasoning / chain-of-thought tokens are captured separately and never
+                // mixed into the user-facing content stream.
+                if let Some(r) = delta.reasoning_content.or(delta.reasoning) {
+                    if !r.is_empty() {
+                        reasoning_delta = Some(r);
+                    }
+                }
+
+                if let Some(c) = delta.content.or(delta.text) {
                     if !c.is_empty() {
                         content_delta = Some(c);
-                    }
-                } else if let Some(r) = delta.reasoning_content.or(delta.reasoning) {
-                    if !r.is_empty() {
-                        content_delta = Some(r);
-                    }
-                } else if let Some(t) = delta.text {
-                    if !t.is_empty() {
-                        content_delta = Some(t);
                     }
                 }
 
@@ -212,6 +216,7 @@ impl SSEStreamParser {
 
         Some(StreamDelta {
             content_delta,
+            reasoning_delta,
             tool_calls_delta,
             finish_reason,
             prompt_tokens,

@@ -64,77 +64,94 @@ impl AgentTool for BashTool {
         let mut stdout_pipe = child.stdout.take().ok_or("Failed to capture stdout")?;
         let mut stderr_pipe = child.stderr.take().ok_or("Failed to capture stderr")?;
 
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-
         let cancel_token = ctx.cancellation_token.clone();
 
-        tokio::select! {
+        // Read both pipes concurrently in independent tasks so neither stream's EOF
+        // causes premature termination and data loss on the other.
+        let max_buf = self.max_buffer_bytes;
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stdout_pipe.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if buf.len() < max_buf {
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(e) => return Err(format!("Stdout read error: {}", e)),
+                }
+            }
+            Ok::<Vec<u8>, String>(buf)
+        });
+
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stderr_pipe.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if buf.len() < max_buf {
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(e) => return Err(format!("Stderr read error: {}", e)),
+                }
+            }
+            Ok::<Vec<u8>, String>(buf)
+        });
+
+        let result = tokio::select! {
             _ = cancel_token.cancelled() => {
                 let _ = child.kill().await;
+                // Reap the killed child to prevent zombie processes
+                let _ = child.wait().await;
                 Err("Process killed by cancellation signal".to_string())
             }
             res = async {
-                let mut out_chunk = [0u8; 4096];
-                let mut err_chunk = [0u8; 4096];
-                loop {
-                    tokio::select! {
-                        n = stdout_pipe.read(&mut out_chunk) => {
-                            match n {
-                                Ok(0) => break,
-                                Ok(bytes) => {
-                                    if stdout_buf.len() < self.max_buffer_bytes {
-                                        stdout_buf.extend_from_slice(&out_chunk[..bytes]);
-                                    }
-                                }
-                                Err(e) => return Err(format!("Stdout read error: {}", e)),
-                            }
-                        }
-                        n = stderr_pipe.read(&mut err_chunk) => {
-                            match n {
-                                Ok(0) => break,
-                                Ok(bytes) => {
-                                    if stderr_buf.len() < self.max_buffer_bytes {
-                                        stderr_buf.extend_from_slice(&err_chunk[..bytes]);
-                                    }
-                                }
-                                Err(e) => return Err(format!("Stderr read error: {}", e)),
-                            }
-                        }
-                    }
-                }
                 let status = child.wait().await.map_err(|e| format!("Wait child error: {}", e))?;
-                Ok(status)
+                // Drain remaining pipe data after process exit
+                let stdout_buf = stdout_task.await.map_err(|e| format!("Stdout task join error: {}", e))??;
+                let stderr_buf = stderr_task.await.map_err(|e| format!("Stderr task join error: {}", e))??;
+                Ok((status, stdout_buf, stderr_buf))
             } => {
-                let status = res?;
-                let stdout_str = String::from_utf8_lossy(&stdout_buf);
-                let stderr_str = String::from_utf8_lossy(&stderr_buf);
-
-                let mut combined = String::new();
-                if !stdout_str.is_empty() {
-                    combined.push_str(&stdout_str);
-                }
-                if !stderr_str.is_empty() {
-                    if !combined.is_empty() {
-                        combined.push('\n');
-                    }
-                    combined.push_str(&stderr_str);
-                }
-
-                if combined.is_empty() {
-                    combined = if status.success() {
-                        "(Command executed successfully with no output)".to_string()
-                    } else {
-                        format!("(Command exited with status {:?} and no output)", status.code())
-                    };
-                }
-
-                if status.success() {
-                    Ok(combined)
-                } else {
-                    Err(format!("Process exit error ({:?}):\n{}", status.code(), combined))
-                }
+                res
             }
+        };
+
+        let (status, stdout_buf, stderr_buf) = match result {
+            Ok(tuple) => tuple,
+            Err(err_msg) => return Err(err_msg),
+        };
+
+        let stdout_str = String::from_utf8_lossy(&stdout_buf);
+        let stderr_str = String::from_utf8_lossy(&stderr_buf);
+
+        let mut combined = String::new();
+        if !stdout_str.is_empty() {
+            combined.push_str(&stdout_str);
+        }
+        if !stderr_str.is_empty() {
+            if !combined.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str(&stderr_str);
+        }
+
+        if combined.is_empty() {
+            combined = if status.success() {
+                "(Command executed successfully with no output)".to_string()
+            } else {
+                format!("(Command exited with status {:?} and no output)", status.code())
+            };
+        }
+
+        if status.success() {
+            Ok(combined)
+        } else {
+            Err(format!("Process exit error ({:?}):\n{}", status.code(), combined))
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::core::utf8::{safe_slice_from, safe_slice_to};
 use crate::tools::sanitizer::sanitize_tool_output;
 use crate::types::message::ToolCall;
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
@@ -127,10 +128,10 @@ impl ToolRegistry {
             };
         }
 
+        // UTF-8 safe head/tail slicing (prevents panics on multi-byte characters)
         let keep_side = self.max_output_bytes * 4 / 10;
-        let head = &output[..keep_side.min(output.len())];
-        let tail_start = output.len().saturating_sub(keep_side);
-        let tail = &output[tail_start..];
+        let head = safe_slice_to(&output, keep_side);
+        let tail = safe_slice_from(&output, output.len().saturating_sub(keep_side));
         let omitted = original_bytes - head.len() - tail.len();
 
         let truncated_str = format!(

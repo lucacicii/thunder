@@ -1,6 +1,7 @@
 pub mod context;
 pub mod state;
 pub mod token_estimator;
+pub mod utf8;
 
 pub use context::*;
 pub use state::*;

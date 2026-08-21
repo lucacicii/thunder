@@ -248,6 +248,14 @@ impl AgentLoop {
                                 delta,
                             });
                         }
+                        Ok(LLMStreamChunk::ReasoningToken(delta)) => {
+                            // Reasoning tokens are forwarded for observability but are NOT
+                            // accumulated into assistant_content (never pollutes final answer).
+                            emit(AgentEvent::TokenDelta {
+                                turn,
+                                delta,
+                            });
+                        }
                         Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
                             emit(AgentEvent::ToolCallChunk {
                                 turn,
@@ -336,9 +344,12 @@ impl AgentLoop {
 
                 // =========================================================================
                 // 🔑 LLM Autonomous Termination Condition:
-                // When LLM does not request tool calls (or signals 'stop'), the task is done.
+                // The loop terminates ONLY when the LLM emits no tool calls. Some providers
+                // return tool_calls together with finish_reason "stop"; in that case the
+                // tools MUST still be executed, otherwise orphaned tool_call ids would
+                // break message alignment on the next turn.
                 // =========================================================================
-                if !has_tool_calls || finish_reason == "stop" {
+                if !has_tool_calls {
                     info!("LLM concluded the task autonomously (no more tool calls)");
                     loop_finish_reason = FinishReason::Done;
                     break;
