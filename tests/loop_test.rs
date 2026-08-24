@@ -124,8 +124,8 @@ async fn test_agent_loop_full_lifecycle() {
 
     // Drain events to verify TurnStart / TurnEnd / LoopComplete events
     let mut event_types = Vec::new();
-    while let Ok(evt) = event_sub.try_recv() {
-        match evt {
+    while let Ok(observed) = event_sub.try_recv() {
+        match observed.event {
             thunder_agent_loop::types::event::AgentEvent::TurnStart { .. } => event_types.push("turn_start"),
             thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. } => event_types.push("token_delta"),
             thunder_agent_loop::types::event::AgentEvent::ToolExecResult { .. } => event_types.push("tool_exec_result"),

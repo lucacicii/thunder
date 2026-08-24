@@ -86,16 +86,16 @@ let mut agent = AgentLoop::new(config);
 let mut event_rx = agent.subscribe_events();
 
 tokio::spawn(async move {
-    while let Ok(event) = event_rx.recv().await {
-        match event {
+    while let Ok(observed) = event_rx.recv().await {
+        match observed.event {
             AgentEvent::TurnStart { turn, .. } => {
-                println!("▶ 轮次 {} 开始", turn);
+                println!("▶ [{}] 轮次 {} 开始", observed.agent_id, turn);
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 print!("{}", delta);
             }
             AgentEvent::ToolExecResult { name, result, .. } => {
-                println!("🛠️ 工具 '{}' 执行完成 ({}ms)", name, result.duration_ms);
+                println!("🛠️ [{}] 工具 '{}' 执行完成 ({}ms)", observed.agent_id, name, result.duration_ms);
             }
             AgentEvent::TurnEnd { finish_reason, stats, .. } => {
                 println!("⏹ 轮次结束 ({}, {}ms)", finish_reason, stats.duration_ms);
@@ -192,6 +192,31 @@ config.pruning = ContextPruningConfig {
 # 交互式 CLI 运行
 ./test.sh run "查询当前目录并总结"
 ```
+
+---
+
+## 🧩 单元契约（A 是 Agent，B 是调度器）
+
+本仓库是 **Agent A**：一只可独立跑完一生的单 Agent 单元。另一个 Rust 应用（**B**）可以依赖 A，创建多只 A 做编排。A 永远不依赖 B。详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+```rust
+// A 自己活完一轮任务
+let mut agent = AgentLoop::new(config).with_id("researcher");
+agent.register_tool(Arc::new(BashTool::default()));
+let result = agent.run("Investigate the repo", None).await?;
+
+// B（调度器）并排跑两只 A
+let planner = AgentLoop::new(cfg.clone()).with_id("planner");
+let coder = AgentLoop::new(cfg).with_id("coder");
+let h1 = planner.start("Plan the change", None)?;
+let h2 = coder.start("Implement it", None)?;
+let (r1, r2) = tokio::try_join!(h1.join(), h2.join())?;
+```
+
+- 一只 `AgentLoop` 同时只跑一个任务；并行 = `new` 第二只。
+- 事件带 `agent_id`，调度器可拆流。
+- scratchpad 按 `agent_id` 隔离；默认不自动删除。
+- 不安装全局 tracing subscriber；宿主（CLI 或 B）自己装。
 
 ---
 

@@ -2,13 +2,31 @@ use crate::types::event::{AgentStats, TurnStats};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum LoopStatus {
-    Idle,
-    Running,
-    ExecutingTools,
-    Completed,
-    Failed,
-    Aborted,
+    Idle = 0,
+    Running = 1,
+    ExecutingTools = 2,
+    Completed = 3,
+    Failed = 4,
+    Aborted = 5,
+}
+
+impl LoopStatus {
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Running,
+            2 => Self::ExecutingTools,
+            3 => Self::Completed,
+            4 => Self::Failed,
+            5 => Self::Aborted,
+            _ => Self::Idle,
+        }
+    }
 }
 
 pub struct AgentStateTracker {

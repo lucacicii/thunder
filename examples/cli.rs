@@ -112,10 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut event_rx = agent.subscribe_events();
     tokio::spawn(async move {
-        while let Ok(event) = event_rx.recv().await {
-            match event {
+        while let Ok(observed) = event_rx.recv().await {
+            match observed.event {
                 AgentEvent::TurnStart { turn, .. } => {
-                    println!("\n🔄 [Turn {} Started]", turn);
+                    println!("\n🔄 [{}] [Turn {} Started]", observed.agent_id, turn);
                 }
                 AgentEvent::ReasoningDelta { delta, .. } => {
                     print!("\x1b[2m{}\x1b[0m", delta); // Render reasoning in dimmed style
@@ -126,14 +126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                 }
                 AgentEvent::ToolExecResult { name, result, .. } => {
-                    println!("\n🛠️  [Tool '{}' executed in {} ms]", name, result.duration_ms);
+                    println!("\n🛠️  [{}] [Tool '{}' executed in {} ms]", observed.agent_id, name, result.duration_ms);
                     println!("    Output: {}", result.output.lines().next().unwrap_or(""));
                 }
                 AgentEvent::TurnEnd { finish_reason, stats, .. } => {
-                    println!("\n🏁 [Turn Finished: reason='{}', duration={}ms]", finish_reason, stats.duration_ms);
+                    println!("\n🏁 [{}] [Turn Finished: reason='{}', duration={}ms]", observed.agent_id, finish_reason, stats.duration_ms);
                 }
                 AgentEvent::Error { turn, message, .. } => {
-                    eprintln!("\n❌ [Error in Turn {:?}: {}]", turn, message);
+                    eprintln!("\n❌ [{}] [Error in Turn {:?}: {}]", observed.agent_id, turn, message);
                 }
                 _ => {}
             }

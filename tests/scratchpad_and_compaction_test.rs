@@ -3,6 +3,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_loop::tools::registry::ToolRegistry;
 use tokio_util::sync::CancellationToken;
 
 struct BigOutputTool;

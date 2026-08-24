@@ -88,16 +88,16 @@ let mut agent = AgentLoop::new(config);
 let mut event_rx = agent.subscribe_events();
 
 tokio::spawn(async move {
-    while let Ok(event) = event_rx.recv().await {
-        match event {
+    while let Ok(observed) = event_rx.recv().await {
+        match observed.event {
             AgentEvent::TurnStart { turn, .. } => {
-                println!("▶ Turn {} started", turn);
+                println!("▶ [{}] Turn {} started", observed.agent_id, turn);
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 print!("{}", delta);
             }
             AgentEvent::ToolExecResult { name, result, .. } => {
-                println!("🛠️ Tool '{}' finished in {}ms", name, result.duration_ms);
+                println!("🛠️ [{}] Tool '{}' finished in {}ms", observed.agent_id, name, result.duration_ms);
             }
             AgentEvent::TurnEnd { finish_reason, stats, .. } => {
                 println!("⏹ Turn ended ({}, {}ms)", finish_reason, stats.duration_ms);
@@ -197,6 +197,31 @@ config.pruning = ContextPruningConfig {
 # Run interactive CLI with streaming output
 ./test.sh run "Summarize directory structure using bash"
 ```
+
+---
+
+## 🧩 Unit Contract (A is an Agent, B is a scheduler)
+
+This crate is **Agent A**: a complete single-agent unit that can run a task to completion on its own. Another Rust app (**B**) may depend on A and orchestrate many instances. A never depends on B. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
+```rust
+// A finishes one task by itself
+let mut agent = AgentLoop::new(config).with_id("researcher");
+agent.register_tool(Arc::new(BashTool::default()));
+let result = agent.run("Investigate the repo", None).await?;
+
+// B (scheduler) runs two units side by side
+let planner = AgentLoop::new(cfg.clone()).with_id("planner");
+let coder = AgentLoop::new(cfg).with_id("coder");
+let h1 = planner.start("Plan the change", None)?;
+let h2 = coder.start("Implement it", None)?;
+let (r1, r2) = tokio::try_join!(h1.join(), h2.join())?;
+```
+
+- One `AgentLoop` runs one task at a time; parallelism means `new` another instance.
+- Events carry `agent_id` so a scheduler can demux streams.
+- Scratchpad files are isolated by `agent_id`; A does not auto-delete them by default.
+- A does not install a global tracing subscriber; the host (CLI or B) does.
 
 ---
 

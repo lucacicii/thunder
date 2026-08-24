@@ -1,6 +1,7 @@
 use crate::tools::scratchpad::ScratchpadConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Recommended autonomous agent prompt guiding the LLM to call tools when needed and conclude when done.
 pub const DEFAULT_AUTONOMOUS_SYSTEM_PROMPT: &str = "\
@@ -38,7 +39,28 @@ impl Default for ContextPruningConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Thresholds for the in-loop repetition / error circuit breaker.
+/// A scheduler (B) may tune these per unit; they do not belong to B's graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopGuardConfig {
+    pub max_history: usize,
+    pub repetition_threshold: usize,
+    pub hard_repetition_limit: usize,
+    pub max_consecutive_errors: usize,
+}
+
+impl Default for LoopGuardConfig {
+    fn default() -> Self {
+        Self {
+            max_history: 10,
+            repetition_threshold: 3,
+            hard_repetition_limit: 5,
+            max_consecutive_errors: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub model: String,
     pub api_base: String,
@@ -55,6 +77,7 @@ pub struct AgentConfig {
     pub request_timeout_ms: u64,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
+    pub loop_guard: LoopGuardConfig,
 }
 
 impl Default for AgentConfig {
@@ -74,6 +97,7 @@ impl Default for AgentConfig {
             request_timeout_ms: 60_000,
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
+            loop_guard: LoopGuardConfig::default(),
         }
     }
 }
@@ -119,6 +143,18 @@ impl AgentConfig {
 
     pub fn with_scratchpad_config(mut self, scratchpad: ScratchpadConfig) -> Self {
         self.scratchpad = scratchpad;
+        self
+    }
+
+    pub fn with_loop_guard(mut self, loop_guard: LoopGuardConfig) -> Self {
+        self.loop_guard = loop_guard;
+        self
+    }
+
+    /// Isolate this unit's scratch files under `base_dir`.
+    /// The actual subdirectory is `base_dir/<agent_id>/` after [`crate::AgentLoop::with_id`].
+    pub fn with_scratchpad_dir(mut self, base_dir: impl Into<PathBuf>) -> Self {
+        self.scratchpad.base_dir = base_dir.into();
         self
     }
 }

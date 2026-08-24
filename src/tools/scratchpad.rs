@@ -37,7 +37,7 @@ pub struct ArtifactManifest {
     pub artifacts: Vec<Artifact>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchpadConfig {
     /// Directory where large outputs are saved (default: `~/.thunder/scratchpad`)
     pub base_dir: PathBuf,
@@ -45,7 +45,8 @@ pub struct ScratchpadConfig {
     pub threshold_bytes: usize,
     /// Maximum bytes to include in the preview head/tail (default: 1024 bytes each)
     pub preview_bytes: usize,
-    /// Automatically delete scratchpad directory when session concludes (default: true)
+    /// Automatically delete scratchpad directory when the unit finishes.
+    /// Default `false`: a scheduler (B) owns cleanup. CLI may opt in.
     pub auto_cleanup: bool,
 }
 
@@ -55,7 +56,7 @@ impl Default for ScratchpadConfig {
             base_dir: default_thunder_scratchpad_dir(),
             threshold_bytes: 16 * 1024, // 16 KB
             preview_bytes: 1024,
-            auto_cleanup: true,
+            auto_cleanup: false,
         }
     }
 }
