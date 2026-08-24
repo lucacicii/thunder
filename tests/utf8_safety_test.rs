@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use serde_json::json;
-use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::core::utf8::{safe_slice_from, safe_slice_to};
 use thunder_agent_loop::tools::registry::ToolRegistry;
@@ -27,7 +26,8 @@ async fn test_truncation_with_cjk_content_no_panic() {
         }
     }
 
-    let registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
+    let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
+    registry.register(std::sync::Arc::new(LargeCJKTool));
     registry
         .execute_tool_call(
             &ToolCall::new_function("call_1", "large_cjk", "{}"),

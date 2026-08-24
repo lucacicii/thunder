@@ -1,5 +1,6 @@
-use crate::core::utf8::{safe_slice_from, safe_slice_to};
 use crate::core::context::ContextBuffer;
+use crate::core::utf8::{safe_slice_from, safe_slice_to};
+use crate::pruning::compactor::{CompactorConfig, RollingCompactor};
 use crate::types::config::{ContextPruningConfig, PruningStrategy};
 use crate::types::message::{ChatMessage, Role};
 
@@ -10,18 +11,29 @@ pub struct PruneResult {
     pub tokens_after: usize,
     pub messages_removed: usize,
     pub tool_outputs_truncated: usize,
+    pub compacted: bool,
 }
 
 pub struct ContextPruner {
     config: ContextPruningConfig,
+    compactor: RollingCompactor,
 }
 
 impl ContextPruner {
     pub fn new(config: ContextPruningConfig) -> Self {
-        Self { config }
+        let compactor = RollingCompactor::new(CompactorConfig {
+            trigger_ratio: 0.80,
+            preserve_recent_turns: config.preserve_last_turns.max(3),
+        });
+        Self { config, compactor }
     }
 
     pub fn prune(&self, context: &mut ContextBuffer) -> PruneResult {
+        self.prune_with_artifacts(context, "")
+    }
+
+    /// Full multi-stage context pruning with Rolling Compaction and Scratchpad Artifacts integration
+    pub fn prune_with_artifacts(&self, context: &mut ContextBuffer, artifacts_summary: &str) -> PruneResult {
         let tokens_before = context.estimated_tokens();
         if tokens_before <= self.config.max_context_tokens {
             return PruneResult {
@@ -30,19 +42,37 @@ impl ContextPruner {
                 tokens_after: tokens_before,
                 messages_removed: 0,
                 tool_outputs_truncated: 0,
+                compacted: false,
             };
         }
 
         let mut tool_outputs_truncated = 0;
         let mut messages_removed = 0;
+        let mut was_compacted = false;
 
+        // Stage 1: Rolling Compaction (Synthesizes Milestone State Digest & retains active window)
         if matches!(
             self.config.strategy,
-            PruningStrategy::TruncateToolResults | PruningStrategy::Hybrid
+            PruningStrategy::Hybrid
         ) {
+            let comp_res = self.compactor.compact_if_needed(context, self.config.max_context_tokens, artifacts_summary);
+            if comp_res.compacted {
+                was_compacted = true;
+                messages_removed += comp_res.messages_compacted;
+            }
+        }
+
+        // Stage 2: Truncate Older Tool Outputs if still over budget
+        if context.estimated_tokens() > self.config.max_context_tokens
+            && matches!(
+                self.config.strategy,
+                PruningStrategy::TruncateToolResults | PruningStrategy::Hybrid
+            )
+        {
             tool_outputs_truncated += self.prune_old_tool_results(context);
         }
 
+        // Stage 3: Atomic Sliding Window (Preserving Pinned System Prompt & State Digest)
         if context.estimated_tokens() > self.config.max_context_tokens
             && matches!(
                 self.config.strategy,
@@ -52,7 +82,7 @@ impl ContextPruner {
             messages_removed += self.prune_sliding_window(context);
         }
 
-        // If STILL over budget in hybrid mode, aggressively truncate even recent tool messages
+        // Stage 4: Aggressive Tool Output Compression for emergency budget enforcement
         if context.estimated_tokens() > self.config.max_context_tokens
             && matches!(self.config.strategy, PruningStrategy::Hybrid)
         {
@@ -66,6 +96,7 @@ impl ContextPruner {
             tokens_after,
             messages_removed,
             tool_outputs_truncated,
+            compacted: was_compacted,
         }
     }
 
@@ -142,13 +173,28 @@ impl ContextPruner {
         truncated_count
     }
 
-    /// Atomic sliding window pruning that never leaves orphaned Tool Calls or Tool Messages
+    /// Atomic sliding window pruning that never leaves orphaned Tool Calls or Tool Messages,
+    /// and preserves both the Pinned System Prompt and Milestone State Digest.
     fn prune_sliding_window(&self, context: &mut ContextBuffer) -> usize {
         let mut removed_count = 0;
         let has_pinned_system = self.config.pin_system_prompt
             && context.get_entry(0).map(|e| e.message.role() == Role::System).unwrap_or(false);
 
-        let start_idx = if has_pinned_system { 1 } else { 0 };
+        let has_state_digest = has_pinned_system
+            && context.len() > 1
+            && context.get_entry(1).map(|e| match &e.message {
+                ChatMessage::System { content, .. } => content.contains("【Previous Conversation Summary"),
+                _ => false,
+            }).unwrap_or(false);
+
+        let start_idx = if has_state_digest {
+            2
+        } else if has_pinned_system {
+            1
+        } else {
+            0
+        };
+
         let min_keep = self.config.preserve_last_turns * 2;
 
         while context.len() > start_idx + min_keep && context.estimated_tokens() > self.config.max_context_tokens {

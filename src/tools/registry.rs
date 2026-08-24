@@ -1,5 +1,6 @@
 use crate::core::utf8::{safe_slice_from, safe_slice_to};
 use crate::tools::sanitizer::sanitize_tool_output;
+use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::message::ToolCall;
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
 use std::collections::HashMap;
@@ -12,6 +13,7 @@ pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
     max_output_bytes: usize,
     default_timeout: Duration,
+    scratchpad: Option<ScratchpadManager>,
 }
 
 impl Default for ToolRegistry {
@@ -26,7 +28,21 @@ impl ToolRegistry {
             tools: HashMap::new(),
             max_output_bytes,
             default_timeout,
+            scratchpad: None,
         }
+    }
+
+    pub fn with_scratchpad(mut self, scratchpad: ScratchpadManager) -> Self {
+        self.scratchpad = Some(scratchpad);
+        self
+    }
+
+    pub fn set_scratchpad(&mut self, scratchpad: ScratchpadManager) {
+        self.scratchpad = Some(scratchpad);
+    }
+
+    pub fn scratchpad(&self) -> Option<&ScratchpadManager> {
+        self.scratchpad.as_ref()
     }
 
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
@@ -107,6 +123,28 @@ impl ToolRegistry {
         match result {
             Ok(output) => {
                 let sanitized = sanitize_tool_output(output);
+                let original_bytes = sanitized.len();
+
+                // If ScratchpadManager is configured, persist oversized output losslessly
+                if let Some(ref sp) = self.scratchpad {
+                    if original_bytes > sp.threshold_bytes() {
+                        match sp.process_tool_output(tool_name, turn, sanitized.clone()).await {
+                            Ok(persisted_handle) => {
+                                return ToolExecutionResult {
+                                    output: persisted_handle,
+                                    is_error: false,
+                                    truncated: true,
+                                    original_bytes,
+                                    duration_ms: duration.as_millis() as u64,
+                                };
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to persist output to scratchpad; falling back to in-memory truncation");
+                            }
+                        }
+                    }
+                }
+
                 self.format_and_truncate(sanitized, false, duration)
             }
             Err(err_msg) => {
