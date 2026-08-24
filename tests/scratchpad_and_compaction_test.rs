@@ -110,7 +110,7 @@ impl LLMClientTrait for LongHorizonMockLLM {
                         tool_calls: vec![ToolCall::new_function(
                             format!("call_{}", turn),
                             "big_output",
-                            "{}",
+                            format!("{{\"step\":{}}}", turn), // Unique arguments per turn
                         )],
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(options.messages.len() * 10),

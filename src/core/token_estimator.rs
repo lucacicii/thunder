@@ -24,16 +24,17 @@ pub fn estimate_token_count(text: &str) -> usize {
             cjk_count += 1;
         } else if ch.is_whitespace() {
             whitespace_count += 1;
-        } else if ch.is_ascii_punctuation() {
+        } else if ch.is_ascii_punctuation() || (0x3000..=0x303F).contains(&u) || (0xFF00..=0xFFEF).contains(&u) {
+            // Include ASCII and fullwidth/CJK punctuation
             punctuation_count += 1;
         }
     }
 
     let ascii_count = total_chars.saturating_sub(cjk_count);
-    let cjk_tokens = (cjk_count * 8 + 9) / 10; // ~0.8 token per char
+    let cjk_tokens = (cjk_count * 8).div_ceil(10); // ~0.8 token per char
     let effective_ascii = ascii_count.saturating_sub(whitespace_count / 2);
-    let ascii_tokens = (effective_ascii * 10 + 36) / 37; // ~3.7 chars per token
-    let punct_tokens = (punctuation_count * 2 + 9) / 10;
+    let ascii_tokens = (effective_ascii * 10).div_ceil(37); // ~3.7 chars per token
+    let punct_tokens = (punctuation_count * 2).div_ceil(10);
 
     (cjk_tokens + ascii_tokens + punct_tokens).max(1)
 }

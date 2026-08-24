@@ -87,6 +87,19 @@ impl ContextBuffer {
         });
     }
 
+    pub fn insert_at(&mut self, index: usize, message: ChatMessage) {
+        let tokens = Self::calculate_message_tokens(&message);
+        self.total_estimated_tokens += tokens;
+        let clamped_idx = index.min(self.entries.len());
+        self.entries.insert(
+            clamped_idx,
+            MessageEntry {
+                message,
+                estimated_tokens: tokens,
+            },
+        );
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

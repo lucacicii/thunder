@@ -6,6 +6,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 
+/// Resolves the standard user home directory for thunder agent temporary files (`~/.thunder/scratchpad`)
+pub fn default_thunder_scratchpad_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".thunder").join("scratchpad")
+    } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        PathBuf::from(userprofile).join(".thunder").join("scratchpad")
+    } else {
+        std::env::temp_dir().join(".thunder").join("scratchpad")
+    }
+}
+
 /// Record of an oversized tool output persisted to the scratchpad directory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
@@ -28,7 +39,7 @@ pub struct ArtifactManifest {
 
 #[derive(Debug, Clone)]
 pub struct ScratchpadConfig {
-    /// Directory where large outputs are saved (default: `.thunder/scratchpad`)
+    /// Directory where large outputs are saved (default: `~/.thunder/scratchpad`)
     pub base_dir: PathBuf,
     /// Threshold in bytes above which outputs are persisted to disk (default: 16 KB)
     pub threshold_bytes: usize,
@@ -41,7 +52,7 @@ pub struct ScratchpadConfig {
 impl Default for ScratchpadConfig {
     fn default() -> Self {
         Self {
-            base_dir: PathBuf::from(".thunder/scratchpad"),
+            base_dir: default_thunder_scratchpad_dir(),
             threshold_bytes: 16 * 1024, // 16 KB
             preview_bytes: 1024,
             auto_cleanup: true,

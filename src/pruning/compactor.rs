@@ -14,7 +14,7 @@ pub struct CompactionResult {
 pub struct CompactorConfig {
     /// Token threshold ratio (0.0 to 1.0) relative to max_context_tokens to trigger compaction (default: 0.75)
     pub trigger_ratio: f32,
-    /// Minimum number of recent turns to preserve with full high fidelity (default: 6)
+    /// Minimum number of recent turns to preserve with full high fidelity (default: 3)
     pub preserve_recent_turns: usize,
 }
 
@@ -22,7 +22,7 @@ impl Default for CompactorConfig {
     fn default() -> Self {
         Self {
             trigger_ratio: 0.75,
-            preserve_recent_turns: 6,
+            preserve_recent_turns: 3,
         }
     }
 }
@@ -86,7 +86,7 @@ impl RollingCompactor {
             0
         };
 
-        // Estimate number of messages per turn ~ 2.5 (User + Assistant + Tool)
+        // Estimate number of messages per turn ~ 3 (User + Assistant + Tool)
         let keep_message_count = self.config.preserve_recent_turns * 3;
         if context.len() <= start_idx + keep_message_count {
             // Not enough older history to meaningfully compact
@@ -189,32 +189,21 @@ impl RollingCompactor {
             context.remove_at(start_idx);
         }
 
-        // 4. Insert or update the State Digest message at index 1 (or 0 if no system prompt)
+        // 4. In-place insert or replace the State Digest message at index 1 (or 0 if no system prompt)
         let digest_msg = ChatMessage::System {
             content: digest.clone(),
             name: Some("state_digest".to_string()),
         };
 
         if has_existing_digest {
-            // Replace the old digest
+            // Replace existing digest in place (O(1))
             context.replace_at(1, digest_msg);
         } else if has_pinned_system {
-            // Insert right after the pinned system prompt
-            let current_messages = context.get_messages();
-            context.clear();
-            context.push(current_messages[0].clone()); // System prompt
-            context.push(digest_msg);                  // State digest
-            for msg in &current_messages[1..] {
-                context.push(msg.clone());
-            }
+            // Insert at index 1 right after pinned system prompt (O(n) shift, no clone/clear)
+            context.insert_at(1, digest_msg);
         } else {
-            // Insert at top
-            let current_messages = context.get_messages();
-            context.clear();
-            context.push(digest_msg);
-            for msg in &current_messages {
-                context.push(msg.clone());
-            }
+            // Insert at index 0 (top)
+            context.insert_at(0, digest_msg);
         }
 
         let tokens_after = context.estimated_tokens();

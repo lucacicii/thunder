@@ -1,4 +1,4 @@
-/// UTF-8 safe string slicing helpers to prevent panics on multi-byte character boundaries.
+//! UTF-8 safe string slicing helpers to prevent panics on multi-byte character boundaries.
 
 /// Slices string from start to `end` byte index, retreating to the nearest char boundary.
 #[inline]
@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn test_safe_slice_to_multibyte_no_panic() {
         let cjk = "你好世界，这是一段中文测试文本";
-        // Byte 4 is inside the second CJK char (3 bytes each)
+        // Byte 4 is inside the second CJK char (3 bytes each: 你=0..3, 好=3..6)
         let sliced = safe_slice_to(cjk, 4);
         assert_eq!(sliced, "你");
 
@@ -50,11 +50,11 @@ mod tests {
 
     #[test]
     fn test_safe_slice_from_multibyte_no_panic() {
-        let cjk = "你好世界";
-        let sliced = safe_slice_from(cjk, 4);
+        let cjk = "你好世界"; // 你=0..3, 好=3..6, 世=6..9, 界=9..12
+        let sliced = safe_slice_from(cjk, 4); // mid-好 -> advances to boundary 6
         assert_eq!(sliced, "世界");
 
-        let sliced2 = safe_slice_from(cjk, 2);
+        let sliced2 = safe_slice_from(cjk, 2); // mid-你 -> advances to boundary 3
         assert_eq!(sliced2, "好世界");
     }
 }

@@ -52,6 +52,7 @@ pub struct LLMClient {
     default_model: String,
     headers: HeaderMap,
     max_retries: usize,
+    chunk_idle_timeout: Duration,
 }
 
 impl LLMClient {
@@ -71,9 +72,10 @@ impl LLMClient {
             }
         }
 
-        // NOTE: Only connect-level timeout is set. A total-request timeout would kill
-        // long-running streaming responses mid-generation.
+        // Only connect-level timeout is set on the client.
         let connect_timeout = Duration::from_millis(config.request_timeout_ms.min(30_000));
+        let chunk_idle_timeout = Duration::from_millis(config.request_timeout_ms.max(60_000));
+
         let client = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .pool_max_idle_per_host(10)
@@ -87,6 +89,7 @@ impl LLMClient {
             default_model: config.model.clone(),
             headers,
             max_retries: 3,
+            chunk_idle_timeout,
         }
     }
 }
@@ -126,6 +129,7 @@ impl LLMClientTrait for LLMClient {
         let client = self.client.clone();
         let headers = self.headers.clone();
         let max_retries = self.max_retries;
+        let chunk_idle_timeout = self.chunk_idle_timeout;
 
         tokio::spawn(async move {
             let mut attempt = 0;
@@ -201,7 +205,7 @@ impl LLMClientTrait for LLMClient {
                     return;
                 }
 
-                // Stream response body
+                // Stream response body with Chunk Idle Timeout protection
                 //
                 // RETRY SAFETY: deltas are buffered locally and only forwarded downstream
                 // once the stream completes successfully. This guarantees that a mid-stream
@@ -220,9 +224,10 @@ impl LLMClientTrait for LLMClient {
                             let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
                             return;
                         }
-                        chunk_opt = byte_stream.next() => {
-                            match chunk_opt {
-                                Some(Ok(bytes)) => {
+                        // Chunk idle timeout: if no bytes arrive for chunk_idle_timeout, trigger retry
+                        chunk_res = tokio::time::timeout(chunk_idle_timeout, byte_stream.next()) => {
+                            match chunk_res {
+                                Ok(Some(Ok(bytes))) => {
                                     for delta in parser.feed_chunk(&bytes) {
                                         if let Some(text) = delta.content_delta {
                                             pending_deltas.push(LLMStreamChunk::Token(text));
@@ -249,7 +254,7 @@ impl LLMClientTrait for LLMClient {
                                         }
                                     }
                                 }
-                                Some(Err(err)) => {
+                                Ok(Some(Err(err))) => {
                                     warn!(
                                         attempt = attempt,
                                         error = %err,
@@ -258,7 +263,17 @@ impl LLMClientTrait for LLMClient {
                                     stream_failed_midway = true;
                                     break;
                                 }
-                                None => {
+                                Ok(None) => {
+                                    // Clean end of stream
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        attempt = attempt,
+                                        timeout_secs = chunk_idle_timeout.as_secs(),
+                                        "Chunk read timed out (no data received within idle timeout window)"
+                                    );
+                                    stream_failed_midway = true;
                                     break;
                                 }
                             }
@@ -276,7 +291,7 @@ impl LLMClientTrait for LLMClient {
                     } else {
                         let _ = tx
                             .send(Err(format!(
-                                "Network stream error after {} attempts: connection dropped or response decoding failed",
+                                "Network stream error after {} attempts: connection dropped or response decoding timed out",
                                 max_retries
                             )))
                             .await;
