@@ -2,9 +2,16 @@
 name = "thunder-agent-loop"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 authors = ["thunder-luc"]
 description = "Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust"
 license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/lucacicii/thunder-agent-loop"
+homepage = "https://github.com/lucacicii/thunder-agent-loop"
+documentation = "https://docs.rs/thunder-agent-loop"
+keywords = ["agent", "llm", "loop", "openai", "tools"]
+categories = ["asynchronous", "api-bindings"]
 
 [dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }

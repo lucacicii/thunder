@@ -92,6 +92,13 @@ impl LLMClient {
             chunk_idle_timeout,
         }
     }
+
+    /// Reuse a host-owned HTTP client (proxy, mTLS, shared pool).
+    pub fn from_client(config: &AgentConfig, client: reqwest::Client) -> Self {
+        let mut built = Self::new(config);
+        built.client = client;
+        built
+    }
 }
 
 #[async_trait]

@@ -1,6 +1,9 @@
 //! # Thunder Agent Loop
 //!
-//! Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust.
+//! A complete single-agent unit: create, register tools, `run`/`start`, observe, cancel.
+//! Another Rust app (scheduler B) may compose many units. This crate never depends on B.
+//!
+//! See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the A/B contract.
 
 pub mod core;
 pub mod logger;
@@ -10,26 +13,27 @@ pub mod stream;
 pub mod tools;
 pub mod types;
 
+/// Stable product surface for a single agent unit and for a scheduler composing many units.
 pub mod prelude {
-    pub use crate::core::context::ContextBuffer;
-    pub use crate::core::state::{AgentStateTracker, LoopStatus};
-    pub use crate::core::token_estimator::estimate_token_count;
-    pub use crate::core::utf8::{safe_slice_from, safe_slice_to};
-    pub use crate::logger::{init_logger, init_logger_with_level};
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
-    pub use crate::loop_engine::guard::{ActionRecord, LoopGuard};
-    pub use crate::loop_engine::hooks::AgentEventDispatcher;
-    pub use crate::pruning::strategy::{ContextPruner, PruneResult};
+    pub use crate::loop_engine::handle::AgentHandle;
+    pub use crate::logger::{init_logger, init_logger_with_level};
     pub use crate::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
     pub use crate::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
-    pub use crate::tools::executor::{ExecutedToolResult, ToolExecutor};
-    pub use crate::tools::registry::ToolRegistry;
-    pub use crate::tools::sanitizer::{is_binary_data, sanitize_tool_output, strip_ansi_escapes};
     pub use crate::tools::scratchpad::{Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager};
-    pub use crate::types::config::{AgentConfig, ContextPruningConfig, PruningStrategy, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
-    pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, TurnStats};
+    pub use crate::types::config::{
+        AgentConfig, ContextPruningConfig, LoopGuardConfig, PruningStrategy,
+        DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
+    };
+    pub use crate::types::error::AgentError;
+    pub use crate::types::event::{
+        AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats,
+    };
+    pub use crate::core::state::LoopStatus;
     pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};
-    pub use crate::types::tool::{AgentTool, FunctionDefinition, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
+    pub use crate::types::tool::{
+        AgentTool, FunctionDefinition, ToolDefinition, ToolExecutionContext, ToolExecutionResult,
+    };
 }
 
 pub use prelude::*;

@@ -31,6 +31,13 @@ pub enum FinishReason {
     Error,
 }
 
+/// Event tagged with the emitting unit id so a scheduler can demux many agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservedEvent {
+    pub agent_id: String,
+    pub event: AgentEvent,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
