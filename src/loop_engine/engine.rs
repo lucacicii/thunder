@@ -263,6 +263,7 @@ impl AgentLoop {
                 };
 
                 let mut assistant_content = String::new();
+                let mut reasoning_content = String::new();
                 let mut completed_chunk = None;
 
                 while let Some(chunk_res) = stream_rx.recv().await {
@@ -275,7 +276,7 @@ impl AgentLoop {
                             });
                         }
                         Ok(LLMStreamChunk::ReasoningToken(delta)) => {
-                            // Separated from answer content — emitted as dedicated ReasoningDelta
+                            reasoning_content.push_str(&delta);
                             emit(AgentEvent::ReasoningDelta {
                                 turn,
                                 delta,
@@ -345,26 +346,25 @@ impl AgentLoop {
                 };
                 tracker.record_turn_stats(turn_stats.clone());
 
-                let effective_content = if let Some(c) = chunk_content {
-                    Some(c)
-                } else if !assistant_content.is_empty() {
-                    Some(assistant_content.clone())
-                } else {
-                    None
-                };
+                // Answer text replayed into context. Never mix reasoning / CoT into `content`:
+                // providers expect tool-call assistant messages to keep content null, and
+                // echoing thoughts back as the reply wastes tokens and pollutes later turns.
+                let answer_content = chunk_content.filter(|c| !c.is_empty()).or_else(|| {
+                    if !assistant_content.is_empty() {
+                        Some(assistant_content.clone())
+                    } else {
+                        None
+                    }
+                });
 
                 // Append assistant message to context
                 let assistant_msg = ChatMessage::Assistant {
-                    content: effective_content.clone(),
+                    content: answer_content.clone(),
                     tool_calls: if has_tool_calls { Some(tool_calls.clone()) } else { None },
                     refusal: None,
                     name: None,
                 };
                 context.push(assistant_msg);
-
-                if let Some(ref c) = effective_content {
-                    final_content = Some(c.clone());
-                }
 
                 info!(
                     turn = turn,
@@ -386,9 +386,18 @@ impl AgentLoop {
                 // return tool_calls together with finish_reason "stop"; in that case the
                 // tools MUST still be executed, otherwise orphaned tool_call ids would
                 // break message alignment on the next turn.
+                // final_content is the user-visible result of this last turn: real answer
+                // first, reasoning only as a last-resort fallback when the answer is empty.
                 // =========================================================================
                 if !has_tool_calls {
                     info!("LLM concluded the task autonomously (no more tool calls)");
+                    final_content = answer_content.or_else(|| {
+                        if !reasoning_content.is_empty() {
+                            Some(reasoning_content.clone())
+                        } else {
+                            None
+                        }
+                    });
                     loop_finish_reason = FinishReason::Done;
                     break;
                 }
