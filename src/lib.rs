@@ -14,6 +14,7 @@ pub mod prelude {
     pub use crate::core::context::ContextBuffer;
     pub use crate::core::state::{AgentStateTracker, LoopStatus};
     pub use crate::core::token_estimator::estimate_token_count;
+    pub use crate::core::utf8::{safe_slice_from, safe_slice_to};
     pub use crate::logger::{init_logger, init_logger_with_level};
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
     pub use crate::loop_engine::guard::{ActionRecord, LoopGuard};
@@ -24,6 +25,7 @@ pub mod prelude {
     pub use crate::tools::executor::{ExecutedToolResult, ToolExecutor};
     pub use crate::tools::registry::ToolRegistry;
     pub use crate::tools::sanitizer::{is_binary_data, sanitize_tool_output, strip_ansi_escapes};
+    pub use crate::tools::scratchpad::{Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager};
     pub use crate::types::config::{AgentConfig, ContextPruningConfig, PruningStrategy, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
     pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, TurnStats};
     pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};

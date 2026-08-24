@@ -6,6 +6,7 @@ use crate::pruning::strategy::ContextPruner;
 use crate::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
 use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::config::AgentConfig;
 use crate::types::event::{AgentEvent, AgentStats, FinishReason, TurnStats};
 use crate::types::message::{ChatMessage, Role};
@@ -29,15 +30,19 @@ pub struct AgentLoop {
     tool_registry: ToolRegistry,
     tool_executor: ToolExecutor,
     event_dispatcher: AgentEventDispatcher,
+    scratchpad: ScratchpadManager,
 }
 
 impl AgentLoop {
     pub fn new(config: AgentConfig) -> Self {
+        let scratchpad = ScratchpadManager::with_default_session(config.scratchpad.clone());
         let llm_client = Arc::new(LLMClient::new(&config));
         let tool_registry = ToolRegistry::new(
             config.max_tool_output_bytes,
             std::time::Duration::from_millis(config.request_timeout_ms),
-        );
+        )
+        .with_scratchpad(scratchpad.clone());
+
         let tool_executor = ToolExecutor::new(tool_registry.clone());
 
         Self {
@@ -46,6 +51,7 @@ impl AgentLoop {
             tool_registry,
             tool_executor,
             event_dispatcher: AgentEventDispatcher::default(),
+            scratchpad,
         }
     }
 
@@ -58,6 +64,10 @@ impl AgentLoop {
         self.tool_registry.register(tool);
         self.tool_executor = ToolExecutor::new(self.tool_registry.clone());
         self
+    }
+
+    pub fn scratchpad(&self) -> &ScratchpadManager {
+        &self.scratchpad
     }
 
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<AgentEvent> {
@@ -122,6 +132,7 @@ impl AgentLoop {
         let tool_executor = self.tool_executor.clone();
         let dispatcher = self.event_dispatcher.clone();
         let pruner = ContextPruner::new(config.pruning.clone());
+        let scratchpad = self.scratchpad.clone();
 
         tokio::spawn(async move {
             let mut tracker = AgentStateTracker::new();
@@ -170,15 +181,17 @@ impl AgentLoop {
                     break;
                 }
 
-                // 1. Context Pruning Check & Token Budget Guard
-                let prune_res = pruner.prune(&mut context);
+                // 1. Context Pruning Check with Scratchpad Artifacts integration
+                let artifacts_summary = scratchpad.format_artifacts_summary();
+                let prune_res = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
                 if prune_res.pruned {
                     debug!(
                         tokens_before = prune_res.tokens_before,
                         tokens_after = prune_res.tokens_after,
                         messages_removed = prune_res.messages_removed,
                         tools_truncated = prune_res.tool_outputs_truncated,
-                        "Context successfully pruned"
+                        compacted = prune_res.compacted,
+                        "Context successfully pruned / compacted"
                     );
                 }
 
@@ -441,6 +454,13 @@ impl AgentLoop {
                 finish_reason = ?loop_finish_reason,
                 "Loop execution completed"
             );
+
+            // Auto-cleanup scratchpad files if configured
+            if config.scratchpad.auto_cleanup {
+                if let Err(err) = scratchpad.cleanup().await {
+                    warn!(error = %err, "Failed to cleanup scratchpad temporary files");
+                }
+            }
 
             emit(AgentEvent::LoopComplete {
                 finish_reason: loop_finish_reason.clone(),

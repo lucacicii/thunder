@@ -1,3 +1,4 @@
+use crate::tools::scratchpad::ScratchpadConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -41,7 +42,7 @@ impl Default for ContextPruningConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub model: String,
     pub api_base: String,
@@ -57,6 +58,7 @@ pub struct AgentConfig {
     pub max_tool_output_bytes: usize,
     pub request_timeout_ms: u64,
     pub pruning: ContextPruningConfig,
+    pub scratchpad: ScratchpadConfig,
 }
 
 impl Default for AgentConfig {
@@ -75,6 +77,7 @@ impl Default for AgentConfig {
             max_tool_output_bytes: 64 * 1024,
             request_timeout_ms: 60_000,
             pruning: ContextPruningConfig::default(),
+            scratchpad: ScratchpadConfig::default(),
         }
     }
 }
@@ -114,6 +117,11 @@ impl AgentConfig {
 
     pub fn with_max_tokens_budget(mut self, budget: usize) -> Self {
         self.max_tokens_budget = Some(budget);
+        self
+    }
+
+    pub fn with_scratchpad_config(mut self, scratchpad: ScratchpadConfig) -> Self {
+        self.scratchpad = scratchpad;
         self
     }
 }
