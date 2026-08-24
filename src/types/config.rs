@@ -9,23 +9,19 @@ Guidelines:
 1. If you need additional information or must execute an operation, call the appropriate tool(s).
 2. When you have sufficient information to fulfill the user's request, do NOT invoke any further tools; formulate and output your final answer directly to conclude the execution loop.";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PruningStrategy {
     TruncateToolResults,
     SlidingWindow,
+    #[default]
     Hybrid,
-}
-
-impl Default for PruningStrategy {
-    fn default() -> Self {
-        Self::Hybrid
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextPruningConfig {
     pub max_context_tokens: usize,
+    /// Number of recent turns to preserve with full fidelity during pruning / compaction (default: 3)
     pub preserve_last_turns: usize,
     pub pin_system_prompt: bool,
     pub strategy: PruningStrategy,
@@ -35,7 +31,7 @@ impl Default for ContextPruningConfig {
     fn default() -> Self {
         Self {
             max_context_tokens: 128_000,
-            preserve_last_turns: 2,
+            preserve_last_turns: 3,
             pin_system_prompt: true,
             strategy: PruningStrategy::Hybrid,
         }
@@ -66,7 +62,7 @@ impl Default for AgentConfig {
         Self {
             model: "gpt-4o".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
+            api_key: None,
             headers: HashMap::new(),
             system_prompt: Some(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT.to_string()),
             temperature: None,
@@ -86,6 +82,7 @@ impl AgentConfig {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            api_key: std::env::var("OPENAI_API_KEY").ok(),
             ..Default::default()
         }
     }

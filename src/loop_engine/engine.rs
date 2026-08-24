@@ -81,7 +81,7 @@ impl AgentLoop {
         cancel_token: Option<CancellationToken>,
     ) -> Result<AgentRunResult, String> {
         let token = cancel_token.unwrap_or_default();
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(128);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(512);
 
         let mut stream_rx = self.run_stream(input.into(), event_tx, token.clone()).await?;
 
@@ -181,6 +181,19 @@ impl AgentLoop {
                     break;
                 }
 
+                // Check hard repetition limit
+                if guard.is_repetition_limit_exceeded() {
+                    let err_msg = "Hard repetition limit exceeded: identical tool call repeated excessively. Terminating loop to prevent infinite spin.".to_string();
+                    warn!(%err_msg);
+                    emit(AgentEvent::Error {
+                        turn: Some(tracker.current_turn()),
+                        message: err_msg,
+                        recoverable: false,
+                    });
+                    loop_finish_reason = FinishReason::Error;
+                    break;
+                }
+
                 // 1. Context Pruning Check with Scratchpad Artifacts integration
                 let artifacts_summary = scratchpad.format_artifacts_summary();
                 let prune_res = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
@@ -262,9 +275,8 @@ impl AgentLoop {
                             });
                         }
                         Ok(LLMStreamChunk::ReasoningToken(delta)) => {
-                            // Reasoning tokens are forwarded for observability but are NOT
-                            // accumulated into assistant_content (never pollutes final answer).
-                            emit(AgentEvent::TokenDelta {
+                            // Separated from answer content — emitted as dedicated ReasoningDelta
+                            emit(AgentEvent::ReasoningDelta {
                                 turn,
                                 delta,
                             });
@@ -288,22 +300,35 @@ impl AgentLoop {
                             completed_chunk = Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens));
                         }
                         Err(stream_err) => {
-                            error!(turn = turn, error = %stream_err, "Stream execution error");
-                            emit(AgentEvent::Error {
-                                turn: Some(turn),
-                                message: stream_err,
-                                recoverable: false,
-                            });
+                            if cancel_token.is_cancelled() {
+                                info!(turn = turn, "Stream cancelled by user");
+                            } else {
+                                error!(turn = turn, error = %stream_err, "Stream execution error");
+                                emit(AgentEvent::Error {
+                                    turn: Some(turn),
+                                    message: stream_err,
+                                    recoverable: false,
+                                });
+                            }
                             break;
                         }
                     }
                 }
 
+                if cancel_token.is_cancelled() {
+                    loop_finish_reason = FinishReason::Cancelled;
+                    break;
+                }
+
                 let (chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens) = match completed_chunk {
                     Some(c) => c,
                     None => {
-                        error!(turn = turn, "Turn terminated without completion payload");
-                        loop_finish_reason = FinishReason::Error;
+                        loop_finish_reason = if cancel_token.is_cancelled() {
+                            FinishReason::Cancelled
+                        } else {
+                            error!(turn = turn, "Turn terminated without completion payload");
+                            FinishReason::Error
+                        };
                         break;
                     }
                 };

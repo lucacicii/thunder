@@ -38,7 +38,13 @@ pub enum AgentEvent {
         turn: usize,
         timestamp: u64,
     },
+    /// Streaming token for user-visible answer content
     TokenDelta {
+        turn: usize,
+        delta: String,
+    },
+    /// Streaming token for chain-of-thought / reasoning (e.g. DeepSeek-R1, o1 series)
+    ReasoningDelta {
         turn: usize,
         delta: String,
     },

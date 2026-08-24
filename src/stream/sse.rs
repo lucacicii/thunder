@@ -134,18 +134,22 @@ impl SSEStreamParser {
         None
     }
 
-    /// Collect fully aggregated tool calls, guaranteeing fallback IDs for providers omitting `id`
+    /// Collect fully aggregated tool calls, guaranteeing fallback IDs and names for malformed provider chunks
     pub fn get_completed_tool_calls(&self) -> Vec<ToolCall> {
         self.accumulated_tools
             .iter()
-            .filter(|(_, acc)| !acc.name.is_empty())
             .map(|(index, acc)| {
                 let id = if acc.id.is_empty() {
                     format!("call_{}", index)
                 } else {
                     acc.id.clone()
                 };
-                ToolCall::new_function(id, &acc.name, &acc.arguments)
+                let name = if acc.name.is_empty() {
+                    format!("unnamed_tool_{}", index)
+                } else {
+                    acc.name.clone()
+                };
+                ToolCall::new_function(id, name, &acc.arguments)
             })
             .collect()
     }

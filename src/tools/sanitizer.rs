@@ -1,5 +1,5 @@
-/// High-performance string & binary sanitizer for LLM tool outputs.
-/// Strips ANSI color/control codes and prevents binary context poisoning.
+//! High-performance string & binary sanitizer for LLM tool outputs.
+//! Strips ANSI color/control codes and prevents binary context poisoning.
 
 /// Strips ANSI escape sequences (e.g. `\x1b[31m`, `\x1b[0m`, CSI codes)
 pub fn strip_ansi_escapes(input: &str) -> String {

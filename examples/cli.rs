@@ -117,6 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AgentEvent::TurnStart { turn, .. } => {
                     println!("\n🔄 [Turn {} Started]", turn);
                 }
+                AgentEvent::ReasoningDelta { delta, .. } => {
+                    print!("\x1b[2m{}\x1b[0m", delta); // Render reasoning in dimmed style
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
                 AgentEvent::TokenDelta { delta, .. } => {
                     print!("{}", delta);
                     let _ = std::io::Write::flush(&mut std::io::stdout());

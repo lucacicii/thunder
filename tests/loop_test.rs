@@ -29,15 +29,20 @@ impl LLMClientTrait for MockLLMClient {
     async fn stream_chat(
         &self,
         _options: ChatRequestOptions,
-        _cancel_token: CancellationToken,
+        cancel_token: CancellationToken,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let count = self.turn_counter.fetch_add(1, Ordering::SeqCst);
         let stop_threshold = self.stop_after_turns;
 
         tokio::spawn(async move {
+            if cancel_token.is_cancelled() {
+                let _ = tx.send(Err("Cancelled".to_string())).await;
+                return;
+            }
+
             if count < stop_threshold {
-                // Emit tool call
+                // Emit progressive tool call with advancing argument
                 let _ = tx.send(Ok(LLMStreamChunk::Token(format!("Step {}...", count)))).await;
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
@@ -45,7 +50,7 @@ impl LLMClientTrait for MockLLMClient {
                         tool_calls: vec![ToolCall::new_function(
                             format!("call_{}", count),
                             "add",
-                            "{\"x\":1,\"y\":1}",
+                            format!("{{\"x\":{},\"y\":1}}", count),
                         )],
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(10),
@@ -143,7 +148,7 @@ async fn test_agent_loop_unlimited_turns() {
 
     assert!(config.max_turns.is_none());
 
-    // Mock client executes 12 continuous tool turns before finishing
+    // Mock client executes 12 progressive tool turns before finishing
     let mock_client = Arc::new(MockLLMClient::new(12));
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
     agent.register_tool(Arc::new(AddTool));
@@ -153,4 +158,89 @@ async fn test_agent_loop_unlimited_turns() {
     assert_eq!(result.finish_reason, FinishReason::Done);
     assert_eq!(result.stats.total_turns, 13); // 12 tool turns + 1 final turn
     assert_eq!(result.stats.total_tool_executions, 12);
+}
+
+#[tokio::test]
+async fn test_agent_loop_mid_stream_cancellation_classified_correctly() {
+    struct SlowHangingClient;
+
+    #[async_trait]
+    impl LLMClientTrait for SlowHangingClient {
+        async fn stream_chat(
+            &self,
+            _options: ChatRequestOptions,
+            cancel_token: CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move {
+                // Emit one token and then wait for cancel
+                let _ = tx.send(Ok(LLMStreamChunk::Token("Processing...".to_string()))).await;
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let config = AgentConfig::new("test-model");
+    let agent = AgentLoop::new(config).with_custom_client(Arc::new(SlowHangingClient));
+
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+
+    // Trigger cancellation after 20ms
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        token_clone.cancel();
+    });
+
+    let result = agent.run("Cancel this task mid stream", Some(token)).await.unwrap();
+
+    // Verify it is classified as Cancelled and NOT Error
+    assert_eq!(result.finish_reason, FinishReason::Cancelled);
+}
+
+#[tokio::test]
+async fn test_hard_repetition_limit_trips_circuit_breaker() {
+    struct InfiniteRepeatingClient;
+
+    #[async_trait]
+    impl LLMClientTrait for InfiniteRepeatingClient {
+        async fn stream_chat(
+            &self,
+            _options: ChatRequestOptions,
+            _cancel_token: CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Completed {
+                        content: Some("Calling same tool forever...".to_string()),
+                        tool_calls: vec![ToolCall::new_function(
+                            "call_repeat",
+                            "add",
+                            "{\"x\":1,\"y\":1}", // Exactly identical args every time
+                        )],
+                        finish_reason: "tool_calls".to_string(),
+                        prompt_tokens: Some(10),
+                        completion_tokens: Some(10),
+                    }))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    let config = AgentConfig::new("test-model");
+    let mut agent = AgentLoop::new(config).with_custom_client(Arc::new(InfiniteRepeatingClient));
+    agent.register_tool(Arc::new(AddTool));
+
+    let result = agent.run("Test repetition guard", None).await.unwrap();
+
+    // Guard terminates the loop with Error to prevent infinite token burn
+    assert_eq!(result.finish_reason, FinishReason::Error);
 }
