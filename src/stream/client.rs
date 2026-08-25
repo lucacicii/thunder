@@ -212,14 +212,8 @@ impl LLMClientTrait for LLMClient {
                     return;
                 }
 
-                // Stream response body with Chunk Idle Timeout protection
-                //
-                // RETRY SAFETY: deltas are buffered locally and only forwarded downstream
-                // once the stream completes successfully. This guarantees that a mid-stream
-                // network failure can safely retry WITHOUT duplicating already-emitted tokens.
                 let mut byte_stream = response.bytes_stream();
                 let mut parser = SSEStreamParser::new();
-                let mut pending_deltas: Vec<LLMStreamChunk> = Vec::new();
                 let mut last_finish_reason = "stop".to_string();
                 let mut prompt_tokens = None;
                 let mut completion_tokens = None;
@@ -237,15 +231,21 @@ impl LLMClientTrait for LLMClient {
                                 Ok(Some(Ok(bytes))) => {
                                     for delta in parser.feed_chunk(&bytes) {
                                         if let Some(text) = delta.content_delta {
-                                            pending_deltas.push(LLMStreamChunk::Token(text));
+                                            if tx.send(Ok(LLMStreamChunk::Token(text))).await.is_err() {
+                                                return;
+                                            }
                                         }
                                         if let Some(reasoning) = delta.reasoning_delta {
-                                            pending_deltas.push(LLMStreamChunk::ReasoningToken(reasoning));
+                                            if tx.send(Ok(LLMStreamChunk::ReasoningToken(reasoning))).await.is_err() {
+                                                return;
+                                            }
                                         }
 
                                         if let Some(tc_deltas) = delta.tool_calls_delta {
                                             for tc in tc_deltas {
-                                                pending_deltas.push(LLMStreamChunk::ToolCallChunk(tc));
+                                                if tx.send(Ok(LLMStreamChunk::ToolCallChunk(tc))).await.is_err() {
+                                                    return;
+                                                }
                                             }
                                         }
 
@@ -289,29 +289,20 @@ impl LLMClientTrait for LLMClient {
                 }
 
                 if stream_failed_midway {
-                    if attempt <= max_retries {
-                        // Safe to retry: nothing has been forwarded downstream yet
-                        let backoff = Duration::from_millis(750 * (1 << (attempt - 1)));
-                        info!(backoff_ms = backoff.as_millis(), "Auto-recovering from broken network stream");
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    } else {
-                        let _ = tx
-                            .send(Err(format!(
-                                "Network stream error after {} attempts: connection dropped or response decoding timed out",
-                                max_retries
-                            )))
-                            .await;
-                        return;
-                    }
+                    let _ = tx
+                        .send(Err(format!(
+                            "Network stream error: connection dropped or response decoding timed out"
+                        )))
+                        .await;
+                    return;
                 }
 
                 if let Some(flushed) = parser.flush() {
                     if let Some(text) = flushed.content_delta {
-                        pending_deltas.push(LLMStreamChunk::Token(text));
+                        let _ = tx.send(Ok(LLMStreamChunk::Token(text))).await;
                     }
                     if let Some(reasoning) = flushed.reasoning_delta {
-                        pending_deltas.push(LLMStreamChunk::ReasoningToken(reasoning));
+                        let _ = tx.send(Ok(LLMStreamChunk::ReasoningToken(reasoning))).await;
                     }
                     if let Some(fr) = flushed.finish_reason {
                         last_finish_reason = fr;
@@ -327,13 +318,6 @@ impl LLMClientTrait for LLMClient {
                 let tool_calls = parser.get_completed_tool_calls();
                 if !tool_calls.is_empty() && last_finish_reason == "stop" {
                     last_finish_reason = "tool_calls".to_string();
-                }
-
-                // Stream completed successfully — now flush all buffered deltas downstream
-                for chunk in pending_deltas {
-                    if tx.send(Ok(chunk)).await.is_err() {
-                        return;
-                    }
                 }
 
                 debug!(
