@@ -4,7 +4,7 @@ use crate::loop_engine::guard::LoopGuard;
 use crate::loop_engine::handle::{AgentHandle, RunningGuard};
 use crate::loop_engine::hooks::AgentEventDispatcher;
 use crate::pruning::strategy::ContextPruner;
-use crate::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
+use crate::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient};
 use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::scratchpad::ScratchpadManager;
@@ -50,7 +50,7 @@ impl AgentLoop {
     pub fn new(config: AgentConfig) -> Self {
         let id = generate_agent_id();
         let scratchpad = ScratchpadManager::new(&id, config.scratchpad.clone());
-        let llm_client = Arc::new(LLMClient::new(&config));
+        let llm_client = Arc::new(UnconfiguredLLMClient);
         let tool_registry = ToolRegistry::new(
             config.max_tool_output_bytes,
             std::time::Duration::from_millis(config.request_timeout_ms),
@@ -96,12 +96,6 @@ impl AgentLoop {
 
     pub fn with_custom_client(mut self, client: Arc<dyn LLMClientTrait>) -> Self {
         self.llm_client = client;
-        self
-    }
-
-    /// Inject a shared HTTP client (proxy, mTLS, connection pool) for the default LLM transport.
-    pub fn with_http_client(mut self, client: reqwest::Client) -> Self {
-        self.llm_client = Arc::new(LLMClient::from_client(&self.config, client));
         self
     }
 

@@ -77,20 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Please check the system date and status".to_string()
     };
 
-    let is_mock = args.iter().any(|a| a == "--mock") || env::var("OPENAI_API_KEY").is_err();
+    let is_mock = args.iter().any(|a| a == "--mock");
 
     let model = env::var("MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let api_base = env::var("OPENAI_API_BASE").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-
-    // Unlimited loop by default (no max_turns restriction)
-    let mut config = AgentConfig::new(model)
-        .with_api_base(api_base)
+    let config = AgentConfig::new(model)
         .with_system_prompt("You are Thunder Agent, an ultra-fast autonomous coding assistant.")
         .with_unlimited_turns();
-
-    if let Ok(key) = env::var("OPENAI_API_KEY") {
-        config = config.with_api_key(key);
-    }
 
     let mut agent = if is_mock {
         println!("🤖 [Mode: Local Mock LLM Engine (Unlimited Turns)]");
