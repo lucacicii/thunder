@@ -1,0 +1,38 @@
+[package]
+name = "thunder-tui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+description = "Interactive Terminal User Interface for Thunder Agent and Orchestra"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agent", "tui", "ratatui", "terminal", "llm"]
+categories = ["command-line-utilities", "asynchronous"]
+
+[[bin]]
+name = "thunder-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
+thunder-agent-loop = { path = "../../thunder-agent-loop" }
+thunder-conversation = { path = "../conversation" }
+thunder-orchestra = { path = "../thunder-orchestra" }
+thunder-agent-skills = { path = "../../thunder-agent-skills" }
+thunder-agent-mcp = { path = "../../thunder-agent-mcp" }
+thunder-agent-root = { path = "../../thunder-agent-root" }
+thunder-agent-providers = { path = "../../thunder-agent-providers" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tempfile = "3.10"

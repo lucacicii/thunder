@@ -1,4 +1,17 @@
-/target
+# Rust
+target/
 **/*.rs.bk
-*.DS_Store
+
+# OS
+.DS_Store
+**/.DS_Store
+
+# Local agent / env
 .thunder/
+**/.thunder/
+.env
+.env.*
+!.env.example
+
+# Runtime
+runs/

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 # ────────────────────────────────────────────────────────────
-# Thunder Agent Loop — Fast Bash Test & Verification Script
+# Thunder Ecosystem — Workspace All-in-One Test Runner
 # ────────────────────────────────────────────────────────────
 
-# Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -16,78 +15,47 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Ensure Cargo/Rust is in PATH
 if ! command -v cargo &>/dev/null; then
     if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
+    elif [ -f "$HOME/.cargo/bin/cargo" ]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
     else
         echo -e "${RED}Error: Cargo / Rust is not installed or not in PATH.${NC}"
-        echo "Please install Rust via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
         exit 1
     fi
 fi
 
-print_header() {
-    echo -e "${CYAN}============================================================${NC}"
-    echo -e "${CYAN}⚡ THUNDER AGENT LOOP — TEST SUITE & RUNNER${NC}"
-    echo -e "${CYAN}============================================================${NC}"
-    echo -e "Rust Version: $(rustc --version)"
-    echo -e "Cargo Version: $(cargo --version)"
-    echo ""
-}
+echo -e "${CYAN}============================================================${NC}"
+echo -e "${CYAN}⚡ THUNDER ECOSYSTEM — FULL TEST SUITE${NC}"
+echo -e "${CYAN}============================================================${NC}"
+echo -e "Rust Version:  $(rustc --version)"
+echo -e "Cargo Version: $(cargo --version)"
+echo ""
 
-run_unit_tests() {
-    echo -e "${BLUE}▶ [1/3] Running Unit & Integration Tests (Debug + Release)...${NC}"
-    cargo test --all-targets --quiet
-    echo -e "${GREEN}✔ All tests passed successfully!${NC}\n"
-}
+echo -e "${BLUE}▶ [1/6] Testing thunder-agent-loop (Core Loop Engine)...${NC}"
+(cd thunder-agent-loop && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-loop passed!${NC}\n"
 
-run_benchmarks() {
-    echo -e "${BLUE}▶ [2/3] Running Performance & Concurrency Benchmark...${NC}"
-    cargo run --release --example benchmark --quiet
-    echo -e "${GREEN}✔ Benchmark completed!${NC}\n"
-}
+echo -e "${BLUE}▶ [2/6] Testing thunder-agent-providers (LLM Adapter Catalog)...${NC}"
+(cd thunder-agent-providers && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-providers passed!${NC}\n"
 
-run_cli_example() {
-    local PROMPT="${1:-Check system status and disk space using bash}"
-    echo -e "${BLUE}▶ [3/3] Running Agent Loop CLI (Live Event Streaming)...${NC}"
-    cargo run --release --example cli -- "$PROMPT"
-    echo -e "${GREEN}✔ CLI execution finished!${NC}\n"
-}
+echo -e "${BLUE}▶ [3/6] Testing thunder-agent-skills (Skill Parser & Registry)...${NC}"
+(cd thunder-agent-skills && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-skills passed!${NC}\n"
 
-case "$1" in
-    test|tests)
-        print_header
-        run_unit_tests
-        ;;
-    bench|benchmark)
-        print_header
-        run_benchmarks
-        ;;
-    run|cli)
-        shift
-        print_header
-        run_cli_example "$@"
-        ;;
-    help|--help|-h)
-        echo "Usage: $0 [command] [args]"
-        echo ""
-        echo "Commands:"
-        echo "  (no args)       Run full test suite (Tests + Benchmark + CLI Demo)"
-        echo "  test            Run unit and integration test suite"
-        echo "  bench           Run 10,000 concurrency & token throughput benchmark"
-        echo "  run [prompt]    Run live CLI demo with streaming event logs"
-        echo ""
-        echo "Environment Variables (for live LLM):"
-        echo "  OPENAI_API_KEY   Your API key (omit to use built-in Mock LLM)"
-        echo "  OPENAI_API_BASE  API endpoint (defaults to https://api.openai.com/v1)"
-        echo "  MODEL            Model ID (defaults to gpt-4o)"
-        ;;
-    *)
-        print_header
-        run_unit_tests
-        run_benchmarks
-        run_cli_example "$@"
-        echo -e "${GREEN}🎉 All checks passed! Thunder Agent Loop is fully verified.${NC}"
-        ;;
-esac
+echo -e "${BLUE}▶ [4/6] Testing thunder-agent-mcp (MCP Client & Tool Bridge)...${NC}"
+(cd thunder-agent-mcp && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-mcp passed!${NC}\n"
+
+echo -e "${BLUE}▶ [5/6] Testing thunder-agent-root (Microkernel Host & Dynamic Plugins)...${NC}"
+(cd thunder-agent-root && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-root passed!${NC}\n"
+
+echo -e "${BLUE}▶ [6/6] Testing thunder-agent-core (Conversation, Orchestra, TUI)...${NC}"
+(cd thunder-agent-core && cargo test --workspace --quiet)
+echo -e "${GREEN}✔ thunder-agent-core passed!${NC}\n"
+
+echo -e "${GREEN}✨ All Thunder crates and test suites completed successfully!${NC}"

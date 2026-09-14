@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "thunder-orchestra",
+    "conversation",
+    "tui",
+]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

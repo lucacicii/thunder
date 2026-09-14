@@ -1,0 +1,28 @@
+[package]
+name = "thunder-agent-skills"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+description = "High-performance Agent Skill Parser, Directory Discovery Engine and Execution Registry for Thunder Agent"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agent", "skills", "parser", "llm", "orchestration"]
+categories = ["asynchronous", "command-line-utilities"]
+
+[dependencies]
+thunder-agent-loop = { path = "../thunder-agent-loop" }
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "fs", "macros", "io-util"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+async-trait = "0.1"
+tracing = "0.1"
+glob = "0.3"
+regex = "1.10"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+tempfile = "3.10"

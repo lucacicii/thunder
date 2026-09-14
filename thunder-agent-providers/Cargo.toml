@@ -1,0 +1,27 @@
+[package]
+name = "thunder-agent-providers"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+description = "Multi-provider LLM adapter for Thunder Agent (pi-ai compatible models.json / auth.json, no Node runtime)"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agent", "llm", "openai", "anthropic", "gemini"]
+categories = ["asynchronous", "api-bindings"]
+
+[dependencies]
+thunder-agent-loop = { path = "../thunder-agent-loop" }
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+bytes = "1.9"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tempfile = "3.10"
