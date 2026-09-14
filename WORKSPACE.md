@@ -4,34 +4,32 @@
 
 ## 1. 仓库怎么挂
 
-GitHub 上**只有**现有仓库：
+GitHub 上**只有一个仓库**：
 
-https://github.com/lucacicii/thunder-agent-loop
+https://github.com/lucacicii/thunder
 
-没有新建第二个 GitHub 仓库，也没有用 git submodule。
+这是原来的 `thunder-agent-loop` 改名而来（旧 URL 会 301 过来），没有新建第二个仓库，也没有用 git submodule。
 
-做法是把原来的 `thunder-agent-loop` **收成 monorepo**：
+做法是把原来的 loop 仓库 **收成 monorepo**：
 
 - git 根目录就是本工作区（`Documents/GitHub/thunder`）
-- remote 仍是 `origin → lucacicii/thunder-agent-loop`
+- remote 是 `origin → lucacicii/thunder`
 - 原来的 loop 源码从仓库根挪进了 `thunder-agent-loop/`
 - 同级的 `core` / `root` / `providers` / `skills` / `mcp` / `plugin` 一并纳入这个仓库
 
 克隆：
 
 ```bash
-git clone https://github.com/lucacicii/thunder-agent-loop.git thunder
+git clone https://github.com/lucacicii/thunder.git
 cd thunder
 ```
 
 提交、推送都在工作区根目录做，不要在子目录里再 `git init`。
 
-仓库名仍叫 `thunder-agent-loop`。若要改成 `thunder`，在 GitHub 上 Rename 即可，不必新建仓库。
-
 ## 2. 目录
 
 ```
-thunder/                          # git 根 = GitHub 上的 thunder-agent-loop
+thunder/                          # git 根 = GitHub 上的 lucacicii/thunder
 ├── README.md                     # 工作区入口
 ├── WORKSPACE.md                  # 本说明
 ├── run.sh                        # 启动 TUI
