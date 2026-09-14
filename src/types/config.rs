@@ -1,6 +1,5 @@
 use crate::tools::scratchpad::ScratchpadConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Recommended autonomous agent prompt guiding the LLM to call tools when needed and conclude when done.
@@ -63,9 +62,6 @@ impl Default for LoopGuardConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub model: String,
-    pub api_base: String,
-    pub api_key: Option<String>,
-    pub headers: HashMap<String, String>,
     pub system_prompt: Option<String>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
@@ -84,9 +80,6 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: "gpt-4o".to_string(),
-            api_base: "https://api.openai.com/v1".to_string(),
-            api_key: None,
-            headers: HashMap::new(),
             system_prompt: Some(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT.to_string()),
             temperature: None,
             top_p: None,
@@ -106,19 +99,8 @@ impl AgentConfig {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
             ..Default::default()
         }
-    }
-
-    pub fn with_api_base(mut self, api_base: impl Into<String>) -> Self {
-        self.api_base = api_base.into();
-        self
-    }
-
-    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
-        self
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {

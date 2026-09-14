@@ -1,5 +1,4 @@
 use crate::stream::sse::{SSEStreamParser, StreamToolCallDelta};
-use crate::types::config::AgentConfig;
 use crate::types::message::{ChatMessage, ToolCall};
 use crate::types::tool::ToolDefinition;
 use async_trait::async_trait;
@@ -56,25 +55,32 @@ pub struct LLMClient {
 }
 
 impl LLMClient {
-    pub fn new(config: &AgentConfig) -> Self {
+    /// Build a Chat Completions client from an explicit endpoint.
+    /// Hosts/providers must pass base URL and key; AgentConfig no longer carries them.
+    pub fn from_endpoint(
+        model: impl Into<String>,
+        api_base: impl Into<String>,
+        api_key: Option<&str>,
+        extra_headers: &std::collections::HashMap<String, String>,
+        request_timeout_ms: u64,
+    ) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        if let Some(key) = &config.api_key {
-            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", key)) {
+        if let Some(key) = api_key {
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {key}")) {
                 headers.insert(AUTHORIZATION, val);
             }
         }
 
-        for (k, v) in &config.headers {
+        for (k, v) in extra_headers {
             if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
                 headers.insert(name, val);
             }
         }
 
-        // Only connect-level timeout is set on the client.
-        let connect_timeout = Duration::from_millis(config.request_timeout_ms.min(30_000));
-        let chunk_idle_timeout = Duration::from_millis(config.request_timeout_ms.max(60_000));
+        let connect_timeout = Duration::from_millis(request_timeout_ms.min(30_000));
+        let chunk_idle_timeout = Duration::from_millis(request_timeout_ms.max(60_000));
 
         let client = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
@@ -85,17 +91,23 @@ impl LLMClient {
 
         Self {
             client,
-            api_base: config.api_base.trim_end_matches('/').to_string(),
-            default_model: config.model.clone(),
+            api_base: api_base.into().trim_end_matches('/').to_string(),
+            default_model: model.into(),
             headers,
             max_retries: 3,
             chunk_idle_timeout,
         }
     }
 
-    /// Reuse a host-owned HTTP client (proxy, mTLS, shared pool).
-    pub fn from_client(config: &AgentConfig, client: reqwest::Client) -> Self {
-        let mut built = Self::new(config);
+    pub fn from_client(
+        model: impl Into<String>,
+        api_base: impl Into<String>,
+        api_key: Option<&str>,
+        extra_headers: &std::collections::HashMap<String, String>,
+        request_timeout_ms: u64,
+        client: reqwest::Client,
+    ) -> Self {
+        let mut built = Self::from_endpoint(model, api_base, api_key, extra_headers, request_timeout_ms);
         built.client = client;
         built
     }
@@ -340,5 +352,19 @@ impl LLMClientTrait for LLMClient {
         });
 
         Ok(rx)
+    }
+}
+
+/// Default client when the host did not inject a provider transport.
+pub struct UnconfiguredLLMClient;
+
+#[async_trait]
+impl LLMClientTrait for UnconfiguredLLMClient {
+    async fn stream_chat(
+        &self,
+        _options: ChatRequestOptions,
+        _cancel_token: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        Err("No LLM provider configured. Attach a client via with_custom_client() or thunder-agent-providers.".to_string())
     }
 }
