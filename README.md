@@ -1,6 +1,6 @@
 # Thunder
 
-Thunder Agent 工作区。托管在现有仓库 [lucacicii/thunder-agent-loop](https://github.com/lucacicii/thunder-agent-loop)，没有新建 GitHub 仓库，也没有 submodule。
+Thunder Agent 工作区。托管在 [lucacicii/thunder](https://github.com/lucacicii/thunder)（由原来的 `thunder-agent-loop` 改名而来），没有新建 GitHub 仓库，也没有 submodule。
 
 仓库怎么挂、目录怎么排、crate 怎么依赖，见 **[WORKSPACE.md](WORKSPACE.md)**。
 
@@ -19,7 +19,7 @@ Thunder Agent 工作区。托管在现有仓库 [lucacicii/thunder-agent-loop](h
 ## 命令
 
 ```bash
-git clone https://github.com/lucacicii/thunder-agent-loop.git thunder
+git clone https://github.com/lucacicii/thunder.git
 cd thunder
 ./run.sh      # 启动 TUI
 ./test.sh     # 全工作区测试

@@ -109,5 +109,5 @@ cargo run -- health --mock
 ```toml
 thunder-agent-loop = { path = "../../thunder-agent-loop" }
 # later:
-# thunder-agent-loop = { git = "https://github.com/lucacicii/thunder-agent-loop.git", tag = "v0.1.0" }
+# thunder-agent-loop = { git = "https://github.com/lucacicii/thunder.git", tag = "v0.1.0" }
 ```
