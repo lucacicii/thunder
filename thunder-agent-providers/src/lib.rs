@@ -1,0 +1,64 @@
+//! OpenAI Chat Completions + Responses adapter for Thunder.
+//!
+//! Endpoint identity lives here. AgentLoop does not read OPENAI_API_KEY / api_base.
+
+pub mod api;
+pub mod auth;
+pub mod catalog;
+pub mod config;
+pub mod error;
+pub mod openai;
+pub mod responses;
+pub mod source;
+
+use crate::api::ProviderApi;
+use crate::catalog::{ModelSpec, ProviderRegistry};
+use crate::error::ProviderError;
+use std::sync::Arc;
+use thunder_agent_loop::stream::client::LLMClientTrait;
+
+pub fn client_for(spec: &ModelSpec, timeout_ms: u64) -> Result<Arc<dyn LLMClientTrait>, ProviderError> {
+    if !spec.available {
+        return Err(ProviderError::Auth(format!(
+            "model `{}` is unavailable (missing API key or base URL)",
+            spec.selection_id()
+        )));
+    }
+    match spec.api {
+        ProviderApi::OpenAiResponses => Ok(Arc::new(responses::OpenAiResponsesClient::new(spec.clone()))),
+        ProviderApi::OpenAiCompletions => {
+            Ok(Arc::new(openai::RoutedOpenAiClient::completions(spec, timeout_ms)))
+        }
+    }
+}
+
+pub async fn client_for_selection(
+    selection: &str,
+    timeout_ms: u64,
+) -> Result<(ModelSpec, Arc<dyn LLMClientTrait>), ProviderError> {
+    let registry = ProviderRegistry::load_default().await?;
+    let spec = registry
+        .resolve(selection)
+        .cloned()
+        .ok_or_else(|| ProviderError::NotFound(selection.to_string()))?;
+    let client = client_for(&spec, timeout_ms)?;
+    Ok((spec, client))
+}
+
+pub async fn has_available_model() -> bool {
+    ProviderRegistry::load_default()
+        .await
+        .map(|registry| registry.list_available().iter().any(|m| m.available))
+        .unwrap_or(false)
+}
+
+pub mod prelude {
+    pub use crate::api::{ModelRef, ProviderApi};
+    pub use crate::catalog::{ModelSpec, ProviderRegistry};
+    pub use crate::client_for;
+    pub use crate::client_for_selection;
+    pub use crate::config::ModelsFile;
+    pub use crate::error::ProviderError;
+    pub use crate::has_available_model;
+    pub use crate::source::ConfigSource;
+}

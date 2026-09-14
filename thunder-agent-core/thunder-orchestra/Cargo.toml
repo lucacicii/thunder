@@ -1,0 +1,29 @@
+[package]
+name = "thunder-orchestra"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+description = "Scheduler for composing many thunder-agent-loop units"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agent", "scheduler", "multi-agent", "orchestration"]
+categories = ["asynchronous"]
+
+[[bin]]
+name = "thunder-orchestra"
+path = "src/main.rs"
+
+[dependencies]
+thunder-agent-loop = { path = "../../thunder-agent-loop" }
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+

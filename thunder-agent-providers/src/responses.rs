@@ -1,0 +1,217 @@
+use crate::catalog::ModelSpec;
+use crate::openai::normalize_openai_base;
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use serde_json::{json, Value};
+use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
+use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
+use tokio_util::sync::CancellationToken;
+
+pub struct OpenAiResponsesClient {
+    http: reqwest::Client,
+    spec: ModelSpec,
+}
+
+impl OpenAiResponsesClient {
+    pub fn new(spec: ModelSpec) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            spec,
+        }
+    }
+}
+
+#[async_trait]
+impl LLMClientTrait for OpenAiResponsesClient {
+    async fn stream_chat(
+        &self,
+        options: ChatRequestOptions,
+        cancel_token: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        let base = normalize_openai_base(&self.spec.base_url);
+        if base.is_empty() {
+            return Err("openai-responses model has no base URL configured".to_string());
+        }
+        let url = format!("{base}/responses");
+        let payload = build_responses_payload(&self.spec.id, &options);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(key) = &self.spec.api_key {
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {key}")) {
+                headers.insert(AUTHORIZATION, val);
+            }
+        }
+        for (k, v) in &self.spec.headers {
+            if let (Ok(name), Ok(val)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let http = self.http.clone();
+        tokio::spawn(async move {
+            let request = http.post(url).headers(headers).json(&payload);
+            let response = tokio::select! {
+                res = request.send() => res,
+                _ = cancel_token.cancelled() => {
+                    let _ = tx.send(Err("Request cancelled by user".to_string())).await;
+                    return;
+                }
+            };
+            let response = match response {
+                Ok(resp) => resp,
+                Err(err) => {
+                    let _ = tx.send(Err(err.to_string())).await;
+                    return;
+                }
+            };
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let _ = tx
+                    .send(Err(format!("OpenAI Responses API returned HTTP {status}: {body}")))
+                    .await;
+                return;
+            }
+
+            let mut stream = response.bytes_stream();
+            let mut buf = String::new();
+            let mut content = String::new();
+            let mut tool_calls = Vec::new();
+            let mut finish = "stop".to_string();
+
+            while let Some(chunk) = stream.next().await {
+                if cancel_token.is_cancelled() {
+                    let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
+                    return;
+                }
+                let Ok(bytes) = chunk else { continue };
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(idx) = buf.find("\n\n") {
+                    let frame = buf[..idx].to_string();
+                    buf = buf[idx + 2..].to_string();
+                    for line in frame.lines() {
+                        let Some(data) = line.strip_prefix("data: ") else { continue };
+                        if data == "[DONE]" {
+                            continue;
+                        }
+                        let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+                        match value.get("type").and_then(|v| v.as_str()) {
+                            Some("response.output_text.delta") => {
+                                if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                                    content.push_str(delta);
+                                    let _ = tx.send(Ok(LLMStreamChunk::Token(delta.to_string()))).await;
+                                }
+                            }
+                            Some("response.reasoning.delta") => {
+                                if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                                    let _ = tx
+                                        .send(Ok(LLMStreamChunk::ReasoningToken(delta.to_string())))
+                                        .await;
+                                }
+                            }
+                            Some("response.output_item.done") => {
+                                if value.pointer("/item/type").and_then(|v| v.as_str())
+                                    == Some("function_call")
+                                {
+                                    let id = value
+                                        .pointer("/item/call_id")
+                                        .or_else(|| value.pointer("/item/id"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("call")
+                                        .to_string();
+                                    let name = value
+                                        .pointer("/item/name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    let args = value
+                                        .pointer("/item/arguments")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("{}")
+                                        .to_string();
+                                    tool_calls.push(ToolCall::new_function(id, name, args));
+                                }
+                            }
+                            Some("response.completed") => {
+                                finish = "stop".to_string();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            let _ = tx
+                .send(Ok(LLMStreamChunk::Completed {
+                    content: if content.is_empty() { None } else { Some(content) },
+                    tool_calls,
+                    finish_reason: finish,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                }))
+                .await;
+        });
+
+        Ok(rx)
+    }
+}
+
+fn build_responses_payload(wire_model: &str, options: &ChatRequestOptions) -> Value {
+    let mut input = Vec::new();
+    for message in &options.messages {
+        match message {
+            ChatMessage::System { content, .. } => {
+                input.push(json!({"role": "system", "content": content}));
+            }
+            ChatMessage::User { content, .. } => {
+                input.push(json!({"role": "user", "content": content}));
+            }
+            ChatMessage::Assistant { content, tool_calls, .. } => {
+                if let Some(text) = content {
+                    if !text.is_empty() {
+                        input.push(json!({"role": "assistant", "content": text}));
+                    }
+                }
+                if let Some(calls) = tool_calls {
+                    for call in calls {
+                        input.push(json!({
+                            "type": "function_call",
+                            "call_id": call.id,
+                            "name": call.function.name,
+                            "arguments": call.function.arguments
+                        }));
+                    }
+                }
+            }
+            ChatMessage::Tool { tool_call_id, content, .. } => {
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": content
+                }));
+            }
+        }
+    }
+
+    let mut payload = json!({
+        "model": wire_model,
+        "input": input,
+        "stream": true
+    });
+    if let Some(temp) = options.temperature {
+        payload["temperature"] = json!(temp);
+    }
+    if let Some(max_tokens) = options.max_tokens {
+        payload["max_output_tokens"] = json!(max_tokens);
+    }
+    if !options.tools.is_empty() {
+        payload["tools"] = json!(options.tools);
+    }
+    payload
+}
