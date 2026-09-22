@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use thunder_agent_loop::prelude::*;
 use thunder_agent_providers::prelude::*;
@@ -264,6 +264,9 @@ impl DaemonService {
         tokio::spawn(async move {
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
             base_cfg.request_timeout_ms = 120_000;
+            if let Some(spec) = registry.resolve(&chosen_model) {
+                base_cfg.pruning.max_context_tokens = spec.context_window;
+            }
 
             let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)

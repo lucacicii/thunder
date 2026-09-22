@@ -28,6 +28,14 @@ impl ContextPruner {
         Self { config, compactor }
     }
 
+    pub fn update_max_tokens(&mut self, new_max: usize) {
+        self.config.max_context_tokens = new_max;
+    }
+
+    pub fn max_tokens(&self) -> usize {
+        self.config.max_context_tokens
+    }
+
     pub fn prune(&self, context: &mut ContextBuffer) -> PruneResult {
         self.prune_with_artifacts(context, "")
     }

@@ -1368,6 +1368,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "parking_lot",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

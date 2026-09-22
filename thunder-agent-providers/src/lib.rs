@@ -54,7 +54,10 @@ pub async fn has_available_model() -> bool {
 
 pub mod prelude {
     pub use crate::api::{ModelRef, ProviderApi};
-    pub use crate::catalog::{ModelSpec, ProviderRegistry};
+    pub use crate::catalog::{
+        default_metadata_cache_path, ModelMetadataCache, ModelSpec, ProviderRegistry,
+        DEFAULT_SAFE_CONTEXT_WINDOW,
+    };
     pub use crate::client_for;
     pub use crate::client_for_selection;
     pub use crate::config::ModelsFile;

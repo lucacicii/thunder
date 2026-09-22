@@ -25,6 +25,7 @@ parking_lot = "0.12"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+regex = "1.10"
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["full", "test-util"] }
