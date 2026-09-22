@@ -13,12 +13,14 @@ use service::DaemonService;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // CRITICAL: Log to stderr so stdout is 100% reserved for NDJSON IPC communication with Electron
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new("info,thunder_daemon=debug,thunder_agent_root=debug,thunder_agent_loop=debug,thunder_agent_providers=debug")
+        });
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
+        .with_env_filter(filter)
         .init();
 
     info!("⚡ Starting Thunder Agent Daemon (STDIO Sidecar mode)...");
