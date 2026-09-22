@@ -19,6 +19,9 @@ pub mod prelude {
     pub use crate::loop_engine::handle::AgentHandle;
     pub use crate::logger::{init_logger, init_logger_with_level};
     pub use crate::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
+    pub use crate::pruning::error_detector::{
+        extract_context_overflow_limit, is_context_overflow_error,
+    };
     pub use crate::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
     pub use crate::tools::scratchpad::{Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager};
     pub use crate::types::config::{

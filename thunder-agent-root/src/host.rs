@@ -224,29 +224,36 @@ impl ThunderRoot {
         let mut agent_cfg = self.config.clone();
         agent_cfg.system_prompt = Some(combined_system_prompt);
 
-        let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
-
-        if let Some(client) = options.custom_client {
-            info!(session_id = %session_id, "Using custom injected LLM client");
-            agent = agent.with_custom_client(client);
-        } else if let Some(spec) = self.provider_registry.resolve_ref(&self.active_model) {
+        let mut resolved_client = options.custom_client.clone();
+        if let Some(spec) = self.provider_registry.resolve_ref(&self.active_model) {
+            // Dynamically inject the model's authentic context window limit into pruning config
+            agent_cfg.pruning.max_context_tokens = spec.context_window;
             info!(
                 session_id = %session_id,
                 model = %spec.selection_id(),
                 provider = %spec.provider,
                 api = ?spec.api,
+                context_window = spec.context_window,
                 available = spec.available,
                 "Resolved model specification"
             );
-            match client_for(spec, self.config.request_timeout_ms) {
-                Ok(client) => agent = agent.with_custom_client(client),
-                Err(err) => error!(
-                    model = %self.active_model.selection_id(),
-                    error = %err,
-                    "Failed to instantiate LLM client for resolved model"
-                ),
+            if resolved_client.is_none() {
+                match client_for(spec, self.config.request_timeout_ms) {
+                    Ok(client) => resolved_client = Some(client),
+                    Err(err) => error!(
+                        model = %self.active_model.selection_id(),
+                        error = %err,
+                        "Failed to instantiate LLM client for resolved model"
+                    ),
+                }
             }
-        } else {
+        }
+
+        let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
+
+        if let Some(client) = resolved_client {
+            agent = agent.with_custom_client(client);
+        } else if options.custom_client.is_none() {
             warn!(
                 model = %self.active_model.selection_id(),
                 "No matching model found in provider registry. AgentLoop will use UnconfiguredLLMClient"

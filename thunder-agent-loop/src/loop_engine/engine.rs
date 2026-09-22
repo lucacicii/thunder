@@ -205,7 +205,7 @@ impl AgentLoop {
         let tool_registry = self.tool_registry.clone();
         let tool_executor = self.tool_executor.clone();
         let dispatcher = self.event_dispatcher.clone();
-        let pruner = ContextPruner::new(config.pruning.clone());
+        let mut pruner = ContextPruner::new(config.pruning.clone());
         let scratchpad = self.scratchpad.clone();
         let agent_id = self.id.clone();
         let status = self.status.clone();
@@ -321,91 +321,136 @@ impl AgentLoop {
                     })
                     .await;
 
-                let request_opts = ChatRequestOptions {
-                    messages: context.get_messages(),
-                    tools: tool_registry.get_definitions(),
-                    model: Some(config.model.clone()),
-                    temperature: config.temperature,
-                    top_p: config.top_p,
-                    max_tokens: config.max_completion_tokens,
-                };
-
-                let stream_res = llm_client.stream_chat(request_opts, cancel_token.clone()).await;
-                let mut stream_rx = match stream_res {
-                    Ok(rx) => rx,
-                    Err(err) => {
-                        error!(agent_id = %agent_id, turn = turn, error = %err, "Failed to initiate stream chat");
-                        emitter
-                            .emit(AgentEvent::Error {
-                                turn: Some(turn),
-                                message: err.clone(),
-                                recoverable: false,
-                            })
-                            .await;
-                        loop_finish_reason = if cancel_token.is_cancelled() {
-                            FinishReason::Cancelled
-                        } else {
-                            FinishReason::Error
-                        };
-                        break;
-                    }
-                };
-
+                let max_overflow_retries = 2;
+                let mut retry_count = 0;
                 let mut assistant_content = String::new();
                 let mut reasoning_content = String::new();
                 let mut completed_chunk = None;
 
-                while let Some(chunk_res) = stream_rx.recv().await {
-                    match chunk_res {
-                        Ok(LLMStreamChunk::Token(delta)) => {
-                            assistant_content.push_str(&delta);
+                loop {
+                    let request_opts = ChatRequestOptions {
+                        messages: context.get_messages(),
+                        tools: tool_registry.get_definitions(),
+                        model: Some(config.model.clone()),
+                        temperature: config.temperature,
+                        top_p: config.top_p,
+                        max_tokens: config.max_completion_tokens,
+                    };
+
+                    let stream_res = llm_client.stream_chat(request_opts, cancel_token.clone()).await;
+                    let mut stream_rx = match stream_res {
+                        Ok(rx) => rx,
+                        Err(err) => {
+                            if !cancel_token.is_cancelled()
+                                && retry_count < max_overflow_retries
+                                && crate::pruning::is_context_overflow_error(&err)
+                            {
+                                retry_count += 1;
+                                let detected_limit = crate::pruning::extract_context_overflow_limit(&err)
+                                    .unwrap_or_else(|| (pruner.max_tokens() as f32 * 0.6) as usize);
+                                warn!(
+                                    agent_id = %agent_id,
+                                    turn = turn,
+                                    detected_limit = detected_limit,
+                                    retry = retry_count,
+                                    "Context overflow detected on chat initiation, auto-healing with compaction and retry"
+                                );
+                                pruner.update_max_tokens(detected_limit);
+                                let _ = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
+                                continue;
+                            }
+
+                            error!(agent_id = %agent_id, turn = turn, error = %err, "Failed to initiate stream chat");
                             emitter
-                                .emit(AgentEvent::TokenDelta { turn, delta })
-                                .await;
-                        }
-                        Ok(LLMStreamChunk::ReasoningToken(delta)) => {
-                            reasoning_content.push_str(&delta);
-                            emitter
-                                .emit(AgentEvent::ReasoningDelta { turn, delta })
-                                .await;
-                        }
-                        Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
-                            emitter
-                                .emit(AgentEvent::ToolCallChunk {
-                                    turn,
-                                    index: tc_delta.index,
-                                    id: tc_delta.id,
-                                    name: tc_delta.name,
-                                    arguments_delta: tc_delta.arguments_delta,
+                                .emit(AgentEvent::Error {
+                                    turn: Some(turn),
+                                    message: err.clone(),
+                                    recoverable: false,
                                 })
                                 .await;
+                            break;
                         }
-                        Ok(LLMStreamChunk::Completed {
-                            content,
-                            tool_calls,
-                            finish_reason,
-                            prompt_tokens,
-                            completion_tokens,
-                        }) => {
-                            completed_chunk =
-                                Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens));
-                        }
-                        Err(stream_err) => {
-                            if cancel_token.is_cancelled() {
-                                info!(agent_id = %agent_id, turn = turn, "Stream cancelled by user");
-                            } else {
-                                error!(agent_id = %agent_id, turn = turn, error = %stream_err, "Stream execution error");
+                    };
+
+                    assistant_content.clear();
+                    reasoning_content.clear();
+                    completed_chunk = None;
+                    let mut stream_failed_overflow = None;
+
+                    while let Some(chunk_res) = stream_rx.recv().await {
+                        match chunk_res {
+                            Ok(LLMStreamChunk::Token(delta)) => {
+                                assistant_content.push_str(&delta);
                                 emitter
-                                    .emit(AgentEvent::Error {
-                                        turn: Some(turn),
-                                        message: stream_err,
-                                        recoverable: false,
+                                    .emit(AgentEvent::TokenDelta { turn, delta })
+                                    .await;
+                            }
+                            Ok(LLMStreamChunk::ReasoningToken(delta)) => {
+                                reasoning_content.push_str(&delta);
+                                emitter
+                                    .emit(AgentEvent::ReasoningDelta { turn, delta })
+                                    .await;
+                            }
+                            Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
+                                emitter
+                                    .emit(AgentEvent::ToolCallChunk {
+                                        turn,
+                                        index: tc_delta.index,
+                                        id: tc_delta.id,
+                                        name: tc_delta.name,
+                                        arguments_delta: tc_delta.arguments_delta,
                                     })
                                     .await;
                             }
-                            break;
+                            Ok(LLMStreamChunk::Completed {
+                                content,
+                                tool_calls,
+                                finish_reason,
+                                prompt_tokens,
+                                completion_tokens,
+                            }) => {
+                                completed_chunk =
+                                    Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens));
+                            }
+                            Err(stream_err) => {
+                                if !cancel_token.is_cancelled() && crate::pruning::is_context_overflow_error(&stream_err) {
+                                    stream_failed_overflow = Some(stream_err);
+                                } else if cancel_token.is_cancelled() {
+                                    info!(agent_id = %agent_id, turn = turn, "Stream cancelled by user");
+                                } else {
+                                    error!(agent_id = %agent_id, turn = turn, error = %stream_err, "Stream execution error");
+                                    emitter
+                                        .emit(AgentEvent::Error {
+                                            turn: Some(turn),
+                                            message: stream_err,
+                                            recoverable: false,
+                                        })
+                                        .await;
+                                }
+                                break;
+                            }
                         }
                     }
+
+                    if let Some(overflow_err) = stream_failed_overflow {
+                        if !cancel_token.is_cancelled() && retry_count < max_overflow_retries {
+                            retry_count += 1;
+                            let detected_limit = crate::pruning::extract_context_overflow_limit(&overflow_err)
+                                .unwrap_or_else(|| (pruner.max_tokens() as f32 * 0.6) as usize);
+                            warn!(
+                                agent_id = %agent_id,
+                                turn = turn,
+                                detected_limit = detected_limit,
+                                retry = retry_count,
+                                "Context overflow detected during stream, auto-healing with compaction and retry"
+                            );
+                            pruner.update_max_tokens(detected_limit);
+                            let _ = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
+                            continue;
+                        }
+                    }
+
+                    break;
                 }
 
                 if cancel_token.is_cancelled() {
