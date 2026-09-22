@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 
 pub struct OpenAiResponsesClient {
     http: reqwest::Client,
@@ -54,8 +55,9 @@ impl LLMClientTrait for OpenAiResponsesClient {
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let http = self.http.clone();
+        let request_url = url.clone();
         tokio::spawn(async move {
-            let request = http.post(url).headers(headers).json(&payload);
+            let request = http.post(&request_url).headers(headers).json(&payload);
             let response = tokio::select! {
                 res = request.send() => res,
                 _ = cancel_token.cancelled() => {
@@ -66,7 +68,14 @@ impl LLMClientTrait for OpenAiResponsesClient {
             let response = match response {
                 Ok(resp) => resp,
                 Err(err) => {
-                    let _ = tx.send(Err(err.to_string())).await;
+                    let mut full_err = err.to_string();
+                    let mut source = std::error::Error::source(&err);
+                    while let Some(s) = source {
+                        full_err.push_str(&format!(": {s}"));
+                        source = std::error::Error::source(s);
+                    }
+                    error!(url = %request_url, error = %full_err, "Failed to send HTTP request to Responses API");
+                    let _ = tx.send(Err(full_err)).await;
                     return;
                 }
             };
@@ -211,7 +220,23 @@ fn build_responses_payload(wire_model: &str, options: &ChatRequestOptions) -> Va
         payload["max_output_tokens"] = json!(max_tokens);
     }
     if !options.tools.is_empty() {
-        payload["tools"] = json!(options.tools);
+        let tools: Vec<serde_json::Value> = options
+            .tools
+            .iter()
+            .map(|t| {
+                let mut obj = serde_json::json!({
+                    "type": "function",
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "parameters": t.function.parameters,
+                });
+                if let Some(strict) = t.function.strict {
+                    obj["strict"] = serde_json::json!(strict);
+                }
+                obj
+            })
+            .collect();
+        payload["tools"] = serde_json::json!(tools);
     }
     payload
 }

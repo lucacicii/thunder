@@ -13,7 +13,7 @@ use thunder_agent_loop::{
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct RootRunOptions {
@@ -227,11 +227,30 @@ impl ThunderRoot {
         let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
 
         if let Some(client) = options.custom_client {
+            info!(session_id = %session_id, "Using custom injected LLM client");
             agent = agent.with_custom_client(client);
         } else if let Some(spec) = self.provider_registry.resolve_ref(&self.active_model) {
-            if let Ok(client) = client_for(spec, self.config.request_timeout_ms) {
-                agent = agent.with_custom_client(client);
+            info!(
+                session_id = %session_id,
+                model = %spec.selection_id(),
+                provider = %spec.provider,
+                api = ?spec.api,
+                available = spec.available,
+                "Resolved model specification"
+            );
+            match client_for(spec, self.config.request_timeout_ms) {
+                Ok(client) => agent = agent.with_custom_client(client),
+                Err(err) => error!(
+                    model = %self.active_model.selection_id(),
+                    error = %err,
+                    "Failed to instantiate LLM client for resolved model"
+                ),
             }
+        } else {
+            warn!(
+                model = %self.active_model.selection_id(),
+                "No matching model found in provider registry. AgentLoop will use UnconfiguredLLMClient"
+            );
         }
 
         if options.register_builtins {

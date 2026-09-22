@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{debug, error, info, warn};
 
 use thunder_agent_loop::prelude::*;
 use thunder_agent_providers::prelude::*;
@@ -204,8 +204,9 @@ impl DaemonService {
             Ok(Some(existing)) => existing,
             _ => {
                 let mut c = Conversation::new(effective_session_id.clone());
-                let title = if prompt.len() > 30 {
-                    format!("{}...", &prompt[..30])
+                let title = if prompt.chars().count() > 30 {
+                    let truncated: String = prompt.chars().take(30).collect();
+                    format!("{truncated}...")
                 } else {
                     prompt.clone()
                 };
@@ -262,7 +263,7 @@ impl DaemonService {
         // Spawn async task runner
         tokio::spawn(async move {
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
-            base_cfg.request_timeout_ms = 60_000;
+            base_cfg.request_timeout_ms = 120_000;
 
             let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
@@ -282,7 +283,11 @@ impl DaemonService {
                 use_mock,
                 custom_client,
                 cancellation_token: Some(cancel_token),
-                forced_plugins: None,
+                forced_plugins: Some(vec![
+                    "conversation".to_string(),
+                    "skills".to_string(),
+                    "mcp".to_string(),
+                ]),
                 register_builtins: true,
             };
 
@@ -317,14 +322,31 @@ impl DaemonService {
                                 let _ = store.save(&conversation).await;
                             }
 
-                            let msg = DaemonResponse::TaskCompleted {
-                                task_id: task_id.clone(),
-                                session_id: effective_session_id.clone(),
-                                final_content,
-                                finish_reason,
-                                active_plugins: selection.active_plugin_ids,
-                            };
-                            write_ndjson(&stdout, &msg).await;
+                            if res.run_result.finish_reason == thunder_agent_loop::types::event::FinishReason::Error {
+                                let err_msg = "Thunder agent task ended with FinishReason::Error (see observed error events for details)".to_string();
+                                error!(task_id = %task_id, finish_reason = %finish_reason, "Task finished with error");
+                                let msg = DaemonResponse::TaskFailed {
+                                    task_id: task_id.clone(),
+                                    session_id: Some(effective_session_id.clone()),
+                                    error: err_msg,
+                                };
+                                write_ndjson(&stdout, &msg).await;
+                            } else {
+                                info!(
+                                    task_id = %task_id,
+                                    finish_reason = %finish_reason,
+                                    has_content = final_content.is_some(),
+                                    "Task execution finished successfully"
+                                );
+                                let msg = DaemonResponse::TaskCompleted {
+                                    task_id: task_id.clone(),
+                                    session_id: effective_session_id.clone(),
+                                    final_content,
+                                    finish_reason,
+                                    active_plugins: selection.active_plugin_ids,
+                                };
+                                write_ndjson(&stdout, &msg).await;
+                            }
                         }
                         Err(err) => {
                             error!(error = %err, "Task execution failed");
