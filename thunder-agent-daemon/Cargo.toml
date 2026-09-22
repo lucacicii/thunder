@@ -1,0 +1,36 @@
+[package]
+name = "thunder-agent-daemon"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+description = "STDIO Sidecar Daemon for Electron, Desktop UIs and Headless Agent Host"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agent", "daemon", "sidecar", "electron", "llm"]
+categories = ["command-line-utilities", "asynchronous"]
+
+[[bin]]
+name = "thunder-daemon"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
+thunder-agent-loop = { path = "../thunder-agent-loop" }
+thunder-conversation = { path = "../thunder-agent-core/conversation" }
+thunder-orchestra = { path = "../thunder-agent-core/thunder-orchestra" }
+thunder-agent-skills = { path = "../thunder-agent-skills" }
+thunder-agent-mcp = { path = "../thunder-agent-mcp" }
+thunder-agent-root = { path = "../thunder-agent-root" }
+thunder-agent-providers = { path = "../thunder-agent-providers" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tempfile = "3.10"
