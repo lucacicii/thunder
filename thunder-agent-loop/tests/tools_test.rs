@@ -72,4 +72,26 @@ async fn test_bash_tool_execution() {
 
     assert!(res.is_ok());
     assert_eq!(res.unwrap().trim(), "thunder-agent-loop-test");
+
+    // Test with cwd
+    let res_cwd = bash
+        .execute(json!({ "command": "pwd", "cwd": "/" }), &ctx)
+        .await;
+    assert!(res_cwd.is_ok());
+    assert_eq!(res_cwd.unwrap().trim(), "/");
+
+    // Test with timeout_ms
+    let res_timeout = bash
+        .execute(json!({ "command": "sleep 5", "timeout_ms": 100 }), &ctx)
+        .await;
+    assert!(res_timeout.is_err());
+    assert!(res_timeout.unwrap_err().contains("timeout"));
+}
+
+#[tokio::test]
+async fn test_agent_loop_with_builtins_builder() {
+    let cfg = thunder_agent_loop::types::config::AgentConfig::new("mock-model");
+    let agent = thunder_agent_loop::AgentLoop::new(cfg).with_builtins();
+    // AgentLoop successfully built with bash, read_file, and write_file
+    assert_eq!(agent.status(), thunder_agent_loop::core::state::LoopStatus::Idle);
 }
