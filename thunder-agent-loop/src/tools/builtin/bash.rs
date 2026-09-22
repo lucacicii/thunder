@@ -33,6 +33,14 @@ impl AgentTool for BashTool {
                     "command": {
                         "type": "string",
                         "description": "The shell command to execute."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory in which to execute the command."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Optional command execution timeout in milliseconds (defaults to 120000 ms)."
                     }
                 },
                 "required": ["command"]
@@ -46,8 +54,14 @@ impl AgentTool for BashTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter 'command'".to_string())?;
 
-        let mut child = Command::new("bash")
-            .arg("-c")
+        let timeout_duration = args
+            .get("timeout_ms")
+            .and_then(|v| v.as_u64())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(120));
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
             .arg(command)
             .stdin(Stdio::null()) // Prevent interactive hanging on user stdin prompts
             .stdout(Stdio::piped())
@@ -57,7 +71,13 @@ impl AgentTool for BashTool {
             .env("CI", "true")
             .env("TERM", "dumb")
             .env("PAGER", "cat")
-            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_TERMINAL_PROMPT", "0");
+
+        if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+            cmd.current_dir(cwd);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn bash process: {}", e))?;
 
@@ -109,6 +129,11 @@ impl AgentTool for BashTool {
                 // Reap the killed child to prevent zombie processes
                 let _ = child.wait().await;
                 Err("Process killed by cancellation signal".to_string())
+            }
+            _ = tokio::time::sleep(timeout_duration) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(format!("Process killed after exceeding timeout of {} ms", timeout_duration.as_millis()))
             }
             res = async {
                 let status = child.wait().await.map_err(|e| format!("Wait child error: {}", e))?;
