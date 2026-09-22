@@ -54,8 +54,12 @@ echo -e "${BLUE}▶ [5/6] Testing thunder-agent-root (Microkernel Host & Dynamic
 (cd thunder-agent-root && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-root passed!${NC}\n"
 
-echo -e "${BLUE}▶ [6/6] Testing thunder-agent-core (Conversation, Orchestra, TUI)...${NC}"
+echo -e "${BLUE}▶ [6/7] Testing thunder-agent-core (Conversation, Orchestra, TUI)...${NC}"
 (cd thunder-agent-core && cargo test --workspace --quiet)
 echo -e "${GREEN}✔ thunder-agent-core passed!${NC}\n"
+
+echo -e "${BLUE}▶ [7/7] Testing thunder-agent-daemon (STDIO Sidecar Daemon)...${NC}"
+(cd thunder-agent-daemon && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-agent-daemon passed!${NC}\n"
 
 echo -e "${GREEN}✨ All Thunder crates and test suites completed successfully!${NC}"

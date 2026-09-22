@@ -13,6 +13,7 @@ Thunder Agent 工作区。托管在 [lucacicii/thunder](https://github.com/lucac
 | [`thunder-agent-skills`](thunder-agent-skills) | Skill 解析与注册 |
 | [`thunder-agent-mcp`](thunder-agent-mcp) | MCP client / tool bridge |
 | [`thunder-agent-root`](thunder-agent-root) | 微内核 host 与插件编排 |
+| [`thunder-agent-daemon`](thunder-agent-daemon) | STDIO Sidecar 守护进程（供 Electron / 外部前端集成） |
 | [`thunder-agent-core`](thunder-agent-core) | conversation / orchestra / TUI |
 | [`thunder-agent-plugin`](thunder-agent-plugin) | 插件目录 |
 
@@ -22,5 +23,6 @@ Thunder Agent 工作区。托管在 [lucacicii/thunder](https://github.com/lucac
 git clone https://github.com/lucacicii/thunder.git
 cd thunder
 ./run.sh      # 启动 TUI
+./daemon.sh   # 启动 STDIO Sidecar 守护进程（供 Electron / 外部前端集成）
 ./test.sh     # 全工作区测试
 ```

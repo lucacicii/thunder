@@ -33,12 +33,14 @@ thunder/                          # git 根 = GitHub 上的 lucacicii/thunder
 ├── README.md                     # 工作区入口
 ├── WORKSPACE.md                  # 本说明
 ├── run.sh                        # 启动 TUI
+├── daemon.sh                     # 启动 STDIO Sidecar Daemon (供 Electron 集成)
 ├── test.sh                       # 全工作区测试
 ├── thunder-agent-loop/           # Agent A：单 Agent 闭环引擎
 ├── thunder-agent-providers/      # LLM Provider 适配（OpenAI / Anthropic / Google）
 ├── thunder-agent-skills/         # Skill 解析与注册
 ├── thunder-agent-mcp/            # MCP client / tool bridge
 ├── thunder-agent-root/           # 微内核 host，按任务动态挂插件
+├── thunder-agent-daemon/         # STDIO Sidecar 守护进程（供 Electron / 外部前端集成）
 ├── thunder-agent-core/           # conversation / orchestra / TUI
 │   ├── conversation/             # 会话与 Turn 存储
 │   ├── thunder-orchestra/        # Agent B：多 Agent 调度
@@ -61,8 +63,9 @@ thunder-agent-providers / skills / mcp / conversation / orchestra
         │
 thunder-agent-root          # host：按需挂 conversation / orchestra / skills / mcp
         ▲
-        │
-thunder-tui                 # 终端应用
+   ┌────┴────┐
+   │         │
+thunder-tui  thunder-agent-daemon  # 终端应用 / STDIO 守护进程
 ```
 
 约定：
