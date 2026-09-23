@@ -149,6 +149,7 @@ impl DaemonService {
                 model,
                 use_mock,
                 workspace_dir,
+                thinking_level,
             } => {
                 self.handle_run_task(
                     id,
@@ -158,6 +159,7 @@ impl DaemonService {
                     model,
                     use_mock.unwrap_or(false),
                     workspace_dir,
+                    thinking_level,
                 )
                 .await;
             }
@@ -194,6 +196,7 @@ impl DaemonService {
         model: Option<String>,
         mut use_mock: bool,
         workspace_dir: Option<String>,
+        thinking_level: Option<String>,
     ) {
         let effective_session_id = session_id.unwrap_or_else(|| {
             format!("sess_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
@@ -215,9 +218,6 @@ impl DaemonService {
             }
         };
 
-        conversation.add_user_message(&prompt);
-        let _ = self.store.save(&conversation).await;
-
         let registry = self.provider_registry.read().await.clone();
         let available = registry.list_available();
 
@@ -226,12 +226,35 @@ impl DaemonService {
             use_mock = true;
         }
 
-        let chosen_model = model.unwrap_or_else(|| {
-            available
-                .first()
-                .map(|m| m.selection_id())
-                .unwrap_or_else(|| "openai/gpt-4o".to_string())
-        });
+        let chosen_model = model
+            .or_else(|| conversation.model.clone())
+            .unwrap_or_else(|| {
+                available
+                    .first()
+                    .map(|m| m.selection_id())
+                    .unwrap_or_else(|| "openai/gpt-4o".to_string())
+            });
+
+        // Workspace is strictly immutable once bound to a conversation:
+        let chosen_workspace = if let Some(ref existing_ws) = conversation.workspace {
+            // Once bound, workspace cannot be modified!
+            existing_ws.clone()
+        } else {
+            // Brand new conversation: bind the incoming workspace_dir or default workspace
+            workspace_dir
+                .unwrap_or_else(|| self.default_workspace.to_string_lossy().to_string())
+        };
+
+        let chosen_thinking = thinking_level
+            .or_else(|| conversation.thinking_level.clone());
+
+        // Bind model, workspace, and thinking_level permanently to this conversation
+        conversation.model = Some(chosen_model.clone());
+        conversation.workspace = Some(chosen_workspace.clone());
+        conversation.thinking_level = chosen_thinking.clone();
+
+        conversation.add_user_message(&prompt);
+        let _ = self.store.save(&conversation).await;
 
         let cancel_token = CancellationToken::new();
         self.active_tasks
@@ -247,6 +270,8 @@ impl DaemonService {
                 "task_id": task_id,
                 "session_id": effective_session_id,
                 "model": chosen_model,
+                "workspace": chosen_workspace,
+                "thinking_level": chosen_thinking,
                 "use_mock": use_mock
             })),
             error: None,
@@ -256,14 +281,15 @@ impl DaemonService {
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
         let stdout = self.stdout.clone();
-        let ws_dir = workspace_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_workspace.clone());
+        let ws_dir = PathBuf::from(&chosen_workspace);
 
         // Spawn async task runner
         tokio::spawn(async move {
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
             base_cfg.request_timeout_ms = 120_000;
+            if let Some(ref tl) = chosen_thinking {
+                base_cfg.thinking_level = Some(tl.clone());
+            }
             if let Some(spec) = registry.resolve(&chosen_model) {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
             }
@@ -292,6 +318,7 @@ impl DaemonService {
                     "mcp".to_string(),
                 ]),
                 register_builtins: true,
+                thinking_level: chosen_thinking.clone(),
             };
 
             let context_input = conversation.as_context_input();

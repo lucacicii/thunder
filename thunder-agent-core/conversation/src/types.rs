@@ -80,6 +80,12 @@ pub struct Conversation {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
     pub status: ConversationStatus,
     pub messages: Vec<ChatMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,6 +107,9 @@ impl Conversation {
             title: None,
             parent_id: None,
             system_prompt: None,
+            model: None,
+            workspace: None,
+            thinking_level: None,
             status: ConversationStatus::Active,
             messages: Vec::new(),
             stages: Vec::new(),
@@ -131,6 +140,27 @@ impl Conversation {
 
     pub fn with_parent_id(mut self, parent_id: impl Into<String>) -> Self {
         self.parent_id = Some(parent_id.into());
+        self
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    pub fn bind_workspace_if_empty(&mut self, workspace: impl Into<String>) {
+        if self.workspace.is_none() {
+            self.workspace = Some(workspace.into());
+        }
+    }
+
+    pub fn with_thinking_level(mut self, level: impl Into<String>) -> Self {
+        self.thinking_level = Some(level.into());
         self
     }
 
@@ -275,6 +305,9 @@ impl Conversation {
             id: self.id.clone(),
             title: self.title.clone(),
             parent_id: self.parent_id.clone(),
+            model: self.model.clone(),
+            workspace: self.workspace.clone(),
+            thinking_level: self.thinking_level.clone(),
             status: self.status,
             message_count: self.messages.len(),
             turn_count: self.stats.turn_count,
@@ -378,6 +411,12 @@ pub struct ConversationSummary {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
     pub status: ConversationStatus,
     pub message_count: usize,
     pub turn_count: usize,

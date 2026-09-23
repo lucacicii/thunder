@@ -71,6 +71,7 @@ pub struct AgentConfig {
     pub max_tokens_budget: Option<usize>,
     pub max_tool_output_bytes: usize,
     pub request_timeout_ms: u64,
+    pub thinking_level: Option<String>,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
     pub loop_guard: LoopGuardConfig,
@@ -88,6 +89,7 @@ impl Default for AgentConfig {
             max_tokens_budget: None,
             max_tool_output_bytes: 64 * 1024,
             request_timeout_ms: 60_000,
+            thinking_level: None,
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             loop_guard: LoopGuardConfig::default(),
@@ -115,6 +117,11 @@ impl AgentConfig {
 
     pub fn with_unlimited_turns(mut self) -> Self {
         self.max_turns = None;
+        self
+    }
+
+    pub fn with_thinking_level(mut self, level: impl Into<String>) -> Self {
+        self.thinking_level = Some(level.into());
         self
     }
 

@@ -96,7 +96,8 @@ impl ModelAdapter for OpenAiReasoningAdapter {
 
         // Add reasoning_effort if supported or needed
         if spec.supports_reasoning_effort {
-            payload["reasoning_effort"] = json!("medium");
+            let effort = options.thinking_level.as_deref().unwrap_or("medium");
+            payload["reasoning_effort"] = json!(effort);
         }
 
         payload

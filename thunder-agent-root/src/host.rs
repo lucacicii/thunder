@@ -23,6 +23,7 @@ pub struct RootRunOptions {
     pub cancellation_token: Option<CancellationToken>,
     pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
+    pub thinking_level: Option<String>,
 }
 
 impl Default for RootRunOptions {
@@ -34,6 +35,7 @@ impl Default for RootRunOptions {
             cancellation_token: None,
             forced_plugins: None,
             register_builtins: true,
+            thinking_level: None,
         }
     }
 }
@@ -230,6 +232,9 @@ impl ThunderRoot {
         let combined_system_prompt = active_set.build_combined_system_prompt(Some(&base_prompt));
         let mut agent_cfg = self.config.clone();
         agent_cfg.system_prompt = Some(combined_system_prompt);
+        if let Some(ref tl) = options.thinking_level {
+            agent_cfg.thinking_level = Some(tl.clone());
+        }
 
         let mut resolved_client = options.custom_client.clone();
         if let Some(spec) = self.provider_registry.resolve_ref(&self.active_model) {
