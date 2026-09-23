@@ -93,6 +93,9 @@ impl AgentTool for BashTool {
             cmd.current_dir(cwd);
         }
 
+        #[cfg(unix)]
+        cmd.process_group(0);
+
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn bash process: {}", e))?;
@@ -141,12 +144,14 @@ impl AgentTool for BashTool {
 
         let result = tokio::select! {
             _ = cancel_token.cancelled() => {
+                kill_process_tree(&child);
                 let _ = child.kill().await;
                 // Reap the killed child to prevent zombie processes
                 let _ = child.wait().await;
                 Err("Process killed by cancellation signal".to_string())
             }
             _ = tokio::time::sleep(timeout_duration) => {
+                kill_process_tree(&child);
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 Err(format!("Process killed after exceeding timeout of {} ms", timeout_duration.as_millis()))
@@ -196,3 +201,15 @@ impl AgentTool for BashTool {
         }
     }
 }
+
+#[cfg(unix)]
+fn kill_process_tree(child: &tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(_child: &tokio::process::Child) {}

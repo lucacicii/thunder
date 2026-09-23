@@ -71,6 +71,18 @@ impl ToolExecutionResult {
             duration_ms: duration.as_millis() as u64,
         }
     }
+
+    /// Appends a structured telemetry notice so the LLM is informed with ground truth.
+    pub fn with_telemetry(mut self, notice: crate::tools::middleware::telemetry::SystemNotice) -> Self {
+        let md = notice.format_markdown();
+        if self.output.trim().is_empty() {
+            self.output = md;
+        } else {
+            self.output = format!("{}\n\n{}", self.output, md);
+        }
+        self.original_bytes = self.output.len();
+        self
+    }
 }
 
 #[async_trait]
