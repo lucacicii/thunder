@@ -71,6 +71,10 @@ impl DaemonService {
             }
 
             DaemonRequest::ListModels { id } => {
+                // Dynamically reload from disk on demand so edits to ~/.thunder/models.json are immediately picked up
+                if let Ok(fresh) = ProviderRegistry::load_default().await {
+                    *self.provider_registry.write().await = fresh;
+                }
                 let registry = self.provider_registry.read().await;
                 let models: Vec<serde_json::Value> = registry
                     .list_available()
@@ -220,6 +224,11 @@ impl DaemonService {
                 c
             }
         };
+
+        // Dynamically reload latest providers configuration before resolving models
+        if let Ok(fresh) = ProviderRegistry::load_default().await {
+            *self.provider_registry.write().await = fresh;
+        }
 
         let registry = self.provider_registry.read().await.clone();
         let available = registry.list_available();
