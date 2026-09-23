@@ -1095,6 +1095,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
+ "libc",
  "parking_lot",
  "regex",
  "reqwest",

@@ -134,6 +134,7 @@ impl ThunderRoot {
     }
 
     pub fn with_workspace(mut self, path: PathBuf) -> Self {
+        self.config.workspace_dir = Some(path.clone());
         self.workspace_root = Some(path);
         self
     }
@@ -231,6 +232,9 @@ impl ThunderRoot {
         }
         let combined_system_prompt = active_set.build_combined_system_prompt(Some(&base_prompt));
         let mut agent_cfg = self.config.clone();
+        if let Some(ref ws) = self.workspace_root {
+            agent_cfg.workspace_dir = Some(ws.clone());
+        }
         agent_cfg.system_prompt = Some(combined_system_prompt);
         if let Some(ref tl) = options.thinking_level {
             agent_cfg.thinking_level = Some(tl.clone());

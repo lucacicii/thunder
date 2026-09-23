@@ -96,8 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register built-in tools
     agent.register_tool(Arc::new(BashTool::default()));
-    agent.register_tool(Arc::new(ReadFileTool));
-    agent.register_tool(Arc::new(WriteFileTool));
+    agent.register_tool(Arc::new(ReadFileTool::default()));
+    agent.register_tool(Arc::new(WriteFileTool::default()));
 
     println!("⚡ User Prompt: \"{}\"", prompt);
     println!("────────────────────────────────────────────────────────────");

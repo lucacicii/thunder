@@ -116,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cancellation_token: None,
         forced_plugins: None,
         register_builtins: true,
+        thinking_level: None,
     };
 
     let mut handle = root.execute(prompt, options).await?;

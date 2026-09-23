@@ -112,6 +112,7 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
         cancellation_token: None,
         forced_plugins: Some(vec!["skills".to_string(), "mcp".to_string()]),
         register_builtins: true,
+        thinking_level: None,
     };
 
     let result = root

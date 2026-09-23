@@ -41,6 +41,10 @@ impl ToolRegistry {
         self.scratchpad = Some(scratchpad);
     }
 
+    pub fn clear_scratchpad(&mut self) {
+        self.scratchpad = None;
+    }
+
     pub fn scratchpad(&self) -> Option<&ScratchpadManager> {
         self.scratchpad.as_ref()
     }

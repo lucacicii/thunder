@@ -95,3 +95,28 @@ async fn test_agent_loop_with_builtins_builder() {
     // AgentLoop successfully built with bash, read_file, and write_file
     assert_eq!(agent.status(), thunder_agent_loop::core::state::LoopStatus::Idle);
 }
+
+#[tokio::test]
+async fn test_turn_off_transactions_without_modifying_code() {
+    // Option 1: Using AgentConfig builder
+    let cfg1 = thunder_agent_loop::types::config::AgentConfig::new("mock-model")
+        .without_transactions();
+    assert!(!cfg1.middleware.enable_transaction);
+
+    // Option 2: Using direct boolean toggle in config
+    let mut cfg2 = thunder_agent_loop::types::config::AgentConfig::new("mock-model");
+    cfg2.middleware.enable_transaction = false;
+    assert!(!cfg2.middleware.enable_transaction);
+
+    // Option 3: Using AgentLoop fluent method
+    let agent = thunder_agent_loop::AgentLoop::new(cfg2).without_transactions();
+    assert!(!agent.config().middleware.enable_transaction);
+
+    // Option 4: Disabling all middlewares for bare-metal execution
+    let cfg_bare = thunder_agent_loop::types::config::AgentConfig::new("mock-model")
+        .without_middlewares();
+    assert!(!cfg_bare.middleware.enable_transaction);
+    assert!(!cfg_bare.middleware.enable_security_guard);
+    assert!(!cfg_bare.middleware.enable_resource_guard);
+    assert!(!cfg_bare.middleware.enable_output_post_processor);
+}

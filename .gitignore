@@ -9,6 +9,8 @@ target/
 # Local agent / env
 .thunder/
 **/.thunder/
+.arp/tmp/
+**/.arp/tmp/
 .env
 .env.*
 !.env.example

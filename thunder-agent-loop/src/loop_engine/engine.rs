@@ -57,7 +57,15 @@ impl AgentLoop {
         )
         .with_scratchpad(scratchpad.clone());
 
-        let tool_executor = ToolExecutor::new(tool_registry.clone());
+        let ws = config.workspace_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        let tool_executor = ToolExecutor::with_configured_pipeline(
+            tool_registry.clone(),
+            ws,
+            Some(scratchpad.clone()),
+            &config.middleware,
+        );
 
         Self {
             id,
@@ -78,12 +86,24 @@ impl AgentLoop {
         self.id = id.into();
         self.scratchpad = ScratchpadManager::new(&self.id, self.config.scratchpad.clone());
         self.tool_registry.set_scratchpad(self.scratchpad.clone());
-        self.tool_executor = ToolExecutor::new(self.tool_registry.clone());
+        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        self.tool_executor = ToolExecutor::with_configured_pipeline(
+            self.tool_registry.clone(),
+            ws,
+            Some(self.scratchpad.clone()),
+            &self.config.middleware,
+        );
         self
     }
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
     }
 
     pub fn status(&self) -> LoopStatus {
@@ -101,7 +121,36 @@ impl AgentLoop {
 
     pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
         self.tool_registry.register(tool);
-        self.tool_executor = ToolExecutor::new(self.tool_registry.clone());
+        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        self.tool_executor = ToolExecutor::with_configured_pipeline(
+            self.tool_registry.clone(),
+            ws,
+            Some(self.scratchpad.clone()),
+            &self.config.middleware,
+        );
+        self
+    }
+
+    /// Disables atomic transactions on this AgentLoop (ideal for benchmarking or testing raw tool behavior).
+    pub fn without_transactions(mut self) -> Self {
+        self.config.middleware.enable_transaction = false;
+        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        self.tool_executor = ToolExecutor::with_configured_pipeline(
+            self.tool_registry.clone(),
+            ws,
+            Some(self.scratchpad.clone()),
+            &self.config.middleware,
+        );
+        self
+    }
+
+    /// Injects a completely custom `ToolExecutor` into this AgentLoop.
+    pub fn with_tool_executor(mut self, executor: ToolExecutor) -> Self {
+        self.tool_executor = executor;
         self
     }
 
@@ -323,8 +372,14 @@ impl AgentLoop {
 
                 let max_overflow_retries = 2;
                 let mut retry_count = 0;
+                let max_stream_retries = config.max_stream_retries;
+                let mut stream_retry_count = 0;
+
                 let mut assistant_content = String::new();
                 let mut reasoning_content = String::new();
+                let mut accumulated_content = String::new();
+                let mut had_tool_chunks;
+                let mut continuation_prompts_injected = 0;
                 let mut completed_chunk = None;
 
                 loop {
@@ -361,6 +416,19 @@ impl AgentLoop {
                                 continue;
                             }
 
+                            if !cancel_token.is_cancelled() && stream_retry_count < max_stream_retries {
+                                stream_retry_count += 1;
+                                warn!(
+                                    agent_id = %agent_id,
+                                    turn = turn,
+                                    retry = stream_retry_count,
+                                    error = %err,
+                                    "Network handshake failed, retrying stream connection"
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << (stream_retry_count - 1)))).await;
+                                continue;
+                            }
+
                             error!(agent_id = %agent_id, turn = turn, error = %err, "Failed to initiate stream chat");
                             emitter
                                 .emit(AgentEvent::Error {
@@ -375,8 +443,10 @@ impl AgentLoop {
 
                     assistant_content.clear();
                     reasoning_content.clear();
+                    had_tool_chunks = false;
                     completed_chunk = None;
                     let mut stream_failed_overflow = None;
+                    let mut stream_interrupted_error = None;
 
                     while let Some(chunk_res) = stream_rx.recv().await {
                         match chunk_res {
@@ -393,6 +463,7 @@ impl AgentLoop {
                                     .await;
                             }
                             Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
+                                had_tool_chunks = true;
                                 emitter
                                     .emit(AgentEvent::ToolCallChunk {
                                         turn,
@@ -419,14 +490,7 @@ impl AgentLoop {
                                 } else if cancel_token.is_cancelled() {
                                     info!(agent_id = %agent_id, turn = turn, "Stream cancelled by user");
                                 } else {
-                                    error!(agent_id = %agent_id, turn = turn, error = %stream_err, "Stream execution error");
-                                    emitter
-                                        .emit(AgentEvent::Error {
-                                            turn: Some(turn),
-                                            message: stream_err,
-                                            recoverable: false,
-                                        })
-                                        .await;
+                                    stream_interrupted_error = Some(stream_err);
                                 }
                                 break;
                             }
@@ -451,7 +515,78 @@ impl AgentLoop {
                         }
                     }
 
+                    // Handle mid-stream disconnection with differentiated continuation
+                    if let Some(stream_err) = stream_interrupted_error {
+                        if !cancel_token.is_cancelled() && stream_retry_count < max_stream_retries {
+                            stream_retry_count += 1;
+
+                            if had_tool_chunks {
+                                // Scenario B: Tool Call arguments interrupted mid-stream
+                                warn!(
+                                    agent_id = %agent_id,
+                                    turn = turn,
+                                    retry = stream_retry_count,
+                                    "Tool argument stream interrupted; requesting model to re-issue complete tool call"
+                                );
+                                context.push(ChatMessage::user(
+                                    "[System Telemetry: StreamResilience\n • Action: Stream interrupted while transmitting tool call arguments.\n • Ground Truth: Partial unparsed JSON was discarded.\n • Guidance: Please re-issue your intended tool call with complete parameters.]",
+                                ));
+                                continuation_prompts_injected += 1;
+                                assistant_content.clear();
+                                continue;
+                            } else if !assistant_content.is_empty() {
+                                // Scenario A: Content stream interrupted mid-stream -> Breakpoint Continuation
+                                accumulated_content.push_str(&assistant_content);
+                                let tail = crate::core::utf8::safe_slice_from(
+                                    &accumulated_content,
+                                    accumulated_content.len().saturating_sub(60),
+                                );
+                                warn!(
+                                    agent_id = %agent_id,
+                                    turn = turn,
+                                    retry = stream_retry_count,
+                                    accumulated_chars = accumulated_content.len(),
+                                    "Content stream interrupted; initiating seamless breakpoint continuation"
+                                );
+                                context.push(ChatMessage::assistant_text(&accumulated_content));
+                                context.push(ChatMessage::user(format!(
+                                    "[System Telemetry: StreamResilience\n • Action: Network stream disconnected mid-response.\n • Ground Truth: Preserved {} chars ending at: '{}'\n • Guidance: Please continue seamlessly from that exact position without repeating prior text or greeting.]",
+                                    accumulated_content.len(),
+                                    tail
+                                )));
+                                continuation_prompts_injected += 2;
+                                assistant_content.clear();
+                                continue;
+                            } else {
+                                // Scenario C: Interrupted during reasoning or before first token -> Clean turn retry
+                                warn!(
+                                    agent_id = %agent_id,
+                                    turn = turn,
+                                    retry = stream_retry_count,
+                                    "Stream disconnected before content was received; performing clean turn retry"
+                                );
+                                reasoning_content.clear();
+                                assistant_content.clear();
+                                continue;
+                            }
+                        } else {
+                            error!(agent_id = %agent_id, turn = turn, error = %stream_err, "Stream execution error, retries exhausted");
+                            emitter
+                                .emit(AgentEvent::Error {
+                                    turn: Some(turn),
+                                    message: stream_err,
+                                    recoverable: false,
+                                })
+                                .await;
+                        }
+                    }
+
                     break;
+                }
+
+                // If continuation prompts were injected to heal the stream, cleanly remove them so history remains pristine
+                for _ in 0..continuation_prompts_injected {
+                    context.pop();
                 }
 
                 if cancel_token.is_cancelled() {
@@ -459,7 +594,7 @@ impl AgentLoop {
                     break;
                 }
 
-                let (chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens) =
+                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens) =
                     match completed_chunk {
                         Some(c) => c,
                         None => {
@@ -472,6 +607,16 @@ impl AgentLoop {
                             break;
                         }
                     };
+
+                // Merge accumulated partial text from earlier stream attempts if continuation succeeded
+                if !accumulated_content.is_empty() {
+                    if let Some(new_content) = chunk_content.take() {
+                        accumulated_content.push_str(&new_content);
+                        chunk_content = Some(accumulated_content);
+                    } else {
+                        chunk_content = Some(accumulated_content);
+                    }
+                }
 
                 let has_tool_calls = !tool_calls.is_empty();
                 let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;

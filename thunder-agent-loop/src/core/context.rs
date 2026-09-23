@@ -164,6 +164,14 @@ impl ContextBuffer {
         }
     }
 
+    pub fn pop(&mut self) -> Option<ChatMessage> {
+        if !self.entries.is_empty() {
+            self.remove_at(self.entries.len() - 1)
+        } else {
+            None
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.total_estimated_tokens = 0;

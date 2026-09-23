@@ -62,7 +62,7 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
     assert!(artifact.file_path.exists());
 
     // Use ReadFileTool to retrieve line 500 from the persisted artifact on disk
-    let read_tool = ReadFileTool;
+    let read_tool = ReadFileTool::default();
     let read_ctx = ToolExecutionContext {
         tool_call_id: "read_1".to_string(),
         turn: 2,

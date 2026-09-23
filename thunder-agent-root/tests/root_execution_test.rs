@@ -76,6 +76,7 @@ async fn test_thunder_root_end_to_end_execution() {
         cancellation_token: None,
         forced_plugins: None,
         register_builtins: true,
+        thinking_level: None,
     };
 
     let mut handle = root

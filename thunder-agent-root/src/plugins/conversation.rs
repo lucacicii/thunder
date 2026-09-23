@@ -120,6 +120,10 @@ impl ThunderPlugin for ConversationPlugin {
                         Some(name.clone()),
                     );
                 }
+                AgentEvent::TurnEnd { .. } => {
+                    // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
+                    let _ = self.store.save(conv).await;
+                }
                 _ => {}
             }
         }

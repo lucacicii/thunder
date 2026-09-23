@@ -1322,6 +1322,7 @@ impl App {
                 cancellation_token: Some(cancel),
                 forced_plugins: None,
                 register_builtins: true,
+                thinking_level: None,
             };
 
             match root.execute(context_input, options).await {
@@ -1401,12 +1402,12 @@ impl App {
             } else if let Ok((_spec, client)) = client_for_selection(&model, timeout_ms).await {
                 agent = agent.with_custom_client(client);
                 agent.register_tool(Arc::new(BashTool::default()));
-                agent.register_tool(Arc::new(ReadFileTool));
-                agent.register_tool(Arc::new(WriteFileTool));
+                agent.register_tool(Arc::new(ReadFileTool::default()));
+                agent.register_tool(Arc::new(WriteFileTool::default()));
             } else {
                 agent.register_tool(Arc::new(BashTool::default()));
-                agent.register_tool(Arc::new(ReadFileTool));
-                agent.register_tool(Arc::new(WriteFileTool));
+                agent.register_tool(Arc::new(ReadFileTool::default()));
+                agent.register_tool(Arc::new(WriteFileTool::default()));
             }
 
             match agent.start(context_input, Some(cancel)) {

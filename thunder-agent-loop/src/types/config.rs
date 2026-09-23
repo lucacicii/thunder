@@ -59,6 +59,34 @@ impl Default for LoopGuardConfig {
     }
 }
 
+/// Dynamic toggles for the 4-layer Onion Middleware Pipeline.
+/// Allows cleanly disabling transactions, security, or resources in test/benchmark environments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareConfig {
+    pub enable_security_guard: bool,
+    pub enable_resource_guard: bool,
+    pub enable_transaction: bool,
+    pub enable_output_post_processor: bool,
+}
+
+impl Default for MiddlewareConfig {
+    fn default() -> Self {
+        let disable_tx = std::env::var("THUNDER_DISABLE_TX")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let disable_sec = std::env::var("THUNDER_DISABLE_SECURITY")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        Self {
+            enable_security_guard: !disable_sec,
+            enable_resource_guard: true,
+            enable_transaction: !disable_tx,
+            enable_output_post_processor: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub model: String,
@@ -71,7 +99,10 @@ pub struct AgentConfig {
     pub max_tokens_budget: Option<usize>,
     pub max_tool_output_bytes: usize,
     pub request_timeout_ms: u64,
+    pub max_stream_retries: usize,
     pub thinking_level: Option<String>,
+    pub workspace_dir: Option<PathBuf>,
+    pub middleware: MiddlewareConfig,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
     pub loop_guard: LoopGuardConfig,
@@ -89,7 +120,10 @@ impl Default for AgentConfig {
             max_tokens_budget: None,
             max_tool_output_bytes: 64 * 1024,
             request_timeout_ms: 60_000,
+            max_stream_retries: 2,
             thinking_level: None,
+            workspace_dir: None,
+            middleware: MiddlewareConfig::default(),
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             loop_guard: LoopGuardConfig::default(),
@@ -117,6 +151,31 @@ impl AgentConfig {
 
     pub fn with_unlimited_turns(mut self) -> Self {
         self.max_turns = None;
+        self
+    }
+
+    pub fn with_workspace_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.workspace_dir = Some(path.into());
+        self
+    }
+
+    pub fn with_max_stream_retries(mut self, retries: usize) -> Self {
+        self.max_stream_retries = retries;
+        self
+    }
+
+    /// Disables atomic transaction middleware (e.g. for testing raw tool behavior)
+    pub fn without_transactions(mut self) -> Self {
+        self.middleware.enable_transaction = false;
+        self
+    }
+
+    /// Disables all onion middlewares for a zero-overhead raw execution pipeline
+    pub fn without_middlewares(mut self) -> Self {
+        self.middleware.enable_security_guard = false;
+        self.middleware.enable_resource_guard = false;
+        self.middleware.enable_transaction = false;
+        self.middleware.enable_output_post_processor = false;
         self
     }
 

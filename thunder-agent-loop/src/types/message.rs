@@ -91,6 +91,15 @@ impl ChatMessage {
         }
     }
 
+    pub fn assistant_text(content: impl Into<String>) -> Self {
+        Self::Assistant {
+            content: Some(content.into()),
+            tool_calls: None,
+            refusal: None,
+            name: None,
+        }
+    }
+
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>, name: Option<String>) -> Self {
         Self::Tool {
             tool_call_id: tool_call_id.into(),
