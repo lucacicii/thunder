@@ -69,8 +69,8 @@ impl ThunderPlugin for OrchestraPlugin {
             move || {
                 let mut agent = thunder_agent_loop::AgentLoop::new(base_cfg.clone());
                 agent.register_tool(Arc::new(thunder_agent_loop::BashTool::default()));
-                agent.register_tool(Arc::new(thunder_agent_loop::ReadFileTool));
-                agent.register_tool(Arc::new(thunder_agent_loop::WriteFileTool));
+                agent.register_tool(Arc::new(thunder_agent_loop::ReadFileTool::default()));
+                agent.register_tool(Arc::new(thunder_agent_loop::WriteFileTool::default()));
                 agent
             },
         );

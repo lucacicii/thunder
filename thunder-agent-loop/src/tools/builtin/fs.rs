@@ -1,10 +1,24 @@
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 
-pub struct ReadFileTool;
+#[derive(Default)]
+pub struct ReadFileTool {
+    default_cwd: Option<PathBuf>,
+}
+
+impl ReadFileTool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
+        self.default_cwd = Some(cwd);
+        self
+    }
+}
 
 #[async_trait]
 impl AgentTool for ReadFileTool {
@@ -39,9 +53,20 @@ impl AgentTool for ReadFileTool {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'path' parameter")?;
 
-        let content = fs::read_to_string(Path::new(path_str))
+        let p = Path::new(path_str);
+        let target_path = if p.is_relative() {
+            if let Some(ref cwd) = self.default_cwd {
+                cwd.join(p)
+            } else {
+                p.to_path_buf()
+            }
+        } else {
+            p.to_path_buf()
+        };
+
+        let content = fs::read_to_string(&target_path)
             .await
-            .map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?;
+            .map_err(|e| format!("Failed to read file '{}': {}", target_path.display(), e))?;
 
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
         let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
@@ -65,7 +90,21 @@ impl AgentTool for ReadFileTool {
     }
 }
 
-pub struct WriteFileTool;
+#[derive(Default)]
+pub struct WriteFileTool {
+    default_cwd: Option<PathBuf>,
+}
+
+impl WriteFileTool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
+        self.default_cwd = Some(cwd);
+        self
+    }
+}
 
 #[async_trait]
 impl AgentTool for WriteFileTool {
@@ -100,17 +139,27 @@ impl AgentTool for WriteFileTool {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'content' parameter")?;
 
-        let path = Path::new(path_str);
+        let p = Path::new(path_str);
+        let path = if p.is_relative() {
+            if let Some(ref cwd) = self.default_cwd {
+                cwd.join(p)
+            } else {
+                p.to_path_buf()
+            }
+        } else {
+            p.to_path_buf()
+        };
+
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
                 .map_err(|e| format!("Failed to create parent directory: {}", e))?;
         }
 
-        fs::write(path, content)
+        fs::write(&path, content)
             .await
-            .map_err(|e| format!("Failed to write file '{}': {}", path_str, e))?;
+            .map_err(|e| format!("Failed to write file '{}': {}", path.display(), e))?;
 
-        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path_str))
+        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path.display()))
     }
 }

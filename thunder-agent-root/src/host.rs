@@ -220,7 +220,14 @@ impl ThunderRoot {
         active_set.dispatch_init(&ctx).await?;
 
         // 4. Construct Root AgentLoop
-        let combined_system_prompt = active_set.build_combined_system_prompt(None);
+        let mut base_prompt = String::from("You are an autonomous engineering assistant powered by Thunder Agent.");
+        if let Some(ws) = &self.workspace_root {
+            base_prompt.push_str(&format!(
+                "\n\n### Current Workspace\nThe active workspace directory is: {}\nAll operations, inspections, file reads/writes, and shell commands must target or execute inside this directory unless specifically instructed otherwise.",
+                ws.display()
+            ));
+        }
+        let combined_system_prompt = active_set.build_combined_system_prompt(Some(&base_prompt));
         let mut agent_cfg = self.config.clone();
         agent_cfg.system_prompt = Some(combined_system_prompt);
 
@@ -261,9 +268,17 @@ impl ThunderRoot {
         }
 
         if options.register_builtins {
-            agent.register_tool(Arc::new(BashTool::default()));
-            agent.register_tool(Arc::new(ReadFileTool));
-            agent.register_tool(Arc::new(WriteFileTool));
+            let mut bash = BashTool::default();
+            let mut read_file = ReadFileTool::default();
+            let mut write_file = WriteFileTool::default();
+            if let Some(ws) = &self.workspace_root {
+                bash = bash.with_default_cwd(ws.clone());
+                read_file = read_file.with_default_cwd(ws.clone());
+                write_file = write_file.with_default_cwd(ws.clone());
+            }
+            agent.register_tool(Arc::new(bash));
+            agent.register_tool(Arc::new(read_file));
+            agent.register_tool(Arc::new(write_file));
         }
 
         // Register tools contributed by active plugins
