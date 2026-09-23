@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "shared": {},
+  "workbench": {
+    "git": {
+      "commitMessage": {
+        "style": "conventional",
+        "language": "en",
+        "extraInstructions": "Use the crate or module name as scope when it can be inferred reliably (loop, core, daemon, providers, skills, mcp, root, tui, orchestra, conversation); do not use file paths or full thunder-agent-* names."
+      }
+    }
+  }
+}

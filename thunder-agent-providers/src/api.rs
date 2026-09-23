@@ -4,10 +4,16 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderApi {
     #[default]
-    #[serde(alias = "openai", alias = "openai-chat")]
+    #[serde(alias = "openai", alias = "openai-chat", alias = "chat-completions")]
     OpenAiCompletions,
     #[serde(alias = "openai-response", alias = "responses")]
     OpenAiResponses,
+    #[serde(alias = "anthropic", alias = "claude", alias = "anthropic-messages", alias = "anthropic-chat")]
+    AnthropicMessages,
+    #[serde(alias = "google", alias = "gemini", alias = "google-generate-content", alias = "google-gemini")]
+    GoogleGenerateContent,
+    #[serde(alias = "ollama", alias = "ollama-chat")]
+    Ollama,
 }
 
 impl ProviderApi {
@@ -17,6 +23,13 @@ impl ProviderApi {
                 Some(Self::OpenAiCompletions)
             }
             "openai-responses" | "openai-response" | "responses" => Some(Self::OpenAiResponses),
+            "anthropic-messages" | "anthropic" | "claude" | "anthropic-chat" => {
+                Some(Self::AnthropicMessages)
+            }
+            "google-generate-content" | "google" | "gemini" | "google-gemini" => {
+                Some(Self::GoogleGenerateContent)
+            }
+            "ollama" | "ollama-chat" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -25,6 +38,9 @@ impl ProviderApi {
         match self {
             Self::OpenAiCompletions => "openai-completions",
             Self::OpenAiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+            Self::GoogleGenerateContent => "google-generate-content",
+            Self::Ollama => "ollama",
         }
     }
 }

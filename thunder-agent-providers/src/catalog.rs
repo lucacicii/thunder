@@ -263,13 +263,21 @@ fn builtin_models(
             ("gpt-4o-mini", "GPT-4o Mini", false),
         ],
         "deepseek" => &[
+            ("deepseek-flash", "DeepSeek V4.1 Flash", true),
+            ("deepseek-v4-pro", "DeepSeek V4 Pro", true),
             ("deepseek-chat", "DeepSeek V3", false),
             ("deepseek-reasoner", "DeepSeek R1", true),
         ],
         _ => return None,
     };
-    let resolved_base = if base_url.trim().is_empty() && provider == "openai" {
-        "https://api.openai.com/v1"
+    let resolved_base = if base_url.trim().is_empty() {
+        if provider == "openai" {
+            "https://api.openai.com/v1"
+        } else if provider == "deepseek" {
+            "https://api.deepseek.com"
+        } else {
+            base_url
+        }
     } else {
         base_url
     };
