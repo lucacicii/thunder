@@ -163,6 +163,7 @@ async fn check_llm_reachable(config: &OrchestraConfig, use_mock: bool) -> Health
         temperature: None,
         top_p: None,
         max_tokens: Some(1),
+        thinking_level: None,
     };
 
     let result = match tokio::time::timeout(timeout, client.stream_chat(options, cancel)).await {

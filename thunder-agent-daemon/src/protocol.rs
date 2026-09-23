@@ -31,6 +31,7 @@ pub enum DaemonRequest {
         model: Option<String>,
         use_mock: Option<bool>,
         workspace_dir: Option<String>,
+        thinking_level: Option<String>,
     },
     /// Cancel a running task by task_id
     CancelTask {

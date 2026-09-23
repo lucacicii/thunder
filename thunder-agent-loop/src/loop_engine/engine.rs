@@ -335,6 +335,7 @@ impl AgentLoop {
                         temperature: config.temperature,
                         top_p: config.top_p,
                         max_tokens: config.max_completion_tokens,
+                        thinking_level: config.thinking_level.clone(),
                     };
 
                     let stream_res = llm_client.stream_chat(request_opts, cancel_token.clone()).await;
