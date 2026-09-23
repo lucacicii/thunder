@@ -82,6 +82,9 @@ impl DaemonService {
                             "name": m.name,
                             "selection_id": m.selection_id(),
                             "available": m.available,
+                            "reasoning": m.reasoning,
+                            "thinking_levels": m.thinking_levels,
+                            "default_thinking_level": m.default_thinking_level,
                         })
                     })
                     .collect();
@@ -246,7 +249,12 @@ impl DaemonService {
         };
 
         let chosen_thinking = thinking_level
-            .or_else(|| conversation.thinking_level.clone());
+            .or_else(|| conversation.thinking_level.clone())
+            .or_else(|| {
+                registry
+                    .resolve(&chosen_model)
+                    .map(|spec| spec.default_thinking_level.clone())
+            });
 
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());

@@ -115,6 +115,13 @@ mod tests {
             supports_developer_role: false,
             supports_reasoning_effort: true,
             max_tokens_field: "max_tokens".to_string(),
+            thinking_levels: vec![
+                "off".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+            ],
+            default_thinking_level: "high".to_string(),
         }
     }
 
@@ -130,6 +137,7 @@ mod tests {
             temperature: Some(0.6),
             top_p: Some(0.95),
             max_tokens: Some(4096),
+            thinking_level: None,
         };
 
         let payload = adapter.adapt_payload(&spec, &options);
@@ -156,6 +164,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            thinking_level: None,
         };
 
         let payload = adapter.adapt_payload(&spec, &options);

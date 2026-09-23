@@ -81,7 +81,76 @@ fn wire_model_is_bare_id_not_selection_id() {
         supports_developer_role: false,
         supports_reasoning_effort: false,
         max_tokens_field: "max_tokens".to_string(),
+        thinking_levels: vec!["off".to_string()],
+        default_thinking_level: "off".to_string(),
     };
     assert_eq!(spec.selection_id(), "cc-switch-open-code-go/ox-alpha-free");
     assert_eq!(spec.id, "ox-alpha-free");
+}
+
+#[tokio::test]
+async fn test_thinking_levels_resolution_and_defaults() {
+    use thunder_agent_providers::catalog::resolve_thinking_levels;
+
+    // 1. Explicit configuration takes highest priority
+    let explicit_levels = vec!["low".to_string(), "high".to_string()];
+    let (levels, def) = resolve_thinking_levels(
+        Some(&explicit_levels),
+        Some("high"),
+        false,
+        false,
+        "any-model",
+    );
+    assert_eq!(levels, vec!["low", "high"]);
+    assert_eq!(def, "high");
+
+    // 2. Known reasoning model by flag or id defaults to off/low/medium/high and medium/high
+    let (r_levels, r_def) = resolve_thinking_levels(None, None, true, false, "custom-model");
+    assert_eq!(r_levels, vec!["off", "low", "medium", "high"]);
+    assert_eq!(r_def, "medium");
+
+    let (r1_levels, r1_def) = resolve_thinking_levels(None, None, false, false, "deepseek-reasoner");
+    assert_eq!(r1_levels, vec!["off", "low", "medium", "high"]);
+    assert_eq!(r1_def, "high");
+
+    let (o3_levels, o3_def) = resolve_thinking_levels(None, None, false, false, "o3-mini");
+    assert_eq!(o3_levels, vec!["off", "low", "medium", "high"]);
+    assert_eq!(o3_def, "medium");
+
+    // 3. Normal non-reasoning model defaults to ["off"] and "off"
+    let (norm_levels, norm_def) = resolve_thinking_levels(None, None, false, false, "gpt-4o-mini");
+    assert_eq!(norm_levels, vec!["off"]);
+    assert_eq!(norm_def, "off");
+
+    // 4. Test parsing from JSON configuration
+    let json = r#"{
+        "providers": {
+            "test-prov": {
+                "baseUrl": "https://api.test.com/v1",
+                "apiKey": "sk-123",
+                "thinkingLevels": ["low", "medium"],
+                "defaultThinkingLevel": "low",
+                "models": [
+                    { "id": "model-inherited" },
+                    {
+                        "id": "model-override",
+                        "thinkingLevels": ["off", "high"],
+                        "defaultThinkingLevel": "high"
+                    }
+                ]
+            }
+        }
+    }"#;
+
+    let models_file = thunder_agent_providers::config::ModelsFile::parse_json(json).unwrap();
+    let auth = thunder_agent_providers::auth::AuthFile::default();
+    let registry = thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
+
+    let m1 = registry.resolve("test-prov/model-inherited").unwrap();
+    assert_eq!(m1.thinking_levels, vec!["low", "medium"]);
+    assert_eq!(m1.default_thinking_level, "low");
+
+    let m2 = registry.resolve("test-prov/model-override").unwrap();
+    assert_eq!(m2.thinking_levels, vec!["off", "high"]);
+    assert_eq!(m2.default_thinking_level, "high");
 }

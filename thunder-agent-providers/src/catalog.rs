@@ -8,6 +8,63 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SAFE_CONTEXT_WINDOW: usize = 128_000;
 
+pub fn resolve_thinking_levels(
+    explicit_levels: Option<&[String]>,
+    explicit_default: Option<&str>,
+    reasoning: bool,
+    supports_reasoning_effort: bool,
+    model_id: &str,
+) -> (Vec<String>, String) {
+    let default_reasoning_levels = vec![
+        "off".to_string(),
+        "low".to_string(),
+        "medium".to_string(),
+        "high".to_string(),
+    ];
+
+    let is_known_reasoning = reasoning
+        || supports_reasoning_effort
+        || {
+            let lower = model_id.to_lowercase();
+            lower.contains("reasoner")
+                || lower.contains("r1")
+                || lower.starts_with("o1")
+                || lower.starts_with("o3")
+                || lower.contains("/o1")
+                || lower.contains("/o3")
+                || lower.contains("thinking")
+                || lower.contains("sonnet-3-7")
+                || lower.contains("claude-3-7")
+        };
+
+    let levels = if let Some(explicit) = explicit_levels {
+        if explicit.is_empty() {
+            vec!["off".to_string()]
+        } else {
+            explicit.to_vec()
+        }
+    } else if is_known_reasoning {
+        default_reasoning_levels
+    } else {
+        vec!["off".to_string()]
+    };
+
+    let default_level = if let Some(explicit_def) = explicit_default {
+        explicit_def.to_string()
+    } else if is_known_reasoning {
+        let lower = model_id.to_lowercase();
+        if lower.contains("reasoner") || lower.contains("r1") {
+            "high".to_string()
+        } else {
+            "medium".to_string()
+        }
+    } else {
+        "off".to_string()
+    };
+
+    (levels, default_level)
+}
+
 /// Resolves standard location for runtime learned model specifications cache.
 pub fn default_metadata_cache_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -86,6 +143,8 @@ pub struct ModelSpec {
     pub supports_developer_role: bool,
     pub supports_reasoning_effort: bool,
     pub max_tokens_field: String,
+    pub thinking_levels: Vec<String>,
+    pub default_thinking_level: String,
 }
 
 impl ModelSpec {
@@ -135,6 +194,13 @@ impl ProviderRegistry {
                 let has_key = provider_key.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
                 let selection_id = format!("{}/{}", provider_id, model.id);
                 let context_window = cache.resolve_context_window(&selection_id, &model.id, model.context_window);
+                let (thinking_levels, default_thinking_level) = resolve_thinking_levels(
+                    model.thinking_levels.as_deref().or(provider.thinking_levels.as_deref()),
+                    model.default_thinking_level.as_deref().or(provider.default_thinking_level.as_deref()),
+                    model.reasoning,
+                    compat.supports_reasoning_effort.unwrap_or(false),
+                    &model.id,
+                );
 
                 models.push(ModelSpec {
                     provider: provider_id.clone(),
@@ -153,6 +219,8 @@ impl ProviderRegistry {
                     max_tokens_field: compat
                         .max_tokens_field
                         .unwrap_or_else(|| "max_tokens".to_string()),
+                    thinking_levels,
+                    default_thinking_level,
                 });
             }
         }
@@ -288,6 +356,13 @@ fn builtin_models(
             .map(|(id, name, reasoning)| {
                 let sel_id = format!("{}/{}", provider, id);
                 let context_window = cache.resolve_context_window(&sel_id, id, None);
+                let (thinking_levels, default_thinking_level) = resolve_thinking_levels(
+                    None,
+                    None,
+                    *reasoning,
+                    compat.supports_reasoning_effort.unwrap_or(false),
+                    id,
+                );
                 ModelSpec {
                     provider: provider.to_string(),
                     id: (*id).to_string(),
@@ -306,6 +381,8 @@ fn builtin_models(
                         .max_tokens_field
                         .clone()
                         .unwrap_or_else(|| "max_tokens".to_string()),
+                    thinking_levels,
+                    default_thinking_level,
                 }
             })
             .collect(),
@@ -320,6 +397,13 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
         .map(|id| {
             let sel_id = format!("openai/{}", id);
             let context_window = cache.resolve_context_window(&sel_id, id, None);
+            let (thinking_levels, default_thinking_level) = resolve_thinking_levels(
+                None,
+                None,
+                false,
+                false,
+                id,
+            );
             ModelSpec {
                 provider: "openai".to_string(),
                 id: id.to_string(),
@@ -335,6 +419,8 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
                 supports_developer_role: false,
                 supports_reasoning_effort: false,
                 max_tokens_field: "max_tokens".to_string(),
+                thinking_levels,
+                default_thinking_level,
             }
         })
         .collect()

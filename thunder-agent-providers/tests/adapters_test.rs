@@ -21,6 +21,8 @@ fn make_dummy_spec(provider: &str, id: &str, api: ProviderApi) -> ModelSpec {
         supports_developer_role: false,
         supports_reasoning_effort: false,
         max_tokens_field: "max_tokens".to_string(),
+        thinking_levels: vec!["off".to_string()],
+        default_thinking_level: "off".to_string(),
     }
 }
 
@@ -71,6 +73,7 @@ fn test_deepseek_v4_1_flash_official_spec_adapter() {
         temperature: Some(0.6),
         top_p: Some(0.95),
         max_tokens: Some(8192),
+        thinking_level: None,
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
@@ -100,6 +103,7 @@ fn test_openai_reasoning_adapter_contract() {
         temperature: Some(0.8), // must be dropped
         top_p: Some(0.95),      // must be dropped
         max_tokens: Some(3000),
+        thinking_level: None,
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
@@ -128,6 +132,7 @@ fn test_anthropic_adapter_contract() {
         temperature: Some(0.5),
         top_p: None,
         max_tokens: Some(4096),
+        thinking_level: None,
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
@@ -157,6 +162,7 @@ fn test_google_adapter_contract() {
         temperature: Some(0.2),
         top_p: None,
         max_tokens: Some(8192),
+        thinking_level: None,
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
@@ -184,6 +190,7 @@ fn test_ollama_adapter_contract() {
         temperature: Some(0.6),
         top_p: None,
         max_tokens: Some(512),
+        thinking_level: None,
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
