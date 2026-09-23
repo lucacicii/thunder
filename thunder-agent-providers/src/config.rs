@@ -21,6 +21,10 @@ pub struct ProviderFileConfig {
     #[serde(default)]
     pub models: Vec<ModelFileConfig>,
     pub compat: Option<CompatConfig>,
+    #[serde(alias = "thinking_levels")]
+    pub thinking_levels: Option<Vec<String>>,
+    #[serde(alias = "default_thinking_level")]
+    pub default_thinking_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -35,6 +39,10 @@ pub struct ModelFileConfig {
     pub context_window: Option<usize>,
     pub max_tokens: Option<usize>,
     pub compat: Option<CompatConfig>,
+    #[serde(alias = "thinking_levels")]
+    pub thinking_levels: Option<Vec<String>>,
+    #[serde(alias = "default_thinking_level")]
+    pub default_thinking_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
