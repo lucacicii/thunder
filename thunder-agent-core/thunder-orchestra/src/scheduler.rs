@@ -57,8 +57,8 @@ impl Scheduler {
         }
         if spec.register_builtins {
             agent.register_tool(Arc::new(BashTool::default()));
-            agent.register_tool(Arc::new(ReadFileTool));
-            agent.register_tool(Arc::new(WriteFileTool));
+            agent.register_tool(Arc::new(ReadFileTool::default()));
+            agent.register_tool(Arc::new(WriteFileTool::default()));
         }
         agent
     }

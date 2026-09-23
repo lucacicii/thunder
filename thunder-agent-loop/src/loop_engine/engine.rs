@@ -108,8 +108,8 @@ impl AgentLoop {
     /// Convenience builder to register standard built-in tools (bash, read_file, write_file).
     pub fn with_builtins(mut self) -> Self {
         self.register_tool(Arc::new(crate::tools::builtin::BashTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::ReadFileTool));
-        self.register_tool(Arc::new(crate::tools::builtin::WriteFileTool));
+        self.register_tool(Arc::new(crate::tools::builtin::ReadFileTool::default()));
+        self.register_tool(Arc::new(crate::tools::builtin::WriteFileTool::default()));
         self
     }
 

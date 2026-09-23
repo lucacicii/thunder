@@ -1,12 +1,14 @@
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 pub struct BashTool {
     max_buffer_bytes: usize,
+    default_cwd: Option<PathBuf>,
 }
 
 impl Default for BashTool {
@@ -17,7 +19,15 @@ impl Default for BashTool {
 
 impl BashTool {
     pub fn new(max_buffer_bytes: usize) -> Self {
-        Self { max_buffer_bytes }
+        Self {
+            max_buffer_bytes,
+            default_cwd: None,
+        }
+    }
+
+    pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
+        self.default_cwd = Some(cwd);
+        self
     }
 }
 
@@ -73,7 +83,13 @@ impl AgentTool for BashTool {
             .env("PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0");
 
-        if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+        let effective_cwd = args
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .or_else(|| self.default_cwd.clone());
+
+        if let Some(cwd) = effective_cwd {
             cmd.current_dir(cwd);
         }
 
