@@ -614,7 +614,7 @@ impl App {
                 kind: PickerKind::SelectModel,
                 title: "🧠 Select Active LLM Model (↑/↓ to move, Enter to select)".to_string(),
                 items,
-                empty_message: Some("No models available. Add ~/.pi/agent/models.json or configure provider auth.".to_string()),
+                empty_message: Some("No models available. Add ~/.thunder/models.json or configure provider auth.".to_string()),
             });
         });
     }

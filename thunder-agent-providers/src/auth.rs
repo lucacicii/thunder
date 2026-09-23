@@ -11,9 +11,12 @@ pub struct AuthFile {
 
 impl AuthFile {
     pub fn default_path() -> Option<PathBuf> {
+        if let Ok(dir) = std::env::var("THUNDER_CONFIG_DIR") {
+            return Some(PathBuf::from(dir).join("auth.json"));
+        }
         std::env::var("HOME")
             .ok()
-            .map(|home| PathBuf::from(home).join(".pi/agent/auth.json"))
+            .map(|home| PathBuf::from(home).join(".thunder/auth.json"))
     }
 
     pub async fn load_default() -> Self {

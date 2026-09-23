@@ -34,38 +34,12 @@ impl ConfigSource {
         }
     }
 
-    pub fn pi_project(workspace: Option<&std::path::Path>) -> Self {
-        let dir = workspace
-            .map(|p| p.join(".pi"))
-            .unwrap_or_else(|| PathBuf::from(".pi"));
-        Self {
-            name: "pi-project".to_string(),
-            models_path: dir.join("models.json"),
-            auth_path: dir.join("auth.json"),
-        }
-    }
-
-    pub fn pi_user() -> Option<Self> {
-        std::env::var("HOME").ok().map(|home| {
-            let dir = PathBuf::from(home).join(".pi/agent");
-            Self {
-                name: "pi-user".to_string(),
-                models_path: dir.join("models.json"),
-                auth_path: dir.join("auth.json"),
-            }
-        })
-    }
-
     pub fn default_chain(workspace: Option<&std::path::Path>) -> Vec<Self> {
         let mut sources = Vec::new();
         if let Some(src) = Self::thunder_user() {
             sources.push(src);
         }
         sources.push(Self::thunder_project(workspace));
-        sources.push(Self::pi_project(workspace));
-        if let Some(src) = Self::pi_user() {
-            sources.push(src);
-        }
         sources
     }
 
