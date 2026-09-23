@@ -66,9 +66,12 @@ impl ModelsFile {
     }
 
     pub fn default_paths() -> Vec<PathBuf> {
-        let mut paths = vec![PathBuf::from(".pi/models.json")];
+        let mut paths = vec![PathBuf::from(".thunder/models.json")];
+        if let Ok(dir) = std::env::var("THUNDER_CONFIG_DIR") {
+            paths.push(PathBuf::from(dir).join("models.json"));
+        }
         if let Ok(home) = std::env::var("HOME") {
-            paths.push(PathBuf::from(home).join(".pi/agent/models.json"));
+            paths.push(PathBuf::from(home).join(".thunder/models.json"));
         }
         paths
     }
