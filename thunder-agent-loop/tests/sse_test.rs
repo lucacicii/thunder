@@ -51,3 +51,21 @@ fn test_sse_parser_fragmented_tool_calls() {
     assert_eq!(completed[0].function.name, "calc");
     assert_eq!(completed[0].function.arguments, "{\"val\":42}");
 }
+
+#[test]
+fn test_sse_parser_usage_with_reasoning_and_cache_tokens() {
+    let mut parser = SSEStreamParser::new();
+
+    let chunk = Bytes::from_static(
+        b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking carefully...\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"prompt_tokens_details\":{\"cached_tokens\":40},\"completion_tokens_details\":{\"reasoning_tokens\":35}}}\n\n"
+    );
+
+    let deltas = parser.feed_chunk(&chunk);
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].reasoning_delta.as_deref(), Some("Thinking carefully..."));
+    assert_eq!(deltas[0].prompt_tokens, Some(100));
+    assert_eq!(deltas[0].completion_tokens, Some(50));
+    assert_eq!(deltas[0].cached_tokens, Some(40));
+    assert_eq!(deltas[0].reasoning_tokens, Some(35));
+}
+

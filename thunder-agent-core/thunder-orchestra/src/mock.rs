@@ -58,6 +58,7 @@ impl LLMClientTrait for RoleMockClient {
                         prompt_tokens: Some(8),
                         completion_tokens: Some(8),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             } else {
@@ -71,6 +72,7 @@ impl LLMClientTrait for RoleMockClient {
                         prompt_tokens: Some(12),
                         completion_tokens: Some(10),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             }

@@ -96,6 +96,7 @@ impl LLMClientTrait for OpenAiResponsesClient {
             let mut prompt_tokens: Option<usize> = None;
             let mut completion_tokens: Option<usize> = None;
             let mut cached_tokens: Option<usize> = None;
+            let mut reasoning_tokens: Option<usize> = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -189,6 +190,12 @@ impl LLMClientTrait for OpenAiResponsesClient {
                                 if let Some(v) = cached {
                                     cached_tokens = Some(v as usize);
                                 }
+                                let reasoning = u.pointer("/output_tokens_details/reasoning_tokens")
+                                    .or_else(|| u.pointer("/completion_tokens_details/reasoning_tokens"))
+                                    .and_then(|v| v.as_u64());
+                                if let Some(v) = reasoning {
+                                    reasoning_tokens = Some(v as usize);
+                                }
                             }
                         }
                     }
@@ -228,6 +235,12 @@ impl LLMClientTrait for OpenAiResponsesClient {
                             if let Some(v) = cached {
                                 cached_tokens = Some(v as usize);
                             }
+                            let reasoning = u.pointer("/output_tokens_details/reasoning_tokens")
+                                .or_else(|| u.pointer("/completion_tokens_details/reasoning_tokens"))
+                                .and_then(|v| v.as_u64());
+                            if let Some(v) = reasoning {
+                                reasoning_tokens = Some(v as usize);
+                            }
                         }
                     }
                 }
@@ -241,6 +254,7 @@ impl LLMClientTrait for OpenAiResponsesClient {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens,
+                    reasoning_tokens,
                 }))
                 .await;
         });

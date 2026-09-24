@@ -42,6 +42,7 @@ impl LLMClientTrait for TwoTurnClient {
                     prompt_tokens: Some(10),
                     completion_tokens: Some(5),
                     cached_tokens: None,
+                    reasoning_tokens: None,
                 }))
                 .await;
         });

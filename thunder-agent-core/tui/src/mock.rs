@@ -51,6 +51,7 @@ impl LLMClientTrait for TuiMockClient {
                     prompt_tokens: Some(15),
                     completion_tokens: Some(25),
                     cached_tokens: None,
+                    reasoning_tokens: None,
                 }))
                 .await;
         });

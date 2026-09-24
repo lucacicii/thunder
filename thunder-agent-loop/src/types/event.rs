@@ -9,6 +9,8 @@ pub struct TurnStats {
     pub completion_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<usize>,
     pub duration_ms: u64,
     pub tool_calls_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,6 +24,8 @@ pub struct AgentStats {
     pub total_completion_tokens: usize,
     #[serde(default)]
     pub total_cached_tokens: usize,
+    #[serde(default)]
+    pub total_reasoning_tokens: usize,
     pub total_duration_ms: u64,
     pub total_tool_executions: usize,
     pub total_tool_time_ms: u64,

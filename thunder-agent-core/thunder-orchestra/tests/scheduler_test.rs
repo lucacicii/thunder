@@ -29,6 +29,7 @@ impl LLMClientTrait for ImmediateClient {
                     prompt_tokens: Some(1),
                     completion_tokens: Some(1),
                     cached_tokens: None,
+                    reasoning_tokens: None,
                 }))
                 .await;
         });
