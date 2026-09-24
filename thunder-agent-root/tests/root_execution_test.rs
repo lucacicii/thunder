@@ -33,6 +33,7 @@ impl LLMClientTrait for TestMockClient {
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(options.messages.len() * 10),
                         completion_tokens: Some(20),
+                        cached_tokens: None,
                     }))
                     .await;
             } else {
@@ -44,6 +45,7 @@ impl LLMClientTrait for TestMockClient {
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(options.messages.len() * 10),
                         completion_tokens: Some(15),
+                        cached_tokens: None,
                     }))
                     .await;
             }
