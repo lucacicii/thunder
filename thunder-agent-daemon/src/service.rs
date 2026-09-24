@@ -477,6 +477,9 @@ impl DaemonService {
                 ]),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
+                role: None,
+                permission: thunder_agent_loop::types::config::Permission::default(),
+                pause_gate: None,
             };
 
             let context_input = conversation.as_context_input();

@@ -1,12 +1,14 @@
 use crate::error::PluginError;
 use crate::plugin::PluginContext;
 use crate::registry::{ActivePluginSet, PluginRegistry};
+use crate::roles::RoleSpec;
 use crate::selector::{PluginSelection, PluginSelector};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_agent_loop::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
+use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
@@ -24,6 +26,13 @@ pub struct RootRunOptions {
     pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
+    /// Active role for this run. `None` keeps the historical behaviour.
+    pub role: Option<RoleSpec>,
+    /// Tool capability tier. Derived from `role.permission` when a role is set.
+    pub permission: Permission,
+    /// Optional cooperative pause gate forwarded to the agent unit, letting the
+    /// host freeze the run at a tool boundary and resume it later.
+    pub pause_gate: Option<Arc<thunder_agent_loop::core::pause::PauseGate>>,
 }
 
 impl Default for RootRunOptions {
@@ -36,7 +45,23 @@ impl Default for RootRunOptions {
             forced_plugins: None,
             register_builtins: true,
             thinking_level: None,
+            role: None,
+            permission: Permission::default(),
+            pause_gate: None,
         }
+    }
+}
+
+impl RootRunOptions {
+    /// Attach a role, deriving the permission tier from it.
+    ///
+    /// The role's `model` / `thinking_level` are intentionally *not* applied
+    /// here: the caller owns model resolution, so it can honour the
+    /// conversation's already-bound model first.
+    pub fn with_role(mut self, role: RoleSpec) -> Self {
+        self.permission = role.permission;
+        self.role = Some(role);
+        self
     }
 }
 
@@ -235,6 +260,20 @@ impl ThunderRoot {
         if let Some(ref ws) = self.workspace_root {
             agent_cfg.workspace_dir = Some(ws.clone());
         }
+        // A role narrows the capability tier. The host is the authority here,
+        // never the plugin layer.
+        agent_cfg.permission = options.permission;
+        let mut combined_system_prompt = combined_system_prompt;
+        if let Some(role) = &options.role {
+            if !role.persona.is_empty() {
+                combined_system_prompt.push_str(&format!(
+                    "\n\n### [Role: {}]\n{}\n\n### Role Capability\nThis role is {}.",
+                    role.display_name(),
+                    role.persona.as_text().trim(),
+                    options.permission.describe()
+                ));
+            }
+        }
         agent_cfg.system_prompt = Some(combined_system_prompt);
         if let Some(ref tl) = options.thinking_level {
             agent_cfg.thinking_level = Some(tl.clone());
@@ -277,22 +316,48 @@ impl ThunderRoot {
         }
 
         if options.register_builtins {
-            let mut bash = BashTool::default();
-            let mut read_file = ReadFileTool::default();
-            let mut write_file = WriteFileTool::default();
-            if let Some(ws) = &self.workspace_root {
-                bash = bash.with_default_cwd(ws.clone());
-                read_file = read_file.with_default_cwd(ws.clone());
-                write_file = write_file.with_default_cwd(ws.clone());
+            let perm = options.permission;
+            let ws = self.workspace_root.clone();
+            // Gate by capability tier: a denied tool is never registered, so it
+            // never reaches the model's tool list in the first place.
+            if perm.allows_read() {
+                let tool = ReadFileTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => tool.with_default_cwd(dir.clone()),
+                    None => tool,
+                }));
             }
-            agent.register_tool(Arc::new(bash));
-            agent.register_tool(Arc::new(read_file));
-            agent.register_tool(Arc::new(write_file));
+            if perm.allows_write() {
+                let tool = WriteFileTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => tool.with_default_cwd(dir.clone()),
+                    None => tool,
+                }));
+            }
+            if perm.allows_exec() {
+                let tool = BashTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => tool.with_default_cwd(dir.clone()),
+                    None => tool,
+                }));
+            }
+            if perm != Permission::Bash {
+                info!(
+                    session_id = %session_id,
+                    permission = %perm.describe(),
+                    "Built-in tools restricted by role permission"
+                );
+            }
         }
 
         // Register tools contributed by active plugins
         for tool in active_set.collect_tools() {
             agent.register_tool(tool);
+        }
+
+        // Forward the host's pause gate so the unit can park at tool boundaries.
+        if let Some(gate) = &options.pause_gate {
+            agent = agent.with_pause_gate(Arc::clone(gate));
         }
 
         // 5. Start AgentLoop with full context input

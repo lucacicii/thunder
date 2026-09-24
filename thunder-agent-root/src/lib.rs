@@ -11,6 +11,7 @@ pub mod host;
 pub mod plugin;
 pub mod plugins;
 pub mod registry;
+pub mod roles;
 pub mod selector;
 
 pub mod prelude {
@@ -30,6 +31,7 @@ pub mod prelude {
     #[cfg(feature = "script-plugin")]
     pub use crate::plugins::script_plugin::*;
     pub use crate::registry::{ActivePluginSet, PluginRegistry};
+    pub use crate::roles::{Persona, RoleRegistry, RoleSpec};
     pub use crate::selector::{PluginSelection, PluginSelector};
 }
 

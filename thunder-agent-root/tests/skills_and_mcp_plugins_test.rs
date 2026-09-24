@@ -116,6 +116,9 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
         forced_plugins: Some(vec!["skills".to_string(), "mcp".to_string()]),
         register_builtins: true,
         thinking_level: None,
+        role: None,
+        permission: thunder_agent_loop::types::config::Permission::default(),
+        pause_gate: None,
     };
 
     let result = root
