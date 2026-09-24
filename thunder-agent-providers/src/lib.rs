@@ -12,6 +12,7 @@ pub mod config;
 pub mod error;
 pub mod google;
 pub mod openai;
+pub mod probe;
 pub mod responses;
 pub mod source;
 

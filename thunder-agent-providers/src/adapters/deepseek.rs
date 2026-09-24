@@ -123,6 +123,7 @@ mod tests {
                 "high".to_string(),
             ],
             default_thinking_level: "high".to_string(),
+            thinking_levels_probed: false,
         }
     }
 

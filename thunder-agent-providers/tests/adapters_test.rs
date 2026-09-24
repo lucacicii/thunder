@@ -23,6 +23,7 @@ fn make_dummy_spec(provider: &str, id: &str, api: ProviderApi) -> ModelSpec {
         max_tokens_field: "max_tokens".to_string(),
         thinking_levels: vec!["off".to_string()],
         default_thinking_level: "off".to_string(),
+        thinking_levels_probed: false,
     }
 }
 

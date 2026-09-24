@@ -101,7 +101,10 @@ impl DaemonService {
                 self.send_response(DaemonResponse::Response {
                     id,
                     success: true,
-                    data: Some(serde_json::json!({ "models": models })),
+                    data: Some(serde_json::json!({
+                        "models": models,
+                        "utility_model": registry.utility_model,
+                    })),
                     error: None,
                 })
                 .await;
@@ -360,7 +363,7 @@ impl DaemonService {
                 .with_plugin(SkillsPlugin::default())
                 .with_plugin(McpPlugin::default())
                 .with_plugin(script_plugin)
-                .with_provider_registry(registry);
+                .with_provider_registry(registry.clone());
 
             let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
                 Some(Arc::new(DaemonMockClient))
@@ -425,6 +428,26 @@ impl DaemonService {
                             conversation.stats.tool_calls_count += res.run_result.stats.total_tool_executions;
                             conversation.stats.duration_ms += res.run_result.stats.total_duration_ms;
                             let _ = store.save(&conversation).await;
+
+                            // Auto-generate concise conversation title using utility model on first turn
+                            let is_first_turn = conversation.stats.turn_count <= res.run_result.stats.total_turns;
+                            if is_first_turn && !use_mock {
+                                let store_clone = store.clone();
+                                let reg_clone = registry.clone();
+                                let sid_clone = effective_session_id.clone();
+                                let prompt_clone = prompt.clone();
+                                let final_content_clone = final_content.clone();
+                                tokio::spawn(async move {
+                                    auto_generate_conversation_title(
+                                        store_clone,
+                                        reg_clone,
+                                        sid_clone,
+                                        prompt_clone,
+                                        final_content_clone,
+                                    )
+                                    .await;
+                                });
+                            }
 
                             // Save full end-to-end task trace
                             let events = collected_events.lock().await.clone();
@@ -590,5 +613,95 @@ async fn list_session_traces(
         tb.cmp(&ta)
     });
     results
+}
+
+async fn auto_generate_conversation_title(
+    store: Arc<FsConversationStore>,
+    registry: ProviderRegistry,
+    session_id: String,
+    prompt: String,
+    assistant_text: Option<String>,
+) {
+    let utility_spec = match registry.resolve_utility_model() {
+        Some(s) if s.available => s.clone(),
+        _ => return,
+    };
+
+    let client = match thunder_agent_providers::client_for(&utility_spec, 10_000) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let user_excerpt = if prompt.chars().count() > 300 {
+        prompt.chars().take(300).collect::<String>()
+    } else {
+        prompt
+    };
+
+    let assistant_excerpt = assistant_text
+        .as_deref()
+        .map(|t| {
+            if t.chars().count() > 300 {
+                t.chars().take(300).collect::<String>()
+            } else {
+                t.to_string()
+            }
+        })
+        .unwrap_or_default();
+
+    let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (between 4 and 10 Chinese characters or 2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
+        + &user_excerpt
+        + "\nAssistant: "
+        + &assistant_excerpt;
+
+    let options = thunder_agent_loop::stream::client::ChatRequestOptions {
+        messages: vec![thunder_agent_loop::types::message::ChatMessage::user(naming_instruction)],
+        tools: vec![],
+        model: Some(utility_spec.id.clone()),
+        temperature: Some(0.3),
+        top_p: Some(0.9),
+        max_tokens: Some(30),
+        thinking_level: Some("off".to_string()),
+    };
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let mut rx = match client.stream_chat(options, cancel_token).await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let mut generated_title = String::new();
+    while let Some(chunk) = rx.recv().await {
+        match chunk {
+            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Token(token)) => {
+                generated_title.push_str(&token);
+            }
+            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Completed { content, .. }) => {
+                if let Some(c) = content {
+                    if generated_title.is_empty() {
+                        generated_title = c;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let cleaned = generated_title
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`')
+        .trim_start_matches("Title:")
+        .trim_start_matches("标题:")
+        .trim_start_matches("标题：")
+        .trim()
+        .to_string();
+
+    if !cleaned.is_empty() && cleaned.chars().count() <= 40 {
+        if let Ok(Some(mut conv)) = store.load(&session_id).await {
+            info!("Auto-generated conversation title for {}: {}", session_id, cleaned);
+            conv.title = Some(cleaned);
+            let _ = store.save(&conv).await;
+        }
+    }
 }
 

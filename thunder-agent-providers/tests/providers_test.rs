@@ -83,6 +83,7 @@ fn wire_model_is_bare_id_not_selection_id() {
         max_tokens_field: "max_tokens".to_string(),
         thinking_levels: vec!["off".to_string()],
         default_thinking_level: "off".to_string(),
+        thinking_levels_probed: false,
     };
     assert_eq!(spec.selection_id(), "cc-switch-open-code-go/ox-alpha-free");
     assert_eq!(spec.id, "ox-alpha-free");
@@ -153,4 +154,83 @@ async fn test_thinking_levels_resolution_and_defaults() {
     let m2 = registry.resolve("test-prov/model-override").unwrap();
     assert_eq!(m2.thinking_levels, vec!["off", "high"]);
     assert_eq!(m2.default_thinking_level, "high");
+}
+
+#[test]
+fn test_models_file_config_extensions() {
+    let json = r#"{
+        "utilityModel": "command/xiaomi/mimo-v2.6-flash",
+        "providers": {
+            "cmd": {
+                "baseUrl": "https://api.test.com/v1",
+                "apiKey": "sk-123",
+                "models": [
+                    {
+                        "id": "mimo",
+                        "thinkingLevelMap": {
+                            "off": "none",
+                            "low": "low",
+                            "medium": "medium",
+                            "high": "high",
+                            "xhigh": null,
+                            "max": null
+                        },
+                        "thinkingLevelsProbed": true
+                    }
+                ]
+            }
+        }
+    }"#;
+
+    let models_file = thunder_agent_providers::config::ModelsFile::parse_json(json).unwrap();
+    assert_eq!(
+        models_file.utility_model.as_deref(),
+        Some("command/xiaomi/mimo-v2.6-flash")
+    );
+
+    let model_cfg = &models_file.providers.get("cmd").unwrap().models[0];
+    assert_eq!(model_cfg.thinking_levels_probed, Some(true));
+    let effective = model_cfg.effective_thinking_levels().unwrap();
+    assert_eq!(effective, vec!["off", "low", "medium", "high"]);
+}
+
+#[tokio::test]
+async fn test_resolve_utility_model_and_probed_flag() {
+    let json = r#"{
+        "utilityModel": "cmd/flash-model",
+        "providers": {
+            "cmd": {
+                "baseUrl": "https://api.test.com/v1",
+                "apiKey": "sk-123",
+                "models": [
+                    {
+                        "id": "heavy-reasoner",
+                        "thinkingLevels": ["low", "high"],
+                        "defaultThinkingLevel": "high",
+                        "thinkingLevelsProbed": true
+                    },
+                    {
+                        "id": "flash-model",
+                        "thinkingLevels": ["off"]
+                    }
+                ]
+            }
+        }
+    }"#;
+
+    let models_file = thunder_agent_providers::config::ModelsFile::parse_json(json).unwrap();
+    let auth = thunder_agent_providers::auth::AuthFile::default();
+    let mut registry = thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
+
+    let utility = registry.resolve_utility_model().unwrap();
+    assert_eq!(utility.id, "flash-model");
+
+    let reasoner = registry.resolve("cmd/heavy-reasoner").unwrap();
+    assert!(reasoner.thinking_levels_probed);
+    assert_eq!(reasoner.thinking_levels, vec!["low", "high"]);
+
+    // Calling probe_unprobed_models should skip already probed models
+    registry.probe_unprobed_models().await;
+    let reasoner_after = registry.resolve("cmd/heavy-reasoner").unwrap();
+    assert_eq!(reasoner_after.thinking_levels, vec!["low", "high"]);
 }
