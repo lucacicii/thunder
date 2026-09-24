@@ -208,6 +208,29 @@ impl DaemonService {
                 })
                 .await;
             }
+
+            DaemonRequest::GetTrace { id, session_id, task_id } => {
+                let trace = load_task_trace(self.store.root(), &session_id, task_id.as_deref()).await;
+                let found = trace.is_some();
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: found,
+                    data: trace,
+                    error: if !found { Some("Trace not found".to_string()) } else { None },
+                })
+                .await;
+            }
+
+            DaemonRequest::ListTraces { id, session_id } => {
+                let list = list_session_traces(self.store.root(), &session_id).await;
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({ "traces": list })),
+                    error: None,
+                })
+                .await;
+            }
         }
     }
 
@@ -331,7 +354,7 @@ impl DaemonService {
 
             let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
-                .with_plugin(ConversationPlugin::with_memory_store())
+                .with_plugin(ConversationPlugin::new(store.clone()))
                 .with_plugin(SkillsPlugin::default())
                 .with_plugin(McpPlugin::default())
                 .with_plugin(script_plugin)
@@ -359,10 +382,13 @@ impl DaemonService {
             };
 
             let context_input = conversation.as_context_input();
+            let start_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
                     let selection = handle.selection.clone();
+                    let collected_events = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+                    let collected_for_stream = Arc::clone(&collected_events);
 
                     // Stream fine-grained observed events (tokens, tool execution, etc.)
                     if let Some(mut rx) = handle.take_events() {
@@ -370,6 +396,7 @@ impl DaemonService {
                         let out = stdout.clone();
                         tokio::spawn(async move {
                             while let Some(event) = rx.recv().await {
+                                collected_for_stream.lock().await.push(event.clone());
                                 let res = DaemonResponse::ObservedEvent {
                                     task_id: tid.clone(),
                                     event,
@@ -384,10 +411,36 @@ impl DaemonService {
                             let finish_reason = format!("{:?}", res.run_result.finish_reason);
                             let final_content = res.final_content.clone();
 
-                            if let Some(ref text) = final_content {
+                            // Full persistence of message chain (retains bash executions, write_file and tool results)
+                            if !res.run_result.messages.is_empty() {
+                                conversation.messages = res.run_result.messages.clone();
+                            } else if let Some(ref text) = final_content {
                                 conversation.add_assistant_message(Some(text.clone()), None);
-                                let _ = store.save(&conversation).await;
                             }
+                            conversation.stats.total_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
+                            conversation.stats.turn_count = res.run_result.stats.total_turns;
+                            conversation.stats.tool_calls_count = res.run_result.stats.total_tool_executions;
+                            conversation.stats.duration_ms = res.run_result.stats.total_duration_ms;
+                            let _ = store.save(&conversation).await;
+
+                            // Save full end-to-end task trace
+                            let events = collected_events.lock().await.clone();
+                            let finished_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                            let trace_data = serde_json::json!({
+                                "task_id": task_id,
+                                "session_id": effective_session_id,
+                                "model": chosen_model,
+                                "workspace_dir": chosen_workspace,
+                                "prompt": prompt,
+                                "started_at_ms": start_time_ms,
+                                "finished_at_ms": finished_at_ms,
+                                "duration_ms": res.run_result.stats.total_duration_ms,
+                                "finish_reason": finish_reason,
+                                "stats": res.run_result.stats,
+                                "final_content": final_content,
+                                "events": events,
+                            });
+                            save_task_trace(store.root(), &effective_session_id, &task_id, &trace_data).await;
 
                             if res.run_result.finish_reason == thunder_agent_loop::types::event::FinishReason::Error {
                                 let err_msg = "Thunder agent task ended with FinishReason::Error (see observed error events for details)".to_string();
@@ -450,3 +503,89 @@ async fn write_ndjson(stdout: &Arc<Mutex<tokio::io::Stdout>>, res: &DaemonRespon
         let _ = o.flush().await;
     }
 }
+
+async fn save_task_trace(
+    store_root: &std::path::Path,
+    session_id: &str,
+    task_id: &str,
+    trace_data: &serde_json::Value,
+) {
+    let trace_dir = store_root.join(session_id).join("traces");
+    let _ = tokio::fs::create_dir_all(&trace_dir).await;
+    let trace_path = trace_dir.join(format!("{}.json", task_id));
+    if let Ok(bytes) = serde_json::to_vec_pretty(trace_data) {
+        let _ = tokio::fs::write(&trace_path, bytes).await;
+    }
+}
+
+async fn load_task_trace(
+    store_root: &std::path::Path,
+    session_id: &str,
+    task_id: Option<&str>,
+) -> Option<serde_json::Value> {
+    let trace_dir = store_root.join(session_id).join("traces");
+    if !trace_dir.exists() {
+        return None;
+    }
+
+    let target_path = if let Some(tid) = task_id {
+        trace_dir.join(format!("{}.json", tid))
+    } else {
+        // Find latest trace file
+        let mut entries = tokio::fs::read_dir(&trace_dir).await.ok()?;
+        let mut latest_path = None;
+        let mut latest_time = std::time::SystemTime::UNIX_EPOCH;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            if p.extension().map(|ext| ext == "json").unwrap_or(false) {
+                if let Ok(meta) = entry.metadata().await {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > latest_time {
+                            latest_time = modified;
+                            latest_path = Some(p);
+                        }
+                    }
+                }
+            }
+        }
+        latest_path?
+    };
+
+    let content = tokio::fs::read(&target_path).await.ok()?;
+    serde_json::from_slice(&content).ok()
+}
+
+async fn list_session_traces(
+    store_root: &std::path::Path,
+    session_id: &str,
+) -> Vec<serde_json::Value> {
+    let trace_dir = store_root.join(session_id).join("traces");
+    let mut results = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&trace_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            if p.extension().map(|ext| ext == "json").unwrap_or(false) {
+                if let Ok(content) = tokio::fs::read(&p).await {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content) {
+                        results.push(serde_json::json!({
+                            "task_id": val.get("task_id"),
+                            "started_at_ms": val.get("started_at_ms"),
+                            "finished_at_ms": val.get("finished_at_ms"),
+                            "duration_ms": val.get("duration_ms"),
+                            "finish_reason": val.get("finish_reason"),
+                            "model": val.get("model"),
+                            "prompt": val.get("prompt"),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    results.sort_by(|a, b| {
+        let ta = a.get("started_at_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let tb = b.get("started_at_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        tb.cmp(&ta)
+    });
+    results
+}
+

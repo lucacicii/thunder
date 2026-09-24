@@ -708,6 +708,14 @@ impl AgentLoop {
                         .await;
                 }
 
+                let ws = config.workspace_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let has_bash = tool_calls.iter().any(|tc| tc.function.name == "bash");
+                let before_git_status = if has_bash {
+                    detect_git_status_snapshot(&ws).await
+                } else {
+                    std::collections::HashSet::new()
+                };
+
                 let exec_results = tool_executor
                     .execute_all(
                         &tool_calls,
@@ -759,6 +767,73 @@ impl AgentLoop {
                             result: executed.result.clone(),
                         })
                         .await;
+
+                    // Emit TelemetryNotice if structured telemetry is attached
+                    if let Some(ref notice) = executed.result.telemetry {
+                        emitter
+                            .emit(AgentEvent::TelemetryNotice {
+                                turn,
+                                tool_call_id: executed.tool_call.id.clone(),
+                                layer: notice.layer.clone(),
+                                action: notice.action.clone(),
+                                ground_truth: notice.ground_truth.clone(),
+                                self_healed: notice.self_healed.clone(),
+                                guidance: notice.guidance.clone(),
+                            })
+                            .await;
+                    }
+
+                    // Emit FileChange for write_file or bash
+                    if executed.tool_call.function.name == "write_file" {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&executed.tool_call.function.arguments) {
+                            if let Some(path_str) = parsed.get("path").and_then(|v| v.as_str()) {
+                                let bytes = parsed.get("content").and_then(|v| v.as_str()).map(|c| c.len());
+                                let action = if executed.result.is_error {
+                                    "failed".to_string()
+                                } else {
+                                    "written".to_string()
+                                };
+                                emitter
+                                    .emit(AgentEvent::FileChange {
+                                        turn,
+                                        tool_call_id: executed.tool_call.id.clone(),
+                                        path: path_str.to_string(),
+                                        action,
+                                        bytes,
+                                        tool_name: "write_file".to_string(),
+                                    })
+                                    .await;
+                            }
+                        }
+                    } else if executed.tool_call.function.name == "bash" {
+                        let after_git_status = detect_git_status_snapshot(&ws).await;
+                        for entry in &after_git_status {
+                            if !before_git_status.contains(entry) {
+                                let file_path = if entry.len() > 3 {
+                                    entry[3..].trim().to_string()
+                                } else {
+                                    entry.clone()
+                                };
+                                let action = if entry.starts_with("??") {
+                                    "created".to_string()
+                                } else if entry.starts_with('D') || entry.contains(" D") {
+                                    "deleted".to_string()
+                                } else {
+                                    "modified".to_string()
+                                };
+                                emitter
+                                    .emit(AgentEvent::FileChange {
+                                        turn,
+                                        tool_call_id: executed.tool_call.id.clone(),
+                                        path: file_path,
+                                        action,
+                                        bytes: None,
+                                        tool_name: "bash".to_string(),
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
 
                     let tool_msg = ChatMessage::Tool {
                         tool_call_id: executed.tool_call.id,
@@ -872,3 +947,29 @@ impl From<ContextBuffer> for ContextInput {
         ContextInput::Buffer(ctx)
     }
 }
+
+async fn detect_git_status_snapshot(workspace: &std::path::Path) -> std::collections::HashSet<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(workspace)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.len() > 3 {
+                        Some(trimmed.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => std::collections::HashSet::new(),
+    }
+}
+

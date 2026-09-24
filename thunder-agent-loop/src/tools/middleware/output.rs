@@ -31,7 +31,13 @@ impl OutputPostProcessorMiddleware {
         self
     }
 
-    fn format_and_truncate(&self, output: String, is_error: bool, duration: Duration) -> ToolExecutionResult {
+    fn format_and_truncate(
+        &self,
+        output: String,
+        is_error: bool,
+        duration: Duration,
+        telemetry: Option<crate::tools::middleware::telemetry::SystemNotice>,
+    ) -> ToolExecutionResult {
         let original_bytes = output.len();
         if original_bytes <= self.max_output_bytes {
             return ToolExecutionResult {
@@ -40,6 +46,7 @@ impl OutputPostProcessorMiddleware {
                 truncated: false,
                 original_bytes,
                 duration_ms: duration.as_millis() as u64,
+                telemetry,
             };
         }
 
@@ -60,6 +67,7 @@ impl OutputPostProcessorMiddleware {
             truncated: true,
             original_bytes,
             duration_ms: duration.as_millis() as u64,
+            telemetry,
         }
     }
 }
@@ -83,7 +91,9 @@ impl ToolMiddleware for OutputPostProcessorMiddleware {
         let duration = Duration::from_millis(res.duration_ms);
 
         if res.is_error {
-            return ToolExecutionResult::error(sanitized, duration);
+            let mut err_res = ToolExecutionResult::error(sanitized, duration);
+            err_res.telemetry = res.telemetry;
+            return err_res;
         }
 
         let original_bytes = sanitized.len();
@@ -99,6 +109,7 @@ impl ToolMiddleware for OutputPostProcessorMiddleware {
                             truncated: true,
                             original_bytes,
                             duration_ms: duration.as_millis() as u64,
+                            telemetry: res.telemetry,
                         };
                         return result;
                     }
@@ -110,7 +121,7 @@ impl ToolMiddleware for OutputPostProcessorMiddleware {
         }
 
         // 2. Format and truncate within byte ceiling
-        self.format_and_truncate(sanitized, false, duration)
+        self.format_and_truncate(sanitized, false, duration, res.telemetry)
     }
 }
 

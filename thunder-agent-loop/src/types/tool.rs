@@ -47,6 +47,8 @@ pub struct ToolExecutionResult {
     pub truncated: bool,
     pub original_bytes: usize,
     pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<crate::tools::middleware::telemetry::SystemNotice>,
 }
 
 impl ToolExecutionResult {
@@ -58,6 +60,7 @@ impl ToolExecutionResult {
             truncated: false,
             original_bytes: bytes,
             duration_ms: duration.as_millis() as u64,
+            telemetry: None,
         }
     }
 
@@ -69,6 +72,7 @@ impl ToolExecutionResult {
             truncated: false,
             original_bytes: bytes,
             duration_ms: duration.as_millis() as u64,
+            telemetry: None,
         }
     }
 
@@ -81,6 +85,7 @@ impl ToolExecutionResult {
             self.output = format!("{}\n\n{}", self.output, md);
         }
         self.original_bytes = self.output.len();
+        self.telemetry = Some(notice);
         self
     }
 }

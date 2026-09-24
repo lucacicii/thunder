@@ -140,6 +140,7 @@ impl ToolRegistry {
                                     truncated: true,
                                     original_bytes,
                                     duration_ms: duration.as_millis() as u64,
+                                    telemetry: None,
                                 };
                             }
                             Err(e) => {
@@ -167,6 +168,7 @@ impl ToolRegistry {
                 truncated: false,
                 original_bytes,
                 duration_ms: duration.as_millis() as u64,
+                telemetry: None,
             };
         }
 
@@ -187,6 +189,7 @@ impl ToolRegistry {
             truncated: true,
             original_bytes,
             duration_ms: duration.as_millis() as u64,
+            telemetry: None,
         }
     }
 }

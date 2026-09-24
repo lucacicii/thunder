@@ -67,6 +67,41 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
     assert!(completed, "Task should reach completed state");
     assert!(got_token_or_event, "Should have received observed events");
 
+    // 3. Test GetTrace
+    let session_id = ack["data"]["session_id"].as_str().unwrap();
+    let trace_req = serde_json::json!({
+        "method": "get_trace",
+        "id": "req-trace-1",
+        "session_id": session_id,
+        "task_id": "task-test-1"
+    });
+    stdin.write_all(format!("{}\n", trace_req).as_bytes()).await?;
+    stdin.flush().await?;
+
+    let trace_line = reader.next_line().await?.expect("Expected trace response");
+    let trace_resp: serde_json::Value = serde_json::from_str(&trace_line)?;
+    assert_eq!(trace_resp["type"], "response");
+    assert_eq!(trace_resp["id"], "req-trace-1");
+    assert_eq!(trace_resp["success"], true);
+    assert_eq!(trace_resp["data"]["task_id"], "task-test-1");
+    assert!(trace_resp["data"]["events"].is_array());
+
+    // 4. Test ListTraces
+    let list_traces_req = serde_json::json!({
+        "method": "list_traces",
+        "id": "req-list-traces-1",
+        "session_id": session_id,
+    });
+    stdin.write_all(format!("{}\n", list_traces_req).as_bytes()).await?;
+    stdin.flush().await?;
+
+    let list_traces_line = reader.next_line().await?.expect("Expected list traces response");
+    let list_traces_resp: serde_json::Value = serde_json::from_str(&list_traces_line)?;
+    assert_eq!(list_traces_resp["type"], "response");
+    assert_eq!(list_traces_resp["id"], "req-list-traces-1");
+    assert_eq!(list_traces_resp["success"], true);
+    assert!(!list_traces_resp["data"]["traces"].as_array().unwrap().is_empty());
+
     // Close stdin to trigger clean shutdown
     drop(stdin);
     let status = child.wait().await?;
