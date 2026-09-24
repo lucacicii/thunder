@@ -16,6 +16,7 @@ thunder-conversation = { path = "../thunder-agent-core/conversation", optional =
 thunder-orchestra = { path = "../thunder-agent-core/thunder-orchestra", optional = true }
 thunder-agent-skills = { path = "../thunder-agent-skills", optional = true }
 thunder-agent-mcp = { path = "../thunder-agent-mcp", optional = true }
+thunder-agent-plugin = { path = "../thunder-agent-plugin", optional = true }
 thunder-agent-providers = { path = "../thunder-agent-providers" }
 tokio = { version = "1.43", features = ["full"] }
 tokio-util = "0.7"
@@ -27,11 +28,12 @@ futures-util = "0.3"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
 
 [features]
-default = ["conversation", "orchestra", "skills", "mcp"]
+default = ["conversation", "orchestra", "skills", "mcp", "script-plugin"]
 conversation = ["dep:thunder-conversation"]
 orchestra = ["dep:thunder-orchestra"]
 skills = ["dep:thunder-agent-skills"]
 mcp = ["dep:thunder-agent-mcp"]
+script-plugin = ["dep:thunder-agent-plugin"]
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["full", "test-util"] }
