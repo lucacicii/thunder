@@ -57,6 +57,7 @@ impl LLMClientTrait for RoleMockClient {
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(8),
                         completion_tokens: Some(8),
+                        cached_tokens: None,
                     }))
                     .await;
             } else {
@@ -69,6 +70,7 @@ impl LLMClientTrait for RoleMockClient {
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(12),
                         completion_tokens: Some(10),
+                        cached_tokens: None,
                     }))
                     .await;
             }

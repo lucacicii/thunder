@@ -18,7 +18,8 @@ impl ModelAdapter for OpenAiStandardAdapter {
         let mut payload = json!({
             "model": model,
             "messages": options.messages,
-            "stream": true
+            "stream": true,
+            "stream_options": { "include_usage": true }
         });
 
         if !options.tools.is_empty() {
@@ -79,7 +80,8 @@ impl ModelAdapter for OpenAiReasoningAdapter {
         let mut payload = json!({
             "model": model,
             "messages": transformed_messages,
-            "stream": true
+            "stream": true,
+            "stream_options": { "include_usage": true }
         });
 
         if !options.tools.is_empty() {

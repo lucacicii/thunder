@@ -31,6 +31,7 @@ impl LLMClientTrait for CountingClient {
                         finish_reason: "tool_calls".into(),
                         prompt_tokens: Some(4),
                         completion_tokens: Some(4),
+                        cached_tokens: None,
                     }))
                     .await;
             } else {
@@ -42,6 +43,7 @@ impl LLMClientTrait for CountingClient {
                         finish_reason: "stop".into(),
                         prompt_tokens: Some(4),
                         completion_tokens: Some(2),
+                        cached_tokens: None,
                     }))
                     .await;
             }
@@ -184,6 +186,7 @@ async fn cancel_one_unit_does_not_stop_sibling() {
                                 finish_reason: "stop".into(),
                                 prompt_tokens: Some(1),
                                 completion_tokens: Some(1),
+                                cached_tokens: None,
                             }))
                             .await;
                     }

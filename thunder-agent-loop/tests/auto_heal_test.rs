@@ -37,6 +37,7 @@ impl LLMClientTrait for ContextOverflowMockClient {
                     finish_reason: "stop".to_string(),
                     prompt_tokens: Some(options.messages.len() * 10),
                     completion_tokens: Some(10),
+                    cached_tokens: None,
                 }))
                 .await;
         });

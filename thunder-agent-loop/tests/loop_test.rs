@@ -55,6 +55,7 @@ impl LLMClientTrait for MockLLMClient {
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(10),
                         completion_tokens: Some(8),
+                        cached_tokens: None,
                     }))
                     .await;
             } else {
@@ -67,6 +68,7 @@ impl LLMClientTrait for MockLLMClient {
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(25),
                         completion_tokens: Some(12),
+                        cached_tokens: None,
                     }))
                     .await;
             }
@@ -229,6 +231,7 @@ async fn test_hard_repetition_limit_trips_circuit_breaker() {
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(10),
                         completion_tokens: Some(10),
+                        cached_tokens: None,
                     }))
                     .await;
             });
@@ -270,6 +273,7 @@ async fn test_reasoning_only_final_turn_captured_in_final_content() {
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(20),
                         completion_tokens: Some(15),
+                        cached_tokens: None,
                     }))
                     .await;
             });
@@ -333,6 +337,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             finish_reason: "tool_calls".to_string(),
                             prompt_tokens: Some(10),
                             completion_tokens: Some(8),
+                            cached_tokens: None,
                         }))
                         .await;
                 } else {
@@ -344,6 +349,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             finish_reason: "stop".to_string(),
                             prompt_tokens: Some(20),
                             completion_tokens: Some(6),
+                            cached_tokens: None,
                         }))
                         .await;
                 }

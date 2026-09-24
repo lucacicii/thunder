@@ -116,6 +116,9 @@ impl LLMClientTrait for GoogleClient {
             let mut buf = String::new();
             let mut content = String::new();
             let mut tool_calls = Vec::new();
+            let mut prompt_tokens = None;
+            let mut completion_tokens = None;
+            let mut cached_tokens = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -131,6 +134,18 @@ impl LLMClientTrait for GoogleClient {
                         let Some(data) = line.strip_prefix("data: ") else { continue };
                         let data = data.trim();
                         let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+
+                        if let Some(usage) = value.get("usageMetadata") {
+                            if let Some(pt) = usage.get("promptTokenCount").and_then(|v| v.as_u64()) {
+                                prompt_tokens = Some(pt as usize);
+                            }
+                            if let Some(ct) = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()) {
+                                completion_tokens = Some(ct as usize);
+                            }
+                            if let Some(cached) = usage.get("cachedContentTokenCount").and_then(|v| v.as_u64()) {
+                                cached_tokens = Some(cached as usize);
+                            }
+                        }
 
                         if let Some(parts) = value.pointer("/candidates/0/content/parts").and_then(|p| p.as_array()) {
                             for part in parts {
@@ -158,8 +173,9 @@ impl LLMClientTrait for GoogleClient {
                     content: if content.is_empty() { None } else { Some(content) },
                     tool_calls,
                     finish_reason: "stop".to_string(),
-                    prompt_tokens: None,
-                    completion_tokens: None,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
                 }))
                 .await;
         });

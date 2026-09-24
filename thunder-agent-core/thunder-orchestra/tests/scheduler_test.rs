@@ -28,6 +28,7 @@ impl LLMClientTrait for ImmediateClient {
                     finish_reason: "stop".to_string(),
                     prompt_tokens: Some(1),
                     completion_tokens: Some(1),
+                    cached_tokens: None,
                 }))
                 .await;
         });

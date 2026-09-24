@@ -39,6 +39,7 @@ impl LLMClientTrait for DroppedStreamMockClient {
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(options.messages.len() * 10),
                         completion_tokens: Some(15),
+                        cached_tokens: None,
                     }))
                     .await;
             }

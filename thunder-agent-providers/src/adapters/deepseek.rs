@@ -58,6 +58,7 @@ impl ModelAdapter for DeepSeekAdapter {
             "model": model,
             "messages": transformed_messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
 
         if !options.tools.is_empty() {

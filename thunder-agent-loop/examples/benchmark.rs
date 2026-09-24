@@ -28,6 +28,7 @@ impl LLMClientTrait for BenchmarkMockLLM {
                     finish_reason: "stop".to_string(),
                     prompt_tokens: Some(15),
                     completion_tokens: Some(10),
+                    cached_tokens: None,
                 }))
                 .await;
         });
