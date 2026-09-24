@@ -4,6 +4,7 @@ use crate::types::config::Permission;
 use crate::types::message::ToolCall;
 use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,15 +20,35 @@ use std::time::{Duration, Instant};
 #[derive(Clone)]
 pub struct PermissionGuardMiddleware {
     permission: Permission,
+    /// Allowed workspace roots (primary first), surfaced in rejections so the
+    /// model knows its legal targets instead of probing with other tools.
+    workspace_roots: Vec<PathBuf>,
 }
 
 impl PermissionGuardMiddleware {
     pub fn new(permission: Permission) -> Self {
-        Self { permission }
+        Self {
+            permission,
+            workspace_roots: Vec::new(),
+        }
+    }
+
+    /// Attach the jail's allowed roots for rejection guidance.
+    pub fn with_workspace_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.workspace_roots = roots;
+        self
     }
 
     pub fn permission(&self) -> Permission {
         self.permission
+    }
+
+    fn roots_display(&self) -> String {
+        self.workspace_roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -54,6 +75,15 @@ impl ToolMiddleware for PermissionGuardMiddleware {
                 _ => "the requested capability",
             };
 
+            let roots_hint = if self.workspace_roots.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Reads inside the allowed workspace roots are still available: [{}].",
+                    self.roots_display()
+                )
+            };
+
             let notice = SystemNotice::new(
                 "PermissionGuard",
                 format!("Blocked '{}' — not granted by the active role", tool),
@@ -62,10 +92,12 @@ impl ToolMiddleware for PermissionGuardMiddleware {
                     capability
                 ),
             )
-            .with_guidance(
+            .with_guidance(format!(
                 "This role is read-only. Produce a plan or a patch description for the user to approve \
-                 instead of attempting to modify the workspace directly.",
-            );
+                 instead of attempting to modify the workspace directly, and do not try to work around \
+                 this with other tools (e.g. shell writes).{}",
+                roots_hint
+            ));
 
             return ToolExecutionResult::error(
                 format!("Error: tool '{}' is not available in the current role", tool),

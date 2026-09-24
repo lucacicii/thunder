@@ -103,6 +103,9 @@ pub struct ThunderRoot {
     registry: PluginRegistry,
     selector: PluginSelector,
     workspace_root: Option<PathBuf>,
+    /// Extra roots (e.g. referenced repositories) sharing the workspace's
+    /// read/write standing in the security jail.
+    extra_roots: Vec<PathBuf>,
     scratch_root: PathBuf,
     provider_registry: ProviderRegistry,
     active_model: ModelRef,
@@ -118,6 +121,7 @@ impl ThunderRoot {
             registry: PluginRegistry::new(),
             selector,
             workspace_root: None,
+            extra_roots: Vec::new(),
             scratch_root,
             provider_registry: ProviderRegistry::default(),
             active_model,
@@ -161,6 +165,15 @@ impl ThunderRoot {
     pub fn with_workspace(mut self, path: PathBuf) -> Self {
         self.config.workspace_dir = Some(path.clone());
         self.workspace_root = Some(path);
+        self
+    }
+
+    /// Grant extra roots (e.g. repositories referenced by the task) the same
+    /// read/write standing as the primary workspace. Relative paths keep
+    /// resolving against the primary workspace; these roots accept absolute
+    /// paths for reads, writes, and shell targets.
+    pub fn with_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.extra_roots = roots;
         self
     }
 
@@ -250,16 +263,35 @@ impl ThunderRoot {
         // 4. Construct Root AgentLoop
         let mut base_prompt = String::from("You are an autonomous engineering assistant powered by Thunder Agent.");
         if let Some(ws) = &self.workspace_root {
+            base_prompt.push_str("\n\n### Workspaces\n");
             base_prompt.push_str(&format!(
-                "\n\n### Current Workspace\nThe active workspace directory is: {}\nAll operations, inspections, file reads/writes, and shell commands must target or execute inside this directory unless specifically instructed otherwise.",
+                "Primary workspace: {}\n(relative paths resolve here)\n",
                 ws.display()
             ));
+            if self.extra_roots.is_empty() {
+                base_prompt.push_str(
+                    "All file paths and shell write targets must stay within the primary workspace \
+                     unless the user explicitly instructs otherwise.",
+                );
+            } else {
+                base_prompt.push_str("Referenced repositories (read/write allowed, absolute paths):\n");
+                for root in &self.extra_roots {
+                    base_prompt.push_str(&format!("- {}\n", root.display()));
+                }
+                base_prompt.push_str(
+                    "All file paths and shell write targets must stay within the primary workspace or one of the \
+                     referenced repositories above, unless the user explicitly instructs otherwise. \n\
+                     When working in a repository, address files by absolute path (read_file / write_file) or pass its \
+                     directory as `cwd` for shell commands; prefer write_file over shell redirections for edits.",
+                );
+            }
         }
         let combined_system_prompt = active_set.build_combined_system_prompt(Some(&base_prompt));
         let mut agent_cfg = self.config.clone();
         if let Some(ref ws) = self.workspace_root {
             agent_cfg.workspace_dir = Some(ws.clone());
         }
+        agent_cfg.extra_workspace_roots = self.extra_roots.clone();
         // A role narrows the capability tier. The host is the authority here,
         // never the plugin layer.
         agent_cfg.permission = options.permission;

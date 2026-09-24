@@ -28,21 +28,30 @@ impl ToolExecutor {
     pub fn with_standard_pipeline(
         registry: ToolRegistry,
         workspace_root: std::path::PathBuf,
+        extra_workspace_roots: Vec<std::path::PathBuf>,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
     ) -> Self {
-        let pipeline = ToolPipeline::standard(workspace_root, registry.clone(), scratchpad);
+        let pipeline =
+            ToolPipeline::standard(workspace_root, &extra_workspace_roots, registry.clone(), scratchpad);
         Self { registry, pipeline }
     }
 
     pub fn with_configured_pipeline(
         registry: ToolRegistry,
         workspace_root: std::path::PathBuf,
+        extra_workspace_roots: Vec<std::path::PathBuf>,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
         permission: crate::types::config::Permission,
     ) -> Self {
-        let pipeline =
-            ToolPipeline::configured(workspace_root, registry.clone(), scratchpad, cfg, permission);
+        let pipeline = ToolPipeline::configured(
+            workspace_root,
+            &extra_workspace_roots,
+            registry.clone(),
+            scratchpad,
+            cfg,
+            permission,
+        );
         Self { registry, pipeline }
     }
 

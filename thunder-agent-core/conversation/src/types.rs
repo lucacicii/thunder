@@ -88,6 +88,10 @@ pub struct Conversation {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// Extra roots granted the same read/write standing as the workspace
+    /// (e.g. repositories referenced by the task). Merged across runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_roots: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
     pub status: ConversationStatus,
@@ -114,6 +118,7 @@ impl Conversation {
             system_prompt: None,
             model: None,
             workspace: None,
+            shared_roots: Vec::new(),
             thinking_level: None,
             status: ConversationStatus::Active,
             messages: Vec::new(),

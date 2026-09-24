@@ -31,6 +31,11 @@ pub enum DaemonRequest {
         model: Option<String>,
         use_mock: Option<bool>,
         workspace_dir: Option<String>,
+        /// Extra roots (e.g. repositories referenced by the task) granted the
+        /// same read/write standing as `workspace_dir`. Merged into the
+        /// conversation's shared_roots; older daemons ignore this field.
+        #[serde(default)]
+        extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         /// Role id to activate for this run (e.g. "plan"). Resolved against
         /// `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`.
