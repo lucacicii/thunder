@@ -507,9 +507,17 @@ impl AgentLoop {
                                 prompt_tokens,
                                 completion_tokens,
                                 cached_tokens,
+                                reasoning_tokens,
                             }) => {
-                                completed_chunk =
-                                    Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens));
+                                completed_chunk = Some((
+                                    content,
+                                    tool_calls,
+                                    finish_reason,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    cached_tokens,
+                                    reasoning_tokens,
+                                ));
                             }
                             Err(stream_err) => {
                                 if !cancel_token.is_cancelled() && crate::pruning::is_context_overflow_error(&stream_err) {
@@ -621,7 +629,7 @@ impl AgentLoop {
                     break;
                 }
 
-                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens) =
+                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens) =
                     match completed_chunk {
                         Some(c) => c,
                         None => {
@@ -656,15 +664,36 @@ impl AgentLoop {
                 let has_tool_calls = !tool_calls.is_empty();
                 let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
 
-                // Fallback estimation if the upstream provider omitted usage counts or sent dummy zeros
+                // Reasoning-token breakdown: prefer the provider-reported subset
+                // (`completion_tokens_details.reasoning_tokens` / Gemini `thoughtsTokenCount`);
+                // otherwise estimate from the accumulated thinking text (Anthropic and
+                // providers without an explicit count). Thinking tokens are part of the
+                // output total, mirroring industry billing semantics.
+                let effective_reasoning_tokens = reasoning_tokens.or_else(|| {
+                    if !reasoning_content.is_empty() {
+                        Some(crate::core::token_estimator::estimate_token_count(&reasoning_content))
+                    } else {
+                        None
+                    }
+                });
+
+                // Fallback estimation if the upstream provider omitted usage counts or sent dummy zeros.
+                // The estimate covers thinking text as well, keeping totals consistent
+                // with the provider-reported semantics above.
                 let effective_completion_tokens = match completion_tokens {
                     Some(ct) if ct > 0 => Some(ct),
                     _ => {
                         let text = answer_content.as_deref().unwrap_or(&assistant_content);
-                        if !text.is_empty() {
+                        let answer_tokens = if !text.is_empty() {
                             Some(crate::core::token_estimator::estimate_token_count(text))
                         } else {
-                            completion_tokens
+                            None
+                        };
+                        match (answer_tokens, effective_reasoning_tokens) {
+                            (Some(a), Some(r)) => Some(a + r),
+                            (Some(a), None) => Some(a),
+                            (None, Some(r)) => Some(r),
+                            (None, None) => completion_tokens,
                         }
                     }
                 };
@@ -691,6 +720,7 @@ impl AgentLoop {
                     prompt_tokens: effective_prompt_tokens,
                     completion_tokens: effective_completion_tokens,
                     cached_tokens,
+                    reasoning_tokens: effective_reasoning_tokens,
                     duration_ms: turn_duration_ms,
                     tool_calls_count: tool_calls.len(),
                     tokens_per_second: tps,

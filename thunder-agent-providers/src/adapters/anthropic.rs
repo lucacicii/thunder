@@ -239,6 +239,7 @@ impl LLMClientTrait for AnthropicClient {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens,
+                    reasoning_tokens: None,
                 }))
                 .await;
         });

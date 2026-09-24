@@ -14,6 +14,9 @@ pub struct StreamDelta {
     pub prompt_tokens: Option<usize>,
     pub completion_tokens: Option<usize>,
     pub cached_tokens: Option<usize>,
+    /// Reasoning-token subset of `completion_tokens`, when the provider reports it
+    /// (OpenAI `completion_tokens_details.reasoning_tokens`).
+    pub reasoning_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +76,7 @@ struct OpenAIUsage {
     prompt_tokens_details: Option<PromptTokensDetails>,
     input_token_details: Option<PromptTokensDetails>,
     input_tokens_details: Option<PromptTokensDetails>,
+    completion_tokens_details: Option<CompletionTokensDetails>,
     prompt_cache_hit_tokens: Option<usize>,
     cache_read_input_tokens: Option<usize>,
     cached_tokens: Option<usize>,
@@ -81,6 +85,11 @@ struct OpenAIUsage {
 #[derive(Debug, Deserialize)]
 struct PromptTokensDetails {
     cached_tokens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionTokensDetails {
+    reasoning_tokens: Option<usize>,
 }
 
 pub struct SSEStreamParser {
@@ -226,6 +235,7 @@ impl SSEStreamParser {
         let mut prompt_tokens = None;
         let mut completion_tokens = None;
         let mut cached_tokens = None;
+        let mut reasoning_tokens = None;
         if let Some(usage) = parsed.usage {
             prompt_tokens = usage.prompt_tokens;
             completion_tokens = usage.completion_tokens;
@@ -238,6 +248,9 @@ impl SSEStreamParser {
                 .or(usage.prompt_cache_hit_tokens)
                 .or(usage.cache_read_input_tokens)
                 .or(usage.cached_tokens);
+            reasoning_tokens = usage
+                .completion_tokens_details
+                .and_then(|d| d.reasoning_tokens);
         }
 
         Some(StreamDelta {
@@ -248,6 +261,7 @@ impl SSEStreamParser {
             prompt_tokens,
             completion_tokens,
             cached_tokens,
+            reasoning_tokens,
         })
     }
 }

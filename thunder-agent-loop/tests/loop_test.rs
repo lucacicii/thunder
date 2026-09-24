@@ -56,6 +56,7 @@ impl LLMClientTrait for MockLLMClient {
                         prompt_tokens: Some(10),
                         completion_tokens: Some(8),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             } else {
@@ -69,6 +70,7 @@ impl LLMClientTrait for MockLLMClient {
                         prompt_tokens: Some(25),
                         completion_tokens: Some(12),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             }
@@ -232,6 +234,7 @@ async fn test_hard_repetition_limit_trips_circuit_breaker() {
                         prompt_tokens: Some(10),
                         completion_tokens: Some(10),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             });
@@ -274,6 +277,7 @@ async fn test_reasoning_only_final_turn_captured_in_final_content() {
                         prompt_tokens: Some(20),
                         completion_tokens: Some(15),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             });
@@ -338,6 +342,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             prompt_tokens: Some(10),
                             completion_tokens: Some(8),
                             cached_tokens: None,
+                            reasoning_tokens: None,
                         }))
                         .await;
                 } else {
@@ -350,6 +355,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             prompt_tokens: Some(20),
                             completion_tokens: Some(6),
                             cached_tokens: None,
+                            reasoning_tokens: None,
                         }))
                         .await;
                 }
@@ -400,3 +406,52 @@ async fn test_max_turns_exit_does_not_keep_partial_final_content() {
     assert_eq!(result.stats.total_turns, 1);
     assert_eq!(result.final_content, None);
 }
+
+#[tokio::test]
+async fn test_turn_stats_includes_reasoning_and_fallback_estimation() {
+    struct FallbackReasoningClient;
+
+    #[async_trait]
+    impl LLMClientTrait for FallbackReasoningClient {
+        async fn stream_chat(
+            &self,
+            _options: ChatRequestOptions,
+            _cancel_token: CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move {
+                // Emit both reasoning and answer tokens
+                let _ = tx.send(Ok(LLMStreamChunk::ReasoningToken("Step 1: plan deeply. Step 2: verify.".to_string()))).await;
+                let _ = tx.send(Ok(LLMStreamChunk::Token("The final result is verified.".to_string()))).await;
+                // Provider omits usage counts entirely
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Completed {
+                        content: None,
+                        tool_calls: vec![],
+                        finish_reason: "stop".to_string(),
+                        prompt_tokens: None,
+                        completion_tokens: None,
+                        cached_tokens: None,
+                        reasoning_tokens: None,
+                    }))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    let config = AgentConfig::new("deepseek-reasoner");
+    let agent = AgentLoop::new(config).with_custom_client(Arc::new(FallbackReasoningClient));
+
+    let result = agent.run("Think and answer", None).await.unwrap();
+    assert_eq!(result.finish_reason, FinishReason::Done);
+    // Overall completion tokens estimated must be > 0 and include the reasoning tokens
+    assert!(result.stats.total_completion_tokens > 0, "total completion tokens should be estimated");
+    assert!(result.stats.total_reasoning_tokens > 0, "reasoning tokens should be recorded via estimation");
+    // total_completion_tokens must be >= total_reasoning_tokens
+    assert!(
+        result.stats.total_completion_tokens >= result.stats.total_reasoning_tokens,
+        "completion tokens should include reasoning tokens"
+    );
+}
+

@@ -151,6 +151,7 @@ impl LLMClientTrait for OllamaClient {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens: None,
+                    reasoning_tokens: None,
                 }))
                 .await;
         });

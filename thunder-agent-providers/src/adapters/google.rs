@@ -119,6 +119,7 @@ impl LLMClientTrait for GoogleClient {
             let mut prompt_tokens = None;
             let mut completion_tokens = None;
             let mut cached_tokens = None;
+            let mut reasoning_tokens = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -139,9 +140,21 @@ impl LLMClientTrait for GoogleClient {
                             if let Some(pt) = usage.get("promptTokenCount").and_then(|v| v.as_u64()) {
                                 prompt_tokens = Some(pt as usize);
                             }
-                            if let Some(ct) = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()) {
-                                completion_tokens = Some(ct as usize);
+                            // Gemini's `candidatesTokenCount` excludes thought tokens;
+                            // industry convention counts thinking as output, so fold them in.
+                            let mut ct = usage
+                                .get("candidatesTokenCount")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as usize);
+                            if let Some(thoughts) = usage
+                                .get("thoughtsTokenCount")
+                                .and_then(|v| v.as_u64())
+                                .filter(|v| *v > 0)
+                            {
+                                reasoning_tokens = Some(thoughts as usize);
+                                ct = Some(ct.unwrap_or(0) + thoughts as usize);
                             }
+                            completion_tokens = ct;
                             if let Some(cached) = usage.get("cachedContentTokenCount").and_then(|v| v.as_u64()) {
                                 cached_tokens = Some(cached as usize);
                             }
@@ -176,6 +189,7 @@ impl LLMClientTrait for GoogleClient {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens,
+                    reasoning_tokens,
                 }))
                 .await;
         });

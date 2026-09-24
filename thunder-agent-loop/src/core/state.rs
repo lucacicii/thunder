@@ -36,6 +36,7 @@ pub struct AgentStateTracker {
     total_prompt_tokens: usize,
     total_completion_tokens: usize,
     total_cached_tokens: usize,
+    total_reasoning_tokens: usize,
     total_tool_executions: usize,
     total_tool_time_ms: u64,
     turn_history: Vec<TurnStats>,
@@ -56,6 +57,7 @@ impl AgentStateTracker {
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
             total_cached_tokens: 0,
+            total_reasoning_tokens: 0,
             total_tool_executions: 0,
             total_tool_time_ms: 0,
             turn_history: Vec::new(),
@@ -89,6 +91,9 @@ impl AgentStateTracker {
         if let Some(cached) = stats.cached_tokens {
             self.total_cached_tokens += cached;
         }
+        if let Some(reasoning) = stats.reasoning_tokens {
+            self.total_reasoning_tokens += reasoning;
+        }
         self.total_tool_executions += stats.tool_calls_count;
         self.turn_history.push(stats);
     }
@@ -110,6 +115,7 @@ impl AgentStateTracker {
             total_prompt_tokens: self.total_prompt_tokens,
             total_completion_tokens: self.total_completion_tokens,
             total_cached_tokens: self.total_cached_tokens,
+            total_reasoning_tokens: self.total_reasoning_tokens,
             total_duration_ms: total_dur_ms,
             total_tool_executions: self.total_tool_executions,
             total_tool_time_ms: self.total_tool_time_ms,

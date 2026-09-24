@@ -34,6 +34,7 @@ impl LLMClientTrait for TestMockClient {
                         prompt_tokens: Some(options.messages.len() * 10),
                         completion_tokens: Some(20),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             } else {
@@ -46,6 +47,7 @@ impl LLMClientTrait for TestMockClient {
                         prompt_tokens: Some(options.messages.len() * 10),
                         completion_tokens: Some(15),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             }

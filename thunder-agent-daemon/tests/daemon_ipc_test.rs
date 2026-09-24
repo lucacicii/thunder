@@ -207,6 +207,8 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
         stdin.flush().await
     }
 
+    let sess_id = format!("sess-merge-test-{}", std::process::id());
+
     // First run binds workspace + one extra root.
     let run1 = serde_json::json!({
         "method": "run_task",
@@ -214,7 +216,7 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
         "task_id": "task-merge-1",
         "prompt": "hello",
         "use_mock": true,
-        "session_id": "sess-merge-test",
+        "session_id": sess_id,
         "workspace_dir": std::env::temp_dir().join("thunder_ipc_ws").to_string_lossy(),
         "extra_workspace_dirs": [repo_a.to_string_lossy()]
     });
@@ -251,7 +253,7 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
         "task_id": "task-merge-2",
         "prompt": "hello again",
         "use_mock": true,
-        "session_id": "sess-merge-test",
+        "session_id": sess_id,
         "workspace_dir": "/this/ignored/new/workspace",
         "extra_workspace_dirs": [repo_a.to_string_lossy(), repo_b.to_string_lossy()]
     });

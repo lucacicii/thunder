@@ -40,6 +40,7 @@ impl LLMClientTrait for CliMockClient {
                         prompt_tokens: Some(options.messages.len() * 15),
                         completion_tokens: Some(30),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             } else {
@@ -57,6 +58,7 @@ impl LLMClientTrait for CliMockClient {
                         prompt_tokens: Some(options.messages.len() * 15),
                         completion_tokens: Some(25),
                         cached_tokens: None,
+                        reasoning_tokens: None,
                     }))
                     .await;
             }

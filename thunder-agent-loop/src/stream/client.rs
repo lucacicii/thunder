@@ -23,6 +23,7 @@ pub enum LLMStreamChunk {
         prompt_tokens: Option<usize>,
         completion_tokens: Option<usize>,
         cached_tokens: Option<usize>,
+        reasoning_tokens: Option<usize>,
     },
 }
 
@@ -232,6 +233,7 @@ impl LLMClientTrait for LLMClient {
                 let mut prompt_tokens = None;
                 let mut completion_tokens = None;
                 let mut cached_tokens = None;
+                let mut reasoning_tokens = None;
                 let mut stream_failed_midway = false;
 
                 loop {
@@ -276,6 +278,9 @@ impl LLMClientTrait for LLMClient {
                                         }
                                         if delta.cached_tokens.is_some() {
                                             cached_tokens = delta.cached_tokens;
+                                        }
+                                        if delta.reasoning_tokens.is_some() {
+                                            reasoning_tokens = delta.reasoning_tokens;
                                         }
                                     }
                                 }
@@ -334,6 +339,9 @@ impl LLMClientTrait for LLMClient {
                     if flushed.cached_tokens.is_some() {
                         cached_tokens = flushed.cached_tokens;
                     }
+                    if flushed.reasoning_tokens.is_some() {
+                        reasoning_tokens = flushed.reasoning_tokens;
+                    }
                 }
 
                 let tool_calls = parser.get_completed_tool_calls();
@@ -355,6 +363,7 @@ impl LLMClientTrait for LLMClient {
                         prompt_tokens,
                         completion_tokens,
                         cached_tokens,
+                        reasoning_tokens,
                     }))
                     .await;
                 return;
