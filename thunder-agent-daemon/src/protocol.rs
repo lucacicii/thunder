@@ -38,6 +38,11 @@ pub enum DaemonRequest {
         id: Option<String>,
         task_id: String,
     },
+    /// Reload TypeScript / JavaScript single-file plugins
+    ReloadPlugins {
+        id: Option<String>,
+        path: Option<String>,
+    },
 }
 
 /// Outgoing message to host (Electron) via stdout

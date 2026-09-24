@@ -27,6 +27,8 @@ pub mod prelude {
     pub use crate::plugins::skills::*;
     #[cfg(feature = "mcp")]
     pub use crate::plugins::mcp::*;
+    #[cfg(feature = "script-plugin")]
+    pub use crate::plugins::script_plugin::*;
     pub use crate::registry::{ActivePluginSet, PluginRegistry};
     pub use crate::selector::{PluginSelection, PluginSelector};
 }

@@ -20,6 +20,7 @@ pub struct DaemonService {
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     stdout: Arc<Mutex<tokio::io::Stdout>>,
     default_workspace: PathBuf,
+    script_plugin: Arc<ScriptPlugin>,
 }
 
 impl DaemonService {
@@ -31,6 +32,7 @@ impl DaemonService {
         let registry = ProviderRegistry::load_default().await.unwrap_or_default();
         let store_root = FsConversationStore::default_store_root();
         let store = FsConversationStore::new(store_root).await?;
+        let script_plugin = Arc::new(ScriptPlugin::new().with_workspace(default_workspace.clone()));
 
         Ok(Self {
             provider_registry: Arc::new(tokio::sync::RwLock::new(registry)),
@@ -38,6 +40,7 @@ impl DaemonService {
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             stdout: Arc::new(Mutex::new(tokio::io::stdout())),
             default_workspace,
+            script_plugin,
         })
     }
 
@@ -191,6 +194,20 @@ impl DaemonService {
                 })
                 .await;
             }
+
+            DaemonRequest::ReloadPlugins { id, path } => {
+                let p = path.map(PathBuf::from);
+                self.script_plugin.reload(p).await;
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "reloaded": true
+                    })),
+                    error: None,
+                })
+                .await;
+            }
         }
     }
 
@@ -299,6 +316,7 @@ impl DaemonService {
         let active_tasks = self.active_tasks.clone();
         let stdout = self.stdout.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
+        let script_plugin = (*self.script_plugin).clone();
 
         // Spawn async task runner
         tokio::spawn(async move {
@@ -316,6 +334,7 @@ impl DaemonService {
                 .with_plugin(ConversationPlugin::with_memory_store())
                 .with_plugin(SkillsPlugin::default())
                 .with_plugin(McpPlugin::default())
+                .with_plugin(script_plugin)
                 .with_provider_registry(registry);
 
             let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
@@ -333,6 +352,7 @@ impl DaemonService {
                     "conversation".to_string(),
                     "skills".to_string(),
                     "mcp".to_string(),
+                    "script_plugin".to_string(),
                 ]),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),

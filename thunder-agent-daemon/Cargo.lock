@@ -1144,6 +1144,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "thunder-agent-plugin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thunder-agent-loop",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "thunder-agent-providers"
 version = "0.1.0"
 dependencies = [
@@ -1169,6 +1184,7 @@ dependencies = [
  "serde_json",
  "thunder-agent-loop",
  "thunder-agent-mcp",
+ "thunder-agent-plugin",
  "thunder-agent-providers",
  "thunder-agent-skills",
  "thunder-conversation",
