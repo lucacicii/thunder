@@ -45,15 +45,73 @@ impl AuthFile {
 
 pub fn resolve_env_value(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if let Some(name) = trimmed.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
-        return std::env::var(name).ok();
-    }
-    if let Some(name) = trimmed.strip_prefix('$') {
+    let var_name = if let Some(name) = trimmed.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+        Some(name)
+    } else if let Some(name) = trimmed.strip_prefix('$') {
         if !name.is_empty() && !name.starts_with('!') {
-            return std::env::var(name).ok();
+            Some(name)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(name) = var_name {
+        if let Ok(val) = std::env::var(name) {
+            if !val.trim().is_empty() {
+                return Some(val);
+            }
+        }
+        // Fallback: check shell profile configuration files (macOS GUI apps don't inherit interactive shell rc)
+        if let Some(val) = read_var_from_shell_rc(name) {
+            return Some(val);
+        }
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn read_var_from_shell_rc(var_name: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let home_path = std::path::Path::new(&home);
+    let files = [
+        home_path.join(".zshrc"),
+        home_path.join(".zshenv"),
+        home_path.join(".zprofile"),
+        home_path.join(".bash_profile"),
+        home_path.join(".bashrc"),
+        home_path.join(".profile"),
+    ];
+
+    let pattern = format!("export {var_name}=");
+    let pattern2 = format!("{var_name}=");
+
+    for file in &files {
+        if let Ok(content) = std::fs::read_to_string(file) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                let rest = if let Some(r) = trimmed.strip_prefix(&pattern) {
+                    Some(r.trim())
+                } else if let Some(r) = trimmed.strip_prefix(&pattern2) {
+                    Some(r.trim())
+                } else {
+                    None
+                };
+
+                if let Some(val_str) = rest {
+                    let cleaned = val_str
+                        .trim_matches(|c: char| c == '"' || c == '\'')
+                        .trim();
+                    if !cleaned.is_empty() {
+                        return Some(cleaned.to_string());
+                    }
+                }
+            }
         }
     }
-    Some(trimmed.to_string())
+    None
 }
 
 pub fn env_api_key(provider: &str) -> Option<String> {
