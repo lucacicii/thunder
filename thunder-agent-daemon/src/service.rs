@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -18,9 +18,23 @@ pub struct DaemonService {
     provider_registry: Arc<tokio::sync::RwLock<ProviderRegistry>>,
     store: Arc<FsConversationStore>,
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Live pause gates per running task.
+    active_pauses: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::pause::PauseGate>>>>,
     stdout: Arc<Mutex<tokio::io::Stdout>>,
     default_workspace: PathBuf,
     script_plugin: Arc<ScriptPlugin>,
+    /// Pending `ask_user_question` calls, keyed by `task_id:question_id`.
+    ///
+    /// Dual key on purpose: the daemon multiplexes concurrent tasks, so a bare
+    /// question id could cross-wire two tasks' answers.
+    pending_questions: Arc<Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>>,
+}
+
+/// Resolution of a pending question.
+#[derive(Debug)]
+pub enum QuestionOutcome {
+    Answered(serde_json::Value),
+    Cancelled,
 }
 
 impl DaemonService {
@@ -38,9 +52,11 @@ impl DaemonService {
             provider_registry: Arc::new(tokio::sync::RwLock::new(registry)),
             store: Arc::new(store),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
+            active_pauses: Arc::new(Mutex::new(HashMap::new())),
             stdout: Arc::new(Mutex::new(tokio::io::stdout())),
             default_workspace,
             script_plugin,
+            pending_questions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -165,6 +181,7 @@ impl DaemonService {
                 use_mock,
                 workspace_dir,
                 thinking_level,
+                role,
             } => {
                 self.handle_run_task(
                     id,
@@ -175,7 +192,114 @@ impl DaemonService {
                     use_mock.unwrap_or(false),
                     workspace_dir,
                     thinking_level,
+                    role,
                 )
+                .await;
+            }
+
+            DaemonRequest::ListRoles { id, workspace_dir } => {
+                let ws = workspace_dir.map(PathBuf::from);
+                let registry = RoleRegistry::load_default(ws.as_deref()).await;
+                let roles: Vec<serde_json::Value> = registry
+                    .list_enabled()
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "id": r.id,
+                            "name": r.display_name(),
+                            "aliases": r.aliases,
+                            "description": r.description,
+                            "permission": r.permission.as_str(),
+                            "persona": r.persona.as_text(),
+                            "model": r.model,
+                            "thinking_level": r.thinking_level,
+                            "ask_user": r.ask_user,
+                            "exit_gate": r.exit_gate,
+                        })
+                    })
+                    .collect();
+
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({ "roles": roles })),
+                    error: None,
+                })
+                .await;
+            }
+
+            DaemonRequest::PauseTask { id, task_id } => {
+                let paused = match self.active_pauses.lock().await.get(&task_id) {
+                    Some(gate) => {
+                        gate.pause();
+                        true
+                    }
+                    None => false,
+                };
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({ "task_id": task_id, "paused": paused })),
+                    error: None,
+                })
+                .await;
+                if paused {
+                    let _ = self
+                        .send_response(DaemonResponse::TaskPaused {
+                            task_id,
+                            session_id: None,
+                            reason: "Paused by user; will hold at the next tool boundary".to_string(),
+                        })
+                        .await;
+                }
+            }
+
+            DaemonRequest::ResumeTask { id, task_id } => {
+                let resumed = match self.active_pauses.lock().await.get(&task_id) {
+                    Some(gate) => {
+                        gate.resume();
+                        true
+                    }
+                    None => false,
+                };
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({ "task_id": task_id, "resumed": resumed })),
+                    error: None,
+                })
+                .await;
+            }
+
+            DaemonRequest::AnswerQuestion { id, question_id, answers, cancelled } => {
+                // question_id is globally unique (`task_id:qN`), so no task lookup
+                // is needed here.
+                let outcome = if cancelled {
+                    QuestionOutcome::Cancelled
+                } else {
+                    QuestionOutcome::Answered(answers)
+                };
+                let delivered = self
+                    .pending_questions
+                    .lock()
+                    .await
+                    .remove(&question_id)
+                    .map(|tx| tx.send(outcome).is_ok())
+                    .unwrap_or(false);
+
+                if !delivered {
+                    warn!(question_id = %question_id, "Answer for unknown/expired question");
+                }
+
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "question_id": question_id,
+                        "delivered": delivered
+                    })),
+                    error: None,
+                })
                 .await;
             }
 
@@ -342,6 +466,7 @@ impl DaemonService {
         mut use_mock: bool,
         workspace_dir: Option<String>,
         thinking_level: Option<String>,
+        role_id: Option<String>,
     ) {
         let effective_session_id = session_id.unwrap_or_else(|| {
             format!("sess_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
@@ -403,6 +528,29 @@ impl DaemonService {
                     .map(|spec| spec.default_thinking_level.clone())
             });
 
+        // Resolve the requested role against global + workspace scopes.
+        // Permission is the load-bearing part: it decides which built-in tools
+        // (and plugin RPCs) exist at all for this run.
+        let role_registry = RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
+        let chosen_role = role_id
+            .as_deref()
+            .and_then(|r| role_registry.resolve(r))
+            .filter(|role| role.enabled);
+        if role_id.is_some() && chosen_role.is_none() {
+            warn!(role = ?role_id, "Requested role not found or disabled; running unconstrained");
+        }
+        let chosen_permission = chosen_role
+            .as_ref()
+            .map(|r| r.permission)
+            .unwrap_or_default();
+        if let Some(role) = &chosen_role {
+            info!(
+                role = %role.display_name(),
+                permission = %chosen_permission.describe(),
+                "Role resolved for task"
+            );
+        }
+
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
         conversation.workspace = Some(chosen_workspace.clone());
@@ -416,6 +564,14 @@ impl DaemonService {
             .lock()
             .await
             .insert(task_id.clone(), cancel_token.clone());
+
+        // Expose a pause gate for this task so the host can freeze it at the
+        // next tool boundary without killing the run.
+        let pause_gate = Arc::new(thunder_agent_loop::core::pause::PauseGate::new());
+        self.active_pauses
+            .lock()
+            .await
+            .insert(task_id.clone(), Arc::clone(&pause_gate));
 
         // Acknowledge task initiation
         self.send_response(DaemonResponse::Response {
@@ -435,9 +591,12 @@ impl DaemonService {
 
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
+        let active_pauses = self.active_pauses.clone();
         let stdout = self.stdout.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
         let script_plugin = (*self.script_plugin).clone();
+        let pending_questions = self.pending_questions.clone();
+        let pause_gate_for_run = Arc::clone(&pause_gate);
 
         // Spawn async task runner
         tokio::spawn(async move {
@@ -450,13 +609,26 @@ impl DaemonService {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
             }
 
-            let root = ThunderRoot::new(base_cfg)
+            let mut root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
                 .with_plugin(ConversationPlugin::new(store.clone()))
                 .with_plugin(SkillsPlugin::default())
                 .with_plugin(McpPlugin::default())
                 .with_plugin(script_plugin)
                 .with_provider_registry(registry.clone());
+
+            // The ask-user capability is opt-in per role (and forced_plugins
+            // gates activation, so this only participates when listed).
+            let ask_enabled = chosen_role.as_ref().map(|r| r.ask_user).unwrap_or(false);
+            if ask_enabled {
+                let tool = crate::ask_user::AskUserQuestionTool::new(
+                    task_id.clone(),
+                    effective_session_id.clone(),
+                    stdout.clone(),
+                    pending_questions.clone(),
+                );
+                root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
+            }
 
             let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
                 Some(Arc::new(DaemonMockClient))
@@ -469,17 +641,23 @@ impl DaemonService {
                 use_mock,
                 custom_client,
                 cancellation_token: Some(cancel_token),
-                forced_plugins: Some(vec![
-                    "conversation".to_string(),
-                    "skills".to_string(),
-                    "mcp".to_string(),
-                    "script_plugin".to_string(),
-                ]),
+                forced_plugins: Some({
+                    let mut ids = vec![
+                        "conversation".to_string(),
+                        "skills".to_string(),
+                        "mcp".to_string(),
+                        "script_plugin".to_string(),
+                    ];
+                    if chosen_role.as_ref().map(|r| r.ask_user).unwrap_or(false) {
+                        ids.push("ask_user".to_string());
+                    }
+                    ids
+                }),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
-                role: None,
-                permission: thunder_agent_loop::types::config::Permission::default(),
-                pause_gate: None,
+                role: chosen_role.clone(),
+                permission: chosen_permission,
+                pause_gate: Some(pause_gate_for_run),
             };
 
             let context_input = conversation.as_context_input();
@@ -619,6 +797,7 @@ impl DaemonService {
             }
 
             active_tasks.lock().await.remove(&task_id);
+            active_pauses.lock().await.remove(&task_id);
         });
     }
 }

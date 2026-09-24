@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{error, info};
 
+mod ask_user;
 mod mock;
 mod protocol;
 mod service;
