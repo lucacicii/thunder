@@ -104,16 +104,22 @@ impl LLMClientTrait for OpenAiResponsesClient {
                 }
                 let Ok(bytes) = chunk else { continue };
                 buf.push_str(&String::from_utf8_lossy(&bytes));
+                if buf.contains("\r\n") {
+                    buf = buf.replace("\r\n", "\n");
+                }
                 while let Some(idx) = buf.find("\n\n") {
                     let frame = buf[..idx].to_string();
                     buf = buf[idx + 2..].to_string();
                     for line in frame.lines() {
-                        let Some(data) = line.strip_prefix("data: ") else { continue };
+                        let trimmed = line.trim();
+                        let Some(data) = trimmed.strip_prefix("data:").or_else(|| trimmed.strip_prefix("data :")) else { continue };
+                        let data = data.trim();
                         if data == "[DONE]" {
                             continue;
                         }
                         let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
-                        match value.get("type").and_then(|v| v.as_str()) {
+                        let ev_type = value.get("type").and_then(|v| v.as_str());
+                        match ev_type {
                             Some("response.output_text.delta") => {
                                 if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
                                     content.push_str(delta);
@@ -156,14 +162,60 @@ impl LLMClientTrait for OpenAiResponsesClient {
                             _ => {}
                         }
 
-                        // Parse usage information from any event or chunk
+                        // Parse usage information from any event or chunk.
+                        // Guard: Filter out dummy placeholder zeros from response.created / in_progress.
                         let usage_node = value.get("usage").or_else(|| value.pointer("/response/usage"));
                         if let Some(u) = usage_node {
-                            if let Some(pt) = u.get("input_tokens").or_else(|| u.get("prompt_tokens")).and_then(|v| v.as_u64()) {
-                                prompt_tokens = Some(pt as usize);
+                            let pt_opt = u.get("input_tokens").or_else(|| u.get("prompt_tokens")).and_then(|v| v.as_u64());
+                            let ct_opt = u.get("output_tokens").or_else(|| u.get("completion_tokens")).and_then(|v| v.as_u64());
+                            let is_completed = ev_type == Some("response.completed");
+                            let has_real = pt_opt.map(|p| p > 0).unwrap_or(false) || ct_opt.map(|c| c > 0).unwrap_or(false);
+
+                            if has_real || is_completed {
+                                if let Some(pt) = pt_opt {
+                                    prompt_tokens = Some(pt as usize);
+                                }
+                                if let Some(ct) = ct_opt {
+                                    completion_tokens = Some(ct as usize);
+                                }
+                                let cached = u.pointer("/input_token_details/cached_tokens")
+                                    .or_else(|| u.pointer("/input_tokens_details/cached_tokens"))
+                                    .or_else(|| u.pointer("/prompt_tokens_details/cached_tokens"))
+                                    .or_else(|| u.get("prompt_cache_hit_tokens"))
+                                    .or_else(|| u.get("cache_read_input_tokens"))
+                                    .or_else(|| u.get("cached_tokens"))
+                                    .or_else(|| u.get("cache_tokens"))
+                                    .and_then(|v| v.as_u64());
+                                if let Some(v) = cached {
+                                    cached_tokens = Some(v as usize);
+                                }
                             }
-                            if let Some(ct) = u.get("output_tokens").or_else(|| u.get("completion_tokens")).and_then(|v| v.as_u64()) {
-                                completion_tokens = Some(ct as usize);
+                        }
+                    }
+                }
+            }
+
+            // Flush remaining buffer in case trailing chunk omitted double newlines
+            if !buf.trim().is_empty() {
+                for line in buf.lines() {
+                    let trimmed = line.trim();
+                    let Some(data) = trimmed.strip_prefix("data:").or_else(|| trimmed.strip_prefix("data :")) else { continue };
+                    let data = data.trim();
+                    if data == "[DONE]" { continue; }
+                    if let Ok(value) = serde_json::from_str::<Value>(data) {
+                        let usage_node = value.get("usage").or_else(|| value.pointer("/response/usage"));
+                        if let Some(u) = usage_node {
+                            let pt_opt = u.get("input_tokens").or_else(|| u.get("prompt_tokens")).and_then(|v| v.as_u64());
+                            let ct_opt = u.get("output_tokens").or_else(|| u.get("completion_tokens")).and_then(|v| v.as_u64());
+                            if let Some(pt) = pt_opt {
+                                if pt > 0 || prompt_tokens.is_none() {
+                                    prompt_tokens = Some(pt as usize);
+                                }
+                            }
+                            if let Some(ct) = ct_opt {
+                                if ct > 0 || completion_tokens.is_none() {
+                                    completion_tokens = Some(ct as usize);
+                                }
                             }
                             let cached = u.pointer("/input_token_details/cached_tokens")
                                 .or_else(|| u.pointer("/input_tokens_details/cached_tokens"))

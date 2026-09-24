@@ -647,23 +647,29 @@ impl AgentLoop {
                 let has_tool_calls = !tool_calls.is_empty();
                 let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
 
-                // Fallback estimation if the upstream provider omitted usage counts
-                let effective_completion_tokens = completion_tokens.or_else(|| {
-                    let text = answer_content.as_deref().unwrap_or(&assistant_content);
-                    if !text.is_empty() {
-                        Some(crate::core::token_estimator::estimate_token_count(text))
-                    } else {
-                        None
+                // Fallback estimation if the upstream provider omitted usage counts or sent dummy zeros
+                let effective_completion_tokens = match completion_tokens {
+                    Some(ct) if ct > 0 => Some(ct),
+                    _ => {
+                        let text = answer_content.as_deref().unwrap_or(&assistant_content);
+                        if !text.is_empty() {
+                            Some(crate::core::token_estimator::estimate_token_count(text))
+                        } else {
+                            completion_tokens
+                        }
                     }
-                });
-                let effective_prompt_tokens = prompt_tokens.or_else(|| {
-                    let count = context.estimated_tokens();
-                    if count > 0 {
-                        Some(count)
-                    } else {
-                        None
+                };
+                let effective_prompt_tokens = match prompt_tokens {
+                    Some(pt) if pt > 0 => Some(pt),
+                    _ => {
+                        let count = context.estimated_tokens();
+                        if count > 0 {
+                            Some(count)
+                        } else {
+                            prompt_tokens
+                        }
                     }
-                });
+                };
 
                 let tps = if turn_duration_ms > 0 && effective_completion_tokens.is_some() {
                     effective_completion_tokens.map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
