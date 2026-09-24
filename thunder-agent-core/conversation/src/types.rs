@@ -76,6 +76,10 @@ pub struct StageRecord {
 pub struct Conversation {
     pub id: String,
     pub title: Option<String>,
+    /// Origin of the current title: "auto" (LLM generated) or "manual" (user set).
+    /// Manual titles are never overwritten by auto-naming unless forced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +109,7 @@ impl Conversation {
         Self {
             id: id.into(),
             title: None,
+            title_source: None,
             parent_id: None,
             system_prompt: None,
             model: None,
@@ -124,6 +129,22 @@ impl Conversation {
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
+    }
+
+    /// True when the current title was explicitly set by the user
+    pub fn is_title_manual(&self) -> bool {
+        self.title_source.as_deref() == Some("manual")
+    }
+
+    /// True when the title is missing or still the initial truncated-prompt placeholder
+    pub fn is_title_placeholder(&self) -> bool {
+        match self.title.as_deref() {
+            None => true,
+            Some(t) => {
+                let t = t.trim();
+                t.is_empty() || (t.len() >= 3 && t.ends_with("..."))
+            }
+        }
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {

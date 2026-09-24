@@ -333,8 +333,22 @@ impl ProviderRegistry {
             }
         }
 
-        // Fallback: look for fast/cheap available model (flash, mini, haiku, lite)
+        // Fallback: look for fast/cheap available model (flash, mini, haiku, lite).
+        // Prefer non-reasoning models: reasoning models burn the small token budget
+        // on thinking and often return empty content for background tasks like naming.
         let fast_candidates = ["flash", "mini", "haiku", "lite", "turbo", "small"];
+        for candidate in fast_candidates {
+            if let Some(spec) = self.models.iter().find(|m| {
+                m.available
+                    && !m.reasoning
+                    && (m.id.to_lowercase().contains(candidate)
+                        || m.name.to_lowercase().contains(candidate))
+            }) {
+                return Some(spec);
+            }
+        }
+
+        // Second pass: allow reasoning models as a last resort for fast candidates
         for candidate in fast_candidates {
             if let Some(spec) = self.models.iter().find(|m| {
                 m.available
@@ -343,10 +357,14 @@ impl ProviderRegistry {
             }) {
                 return Some(spec);
             }
-        }
+ }
 
-        // Fallback: first available model
-        self.models.iter().find(|m| m.available).or_else(|| self.models.first())
+        // Fallback: first available non-reasoning model, then any available model
+        self.models
+            .iter()
+            .find(|m| m.available && !m.reasoning)
+            .or_else(|| self.models.iter().find(|m| m.available))
+            .or_else(|| self.models.first())
     }
 
     pub fn resolve_ref(&self, model_ref: &crate::api::ModelRef) -> Option<&ModelSpec> {
