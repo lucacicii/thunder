@@ -786,8 +786,8 @@ impl DaemonService {
                                 let msg = DaemonResponse::TaskCompleted {
                                     task_id: task_id.clone(),
                                     session_id: effective_session_id.clone(),
-                                    final_content,
-                                    finish_reason,
+                                    final_content: final_content.clone(),
+                                    finish_reason: finish_reason.clone(),
                                     active_plugins: selection.active_plugin_ids,
                                 };
                                 write_ndjson(&stdout, &msg).await;
