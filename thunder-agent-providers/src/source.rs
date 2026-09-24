@@ -69,6 +69,9 @@ pub async fn load_merged(
     let mut auth = AuthFile::default();
     for source in sources {
         if let Some(file) = source.load_models().await {
+            if models.utility_model.is_none() && file.utility_model.is_some() {
+                models.utility_model = file.utility_model;
+            }
             for (id, provider) in file.providers {
                 models.providers.entry(id).or_insert(provider);
             }
