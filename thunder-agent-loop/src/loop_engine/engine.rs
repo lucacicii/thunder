@@ -44,6 +44,8 @@ pub struct AgentLoop {
     scratchpad: ScratchpadManager,
     running: Arc<AtomicBool>,
     status: Arc<AtomicU8>,
+    /// Cooperative pause gate; shared with any handle that wants to pause this unit.
+    pause_gate: Arc<crate::core::pause::PauseGate>,
 }
 
 impl AgentLoop {
@@ -65,6 +67,7 @@ impl AgentLoop {
             ws,
             Some(scratchpad.clone()),
             &config.middleware,
+            config.permission,
         );
 
         Self {
@@ -77,6 +80,7 @@ impl AgentLoop {
             scratchpad,
             running: Arc::new(AtomicBool::new(false)),
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
+            pause_gate: crate::core::pause::PauseGate::new_shared(),
         }
     }
 
@@ -94,6 +98,7 @@ impl AgentLoop {
             ws,
             Some(self.scratchpad.clone()),
             &self.config.middleware,
+            self.config.permission,
         );
         self
     }
@@ -114,6 +119,13 @@ impl AgentLoop {
         self.running.load(Ordering::Acquire)
     }
 
+    /// Adopt an externally owned pause gate, so a host can hold and release this
+    /// unit without reaching into its internals.
+    pub fn with_pause_gate(mut self, gate: Arc<crate::core::pause::PauseGate>) -> Self {
+        self.pause_gate = gate;
+        self
+    }
+
     pub fn with_custom_client(mut self, client: Arc<dyn LLMClientTrait>) -> Self {
         self.llm_client = client;
         self
@@ -129,6 +141,7 @@ impl AgentLoop {
             ws,
             Some(self.scratchpad.clone()),
             &self.config.middleware,
+            self.config.permission,
         );
         self
     }
@@ -144,6 +157,7 @@ impl AgentLoop {
             ws,
             Some(self.scratchpad.clone()),
             &self.config.middleware,
+            self.config.permission,
         );
         self
     }
@@ -188,6 +202,7 @@ impl AgentLoop {
         let (event_tx, event_rx) = mpsc::channel::<ObservedEvent>(512);
         let (result_tx, result_rx) = oneshot::channel();
 
+        let pause_gate = Arc::clone(&self.pause_gate);
         self.spawn_loop(input.into(), event_tx, result_tx, token.clone());
 
         Ok(AgentHandle::new(
@@ -195,6 +210,7 @@ impl AgentLoop {
             self.status.clone(),
             self.running.clone(),
             token,
+            pause_gate,
             result_rx,
             event_rx,
         ))
@@ -259,6 +275,7 @@ impl AgentLoop {
         let agent_id = self.id.clone();
         let status = self.status.clone();
         let running = self.running.clone();
+        let pause_gate = Arc::clone(&self.pause_gate);
 
         tokio::spawn(async move {
             let _busy = RunningGuard::new(running);
@@ -733,6 +750,22 @@ impl AgentLoop {
                             arguments,
                         })
                         .await;
+                }
+
+                // Cooperative pause checkpoint. Held *before* dispatching tools so
+                // an in-flight tool is never interrupted mid-write.
+                if pause_gate.is_paused() {
+                    info!(agent_id = %agent_id, turn, "Paused at tool boundary; awaiting resume");
+                    tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {}
+                        _ = pause_gate.wait_if_paused() => {}
+                    }
+                    if cancel_token.is_cancelled() {
+                        loop_finish_reason = FinishReason::Cancelled;
+                        break;
+                    }
+                    info!(agent_id = %agent_id, turn, "Resumed from pause");
                 }
 
                 let ws = config.workspace_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());

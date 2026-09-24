@@ -39,8 +39,10 @@ impl ToolExecutor {
         workspace_root: std::path::PathBuf,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
+        permission: crate::types::config::Permission,
     ) -> Self {
-        let pipeline = ToolPipeline::configured(workspace_root, registry.clone(), scratchpad, cfg);
+        let pipeline =
+            ToolPipeline::configured(workspace_root, registry.clone(), scratchpad, cfg, permission);
         Self { registry, pipeline }
     }
 

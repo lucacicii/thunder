@@ -224,14 +224,50 @@ let (r1, r2) = tokio::try_join!(h1.join(), h2.join())?;
 
 ```
 src/
-├── core/                  # 上下文缓冲 (Context Buffer)、状态追踪、Token 估算
+├── core/                  # 上下文缓冲 (Context Buffer)、状态追踪、Token 估算、暂停闸门
 ├── loop_engine/           # 核心自主循环引擎、事件分发器
 ├── pruning/               # 自适应上下文裁剪（滑动窗口、工具输出压缩）
 ├── stream/                # 零拷贝 SSE 客户端与流解析器
 ├── tools/                 # 工具注册表、并行执行器与内置工具
-│   └── builtin/           # bash, read_file, write_file
+│   ├── builtin/           # bash, read_file, write_file
+│   └── middleware/        # 洋葱中间件（Security / Resource / Transaction / Output / Permission）
 └── types/                 # 消息、事件、工具与配置类型定义
 ```
+
+---
+
+## 🔐 权限档与协作式暂停
+
+两个**产品中立**的控制原语。A 只负责“能不能做”和“停不停”，不关心是谁要求的。
+
+### `Permission`（能力档）
+
+```rust
+pub enum Permission { Read, Write, Bash }   // 递进：Read ⊂ Write ⊂ Bash
+```
+
+挂在 `AgentConfig` 上（默认 `Bash`，保持历史行为）。它由**宿主**决定注册哪些内置工具，
+再由 `PermissionGuardMiddleware` 兜底——即使某条路径漏注册，执行前也会被拒并附
+结构化 telemetry，让模型知道“文件并没有被写入”。
+
+```rust
+let cfg = AgentConfig::new("gpt-4o").with_permission(Permission::Read);
+```
+
+> 只读档下 `write_file` / `bash` 不会注册；模型连工具名都看不到。
+
+### `PauseGate`（协作式暂停）
+
+不可逆的是取消（`CancellationToken`）；可恢复的是暂停，所以是**另一个** token。
+
+```rust
+let handle = agent.start("...", None)?;
+handle.pause();          // 在下一个工具边界生效
+handle.resume();         // 继续
+```
+
+检查点在**工具派发前**，因此进行中的工具会跑完，不会被半途打断（避免写坏文件）。
+被暂停的循环阻塞在 `wait_if_paused()`，不占用 CPU。
 
 ---
 
