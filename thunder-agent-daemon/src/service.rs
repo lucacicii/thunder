@@ -214,6 +214,99 @@ impl DaemonService {
                 .await;
             }
 
+            DaemonRequest::GenerateTitle { id, session_id, force } => {
+                // Reload the registry so the latest utilityModel config is honored
+                if let Ok(fresh) = ProviderRegistry::load_default().await {
+                    *self.provider_registry.write().await = fresh;
+                }
+                let registry = self.provider_registry.read().await.clone();
+                match generate_conversation_title(&self.store, &registry, &session_id, force, None, None).await {
+                    Ok(title) => {
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: true,
+                            data: Some(serde_json::json!({ "title": title, "source": "auto" })),
+                            error: None,
+                        })
+                        .await;
+                    }
+                    Err(e) => {
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: false,
+                            data: Some(serde_json::json!({ "error_kind": e.kind })),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                    }
+                }
+            }
+
+            DaemonRequest::SetConversationTitle { id, session_id, title } => {
+                let trimmed = title.trim().to_string();
+                if trimmed.is_empty() {
+                    self.send_response(DaemonResponse::Response {
+                        id,
+                        success: false,
+                        data: Some(serde_json::json!({ "error_kind": "invalid_title" })),
+                        error: Some("[invalid_title] title must not be empty".to_string()),
+                    })
+                    .await;
+                } else {
+                    let final_title = if trimmed.chars().count() > 40 {
+                        trimmed.chars().take(40).collect::<String>()
+                    } else {
+                        trimmed
+                    };
+                    match self.store.load(&session_id).await {
+                        Ok(Some(mut conv)) => {
+                            conv.title = Some(final_title);
+                            conv.title_source = Some("manual".to_string());
+                            conv.updated_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                            match self.store.save(&conv).await {
+                                Ok(_) => {
+                                    info!(session_id = %session_id, "Conversation title set manually");
+                                    self.send_response(DaemonResponse::Response {
+                                        id,
+                                        success: true,
+                                        data: Some(serde_json::json!({ "title": conv.title, "source": "manual" })),
+                                        error: None,
+                                    })
+                                    .await;
+                                }
+                                Err(e) => {
+                                    self.send_response(DaemonResponse::Response {
+                                        id,
+                                        success: false,
+                                        data: Some(serde_json::json!({ "error_kind": "store_error" })),
+                                        error: Some(format!("[store_error] failed to persist title: {e}")),
+                                    })
+                                    .await;
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            self.send_response(DaemonResponse::Response {
+                                id,
+                                success: false,
+                                data: Some(serde_json::json!({ "error_kind": "not_found" })),
+                                error: Some(format!("[not_found] conversation `{session_id}` not found")),
+                            })
+                            .await;
+                        }
+                        Err(e) => {
+                            self.send_response(DaemonResponse::Response {
+                                id,
+                                success: false,
+                                data: Some(serde_json::json!({ "error_kind": "store_error" })),
+                                error: Some(format!("[store_error] failed to load conversation: {e}")),
+                            })
+                            .await;
+                        }
+                    }
+                }
+            }
+
             DaemonRequest::GetTrace { id, session_id, task_id } => {
                 let trace = load_task_trace(self.store.root(), &session_id, task_id.as_deref()).await;
                 let found = trace.is_some();
@@ -429,23 +522,29 @@ impl DaemonService {
                             conversation.stats.duration_ms += res.run_result.stats.total_duration_ms;
                             let _ = store.save(&conversation).await;
 
-                            // Auto-generate concise conversation title using utility model on first turn
+                            // Auto-generate concise conversation title on the first turn,
+                            // or later whenever the title is still a placeholder (self-heal,
+                            // e.g. for conversations created before this feature existed).
                             let is_first_turn = conversation.stats.turn_count <= res.run_result.stats.total_turns;
-                            if is_first_turn && !use_mock {
+                            if (is_first_turn || conversation.is_title_placeholder()) && !use_mock {
                                 let store_clone = store.clone();
                                 let reg_clone = registry.clone();
                                 let sid_clone = effective_session_id.clone();
                                 let prompt_clone = prompt.clone();
                                 let final_content_clone = final_content.clone();
                                 tokio::spawn(async move {
-                                    auto_generate_conversation_title(
-                                        store_clone,
-                                        reg_clone,
-                                        sid_clone,
-                                        prompt_clone,
+                                    if let Err(e) = generate_conversation_title(
+                                        &store_clone,
+                                        &reg_clone,
+                                        &sid_clone,
+                                        false,
+                                        Some(prompt_clone),
                                         final_content_clone,
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        warn!(session_id = %sid_clone, error = %e, "Auto title generation failed");
+                                    }
                                 });
                             }
 
@@ -615,39 +714,137 @@ async fn list_session_traces(
     results
 }
 
-async fn auto_generate_conversation_title(
-    store: Arc<FsConversationStore>,
-    registry: ProviderRegistry,
-    session_id: String,
-    prompt: String,
-    assistant_text: Option<String>,
-) {
+/// Structured error for conversation title generation, surfaced to the host for diagnosis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TitleGenError {
+    /// Machine-readable kind: no_utility_model | client_error | api_error |
+    /// empty_title | store_error | manual_locked | not_found
+    pub kind: String,
+    /// Human-readable detail (include model id / source error where available)
+    pub detail: String,
+}
+
+impl TitleGenError {
+    fn new(kind: &str, detail: impl Into<String>) -> Self {
+        Self { kind: kind.to_string(), detail: detail.into() }
+    }
+}
+
+impl std::fmt::Display for TitleGenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.kind, self.detail)
+    }
+}
+
+/// Strip quotes/prefixes from a raw model-generated title.
+fn clean_generated_title(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`')
+        .trim_start_matches("Title:")
+        .trim_start_matches("标题:")
+        .trim_start_matches("标题：")
+        .trim()
+        .to_string()
+}
+
+/// Truncate to a display-safe length (char-boundary safe).
+fn clamp_title(cleaned: String) -> String {
+    if cleaned.chars().count() > 40 {
+        cleaned.chars().take(40).collect()
+    } else {
+        cleaned
+    }
+}
+
+fn first_message_text(conv: &Conversation, want_user: bool) -> Option<String> {
+    for msg in &conv.messages {
+        match (msg, want_user) {
+            (ChatMessage::User { content, .. }, true) => return Some(content.clone()),
+            (ChatMessage::Assistant { content, .. }, false) => {
+                return content.clone().filter(|c| !c.trim().is_empty());
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Generate (or regenerate) and persist a conversation title.
+/// Synchronous: awaits the utility-model call so the caller receives the outcome.
+/// Errors are returned structured and also logged at warn level.
+pub async fn generate_conversation_title(
+    store: &FsConversationStore,
+    registry: &ProviderRegistry,
+    session_id: &str,
+    force: bool,
+    prompt_override: Option<String>,
+    assistant_override: Option<String>,
+) -> Result<String, TitleGenError> {
+    let result = generate_conversation_title_inner(
+        store,
+        registry,
+        session_id,
+        force,
+        prompt_override,
+        assistant_override,
+    )
+    .await;
+    match &result {
+        Ok(title) => info!(session_id = %session_id, title = %title, "Conversation title generated"),
+        Err(e) => warn!(session_id = %session_id, error = %e, "Conversation title generation failed"),
+    }
+    result
+}
+
+async fn generate_conversation_title_inner(
+    store: &FsConversationStore,
+    registry: &ProviderRegistry,
+    session_id: &str,
+    force: bool,
+    prompt_override: Option<String>,
+    assistant_override: Option<String>,
+) -> Result<String, TitleGenError> {
+    // Load the freshest conversation state from the store
+    let conv = match store.load(session_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return Err(TitleGenError::new("not_found", format!("conversation `{session_id}` not found"))),
+        Err(e) => return Err(TitleGenError::new("store_error", format!("failed to load conversation: {e}"))),
+    };
+
+    // Never overwrite a manual title unless explicitly forced
+    if conv.is_title_manual() && !force {
+        return Err(TitleGenError::new(
+            "manual_locked",
+            "title was set manually; pass force=true to override",
+        ));
+    }
+
+    let prompt = prompt_override.or_else(|| first_message_text(&conv, true))
+        .ok_or_else(|| TitleGenError::new("empty_title", "conversation has no user message to summarize"))?;
+    let assistant_text = assistant_override.or_else(|| first_message_text(&conv, false));
+
+    // Resolve the utility model used for background naming
     let utility_spec = match registry.resolve_utility_model() {
         Some(s) if s.available => s.clone(),
-        _ => return,
+        Some(s) => {
+            return Err(TitleGenError::new(
+                "no_utility_model",
+                format!("utility model `{}` is not available (missing API key or base URL)", s.selection_id()),
+            ));
+        }
+        None => {
+            return Err(TitleGenError::new(
+                "no_utility_model",
+                "no utility model configured or heuristically resolvable; set `utilityModel` in models.json",
+            ));
+        }
     };
 
-    let client = match thunder_agent_providers::client_for(&utility_spec, 10_000) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    let client = thunder_agent_providers::client_for(&utility_spec, 60_000)
+        .map_err(|e| TitleGenError::new("client_error", format!("failed to create client for `{}`: {e}", utility_spec.selection_id())))?;
 
-    let user_excerpt = if prompt.chars().count() > 300 {
-        prompt.chars().take(300).collect::<String>()
-    } else {
-        prompt
-    };
-
-    let assistant_excerpt = assistant_text
-        .as_deref()
-        .map(|t| {
-            if t.chars().count() > 300 {
-                t.chars().take(300).collect::<String>()
-            } else {
-                t.to_string()
-            }
-        })
-        .unwrap_or_default();
+    let user_excerpt = truncate_chars(&prompt, 300);
+    let assistant_excerpt = assistant_text.as_deref().map(|t| truncate_chars(t, 300)).unwrap_or_default();
 
     let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (between 4 and 10 Chinese characters or 2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
         + &user_excerpt
@@ -655,20 +852,21 @@ async fn auto_generate_conversation_title(
         + &assistant_excerpt;
 
     let options = thunder_agent_loop::stream::client::ChatRequestOptions {
-        messages: vec![thunder_agent_loop::types::message::ChatMessage::user(naming_instruction)],
+        messages: vec![ChatMessage::user(naming_instruction)],
         tools: vec![],
         model: Some(utility_spec.id.clone()),
         temperature: Some(0.3),
         top_p: Some(0.9),
-        max_tokens: Some(30),
+        // Generous budget: reasoning models may spend tokens thinking before the answer
+        max_tokens: Some(100),
         thinking_level: Some("off".to_string()),
     };
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let mut rx = match client.stream_chat(options, cancel_token).await {
-        Ok(r) => r,
-        Err(_) => return,
-    };
+    let mut rx = client
+        .stream_chat(options, cancel_token)
+        .await
+        .map_err(|e| TitleGenError::new("api_error", format!("utility model `{}` request failed: {e}", utility_spec.selection_id())))?;
 
     let mut generated_title = String::new();
     while let Some(chunk) = rx.recv().await {
@@ -678,30 +876,103 @@ async fn auto_generate_conversation_title(
             }
             Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Completed { content, .. }) => {
                 if let Some(c) = content {
-                    if generated_title.is_empty() {
+                    if generated_title.trim().is_empty() {
                         generated_title = c;
                     }
                 }
             }
-            _ => {}
+            Ok(_) => {}
+            Err(e) => {
+                return Err(TitleGenError::new(
+                    "api_error",
+                    format!("utility model `{}` stream error: {e}", utility_spec.selection_id()),
+                ));
+            }
         }
     }
 
-    let cleaned = generated_title
-        .trim()
-        .trim_matches(|c: char| c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`')
-        .trim_start_matches("Title:")
-        .trim_start_matches("标题:")
-        .trim_start_matches("标题：")
-        .trim()
-        .to_string();
+    let cleaned = clean_generated_title(&generated_title);
+    if cleaned.is_empty() {
+        return Err(TitleGenError::new(
+            "empty_title",
+            format!("utility model `{}` returned no usable content (raw output empty after cleaning)", utility_spec.selection_id()),
+        ));
+    }
+    let final_title = clamp_title(cleaned);
 
-    if !cleaned.is_empty() && cleaned.chars().count() <= 40 {
-        if let Ok(Some(mut conv)) = store.load(&session_id).await {
-            info!("Auto-generated conversation title for {}: {}", session_id, cleaned);
-            conv.title = Some(cleaned);
-            let _ = store.save(&conv).await;
-        }
+    // Re-load to avoid clobbering concurrent writes, then persist
+    let mut conv = match store.load(session_id).await {
+        Ok(Some(c)) => c,
+        _ => return Err(TitleGenError::new("store_error", format!("conversation `{session_id}` disappeared during title generation"))),
+    };
+    conv.title = Some(final_title.clone());
+    conv.title_source = Some("auto".to_string());
+    conv.updated_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    store
+        .save(&conv)
+        .await
+        .map_err(|e| TitleGenError::new("store_error", format!("failed to persist title: {e}")))?;
+
+    Ok(final_title)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        s.chars().take(max).collect()
+    } else {
+        s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn cleans_quotes_and_prefixes() {
+        assert_eq!(clean_generated_title("  \"多平台总结\" "), "多平台总结");
+        assert_eq!(clean_generated_title("《标题》"), "标题");
+        assert_eq!(clean_generated_title("Title: News summary"), "News summary");
+        assert_eq!(clean_generated_title("标题：新闻总结"), "新闻总结");
+        assert_eq!(clean_generated_title("`git help`"), "git help");
+    }
+
+    #[test]
+    fn clamps_long_titles_by_chars_not_bytes() {
+        assert_eq!(clamp_title("短标题".to_string()), "短标题");
+        let long = "a".repeat(50);
+        assert_eq!(clamp_title(long).chars().count(), 40);
+        // 40 CJK chars are 120 bytes — must not panic on char boundaries
+        let cjk = "标".repeat(50);
+        assert_eq!(clamp_title(cjk).chars().count(), 40);
+    }
+
+    #[test]
+    fn detects_placeholder_titles() {
+        let mut conv = Conversation::new("s1");
+        assert!(conv.is_title_placeholder());
+        conv = conv.with_title("[Active Workspace: /Users/luca...");
+        assert!(conv.is_title_placeholder());
+        conv.title = Some("真正的标题".to_string());
+        assert!(!conv.is_title_placeholder());
+    }
+
+    #[test]
+    fn manual_title_source_is_respected() {
+        let mut conv = Conversation::new("s1");
+        assert!(!conv.is_title_manual());
+        conv.title_source = Some("manual".to_string());
+        assert!(conv.is_title_manual());
+    }
+
+    #[test]
+    fn extracts_first_user_and_assistant_messages() {
+        let mut conv = Conversation::new("s1");
+        conv.messages.push(ChatMessage::system("sys"));
+        conv.messages.push(ChatMessage::user("帮我总结新闻"));
+        conv.messages.push(ChatMessage::assistant_text("好的,总结如下"));
+        assert_eq!(first_message_text(&conv, true).as_deref(), Some("帮我总结新闻"));
+        assert_eq!(first_message_text(&conv, false).as_deref(), Some("好的,总结如下"));
     }
 }
 

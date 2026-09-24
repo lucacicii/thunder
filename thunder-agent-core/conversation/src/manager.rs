@@ -157,6 +157,7 @@ impl<S: ConversationStore> ConversationManager<S> {
         let mut branched = Conversation {
             id: new_id_str,
             title: source.title.as_ref().map(|t| format!("{t} (Fork)")),
+            title_source: Some("auto".to_string()),
             parent_id: Some(source.id.clone()),
             system_prompt: source.system_prompt.clone(),
             model: source.model.clone(),

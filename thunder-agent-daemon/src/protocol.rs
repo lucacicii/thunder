@@ -54,6 +54,20 @@ pub enum DaemonRequest {
         id: Option<String>,
         session_id: String,
     },
+    /// AI-generate a conversation title (synchronous, returns title or error detail)
+    GenerateTitle {
+        id: Option<String>,
+        session_id: String,
+        /// Force regeneration even if the title was manually set
+        #[serde(default)]
+        force: bool,
+    },
+    /// Manually set a conversation title
+    SetConversationTitle {
+        id: Option<String>,
+        session_id: String,
+        title: String,
+    },
 }
 
 /// Outgoing message to host (Electron) via stdout
