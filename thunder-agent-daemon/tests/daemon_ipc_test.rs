@@ -181,3 +181,106 @@ async fn test_daemon_list_models_and_cancel() -> Result<(), Box<dyn std::error::
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    let repo_a = std::env::temp_dir().join("thunder_ipc_repo_a");
+    let repo_b = std::env::temp_dir().join("thunder_ipc_repo_b");
+    std::fs::create_dir_all(&repo_a)?;
+    std::fs::create_dir_all(&repo_b)?;
+
+    async fn send(
+        stdin: &mut tokio::process::ChildStdin,
+        payload: String,
+    ) -> std::io::Result<()> {
+        stdin.write_all(format!("{}\n", payload).as_bytes()).await?;
+        stdin.flush().await
+    }
+
+    // First run binds workspace + one extra root.
+    let run1 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-merge-1",
+        "task_id": "task-merge-1",
+        "prompt": "hello",
+        "use_mock": true,
+        "session_id": "sess-merge-test",
+        "workspace_dir": std::env::temp_dir().join("thunder_ipc_ws").to_string_lossy(),
+        "extra_workspace_dirs": [repo_a.to_string_lossy()]
+    });
+    send(&mut stdin, run1.to_string()).await?;
+
+    let mut shared_roots: Vec<String> = Vec::new();
+    // Drain until the ack for req-merge-1 shows shared_roots.
+    while let Ok(Some(line)) = reader.next_line().await {
+        let evt: serde_json::Value = serde_json::from_str(&line)?;
+        if evt["type"] == "response" && evt["id"] == "req-merge-1" {
+            assert_eq!(evt["success"], true);
+            let roots = evt["data"]["shared_roots"].as_array().expect("shared_roots echoed");
+            shared_roots = roots.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            break;
+        }
+        // Ignore task events; the mock run may complete quickly.
+    }
+    assert_eq!(shared_roots.len(), 1, "first run binds exactly one extra root: {shared_roots:?}");
+    assert!(shared_roots[0].ends_with("thunder_ipc_repo_a"));
+
+    // Drain any events from the mock run finishing.
+    while let Ok(Some(line)) = reader.next_line().await {
+        let evt: serde_json::Value = serde_json::from_str(&line)?;
+        if evt["type"] == "task_completed" {
+            break;
+        }
+    }
+
+    // Second run on the same session: workspace stays bound (merge policy),
+    // a new repo joins, re-sending repo_a must not duplicate.
+    let run2 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-merge-2",
+        "task_id": "task-merge-2",
+        "prompt": "hello again",
+        "use_mock": true,
+        "session_id": "sess-merge-test",
+        "workspace_dir": "/this/ignored/new/workspace",
+        "extra_workspace_dirs": [repo_a.to_string_lossy(), repo_b.to_string_lossy()]
+    });
+    send(&mut stdin, run2.to_string()).await?;
+
+    let mut merged: Vec<String> = Vec::new();
+    let mut bound_workspace = String::new();
+    while let Ok(Some(line)) = reader.next_line().await {
+        let evt: serde_json::Value = serde_json::from_str(&line)?;
+        if evt["type"] == "response" && evt["id"] == "req-merge-2" {
+            assert_eq!(evt["success"], true);
+            let roots = evt["data"]["shared_roots"].as_array().expect("shared_roots echoed");
+            merged = roots.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            bound_workspace = evt["data"]["workspace"].as_str().unwrap().to_string();
+            break;
+        }
+    }
+    assert_eq!(merged.len(), 2, "deduped union expected: {merged:?}");
+    assert!(merged.iter().any(|r| r.ends_with("thunder_ipc_repo_a")));
+    assert!(merged.iter().any(|r| r.ends_with("thunder_ipc_repo_b")));
+    assert!(
+        bound_workspace.ends_with("thunder_ipc_ws"),
+        "workspace stays first-bind immutable, got {bound_workspace}"
+    );
+
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&repo_a);
+    let _ = std::fs::remove_dir_all(&repo_b);
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("thunder_ipc_ws"));
+    Ok(())
+}

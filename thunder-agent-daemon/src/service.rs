@@ -180,6 +180,7 @@ impl DaemonService {
                 model,
                 use_mock,
                 workspace_dir,
+                extra_workspace_dirs,
                 thinking_level,
                 role,
             } => {
@@ -191,6 +192,7 @@ impl DaemonService {
                     model,
                     use_mock.unwrap_or(false),
                     workspace_dir,
+                    extra_workspace_dirs,
                     thinking_level,
                     role,
                 )
@@ -465,6 +467,7 @@ impl DaemonService {
         model: Option<String>,
         mut use_mock: bool,
         workspace_dir: Option<String>,
+        extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         role_id: Option<String>,
     ) {
@@ -520,6 +523,17 @@ impl DaemonService {
                 .unwrap_or_else(|| self.default_workspace.to_string_lossy().to_string())
         };
 
+        // Shared roots follow a merge policy instead of first-bind-wins: hosts
+        // (e.g. the panel) send the full referenced-repository list on every
+        // run, so a repo added to the task later becomes writable mid-task.
+        let mut chosen_shared_roots = conversation.shared_roots.clone();
+        for dir in extra_workspace_dirs.into_iter().flatten() {
+            let dir = dir.trim().to_string();
+            if !dir.is_empty() && !chosen_shared_roots.contains(&dir) {
+                chosen_shared_roots.push(dir);
+            }
+        }
+
         let chosen_thinking = thinking_level
             .or_else(|| conversation.thinking_level.clone())
             .or_else(|| {
@@ -554,6 +568,7 @@ impl DaemonService {
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
         conversation.workspace = Some(chosen_workspace.clone());
+        conversation.shared_roots = chosen_shared_roots.clone();
         conversation.thinking_level = chosen_thinking.clone();
 
         conversation.add_user_message(&prompt);
@@ -582,6 +597,7 @@ impl DaemonService {
                 "session_id": effective_session_id,
                 "model": chosen_model,
                 "workspace": chosen_workspace,
+                "shared_roots": chosen_shared_roots,
                 "thinking_level": chosen_thinking,
                 "use_mock": use_mock
             })),
@@ -611,6 +627,9 @@ impl DaemonService {
 
             let mut root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
+                .with_extra_roots(
+                    chosen_shared_roots.iter().map(PathBuf::from).collect(),
+                )
                 .with_plugin(ConversationPlugin::new(store.clone()))
                 .with_plugin(SkillsPlugin::default())
                 .with_plugin(McpPlugin::default())

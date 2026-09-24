@@ -65,6 +65,7 @@ impl AgentLoop {
         let tool_executor = ToolExecutor::with_configured_pipeline(
             tool_registry.clone(),
             ws,
+            config.extra_workspace_roots.clone(),
             Some(scratchpad.clone()),
             &config.middleware,
             config.permission,
@@ -96,6 +97,7 @@ impl AgentLoop {
         self.tool_executor = ToolExecutor::with_configured_pipeline(
             self.tool_registry.clone(),
             ws,
+            self.config.extra_workspace_roots.clone(),
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
@@ -109,6 +111,11 @@ impl AgentLoop {
 
     pub fn config(&self) -> &AgentConfig {
         &self.config
+    }
+
+    /// Read-only access to the tool executor (pipeline + registry).
+    pub fn tool_executor(&self) -> &ToolExecutor {
+        &self.tool_executor
     }
 
     pub fn status(&self) -> LoopStatus {
@@ -139,6 +146,7 @@ impl AgentLoop {
         self.tool_executor = ToolExecutor::with_configured_pipeline(
             self.tool_registry.clone(),
             ws,
+            self.config.extra_workspace_roots.clone(),
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
@@ -155,6 +163,7 @@ impl AgentLoop {
         self.tool_executor = ToolExecutor::with_configured_pipeline(
             self.tool_registry.clone(),
             ws,
+            self.config.extra_workspace_roots.clone(),
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,

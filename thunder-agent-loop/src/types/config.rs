@@ -172,6 +172,11 @@ pub struct AgentConfig {
     pub max_stream_retries: usize,
     pub thinking_level: Option<String>,
     pub workspace_dir: Option<PathBuf>,
+    /// Additional workspace roots (e.g. repositories referenced by the task)
+    /// granted the same read/write standing as the primary workspace. The
+    /// security guard jails paths to the union of primary root + these roots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_workspace_roots: Vec<PathBuf>,
     pub middleware: MiddlewareConfig,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
@@ -195,6 +200,7 @@ impl Default for AgentConfig {
             max_stream_retries: 2,
             thinking_level: None,
             workspace_dir: None,
+            extra_workspace_roots: Vec::new(),
             middleware: MiddlewareConfig::default(),
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
@@ -229,6 +235,16 @@ impl AgentConfig {
 
     pub fn with_workspace_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.workspace_dir = Some(path.into());
+        self
+    }
+
+    /// Grant additional workspace roots the same read/write standing as the
+    /// primary workspace (multi-root jail).
+    pub fn with_extra_workspace_roots(
+        mut self,
+        roots: impl IntoIterator<Item = impl Into<PathBuf>>,
+    ) -> Self {
+        self.extra_workspace_roots.extend(roots.into_iter().map(Into::into));
         self
     }
 

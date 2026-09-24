@@ -124,11 +124,13 @@ impl ToolPipeline {
     ///   -> RegistryTerminalHandler (Core tool invocation)
     pub fn standard(
         workspace_root: std::path::PathBuf,
+        extra_workspace_roots: &[std::path::PathBuf],
         registry: ToolRegistry,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
     ) -> Self {
         Self::configured(
             workspace_root,
+            extra_workspace_roots,
             registry,
             scratchpad,
             &crate::types::config::MiddlewareConfig::default(),
@@ -139,6 +141,7 @@ impl ToolPipeline {
     /// Assembles an Onion Middleware Pipeline adhering to caller's `MiddlewareConfig`.
     pub fn configured(
         workspace_root: std::path::PathBuf,
+        extra_workspace_roots: &[std::path::PathBuf],
         mut registry: ToolRegistry,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
@@ -154,9 +157,17 @@ impl ToolPipeline {
 
         let mut pipeline = Self::new(terminal);
         // Outermost gate: a denied capability never reaches the workspace.
-        pipeline.add_middleware(Arc::new(permission_guard::PermissionGuardMiddleware::new(permission)));
+        let mut all_roots = vec![workspace_root.clone()];
+        all_roots.extend(extra_workspace_roots.iter().cloned());
+        pipeline.add_middleware(Arc::new(
+            permission_guard::PermissionGuardMiddleware::new(permission)
+                .with_workspace_roots(all_roots),
+        ));
         if cfg.enable_security_guard {
-            pipeline.add_middleware(Arc::new(SecurityGuardMiddleware::new(&workspace_root)));
+            pipeline.add_middleware(Arc::new(
+                SecurityGuardMiddleware::new(&workspace_root)
+                    .with_extra_roots(extra_workspace_roots.iter().cloned()),
+            ));
         }
         if cfg.enable_resource_guard {
             pipeline.add_middleware(Arc::new(ResourceGuardMiddleware::new(&workspace_root)));

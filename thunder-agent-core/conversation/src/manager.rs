@@ -162,6 +162,7 @@ impl<S: ConversationStore> ConversationManager<S> {
             system_prompt: source.system_prompt.clone(),
             model: source.model.clone(),
             workspace: source.workspace.clone(),
+            shared_roots: source.shared_roots.clone(),
             thinking_level: source.thinking_level.clone(),
             status: ConversationStatus::Active,
             messages,
