@@ -59,6 +59,7 @@ export default definePlugin({
         runner_path,
         plugin_dirs: vec![plugins_dir.clone()],
         workspace_dir: ws_dir.clone(),
+        permission: thunder_agent_loop::types::config::Permission::default(),
     };
 
     let sidecar = SidecarManager::new(config);
@@ -151,4 +152,61 @@ export default definePlugin({
         .expect("Execution should continue using prior active version");
 
     assert_eq!(result_v3, "Sum: 10", "Should remain on working version despite syntax error");
+}
+
+/// Security: a read-only role must not be bypassed through the plugin RPC
+/// channel. This is the side channel that the host's tool gate cannot see.
+#[tokio::test]
+async fn read_only_permission_blocks_plugin_write_and_exec_rpc() {
+    use thunder_agent_loop::types::config::Permission;
+
+    if !SidecarManager::is_node_available().await {
+        eprintln!("Node.js not available, skipping test");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let ws_dir = temp.path().to_path_buf();
+    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
+
+    let runner_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("runner")
+        .join("host.mjs");
+
+    let config = SidecarConfig {
+        runner_path,
+        plugin_dirs: vec![plugins_dir.clone()],
+        workspace_dir: ws_dir.clone(),
+        permission: Permission::Read,
+    };
+
+    let sidecar = SidecarManager::new(config);
+    sidecar.start().await.expect("start sidecar");
+
+    // Both RPCs must be refused before touching the filesystem or the shell.
+    let write_err = sidecar
+        .call_rpc(
+            "fs_write_file",
+            serde_json::json!({ "path": "should_not_exist.txt", "content": "nope" }),
+        )
+        .await
+        .expect_err("fs_write_file must be denied under Read");
+    assert!(
+        write_err.contains("Permission denied"),
+        "unexpected error: {write_err}"
+    );
+    assert!(
+        !ws_dir.join("should_not_exist.txt").exists(),
+        "denied write must not create the file"
+    );
+
+    let exec_err = sidecar
+        .call_rpc("exec_bash", serde_json::json!({ "command": "echo pwned" }))
+        .await
+        .expect_err("exec_bash must be denied under Read");
+    assert!(
+        exec_err.contains("Permission denied"),
+        "unexpected error: {exec_err}"
+    );
 }

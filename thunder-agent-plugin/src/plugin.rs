@@ -39,6 +39,7 @@ impl TsScriptPluginEngine {
             runner_path,
             plugin_dirs,
             workspace_dir: workspace_dir.clone(),
+            permission: thunder_agent_loop::types::config::Permission::default(),
         };
 
         let sidecar = SidecarManager::new(config);

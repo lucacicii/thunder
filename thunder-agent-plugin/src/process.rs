@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use thunder_agent_loop::types::config::Permission;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
@@ -13,6 +14,12 @@ pub struct SidecarConfig {
     pub runner_path: PathBuf,
     pub plugin_dirs: Vec<PathBuf>,
     pub workspace_dir: PathBuf,
+    /// Capability tier inherited by plugin RPCs.
+    ///
+    /// The plugin layer does not decide permissions — it inherits them. Without
+    /// this, `ctx.exec()` / `ctx.fs.writeFile()` would be a side channel around
+    /// the host's tool gate.
+    pub permission: Permission,
 }
 
 struct PendingRequest {
@@ -113,6 +120,7 @@ impl SidecarManager {
         let pending_calls = Arc::clone(&self.pending_tool_calls);
         let pending_prompts = Arc::clone(&self.pending_prompts);
         let ws_dir = self.config.workspace_dir.clone();
+        let rpc_permission = self.config.permission;
 
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -155,7 +163,7 @@ impl SidecarManager {
                         }
                     }
                     ClientMessage::RpcRequest { id, method, params } => {
-                        let resp = Self::handle_client_rpc(&ws_dir, &method, params).await;
+                        let resp = Self::handle_client_rpc(&ws_dir, rpc_permission, &method, params).await;
                         this.send_message(HostMessage::RpcResponse {
                             id,
                             success: resp.is_ok(),
@@ -194,9 +202,19 @@ impl SidecarManager {
     }
 
     /// Handle reverse RPC requested by TS plugin (`ctx.fs.writeFile`, `ctx.exec`, etc.)
-    async fn handle_client_rpc(ws_dir: &Path, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    async fn handle_client_rpc(
+        ws_dir: &Path,
+        permission: Permission,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         match method {
             "fs_write_file" => {
+                if !permission.allows_write() {
+                    return Err(
+                        "Permission denied: 'fs_write_file' is not granted by the active role".to_string(),
+                    );
+                }
                 let rel_path = params.get("path").and_then(|v| v.as_str()).ok_or("Missing path")?.to_string();
                 let content = params.get("content").and_then(|v| v.as_str()).ok_or("Missing content")?.to_string();
                 let target = ws_dir.join(&rel_path);
@@ -240,6 +258,11 @@ impl SidecarManager {
                 Ok(serde_json::Value::String(content))
             }
             "exec_bash" => {
+                if !permission.allows_exec() {
+                    return Err(
+                        "Permission denied: 'exec_bash' is not granted by the active role".to_string(),
+                    );
+                }
                 let command = params.get("command").and_then(|v| v.as_str()).ok_or("Missing command")?.to_string();
                 let cwd = params.get("cwd").and_then(|v| v.as_str()).map(PathBuf::from).unwrap_or_else(|| ws_dir.to_path_buf());
 
@@ -260,6 +283,24 @@ impl SidecarManager {
             }
             _ => Err(format!("Unsupported RPC method: {method}")),
         }
+    }
+
+    /// Invoke a reverse RPC (the channel behind `ctx.fs` / `ctx.exec`) directly.
+    ///
+    /// Uses this sidecar's configured workspace and permission tier, so callers
+    /// and tests observe exactly the same enforcement as an in-process plugin.
+    pub async fn call_rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Self::handle_client_rpc(
+            &self.config.workspace_dir,
+            self.config.permission,
+            method,
+            params,
+        )
+        .await
     }
 
     pub async fn execute_tool(
