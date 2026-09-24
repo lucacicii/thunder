@@ -71,7 +71,11 @@ struct OpenAIUsage {
     prompt_tokens: Option<usize>,
     completion_tokens: Option<usize>,
     prompt_tokens_details: Option<PromptTokensDetails>,
+    input_token_details: Option<PromptTokensDetails>,
+    input_tokens_details: Option<PromptTokensDetails>,
     prompt_cache_hit_tokens: Option<usize>,
+    cache_read_input_tokens: Option<usize>,
+    cached_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,8 +231,13 @@ impl SSEStreamParser {
             completion_tokens = usage.completion_tokens;
             cached_tokens = usage
                 .prompt_tokens_details
+                .as_ref()
                 .and_then(|d| d.cached_tokens)
-                .or(usage.prompt_cache_hit_tokens);
+                .or_else(|| usage.input_token_details.as_ref().and_then(|d| d.cached_tokens))
+                .or_else(|| usage.input_tokens_details.as_ref().and_then(|d| d.cached_tokens))
+                .or(usage.prompt_cache_hit_tokens)
+                .or(usage.cache_read_input_tokens)
+                .or(usage.cached_tokens);
         }
 
         Some(StreamDelta {

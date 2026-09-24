@@ -166,9 +166,12 @@ impl LLMClientTrait for OpenAiResponsesClient {
                                 completion_tokens = Some(ct as usize);
                             }
                             let cached = u.pointer("/input_token_details/cached_tokens")
+                                .or_else(|| u.pointer("/input_tokens_details/cached_tokens"))
                                 .or_else(|| u.pointer("/prompt_tokens_details/cached_tokens"))
                                 .or_else(|| u.get("prompt_cache_hit_tokens"))
                                 .or_else(|| u.get("cache_read_input_tokens"))
+                                .or_else(|| u.get("cached_tokens"))
+                                .or_else(|| u.get("cache_tokens"))
                                 .and_then(|v| v.as_u64());
                             if let Some(v) = cached {
                                 cached_tokens = Some(v as usize);
