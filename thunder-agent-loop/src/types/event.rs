@@ -78,6 +78,26 @@ pub enum AgentEvent {
         name: String,
         result: ToolExecutionResult,
     },
+    FileChange {
+        turn: usize,
+        tool_call_id: String,
+        path: String,
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes: Option<usize>,
+        tool_name: String,
+    },
+    TelemetryNotice {
+        turn: usize,
+        tool_call_id: String,
+        layer: String,
+        action: String,
+        ground_truth: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        self_healed: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        guidance: Option<String>,
+    },
     TurnEnd {
         turn: usize,
         finish_reason: String,

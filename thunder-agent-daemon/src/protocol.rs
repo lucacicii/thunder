@@ -43,6 +43,17 @@ pub enum DaemonRequest {
         id: Option<String>,
         path: Option<String>,
     },
+    /// Get full execution trace for a task
+    GetTrace {
+        id: Option<String>,
+        session_id: String,
+        task_id: Option<String>,
+    },
+    /// List available task traces for a session
+    ListTraces {
+        id: Option<String>,
+        session_id: String,
+    },
 }
 
 /// Outgoing message to host (Electron) via stdout
