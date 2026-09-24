@@ -136,14 +136,17 @@ fn test_anthropic_adapter_contract() {
     };
 
     let payload = adapter.adapt_payload(&spec, &options);
-    // Anthropic separates system into top-level property
-    assert_eq!(payload["system"], "Anthropic system instructions");
+    // Anthropic separates system into top-level property with prompt caching
+    assert_eq!(payload["system"][0]["type"], "text");
+    assert_eq!(payload["system"][0]["text"], "Anthropic system instructions");
+    assert_eq!(payload["system"][0]["cache_control"]["type"], "ephemeral");
     // Messages only contain non-system messages
     assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
     assert_eq!(payload["messages"][0]["role"], "user");
-    // Tools are mapped to Anthropic format (input_schema)
+    // Tools are mapped to Anthropic format (input_schema) with cache_control
     assert_eq!(payload["tools"][0]["name"], "test_tool");
     assert!(payload["tools"][0]["input_schema"].is_object());
+    assert_eq!(payload["tools"][0]["cache_control"]["type"], "ephemeral");
 }
 
 #[test]

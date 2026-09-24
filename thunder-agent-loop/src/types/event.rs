@@ -7,8 +7,12 @@ pub struct TurnStats {
     pub turn: usize,
     pub prompt_tokens: Option<usize>,
     pub completion_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<usize>,
     pub duration_ms: u64,
     pub tool_calls_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -16,9 +20,13 @@ pub struct AgentStats {
     pub total_turns: usize,
     pub total_prompt_tokens: usize,
     pub total_completion_tokens: usize,
+    #[serde(default)]
+    pub total_cached_tokens: usize,
     pub total_duration_ms: u64,
     pub total_tool_executions: usize,
     pub total_tool_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_tokens_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

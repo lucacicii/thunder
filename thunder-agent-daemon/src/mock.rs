@@ -44,6 +44,7 @@ impl LLMClientTrait for DaemonMockClient {
                             finish_reason: "cancelled".to_string(),
                             prompt_tokens: None,
                             completion_tokens: None,
+                            cached_tokens: None,
                         })).await;
                         return;
                     }
@@ -62,6 +63,7 @@ impl LLMClientTrait for DaemonMockClient {
                     finish_reason: "stop".to_string(),
                     prompt_tokens: None,
                     completion_tokens: None,
+                    cached_tokens: None,
                 }))
                 .await;
         });

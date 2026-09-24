@@ -480,9 +480,10 @@ impl AgentLoop {
                                 finish_reason,
                                 prompt_tokens,
                                 completion_tokens,
+                                cached_tokens,
                             }) => {
                                 completed_chunk =
-                                    Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens));
+                                    Some((content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens));
                             }
                             Err(stream_err) => {
                                 if !cancel_token.is_cancelled() && crate::pruning::is_context_overflow_error(&stream_err) {
@@ -594,7 +595,7 @@ impl AgentLoop {
                     break;
                 }
 
-                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens) =
+                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens) =
                     match completed_chunk {
                         Some(c) => c,
                         None => {
@@ -618,18 +619,6 @@ impl AgentLoop {
                     }
                 }
 
-                let has_tool_calls = !tool_calls.is_empty();
-                let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
-
-                let turn_stats = TurnStats {
-                    turn,
-                    prompt_tokens,
-                    completion_tokens,
-                    duration_ms: turn_duration_ms,
-                    tool_calls_count: tool_calls.len(),
-                };
-                tracker.record_turn_stats(turn_stats.clone());
-
                 let answer_content = chunk_content.filter(|c| !c.is_empty()).or_else(|| {
                     if !assistant_content.is_empty() {
                         Some(assistant_content.clone())
@@ -637,6 +626,44 @@ impl AgentLoop {
                         None
                     }
                 });
+
+                let has_tool_calls = !tool_calls.is_empty();
+                let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
+
+                // Fallback estimation if the upstream provider omitted usage counts
+                let effective_completion_tokens = completion_tokens.or_else(|| {
+                    let text = answer_content.as_deref().unwrap_or(&assistant_content);
+                    if !text.is_empty() {
+                        Some(crate::core::token_estimator::estimate_token_count(text))
+                    } else {
+                        None
+                    }
+                });
+                let effective_prompt_tokens = prompt_tokens.or_else(|| {
+                    let count = context.estimated_tokens();
+                    if count > 0 {
+                        Some(count)
+                    } else {
+                        None
+                    }
+                });
+
+                let tps = if turn_duration_ms > 0 && effective_completion_tokens.is_some() {
+                    effective_completion_tokens.map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
+
+                let turn_stats = TurnStats {
+                    turn,
+                    prompt_tokens: effective_prompt_tokens,
+                    completion_tokens: effective_completion_tokens,
+                    cached_tokens,
+                    duration_ms: turn_duration_ms,
+                    tool_calls_count: tool_calls.len(),
+                    tokens_per_second: tps,
+                };
+                tracker.record_turn_stats(turn_stats.clone());
 
                 let assistant_msg = ChatMessage::Assistant {
                     content: answer_content.clone(),

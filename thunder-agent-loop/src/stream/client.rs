@@ -22,6 +22,7 @@ pub enum LLMStreamChunk {
         finish_reason: String,
         prompt_tokens: Option<usize>,
         completion_tokens: Option<usize>,
+        cached_tokens: Option<usize>,
     },
 }
 
@@ -230,6 +231,7 @@ impl LLMClientTrait for LLMClient {
                 let mut last_finish_reason = "stop".to_string();
                 let mut prompt_tokens = None;
                 let mut completion_tokens = None;
+                let mut cached_tokens = None;
                 let mut stream_failed_midway = false;
 
                 loop {
@@ -271,6 +273,9 @@ impl LLMClientTrait for LLMClient {
                                         }
                                         if delta.completion_tokens.is_some() {
                                             completion_tokens = delta.completion_tokens;
+                                        }
+                                        if delta.cached_tokens.is_some() {
+                                            cached_tokens = delta.cached_tokens;
                                         }
                                     }
                                 }
@@ -326,6 +331,9 @@ impl LLMClientTrait for LLMClient {
                     if flushed.completion_tokens.is_some() {
                         completion_tokens = flushed.completion_tokens;
                     }
+                    if flushed.cached_tokens.is_some() {
+                        cached_tokens = flushed.cached_tokens;
+                    }
                 }
 
                 let tool_calls = parser.get_completed_tool_calls();
@@ -346,6 +354,7 @@ impl LLMClientTrait for LLMClient {
                         finish_reason: last_finish_reason,
                         prompt_tokens,
                         completion_tokens,
+                        cached_tokens,
                     }))
                     .await;
                 return;

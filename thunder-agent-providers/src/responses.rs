@@ -93,6 +93,9 @@ impl LLMClientTrait for OpenAiResponsesClient {
             let mut content = String::new();
             let mut tool_calls = Vec::new();
             let mut finish = "stop".to_string();
+            let mut prompt_tokens: Option<usize> = None;
+            let mut completion_tokens: Option<usize> = None;
+            let mut cached_tokens: Option<usize> = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -152,6 +155,25 @@ impl LLMClientTrait for OpenAiResponsesClient {
                             }
                             _ => {}
                         }
+
+                        // Parse usage information from any event or chunk
+                        let usage_node = value.get("usage").or_else(|| value.pointer("/response/usage"));
+                        if let Some(u) = usage_node {
+                            if let Some(pt) = u.get("input_tokens").or_else(|| u.get("prompt_tokens")).and_then(|v| v.as_u64()) {
+                                prompt_tokens = Some(pt as usize);
+                            }
+                            if let Some(ct) = u.get("output_tokens").or_else(|| u.get("completion_tokens")).and_then(|v| v.as_u64()) {
+                                completion_tokens = Some(ct as usize);
+                            }
+                            let cached = u.pointer("/input_token_details/cached_tokens")
+                                .or_else(|| u.pointer("/prompt_tokens_details/cached_tokens"))
+                                .or_else(|| u.get("prompt_cache_hit_tokens"))
+                                .or_else(|| u.get("cache_read_input_tokens"))
+                                .and_then(|v| v.as_u64());
+                            if let Some(v) = cached {
+                                cached_tokens = Some(v as usize);
+                            }
+                        }
                     }
                 }
             }
@@ -161,8 +183,9 @@ impl LLMClientTrait for OpenAiResponsesClient {
                     content: if content.is_empty() { None } else { Some(content) },
                     tool_calls,
                     finish_reason: finish,
-                    prompt_tokens: None,
-                    completion_tokens: None,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
                 }))
                 .await;
         });
@@ -211,7 +234,8 @@ fn build_responses_payload(wire_model: &str, options: &ChatRequestOptions) -> Va
     let mut payload = json!({
         "model": wire_model,
         "input": input,
-        "stream": true
+        "stream": true,
+        "stream_options": { "include_usage": true }
     });
     if let Some(temp) = options.temperature {
         payload["temperature"] = json!(temp);

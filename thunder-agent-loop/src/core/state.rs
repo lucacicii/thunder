@@ -35,6 +35,7 @@ pub struct AgentStateTracker {
     start_time: Instant,
     total_prompt_tokens: usize,
     total_completion_tokens: usize,
+    total_cached_tokens: usize,
     total_tool_executions: usize,
     total_tool_time_ms: u64,
     turn_history: Vec<TurnStats>,
@@ -54,6 +55,7 @@ impl AgentStateTracker {
             start_time: Instant::now(),
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
+            total_cached_tokens: 0,
             total_tool_executions: 0,
             total_tool_time_ms: 0,
             turn_history: Vec::new(),
@@ -84,6 +86,9 @@ impl AgentStateTracker {
         if let Some(ct) = stats.completion_tokens {
             self.total_completion_tokens += ct;
         }
+        if let Some(cached) = stats.cached_tokens {
+            self.total_cached_tokens += cached;
+        }
         self.total_tool_executions += stats.tool_calls_count;
         self.turn_history.push(stats);
     }
@@ -93,13 +98,22 @@ impl AgentStateTracker {
     }
 
     pub fn get_stats(&self) -> AgentStats {
+        let total_dur_ms = self.start_time.elapsed().as_millis() as u64;
+        let avg_tps = if total_dur_ms > 0 && self.total_completion_tokens > 0 {
+            Some((self.total_completion_tokens as f64) / (total_dur_ms as f64 / 1000.0))
+        } else {
+            None
+        };
+
         AgentStats {
             total_turns: self.current_turn,
             total_prompt_tokens: self.total_prompt_tokens,
             total_completion_tokens: self.total_completion_tokens,
-            total_duration_ms: self.start_time.elapsed().as_millis() as u64,
+            total_cached_tokens: self.total_cached_tokens,
+            total_duration_ms: total_dur_ms,
             total_tool_executions: self.total_tool_executions,
             total_tool_time_ms: self.total_tool_time_ms,
+            avg_tokens_per_second: avg_tps,
         }
     }
 

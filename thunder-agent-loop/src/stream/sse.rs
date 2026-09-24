@@ -13,6 +13,7 @@ pub struct StreamDelta {
     pub finish_reason: Option<String>,
     pub prompt_tokens: Option<usize>,
     pub completion_tokens: Option<usize>,
+    pub cached_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,13 @@ struct OpenAIFunctionDelta {
 struct OpenAIUsage {
     prompt_tokens: Option<usize>,
     completion_tokens: Option<usize>,
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    prompt_cache_hit_tokens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<usize>,
 }
 
 pub struct SSEStreamParser {
@@ -213,9 +221,14 @@ impl SSEStreamParser {
 
         let mut prompt_tokens = None;
         let mut completion_tokens = None;
+        let mut cached_tokens = None;
         if let Some(usage) = parsed.usage {
             prompt_tokens = usage.prompt_tokens;
             completion_tokens = usage.completion_tokens;
+            cached_tokens = usage
+                .prompt_tokens_details
+                .and_then(|d| d.cached_tokens)
+                .or(usage.prompt_cache_hit_tokens);
         }
 
         Some(StreamDelta {
@@ -225,6 +238,7 @@ impl SSEStreamParser {
             finish_reason,
             prompt_tokens,
             completion_tokens,
+            cached_tokens,
         })
     }
 }

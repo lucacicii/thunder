@@ -112,6 +112,8 @@ impl LLMClientTrait for OllamaClient {
             let mut stream = response.bytes_stream();
             let mut buf = String::new();
             let mut content = String::new();
+            let mut prompt_tokens = None;
+            let mut completion_tokens = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -131,6 +133,12 @@ impl LLMClientTrait for OllamaClient {
                             content.push_str(text);
                             let _ = tx.send(Ok(LLMStreamChunk::Token(text.to_string()))).await;
                         }
+                        if let Some(pt) = value.get("prompt_eval_count").and_then(|v| v.as_u64()) {
+                            prompt_tokens = Some(pt as usize);
+                        }
+                        if let Some(ct) = value.get("eval_count").and_then(|v| v.as_u64()) {
+                            completion_tokens = Some(ct as usize);
+                        }
                     }
                 }
             }
@@ -140,8 +148,9 @@ impl LLMClientTrait for OllamaClient {
                     content: if content.is_empty() { None } else { Some(content) },
                     tool_calls: vec![],
                     finish_reason: "stop".to_string(),
-                    prompt_tokens: None,
-                    completion_tokens: None,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens: None,
                 }))
                 .await;
         });

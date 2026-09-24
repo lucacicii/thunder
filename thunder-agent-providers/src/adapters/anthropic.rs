@@ -26,7 +26,14 @@ impl ModelAdapter for AnthropicAdapter {
         });
 
         if let Some(system_text) = system {
-            payload["system"] = json!(system_text);
+            // Anthropic Prompt Caching: inject cache_control on system prompt block
+            payload["system"] = json!([
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ]);
         }
 
         if let Some(temp) = options.temperature {
@@ -34,15 +41,21 @@ impl ModelAdapter for AnthropicAdapter {
         }
 
         if !options.tools.is_empty() {
-            payload["tools"] = json!(options
-                .tools
-                .iter()
-                .map(|t| json!({
+            let mut tools_json = Vec::new();
+            let total = options.tools.len();
+            for (idx, t) in options.tools.iter().enumerate() {
+                let mut tool_obj = json!({
                     "name": t.function.name,
                     "description": t.function.description,
                     "input_schema": t.function.parameters,
-                }))
-                .collect::<Vec<_>>());
+                });
+                // Place cache_control on the final tool to cache all tool definitions
+                if idx == total - 1 {
+                    tool_obj["cache_control"] = json!({ "type": "ephemeral" });
+                }
+                tools_json.push(tool_obj);
+            }
+            payload["tools"] = json!(tools_json);
         }
 
         payload
@@ -83,6 +96,7 @@ impl LLMClientTrait for AnthropicClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert("anthropic-beta", HeaderValue::from_static("prompt-caching-2024-07-25"));
         if let Some(key) = &self.spec.api_key {
             if let Ok(val) = HeaderValue::from_str(key) {
                 headers.insert("x-api-key", val);
@@ -133,6 +147,9 @@ impl LLMClientTrait for AnthropicClient {
             let mut tool_calls = Vec::new();
             let mut current_tool: Option<(String, String, String)> = None;
             let mut finish = "end_turn".to_string();
+            let mut prompt_tokens = None;
+            let mut completion_tokens = None;
+            let mut cached_tokens = None;
 
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
@@ -188,9 +205,24 @@ impl LLMClientTrait for AnthropicClient {
                                     tool_calls.push(ToolCall::new_function(id, name, args));
                                 }
                             }
+                            Some("message_start") => {
+                                if let Some(usage) = value.pointer("/message/usage") {
+                                    if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                                        prompt_tokens = Some(input as usize);
+                                    }
+                                    if let Some(cached) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                                        cached_tokens = Some(cached as usize);
+                                    }
+                                }
+                            }
                             Some("message_delta") => {
                                 if let Some(reason) = value.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
                                     finish = reason.to_string();
+                                }
+                                if let Some(usage) = value.get("usage") {
+                                    if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                                        completion_tokens = Some(output as usize);
+                                    }
                                 }
                             }
                             _ => {}
@@ -204,8 +236,9 @@ impl LLMClientTrait for AnthropicClient {
                     content: if content.is_empty() { None } else { Some(content) },
                     tool_calls,
                     finish_reason: finish,
-                    prompt_tokens: None,
-                    completion_tokens: None,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
                 }))
                 .await;
         });

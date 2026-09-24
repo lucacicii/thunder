@@ -121,6 +121,7 @@ async fn test_app_streaming_event_ingestion() {
                 truncated: false,
                 original_bytes: 13,
                 duration_ms: 4,
+                telemetry: None,
             },
         },
     });
