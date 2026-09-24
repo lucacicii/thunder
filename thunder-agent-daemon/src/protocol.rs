@@ -32,6 +32,33 @@ pub enum DaemonRequest {
         use_mock: Option<bool>,
         workspace_dir: Option<String>,
         thinking_level: Option<String>,
+        /// Role id to activate for this run (e.g. "plan"). Resolved against
+        /// `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`.
+        role: Option<String>,
+    },
+    /// List all roles visible from global + workspace scopes
+    ListRoles {
+        id: Option<String>,
+        workspace_dir: Option<String>,
+    },
+    /// Cooperatively pause a running task at the next tool boundary
+    PauseTask {
+        id: Option<String>,
+        task_id: String,
+    },
+    /// Resume a paused task
+    ResumeTask {
+        id: Option<String>,
+        task_id: String,
+    },
+    /// Answer a pending `ask_user_question` from the agent
+    AnswerQuestion {
+        id: Option<String>,
+        question_id: String,
+        #[serde(default)]
+        answers: serde_json::Value,
+        #[serde(default)]
+        cancelled: bool,
     },
     /// Cancel a running task by task_id
     CancelTask {
@@ -102,4 +129,37 @@ pub enum DaemonResponse {
         session_id: Option<String>,
         error: String,
     },
+    /// The agent is asking the user a question and is blocked until answered.
+    /// The panel renders this as a question bubble.
+    UserQuestion {
+        task_id: String,
+        session_id: Option<String>,
+        question_id: String,
+        questions: Vec<QuestionItem>,
+    },
+    /// A task is paused and will not advance until resumed.
+    TaskPaused {
+        task_id: String,
+        session_id: Option<String>,
+        reason: String,
+    },
+}
+
+/// One question presented to the user, mirroring the panel's bubble options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionItem {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
