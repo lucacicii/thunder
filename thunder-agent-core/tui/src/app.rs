@@ -1323,6 +1323,9 @@ impl App {
                 forced_plugins: None,
                 register_builtins: true,
                 thinking_level: None,
+                role: None,
+                permission: thunder_agent_loop::types::config::Permission::default(),
+                pause_gate: None,
             };
 
             match root.execute(context_input, options).await {
