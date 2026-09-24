@@ -23,6 +23,8 @@ pub fn extract_allowed_levels_from_error(error_text: &str) -> Option<Vec<String>
         || lower.contains("reasoning_effort not supported")
         || lower.contains("unrecognized request argument supplied: reasoning_effort")
         || lower.contains("unknown parameter: reasoning_effort")
+        || lower.contains("unsupported parameter: reasoning_effort")
+        || (lower.contains("unsupported parameter") && lower.contains("reasoning_effort"))
         || lower.contains("unexpected keyword argument 'reasoning_effort'")
         || lower.contains("thinking is not supported")
         || lower.contains("thinking is not enabled")
