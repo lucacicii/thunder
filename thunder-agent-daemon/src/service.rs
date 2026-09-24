@@ -92,6 +92,8 @@ impl DaemonService {
                             "reasoning": m.reasoning,
                             "thinking_levels": m.thinking_levels,
                             "default_thinking_level": m.default_thinking_level,
+                            "context_window": m.context_window,
+                            "max_tokens": m.max_tokens,
                         })
                     })
                     .collect();
@@ -417,10 +419,11 @@ impl DaemonService {
                             } else if let Some(ref text) = final_content {
                                 conversation.add_assistant_message(Some(text.clone()), None);
                             }
-                            conversation.stats.total_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
-                            conversation.stats.turn_count = res.run_result.stats.total_turns;
-                            conversation.stats.tool_calls_count = res.run_result.stats.total_tool_executions;
-                            conversation.stats.duration_ms = res.run_result.stats.total_duration_ms;
+                            let task_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
+                            conversation.stats.total_tokens += task_tokens;
+                            conversation.stats.turn_count += res.run_result.stats.total_turns;
+                            conversation.stats.tool_calls_count += res.run_result.stats.total_tool_executions;
+                            conversation.stats.duration_ms += res.run_result.stats.total_duration_ms;
                             let _ = store.save(&conversation).await;
 
                             // Save full end-to-end task trace
