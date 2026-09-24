@@ -25,13 +25,14 @@ pub mod prelude {
     pub use crate::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
     pub use crate::tools::scratchpad::{Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager};
     pub use crate::types::config::{
-        AgentConfig, ContextPruningConfig, LoopGuardConfig, PruningStrategy,
+        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission, PruningStrategy,
         DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
     };
     pub use crate::types::error::AgentError;
     pub use crate::types::event::{
         AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats,
     };
+    pub use crate::core::pause::PauseGate;
     pub use crate::core::state::LoopStatus;
     pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};
     pub use crate::types::tool::{

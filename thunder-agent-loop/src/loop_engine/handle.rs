@@ -1,3 +1,4 @@
+use crate::core::pause::PauseGate;
 use crate::core::state::LoopStatus;
 use crate::loop_engine::engine::AgentRunResult;
 use crate::types::error::AgentError;
@@ -17,6 +18,7 @@ pub struct AgentHandle {
     status: Arc<AtomicU8>,
     running: Arc<AtomicBool>,
     cancel: CancellationToken,
+    pause_gate: Arc<PauseGate>,
     result_rx: oneshot::Receiver<AgentRunResult>,
     event_rx: Option<mpsc::Receiver<ObservedEvent>>,
 }
@@ -27,6 +29,7 @@ impl AgentHandle {
         status: Arc<AtomicU8>,
         running: Arc<AtomicBool>,
         cancel: CancellationToken,
+        pause_gate: Arc<PauseGate>,
         result_rx: oneshot::Receiver<AgentRunResult>,
         event_rx: mpsc::Receiver<ObservedEvent>,
     ) -> Self {
@@ -35,9 +38,25 @@ impl AgentHandle {
             status,
             running,
             cancel,
+            pause_gate,
             result_rx,
             event_rx: Some(event_rx),
         }
+    }
+
+    /// Request a cooperative pause. Takes effect at the next tool boundary, so
+    /// an in-flight tool completes rather than being interrupted.
+    pub fn pause(&self) {
+        self.pause_gate.pause();
+    }
+
+    /// Release a pause and let the loop advance.
+    pub fn resume(&self) {
+        self.pause_gate.resume();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause_gate.is_paused()
     }
 
     pub fn agent_id(&self) -> &str {

@@ -1,10 +1,12 @@
 pub mod output;
+pub mod permission_guard;
 pub mod resource;
 pub mod security;
 pub mod telemetry;
 pub mod transaction;
 
 pub use output::OutputPostProcessorMiddleware;
+pub use permission_guard::PermissionGuardMiddleware;
 pub use resource::ResourceGuardMiddleware;
 pub use security::SecurityGuardMiddleware;
 pub use telemetry::SystemNotice;
@@ -130,6 +132,7 @@ impl ToolPipeline {
             registry,
             scratchpad,
             &crate::types::config::MiddlewareConfig::default(),
+            crate::types::config::Permission::default(),
         )
     }
 
@@ -139,6 +142,7 @@ impl ToolPipeline {
         mut registry: ToolRegistry,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
+        permission: crate::types::config::Permission,
     ) -> Self {
         let max_output_bytes = 64 * 1024;
         let terminal: Arc<dyn ToolHandler> = if cfg.enable_output_post_processor {
@@ -149,6 +153,8 @@ impl ToolPipeline {
         };
 
         let mut pipeline = Self::new(terminal);
+        // Outermost gate: a denied capability never reaches the workspace.
+        pipeline.add_middleware(Arc::new(permission_guard::PermissionGuardMiddleware::new(permission)));
         if cfg.enable_security_guard {
             pipeline.add_middleware(Arc::new(SecurityGuardMiddleware::new(&workspace_root)));
         }
