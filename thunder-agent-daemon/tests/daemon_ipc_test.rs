@@ -349,3 +349,46 @@ async fn test_daemon_rejects_duplicate_task_id() -> Result<(), Box<dyn std::erro
     let _ = child.wait().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    // 1. Send malformed request that has an id
+    send(&mut stdin, r#"{"method": "unknown_method", "id": "req-bad-1"}"#.to_string()).await?;
+
+    let line1 = reader.next_line().await?.expect("response line expected");
+    let resp1: serde_json::Value = serde_json::from_str(&line1)?;
+    assert_eq!(resp1["type"], "response");
+    assert_eq!(resp1["id"], "req-bad-1");
+    assert_eq!(resp1["success"], false);
+    assert!(resp1["error"].as_str().unwrap().contains("Invalid JSON command"));
+
+    // 2. Send broken syntax without id
+    send(&mut stdin, r#"{"method": unquoted_syntax}"#.to_string()).await?;
+
+    let line2 = reader.next_line().await?.expect("response line expected");
+    let resp2: serde_json::Value = serde_json::from_str(&line2)?;
+    assert_eq!(resp2["type"], "response");
+    assert_eq!(resp2["id"], serde_json::Value::Null);
+    assert_eq!(resp2["success"], false);
+    assert!(resp2["error"].as_str().unwrap().contains("Invalid JSON command"));
+
+    drop(stdin);
+    let _ = child.wait().await;
+    Ok(())
+}

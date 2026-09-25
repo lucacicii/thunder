@@ -8,7 +8,7 @@ mod mock;
 mod protocol;
 mod service;
 
-use protocol::DaemonRequest;
+use protocol::{DaemonRequest, DaemonResponse};
 use service::DaemonService;
 
 #[tokio::main]
@@ -53,6 +53,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 error!(error = %e, raw = %trimmed, "Malformed JSON request received");
                 eprintln!("Invalid JSON command: {e}");
+
+                // Attempt to salvage request id so the caller Promise/channel deterministically rejects
+                let maybe_id = serde_json::from_str::<serde_json::Value>(trimmed)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(|id_val| id_val.as_str().map(String::from)));
+
+                let res = DaemonResponse::Response {
+                    id: maybe_id,
+                    success: false,
+                    data: None,
+                    error: Some(format!("Invalid JSON command: {e}")),
+                };
+                service.send_response(res).await;
             }
         }
     }
