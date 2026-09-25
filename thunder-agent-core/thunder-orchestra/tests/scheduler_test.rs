@@ -134,3 +134,53 @@ async fn health_passes_with_mock_and_temp_dirs() {
     assert!(report.checks.iter().all(|c| c.passed), "checks: {:?}", report.checks);
 }
 
+#[tokio::test]
+async fn parallel_with_synthesis_aggregates_results() {
+    let root = store_root("parallel_synthesis");
+    let orchestra = OrchestraConfig::new(Topology::Parallel)
+        .with_store_root(&root)
+        .with_scratch_root(root.join("scratch"))
+        .with_synthesizer(true)
+        .with_unit(unit("planner", "planner"))
+        .with_unit(unit("reviewer", "reviewer"));
+
+    let scheduler = Scheduler::new(orchestra);
+    let run = scheduler
+        .dispatch("review security vulnerabilities", true, None)
+        .await
+        .expect("dispatch");
+
+    assert_eq!(run.results.len(), 2);
+    assert!(run.synthesis.is_some());
+    let syn = run.synthesis.unwrap();
+    assert!(syn.contains("[Synthesizer Aggregation Report]"));
+    assert!(syn.contains("planner"));
+    assert!(syn.contains("reviewer"));
+}
+
+#[tokio::test]
+async fn fan_out_decomposes_structured_subtasks_concurrently() {
+    let root = store_root("fan_out");
+    let orchestra = OrchestraConfig::new(Topology::FanOut)
+        .with_store_root(&root)
+        .with_scratch_root(root.join("scratch"))
+        .with_synthesizer(true)
+        .with_unit(unit("sec_auditor", "security"))
+        .with_unit(unit("perf_auditor", "performance"));
+
+    let prompt = "Process these two audit tasks:\n1. Audit auth middleware for token leak vulnerabilities\n2. Benchmark request throughput under 10k connections";
+
+    let scheduler = Scheduler::new(orchestra);
+    let run = scheduler
+        .dispatch(prompt, true, None)
+        .await
+        .expect("dispatch");
+
+    assert_eq!(run.results.len(), 2);
+    // Verified subtask titles and roles assigned
+    let titles: Vec<_> = run.results.iter().map(|(label, _)| label.as_str()).collect();
+    assert!(titles.iter().any(|t| t.contains("SubTask 1")));
+    assert!(titles.iter().any(|t| t.contains("SubTask 2")));
+    assert!(run.synthesis.is_some());
+}
+

@@ -3,13 +3,45 @@ use crate::tools::middleware::{ToolHandler, ToolMiddleware};
 use crate::types::message::ToolCall;
 use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as TokioMutex;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Cross-agent/task per-file mutation mutex map (analogous to Pi's file-mutation-queue).
+/// Serializes concurrent write operations aimed at the exact same normalized file path,
+/// while allowing concurrent writes to distinct files to proceed completely in parallel.
+static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+fn get_file_mutation_lock(target_path: &Path) -> Arc<TokioMutex<()>> {
+    let normalized = if let Ok(c) = target_path.canonicalize() {
+        c
+    } else if let Some(parent) = target_path.parent() {
+        if let Ok(parent_c) = parent.canonicalize() {
+            if let Some(name) = target_path.file_name() {
+                parent_c.join(name)
+            } else {
+                target_path.to_path_buf()
+            }
+        } else {
+            target_path.to_path_buf()
+        }
+    } else {
+        target_path.to_path_buf()
+    };
+
+    let mut locks = FILE_MUTATION_LOCKS.lock().unwrap();
+    locks
+        .entry(normalized)
+        .or_insert_with(|| Arc::new(TokioMutex::new(())))
+        .clone()
+}
 
 /// RAII Guard that automatically removes an uncommitted temporary file on drop.
 pub struct TempFileGuard {
@@ -142,6 +174,10 @@ impl TransactionMiddleware {
         ctx: &ToolExecutionContext,
         timeout: Option<Duration>,
     ) -> Result<(String, SystemNotice), (String, SystemNotice)> {
+        // Acquire per-file mutation lock to serialize concurrent writes from parallel agents
+        let file_lock = get_file_mutation_lock(&target_path);
+        let _file_permit = file_lock.lock().await;
+
         let _ = tokio::fs::create_dir_all(&self.temp_dir).await;
         let temp_path = self.generate_temp_path(&target_path);
         let mut guard = TempFileGuard::new(temp_path.clone());
@@ -435,6 +471,48 @@ mod tests {
         let content = std::fs::read_to_string(&target_file).expect("read");
         assert_eq!(content, "Original Important Content");
         assert!(result.output.contains("remains 100% UNTOUCHED"));
+        let _ = std::fs::remove_dir_all(&test_root);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_writes_are_serialized_safely() {
+        let test_root = std::env::temp_dir().join(format!("thunder_atomic_concurrent_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        let _ = std::fs::create_dir_all(&test_root);
+        let ws = test_root.clone();
+        let middleware = Arc::new(TransactionMiddleware::new(&ws));
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let mw = Arc::clone(&middleware);
+            let handle = tokio::spawn(async move {
+                let call = ToolCall::new_function(
+                    format!("call_concurrent_{i}"),
+                    "write_file",
+                    serde_json::json!({
+                        "path": "shared_output.txt",
+                        "content": format!("Write version {i}\n")
+                    })
+                    .to_string(),
+                );
+                let ctx = ToolExecutionContext {
+                    tool_call_id: format!("call_concurrent_{i}"),
+                    turn: 1,
+                    cancellation_token: CancellationToken::new(),
+                };
+                mw.handle(&call, &ctx, None, Arc::new(DummyTerminal)).await
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let res = handle.await.expect("join");
+            assert!(!res.is_error, "Concurrent write failed: {}", res.output);
+        }
+
+        let target_file = ws.join("shared_output.txt");
+        assert!(target_file.exists());
+        let final_content = std::fs::read_to_string(&target_file).expect("read");
+        assert!(final_content.starts_with("Write version "));
         let _ = std::fs::remove_dir_all(&test_root);
     }
 }

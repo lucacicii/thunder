@@ -71,6 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Topology::Single => vec![
             UnitSpec::new("agent", "assistant", base.clone()).with_builtins(),
         ],
+        Topology::FanOut => vec![
+            UnitSpec::new("worker1", "worker", base.clone()).with_builtins(),
+            UnitSpec::new("worker2", "worker", base.clone()).with_builtins(),
+        ],
         Topology::Auto => vec![
             UnitSpec::new("planner", "planner", base.clone()).with_builtins(),
             UnitSpec::new("coder", "coder", base.clone()).with_builtins(),

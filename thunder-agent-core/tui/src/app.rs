@@ -1485,7 +1485,9 @@ impl App {
             UnitSpec::new("reviewer", "reviewer", base_cfg.clone()).with_builtins(),
         ];
 
-        let mut orchestra_cfg = OrchestraConfig::new(topology).with_base(base_cfg);
+        let mut orchestra_cfg = OrchestraConfig::new(topology)
+            .with_base(base_cfg)
+            .with_synthesizer(true);
         for unit in units {
             orchestra_cfg = orchestra_cfg.with_unit(unit);
         }
@@ -1514,6 +1516,13 @@ impl App {
                         ));
                     }
 
+                    if let Some(synthesis) = &run.synthesis {
+                        summary_text.push_str(&format!(
+                            "### 🎯 Synthesized Report\n\n{}\n\n---\n\n",
+                            synthesis.trim()
+                        ));
+                    }
+
                     match topology {
                         Topology::Sequential | Topology::Auto if run.results.len() > 1 => {
                             summary_text.push_str(&format!("### 🔗 Pipeline Completed (run_id: {})\n\n", run.run_id));
@@ -1524,7 +1533,7 @@ impl App {
                                 }
                             }
                         }
-                        Topology::Parallel => {
+                        Topology::Parallel | Topology::FanOut => {
                             summary_text.push_str(&format!("### ⚖️ Parallel Execution Summary (run_id: {})\n\n", run.run_id));
                             for (role, res) in &run.results {
                                 summary_text.push_str(&format!("#### Role: `{role}`\n"));

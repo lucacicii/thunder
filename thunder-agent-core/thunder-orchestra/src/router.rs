@@ -9,9 +9,9 @@ pub struct RoutingDecision {
     pub confidence: f32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct IntentRouter {
-    base_config: Option<AgentConfig>,
+    pub base_config: Option<AgentConfig>,
 }
 
 impl IntentRouter {
@@ -19,23 +19,26 @@ impl IntentRouter {
         Self { base_config }
     }
 
-    /// Autonomously classify the user prompt and decide the optimal orchestration topology.
-    pub async fn route(&self, prompt: &str, use_mock: bool) -> RoutingDecision {
-        if use_mock || self.base_config.is_none() {
-            return self.heuristic_route(prompt);
-        }
-
-        if let Some(base) = &self.base_config {
-            if let Ok(decision) = self.llm_route(prompt, base).await {
-                return decision;
-            }
-        }
-
+    /// Autonomously classify the user prompt and decide the optimal orchestration topology
+    /// via deterministic intent triggers and structural keywords.
+    pub async fn route(&self, prompt: &str, _use_mock: bool) -> RoutingDecision {
         self.heuristic_route(prompt)
     }
 
     pub fn heuristic_route(&self, prompt: &str) -> RoutingDecision {
         let p_lower = prompt.to_lowercase();
+
+        let fanout_keywords = [
+            "fan out", "fanout", "subtask", "subtasks", "partition", "batch process",
+            "拆解", "分工", "分块", "分批", "子任务", "分发",
+        ];
+        if fanout_keywords.iter().any(|k| p_lower.contains(k)) {
+            return RoutingDecision {
+                topology: Topology::FanOut,
+                reason: "Task contains decomposable, independent subtasks suited for fan-out parallelization.".to_string(),
+                confidence: 0.92,
+            };
+        }
 
         let parallel_keywords = [
             "review", "audit", "benchmark", "compare", "security", "perf",
@@ -66,10 +69,5 @@ impl IntentRouter {
             reason: "Standard direct query or atomic task best handled by a single autonomous agent.".to_string(),
             confidence: 0.95,
         }
-    }
-
-    async fn llm_route(&self, prompt: &str, base: &AgentConfig) -> Result<RoutingDecision, String> {
-        let _ = (prompt, base);
-        Err("live LLM routing requires a provider-injected client".to_string())
     }
 }

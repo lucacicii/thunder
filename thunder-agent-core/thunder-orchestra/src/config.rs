@@ -12,7 +12,9 @@ pub enum Topology {
     Sequential,
     /// All units `start` together; B waits for every handle (Planner + Reviewer).
     Parallel,
-    /// LLM autonomously analyzes intent and decides whether Single, Sequential, or Parallel is optimal.
+    /// Decomposes a large task into distinct subtasks and runs specialized workers concurrently on each slice.
+    FanOut,
+    /// Autonomous heuristic routing analyzes intent and selects the optimal topology.
     Auto,
 }
 
@@ -29,6 +31,7 @@ pub struct UnitSpec {
     pub role: String,
     pub config: AgentConfig,
     pub register_builtins: bool,
+    pub system_prompt: Option<String>,
 }
 
 impl UnitSpec {
@@ -38,7 +41,13 @@ impl UnitSpec {
             role: role.into(),
             config,
             register_builtins: false,
+            system_prompt: None,
         }
+    }
+
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
     }
 
     pub fn with_builtins(mut self) -> Self {
@@ -57,6 +66,10 @@ pub struct OrchestraConfig {
     /// diagnostics (e.g. `Scheduler::health`). Falls back to `units[0].config`
     /// if unset.
     pub base: Option<AgentConfig>,
+    /// Whether to synthesize findings across multiple units into an aggregated report.
+    pub synthesize: bool,
+    /// Optional dedicated UnitSpec used to run the synthesis aggregator.
+    pub synthesizer: Option<UnitSpec>,
 }
 
 impl OrchestraConfig {
@@ -67,11 +80,24 @@ impl OrchestraConfig {
             store_root: PathBuf::from("runs"),
             units: Vec::new(),
             base: None,
+            synthesize: false,
+            synthesizer: None,
         }
     }
 
     pub fn with_unit(mut self, spec: UnitSpec) -> Self {
         self.units.push(spec);
+        self
+    }
+
+    pub fn with_synthesizer(mut self, enabled: bool) -> Self {
+        self.synthesize = enabled;
+        self
+    }
+
+    pub fn with_synthesizer_unit(mut self, spec: UnitSpec) -> Self {
+        self.synthesizer = Some(spec);
+        self.synthesize = true;
         self
     }
 

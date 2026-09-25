@@ -10,9 +10,9 @@ pub struct PluginSelection {
     pub confidence: f32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PluginSelector {
-    base_config: Option<AgentConfig>,
+    pub base_config: Option<AgentConfig>,
 }
 
 impl PluginSelector {
