@@ -1,10 +1,12 @@
 # Architecture: A is a unit, B is a scheduler
 
+[English](ARCHITECTURE.md) | [简体中文](ARCHITECTURE_zh.md)
+
 This crate (`thunder-agent-loop`) is **Agent A**: a complete, independently runnable
-single-agent unit. Another Rust application (**Agent B**) may depend on A and
+single-agent unit. Another Rust application (**Agent B**, e.g. `thunder-orchestra`) may depend on A and
 orchestrate many A instances. A never depends on B.
 
-```
+```text
 A  = one AgentLoop, one task at a time, full inner turn loop
 B  = optional scheduler / multi-agent graph (another crate)
 ```
@@ -54,9 +56,11 @@ Rules:
 2. Events are tagged with `agent_id` so a process with many A's can demux.
 3. Scratchpad files are isolated by `agent_id` under the configured `base_dir`.
    A does not delete them unless `auto_cleanup` is explicitly set.
-4. A does not install a global `tracing` subscriber. Hosts (CLI or B) do.
-5. A does not know about B: no agent graph, no router, no shared blackboard.
-6. Nested multi-agent (A calling A) is a tool in B (`DelegateTool` wrapping
+4. Concurrent file writes across multiple A instances or tools are safely serialized
+   via `FILE_MUTATION_LOCKS` (process-wide physical path mutex in `TransactionMiddleware`).
+5. A does not install a global `tracing` subscriber. Hosts (CLI or B) do.
+6. A does not know about B: no agent graph, no router, no shared blackboard.
+7. Nested multi-agent (A calling A) is a tool in B (`DelegateTool` wrapping
    another `AgentLoop`). Do not grow a runtime graph inside A.
 
 ## What stays in A
@@ -64,11 +68,11 @@ Rules:
 - Closed autonomous loop (`run` / `start`)
 - `LLMClientTrait` transport abstraction (implemented in production by `thunder-pi-bridge`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
-- In-memory context pruning
-- Loop-level repetition / error circuit breaker
-- Cancellation via `CancellationToken`
-- Optional built-in tools as **parts** (`BashTool`, file tools) — not auto-registered
-- CLI example that runs one agent to completion
+- In-memory context pruning with decoupled tool output eviction (`tool_eviction_threshold_tokens`)
+- Process-wide path concurrency locking (`FILE_MUTATION_LOCKS`)
+- Loop-level repetition / error circuit breaker (bounded default turns = 50)
+- Cancellation via `CancellationToken` and cooperative pausing via `PauseGate`
+- Built-in tools as optional parts (`BashTool`, file tools) — not auto-registered
 
 ## What never enters A
 
@@ -80,9 +84,9 @@ Rules:
 
 ## Dependency direction
 
-```
+```text
 B  ──depends on──►  A (this crate)
 A  never imports B
 ```
 
-B pins A by git tag or crates.io version. A's CI does not build B.
+B pins A by path, git tag, or crates.io version. A's CI does not build B.

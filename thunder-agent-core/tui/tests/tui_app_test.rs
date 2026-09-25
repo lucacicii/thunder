@@ -38,6 +38,13 @@ async fn test_app_execution_mode_cycling() {
     );
     assert_eq!(app.execution_mode, ExecutionMode::ParallelCouncil);
 
+    // Ctrl+P cycles to FanOut
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        tx.clone(),
+    );
+    assert_eq!(app.execution_mode, ExecutionMode::FanOut);
+
     // Ctrl+P cycles to SingleAgent
     app.handle_key(
         KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),

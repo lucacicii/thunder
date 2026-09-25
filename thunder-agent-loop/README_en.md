@@ -1,6 +1,6 @@
 # ⚡ Thunder Agent Loop
 
-> **Ultra-lightweight, High-Performance, Minimal-Resource Agent Loop Engine in Rust**
+> **Ultra-lightweight, High-Performance, Minimal-Resource Single-Agent Loop Engine in Rust**
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -8,41 +8,39 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
+`thunder-agent-loop` is the core atomic execution unit (**Agent A**) in the Thunder ecosystem. It drives the complete autonomous lifecycle of a single agent instance on a single task (multi-turn reasoning, streaming token/reasoning parsing, concurrent tool execution, decoupled context eviction, and state persistence), serving as a clean, cohesive substrate for downstream schedulers (**Agent B**, such as `thunder-orchestra`).
+
 ---
 
-## 🚀 Core Features
+## 🚀 Key Features
 
-- **Unbounded Autonomous Loop**: No hardcoded maximum turn limits by default. Termination is driven purely by LLM intent (`finish_reason: "stop"` or absence of tool calls) and external `CancellationToken`, while preserving optional turn and token budget circuit-breaker safeguards.
-- **Extreme Performance & Ultra-Low Latency**: Pure scheduling framework overhead is only **~5.7 µs (0.0057 ms)** per task, achieving throughput exceeding **170,000+ loops/sec**.
-- **Minimal Resource Footprint**: 10,000 concurrent agent loops consume **< 10 MB** of resident set size (RSS) memory, with zero garbage collection pauses (No GC).
-- **Streaming Incremental SSE Parser**: Zero-copy / low-allocation Server-Sent Events (SSE) parser that extracts real-time token deltas and accumulates multi-tool-call arguments on the fly.
-- **Parallel Asynchronous Tool Execution**: Executes native async Rust tools and non-blocking sub-processes (such as `BashTool`) concurrently, equipped with timeout circuit breakers and intelligent Head/Tail output truncation.
-- **Adaptive Context Pruning**: Hybrid pruning strategies (old tool output truncation + sliding window) maintain long-horizon conversations within token budgets while keeping the system prompt permanently pinned.
-- **Fine-Grained Lifecycle Observability**: Broadcasts comprehensive events across the entire loop lifecycle: `TurnStart`, `TokenDelta`, `ToolCallChunk`, `ToolCallReady`, `ToolExecResult`, `TurnEnd`, `LoopComplete`, and `Error`.
+- **Bounded Autonomous Loop**: Configured with a default **50 turns ceiling** to safeguard against infinite loops, paired with an explicit `.with_unlimited_turns()` escape hatch where termination is driven purely by model completion (`finish_reason: "stop"` or absence of tool calls).
+- **Pure Transport Decoupling**: Free of HTTP or provider-specific protocol dependencies. Operates over a clean asynchronous stream contract (`LLMClientTrait`). In production, seamlessly powered by `thunder-pi-bridge` (a Node.js sidecar running `@earendil-works/pi-ai`).
+- **Decoupled Tool Eviction**: Separates **tool output eviction** (`tool_eviction_threshold_tokens: 20_000`) from the model's physical context window. Automatically compacts older tool logs when tool output accumulates, while preserving human-assistant dialogue history up to the model's full capacity (e.g. DeepSeek 1M tokens).
+- **Cross-Agent File Write Mutex (`FILE_MUTATION_LOCKS`)**: Built into `TransactionMiddleware`. Provides process-wide normalized path mutexes so concurrent agents or parallel tools writing to the same file serialize cleanly, eliminating silent overwrites.
+- **Ultra-Low Latency & Footprint**: Framework scheduling overhead is only **~5.7 µs (0.0057 ms)** per task. Resident memory (RSS) under 10k concurrency is **< 10 MB**, with zero garbage collection pause.
+- **Native Parallel Tool Dispatch**: Executes native functions and non-blocking asynchronous Bash subprocesses concurrently with timeout fuses and head/tail smart truncation.
+- **Observable Event Streaming**: Full-lifecycle backpressured broadcast stream supporting `TurnStart`, `TokenDelta`, `ReasoningDelta`, `ToolExecResult`, and `LoopComplete`.
+- **Permission Tiers & Cooperative Pausing**: Three permission tiers (`Read` ⊂ `Write` ⊂ `Bash`, where unauthorized tools are physically not registered) and non-destructive cooperative pausing (`PauseGate`) at tool scheduling boundaries.
 
 ---
 
 ## 📊 Benchmark
 
-Tested on Apple Silicon (ARM64 / M-series):
+Benchmarked on Apple Silicon (ARM64):
 
-| Benchmark Item | Result Metric | Description |
+| Metric | Result | Note |
 | :--- | :--- | :--- |
-| **Token Estimation Throughput** | **1,465 MB/s** (1.53 billion chars/sec) | Zero-allocation, bilingual adaptive estimation |
-| **10k Concurrency Throughput** | **174,838 loops / sec** | 10,000 concurrent agent loops finished within 57 ms |
-| **Single Task Framework Overhead** | **5.72 µs (0.0057 ms)** | Pure framework dispatch latency (excluding network I/O) |
-| **10k Concurrency RSS Memory** | **8.19 MB** | Minimal footprint, ideal for high-density microservices and edge embeddings |
-
-Run benchmarks locally:
-```bash
-./test.sh bench
-```
+| **Token Estimation Throughput** | **1,465 MB/s** (1.53B chars/sec) | Zero-allocation, dual English/Chinese |
+| **10k Concurrency Dispatch** | **174,838 loops / sec** | 10,000 concurrent loops completed in 57ms |
+| **Single-Task Framework Overhead** | **5.72 µs (0.0057 ms)** | Clean scheduling latency excluding external network |
+| **10k Concurrency Resident Memory (RSS)** | **8.19 MB** | Minimal footprint for microservices and edge embedding |
 
 ---
 
 ## 🛠️ Quickstart
 
-### 1. Basic Usage (Default Unbounded Autonomous Loop)
+### 1. Basic Loop & Tool Registration
 
 ```rust
 use std::sync::Arc;
@@ -50,24 +48,22 @@ use thunder_agent_loop::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initialize configuration (unbounded autonomous loop by default)
+    // 1. Initialize configuration (default 50-turn safety ceiling)
     let config = AgentConfig::new("gpt-4o")
-        .with_api_base("https://api.openai.com/v1")
-        .with_api_key(std::env::var("OPENAI_API_KEY")?)
-        .with_system_prompt("You are a high-speed autonomous AI assistant.")
-        .with_unlimited_turns(); // Explicitly declare unbounded execution
+        .with_system_prompt("You are a high-speed AI engineering assistant.")
+        .with_max_turns(50); // or .with_unlimited_turns()
 
     let mut agent = AgentLoop::new(config);
     
-    // Register built-in tools
+    // 2. Register required tools
     agent.register_tool(Arc::new(BashTool::default()));
-    agent.register_tool(Arc::new(ReadFileTool));
-    agent.register_tool(Arc::new(WriteFileTool));
+    agent.register_tool(Arc::new(ReadFileTool::default()));
+    agent.register_tool(Arc::new(WriteFileTool::default()));
 
-    // 2. Execute agent loop (runs until task is fulfilled or cancelled)
-    let result = agent.run("Check current system status and list files", None).await?;
+    // 3. Execute closed-loop task
+    let result = agent.run("Check system git status and summarize the repository", None).await?;
     
-    println!("Final Content: {:?}", result.final_content);
+    println!("Final Output: {:?}", result.final_content);
     println!("Total Turns: {}", result.stats.total_turns);
     println!("Tool Executions: {}", result.stats.total_tool_executions);
 
@@ -77,9 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-### 2. Event Streaming & Real-Time Observability
-
-Subscribe to live lifecycle events before running the loop:
+### 2. Event Subscription & Real-Time Streaming
 
 ```rust
 use thunder_agent_loop::prelude::*;
@@ -96,11 +90,15 @@ tokio::spawn(async move {
             AgentEvent::TokenDelta { delta, .. } => {
                 print!("{}", delta);
             }
+            AgentEvent::ReasoningDelta { delta, .. } => {
+                // Reasoning chain (DeepSeek-R1 / o1)
+                print!("[Thinking] {}", delta);
+            }
             AgentEvent::ToolExecResult { name, result, .. } => {
-                println!("🛠️ [{}] Tool '{}' finished in {}ms", observed.agent_id, name, result.duration_ms);
+                println!("🛠️ [{}] Tool '{}' finished ({}ms)", observed.agent_id, name, result.duration_ms);
             }
             AgentEvent::TurnEnd { finish_reason, stats, .. } => {
-                println!("⏹ Turn ended ({}, {}ms)", finish_reason, stats.duration_ms);
+                println!("⏹ Turn concluded ({}, {}ms)", finish_reason, stats.duration_ms);
             }
             _ => {}
         }
@@ -110,132 +108,86 @@ tokio::spawn(async move {
 
 ---
 
-### 3. Creating Custom Tools
-
-Implement the `AgentTool` trait to register custom domain tools:
-
-```rust
-use async_trait::async_trait;
-use serde_json::json;
-use thunder_agent_loop::prelude::*;
-
-pub struct CalculatorTool;
-
-#[async_trait]
-impl AgentTool for CalculatorTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new_function(
-            "calculate",
-            "Perform mathematical calculations",
-            json!({
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Math expression to evaluate, e.g. 12 * 45"
-                    }
-                },
-                "required": ["expression"]
-            }),
-        )
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolExecutionContext,
-    ) -> Result<String, String> {
-        let expr = args["expression"].as_str().ok_or("Missing expression")?;
-        // Process calculation...
-        Ok(format!("Result of {}: 540", expr))
-    }
-}
-```
-
----
-
-### 4. Context Pruning Configuration
-
-Configure adaptive context compaction to prevent prompt explosion on long-running loops:
+### 3. Decoupled Tool Eviction & Context Configuration
 
 ```rust
 use thunder_agent_loop::prelude::*;
 
-let mut config = AgentConfig::new("gpt-4o");
+let mut config = AgentConfig::new("deepseek-chat");
 config.pruning = ContextPruningConfig {
-    max_context_tokens: 64_000,
+    // Total physical context window (e.g. 1,000,000 tokens)
+    max_context_tokens: 1_000_000,
+    // Decoupled tool eviction: trims tool outputs only when tool logs exceed 20,000 tokens
+    tool_eviction_threshold_tokens: 20_000,
     preserve_last_turns: 3,
     pin_system_prompt: true,
-    strategy: PruningStrategy::Hybrid, // Truncate old tool outputs + sliding window
+    strategy: PruningStrategy::Hybrid, // Hybrid: tool output compaction + sliding window
 };
 ```
 
 ---
 
-## 🧰 Built-in Tools
+### 4. Cross-Agent File Concurrency Lock
 
-| Tool | Name | Description |
-| :--- | :--- | :--- |
-| **`BashTool`** | `bash` | Non-blocking async shell command execution with timeout & output truncation safeguards. |
-| **`ReadFileTool`** | `read_file` | Fast async file reader with automatic path validation. |
-| **`WriteFileTool`** | `write_file` | Async atomic file writer that automatically creates parent directories. |
-
----
-
-## 🧪 Test & Automation Script (`test.sh`)
-
-```bash
-# Run full suite (Unit tests + 10k Concurrency Benchmark + CLI demo)
-./test.sh
-
-# Run unit and integration tests only
-./test.sh test
-
-# Run high-concurrency performance benchmark (10,000 concurrent loops)
-./test.sh bench
-
-# Run interactive CLI with streaming output
-./test.sh run "Summarize directory structure using bash"
-```
-
----
-
-## 🧩 Unit Contract (A is an Agent, B is a scheduler)
-
-This crate is **Agent A**: a complete single-agent unit that can run a task to completion on its own. Another Rust app (**B**) may depend on A and orchestrate many instances. A never depends on B. See [ARCHITECTURE.md](ARCHITECTURE.md).
+When multiple agent units or concurrent tool calls target the same file path, `TransactionMiddleware` acquires `FILE_MUTATION_LOCKS`:
 
 ```rust
-// A finishes one task by itself
-let mut agent = AgentLoop::new(config).with_id("researcher");
-agent.register_tool(Arc::new(BashTool::default()));
-let result = agent.run("Investigate the repo", None).await?;
+// Process-wide normalized path mutex table
+// Concurrent writes to the SAME file are queued safely.
+// Concurrent writes to DIFFERENT files proceed fully parallel.
+static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-// B (scheduler) runs two units side by side
-let planner = AgentLoop::new(cfg.clone()).with_id("planner");
-let coder = AgentLoop::new(cfg).with_id("coder");
-let h1 = planner.start("Plan the change", None)?;
-let h2 = coder.start("Implement it", None)?;
-let (r1, r2) = tokio::try_join!(h1.join(), h2.join())?;
+// Write flow: acquire path lock → write temp file → atomic shadow-rename commit
+let lock = FILE_MUTATION_LOCKS.lock().unwrap()
+    .entry(normalized_path)
+    .or_insert_with(|| Arc::new(TokioMutex::new(())))
+    .clone();
+let _guard = lock.lock().await;
 ```
-
-- One `AgentLoop` runs one task at a time; parallelism means `new` another instance.
-- Events carry `agent_id` so a scheduler can demux streams.
-- Scratchpad files are isolated by `agent_id`; A does not auto-delete them by default.
-- A does not install a global tracing subscriber; the host (CLI or B) does.
 
 ---
 
-## 📦 Project Architecture
+## 🔒 Permissions & Cooperative Pausing
 
+### `Permission` Levels
+
+```rust
+pub enum Permission { Read, Write, Bash }   // Hierarchy: Read ⊂ Write ⊂ Bash
 ```
+
+Configured on `AgentConfig` (defaults to `Bash`). Controls which tools are registered. Blocked tools are invisible to the model. `PermissionGuardMiddleware` provides additional defense-in-depth.
+
+```rust
+let cfg = AgentConfig::new("gpt-4o").with_permission(Permission::Read);
+```
+
+### `PauseGate` (Cooperative Pausing)
+
+`CancellationToken` handles irreversible task termination; `PauseGate` handles non-destructive, resumable task pausing.
+
+```rust
+let handle = agent.start("Long running task", None)?;
+handle.pause();          // Takes effect at next tool boundary
+handle.resume();         // Resumes execution
+```
+
+The pause checkpoint is placed **before tool dispatch**. Active tools finish cleanly before pausing, preventing file corruption.
+
+---
+
+## 📂 Module Structure
+
+```text
 src/
-├── core/                  # Context buffer, state tracker, token estimator
-├── loop_engine/           # Main autonomous loop engine & event dispatcher
-├── pruning/               # Adaptive sliding window & tool output compression
-├── stream/                # Zero-copy SSE client & chunk parsers
-├── tools/                 # Tool registry, parallel executor, built-in tools
-│   └── builtin/           # bash, read_file, write_file
-└── types/                 # Message, event, tool, and config data types
+├── core/                  # Context buffer, state tracker, token estimator, PauseGate
+├── loop_engine/           # Core loop engine, event emitter, task state machine
+├── pruning/               # Decoupled pruning & tool output eviction
+├── stream/                # Pure LLMClientTrait contract and mock client
+├── tools/                 # Tool registry, parallel executor, builtin tools
+│   ├── builtin/           # bash, read_file, write_file
+│   └── middleware/        # Middlewares (Security / Resource / Transaction / FILE_MUTATION_LOCKS)
+└── types/                 # Messages, events, tools, and config definitions
 ```
 
 ---

@@ -11,14 +11,14 @@
 ## 🌟 核心特性
 
 - **多编排拓扑原生感知**：
-  - **Sequential (串行流水线)**：阶段切片 (`StageRecord`)，精确追踪 `planner` → `coder` 各阶段交接产出。
+  - **Sequential (串行流水线)**：阶段切片 (`StageRecord`)，精确追踪 `planner` ➔ `coder` 各阶段交接产出。
   - **Parallel (并行分治)**：会话派生分支 (`create_branch`) 与多视角合并归约 (`merge_parallel_into_parent`)。
   - **Delegate (嵌套委托)**：工具调用关联子会话 (`record_delegated_task`)，实现父会话干净收敛、子会话自由下钻。
 - **双模存储架构**：
   - **`MemoryConversationStore`**：基于 `RwLock<HashMap>` 的线程安全纯内存存储，适合单次运行、测试与低延迟缓存。
-  - **`FsConversationStore`**：基于文件系统与原子写入（`rename`）的持久化存储，内置 `index.json` 极速索引缓存，规避大文件列表遍历开销。
+  - **`FsConversationStore`**：基于文件系统与原子写入（shadow rename）的持久化存储，内置 `index.json` 极速索引缓存，规避大目录文件遍历开销。
 - **Turn 轮次抽象与智能裁剪**：
-  - 自动将 `User -> Assistant -> Tool -> Assistant` 聚合为逻辑轮次。
+  - 自动将 `User ➔ Assistant ➔ Tool ➔ Assistant` 聚合为逻辑轮次。
   - 支持按轮次裁剪 (`truncate_turns`) 并保持 System Prompt 绝对置顶。
 - **无缝桥接运行时**：
   - 会话可直接转换为 `thunder-agent-loop` 的 `ContextInput` 或 `ContextBuffer`。
@@ -64,9 +64,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-## 🧪 自动化测试
+## 🛠️ 自动化测试
 
 ```bash
 # 运行子包全套单元与集成测试
-./test.sh
+cargo test -p thunder-conversation
 ```
+
+---
+
+## 📄 开源协议
+
+本项目采用 [Apache License 2.0](../../LICENSE) 开源许可证。
