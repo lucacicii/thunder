@@ -196,7 +196,7 @@ impl Default for AgentConfig {
             temperature: None,
             top_p: None,
             max_completion_tokens: None,
-            max_turns: None, // Default: no upper bound on loop turns (unlimited)
+            max_turns: Some(50), // Default: 50 turns safety ceiling. Use `with_unlimited_turns()` to run indefinitely.
             max_tokens_budget: None,
             max_tool_output_bytes: 64 * 1024,
             request_timeout_ms: 60_000,
