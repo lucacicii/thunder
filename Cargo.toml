@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "thunder-agent-loop",
+    "thunder-pi-bridge",
+    "thunder-agent-providers",
+    "thunder-agent-skills",
+    "thunder-agent-mcp",
+    "thunder-agent-root",
+    "thunder-agent-plugin",
+    "thunder-agent-daemon",
+    "thunder-agent-core/conversation",
+    "thunder-agent-core/thunder-orchestra",
+    "thunder-agent-core/tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+license = "Apache-2.0"
+repository = "https://github.com/lucacicii/thunder"
+homepage = "https://github.com/lucacicii/thunder"
+
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
+tokio-util = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+tempfile = "3.10"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
