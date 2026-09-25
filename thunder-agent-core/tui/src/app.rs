@@ -4,12 +4,54 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
 use thunder_conversation::prelude::*;
-use thunder_orchestra::{OrchestraConfig, Scheduler, Topology, UnitSpec};
+use thunder_orchestra::{ClientFactory, OrchestraConfig, Scheduler, Topology, UnitSpec};
 use thunder_agent_root::prelude::*;
 use thunder_agent_providers::prelude::*;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+/// Default role personas for TUI-orchestrated units so Parallel Council runs
+/// carry genuinely different system prompts instead of a shared base prompt.
+fn orchestra_role_persona(role: &str) -> Option<&'static str> {
+    match role {
+        "planner" => Some(
+            "You are the Planning Specialist. Decompose the brief into concrete, ordered steps, \
+             surface risks and dependencies, and produce a precise actionable plan. \
+             Do not modify files yourself.",
+        ),
+        "coder" => Some(
+            "You are the Implementation Specialist. Execute the incoming plan with precise, \
+             minimal edits, verify changes with available tools, and report exactly what changed.",
+        ),
+        "reviewer" => Some(
+            "You are the Review & Risk Specialist. Critique the work for correctness, quality, \
+             and security; list defects by severity and propose concrete fixes.",
+        ),
+        _ => None,
+    }
+}
+
+fn orchestra_units(base: &AgentConfig) -> Vec<UnitSpec> {
+    ["planner", "coder", "reviewer"]
+        .into_iter()
+        .map(|role| {
+            let mut spec = UnitSpec::new(role, role, base.clone()).with_builtins();
+            if let Some(persona) = orchestra_role_persona(role) {
+                spec = spec.with_system_prompt(persona);
+            }
+            spec
+        })
+        .collect()
+}
+
+fn synthesizer_unit(base: &AgentConfig) -> UnitSpec {
+    UnitSpec::new("synthesizer", "synthesizer", base.clone()).with_system_prompt(
+        "You are the Synthesis and Review Aggregator. Merge the unit outputs into one unified, \
+         decisive report: highlight consensus, resolve discrepancies, and state the final \
+         actionable conclusion. Be concise.",
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -180,6 +222,22 @@ impl App {
     pub fn with_provider_registry(mut self, registry: ProviderRegistry) -> Self {
         self.provider_registry = registry;
         self
+    }
+
+    /// Real-mode LLM seam for every orchestra run launched by this TUI:
+    /// resolves each unit's own `AgentConfig.model` through the provider
+    /// registry (same `client_for` path as `ThunderRoot`), so units never fall
+    /// back to `UnconfiguredLLMClient`. Returns `None` in mock mode.
+    fn orchestra_client_factory(&self) -> Option<ClientFactory> {
+        if self.use_mock {
+            return None;
+        }
+        let registry = self.provider_registry.clone();
+        Some(Arc::new(move |cfg: &AgentConfig| {
+            registry
+                .resolve(&cfg.model)
+                .and_then(|spec| client_for(spec, cfg.request_timeout_ms).ok())
+        }))
     }
 
     pub async fn refresh_sessions(&mut self) {
@@ -1290,14 +1348,15 @@ impl App {
         let mut base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
         base_cfg.temperature = Some(self.temperature);
         base_cfg.request_timeout_ms = timeout_ms;
+        if let Some(spec) = self.provider_registry.resolve(&model) {
+            base_cfg.pruning.max_context_tokens = spec.context_window;
+        }
 
-        let units = vec![
-            UnitSpec::new("planner", "planner", base_cfg.clone()).with_builtins(),
-            UnitSpec::new("coder", "coder", base_cfg.clone()).with_builtins(),
-            UnitSpec::new("reviewer", "reviewer", base_cfg.clone()).with_builtins(),
-        ];
         let mut orchestra_cfg = OrchestraConfig::new(Topology::Auto).with_base(base_cfg.clone());
-        for unit in units {
+        if let Some(factory) = self.orchestra_client_factory() {
+            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
+        }
+        for unit in orchestra_units(&base_cfg) {
             orchestra_cfg = orchestra_cfg.with_unit(unit);
         }
 
@@ -1487,17 +1546,17 @@ impl App {
         let mut base_cfg = AgentConfig::new(model).with_unlimited_turns();
         base_cfg.temperature = Some(self.temperature);
         base_cfg.request_timeout_ms = self.request_timeout_ms;
-
-        let units = vec![
-            UnitSpec::new("planner", "planner", base_cfg.clone()).with_builtins(),
-            UnitSpec::new("coder", "coder", base_cfg.clone()).with_builtins(),
-            UnitSpec::new("reviewer", "reviewer", base_cfg.clone()).with_builtins(),
-        ];
+        if let Some(spec) = self.provider_registry.resolve(&base_cfg.model) {
+            base_cfg.pruning.max_context_tokens = spec.context_window;
+        }
 
         let mut orchestra_cfg = OrchestraConfig::new(topology)
-            .with_base(base_cfg)
-            .with_synthesizer(true);
-        for unit in units {
+            .with_base(base_cfg.clone())
+            .with_synthesizer_unit(synthesizer_unit(&base_cfg));
+        if let Some(factory) = self.orchestra_client_factory() {
+            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
+        }
+        for unit in orchestra_units(&base_cfg) {
             orchestra_cfg = orchestra_cfg.with_unit(unit);
         }
 
@@ -1584,7 +1643,10 @@ impl App {
         let use_mock = self.use_mock;
         let base_cfg = AgentConfig::new(model).with_unlimited_turns();
 
-        let orchestra_cfg = OrchestraConfig::new(Topology::Sequential).with_base(base_cfg);
+        let mut orchestra_cfg = OrchestraConfig::new(Topology::Sequential).with_base(base_cfg);
+        if let Some(factory) = self.orchestra_client_factory() {
+            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
+        }
         let scheduler = Scheduler::new(orchestra_cfg);
 
         tokio::spawn(async move {

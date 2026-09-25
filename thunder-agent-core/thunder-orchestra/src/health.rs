@@ -143,11 +143,27 @@ async fn check_llm_reachable(config: &OrchestraConfig, use_mock: bool) -> Health
     let client: Arc<dyn LLMClientTrait> = if use_mock {
         Arc::new(RoleMockClient::new("health"))
     } else {
-        return HealthCheck {
-            name: "llm_reachable".to_string(),
-            passed: false,
-            detail: "live LLM probe requires a provider-injected client".to_string(),
+        let Some(factory) = config.client_factory.as_ref() else {
+            return HealthCheck {
+                name: "llm_reachable".to_string(),
+                passed: false,
+                detail: "no client factory configured for live probe: attach one via \
+                         `OrchestraConfig::with_client_factory` (hosts typically build it from \
+                         `ProviderRegistry` + `client_for`)"
+                    .to_string(),
+            };
         };
+        let Some(resolved) = factory(&base) else {
+            return HealthCheck {
+                name: "llm_reachable".to_string(),
+                passed: false,
+                detail: format!(
+                    "client factory returned no client for model `{}` — verify models.json / auth.json",
+                    base.model
+                ),
+            };
+        };
+        resolved
     };
 
     let cancel = CancellationToken::new();

@@ -1,9 +1,51 @@
 use std::env;
+use std::sync::Arc;
 use thunder_agent_loop::{init_logger, AgentConfig};
-use thunder_orchestra::{OrchestraConfig, Scheduler, Topology, UnitSpec};
+use thunder_orchestra::{ClientFactory, OrchestraConfig, Scheduler, Topology, UnitSpec};
 
 fn live_config(model: String) -> AgentConfig {
     AgentConfig::new(model).with_unlimited_turns()
+}
+
+/// Default role personas so CLI units carry genuinely different system prompts.
+fn persona_for(role: &str) -> Option<&'static str> {
+    match role {
+        "planner" => Some(
+            "You are the Planning Specialist. Decompose the brief into concrete, ordered steps, \
+             identify risks and dependencies, and hand a precise actionable plan to the next unit. \
+             Do not modify files yourself.",
+        ),
+        "coder" => Some(
+            "You are the Implementation Specialist. Execute the incoming plan with precise, minimal \
+             edits, verify your changes with the available tools, and report exactly what changed.",
+        ),
+        "reviewer" => Some(
+            "You are the Review & Risk Specialist. Critique the work from a quality, correctness, and \
+             security angle, list defects by severity, and propose concrete fixes.",
+        ),
+        _ => None,
+    }
+}
+
+fn unit(id: &str, role: &str, base: &AgentConfig) -> UnitSpec {
+    let mut spec = UnitSpec::new(id, role, base.clone()).with_builtins();
+    if let Some(persona) = persona_for(role) {
+        spec = spec.with_system_prompt(persona);
+    }
+    spec
+}
+
+/// Build the real-mode client factory from the default provider registry.
+/// The factory resolves each unit's own `AgentConfig.model` so different units
+/// may run different models.
+async fn client_factory_or_none() -> Option<ClientFactory> {
+    use thunder_agent_providers::prelude::{client_for, ProviderRegistry};
+    let registry = ProviderRegistry::load_default().await.ok()?;
+    Some(Arc::new(move |cfg: &AgentConfig| {
+        registry
+            .resolve(&cfg.model)
+            .and_then(|spec| client_for(spec, cfg.request_timeout_ms).ok())
+    }))
 }
 
 fn parse_args(args: &[String]) -> (Topology, String) {
@@ -44,12 +86,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).map(|s| s.as_str()) == Some("health")
         || args.iter().any(|a| a == "--health")
     {
-        let use_mock = args.iter().any(|a| a == "--mock");
         let store_root = env::current_dir()?.join("runs");
-        let orchestra = OrchestraConfig::new(Topology::Parallel)
+        let mut orchestra = OrchestraConfig::new(Topology::Parallel)
             .with_store_root(&store_root)
             .with_scratch_root(env::temp_dir().join("thunder-orchestra"))
             .with_base(base.clone());
+        if !use_mock {
+            if let Some(factory) = client_factory_or_none().await {
+                orchestra = orchestra.with_client_factory(factory);
+            }
+        }
         let scheduler = Scheduler::new(orchestra);
         let report = scheduler.health(use_mock).await;
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -61,12 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let units = match topology {
         Topology::Parallel => vec![
-            UnitSpec::new("planner", "planner", base.clone()).with_builtins(),
-            UnitSpec::new("reviewer", "reviewer", base.clone()).with_builtins(),
+            unit("planner", "planner", &base),
+            unit("reviewer", "reviewer", &base),
         ],
         Topology::Sequential => vec![
-            UnitSpec::new("planner", "planner", base.clone()).with_builtins(),
-            UnitSpec::new("coder", "coder", base.clone()).with_builtins(),
+            unit("planner", "planner", &base),
+            unit("coder", "coder", &base),
         ],
         Topology::Single => vec![
             UnitSpec::new("agent", "assistant", base.clone()).with_builtins(),
@@ -76,9 +122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             UnitSpec::new("worker2", "worker", base.clone()).with_builtins(),
         ],
         Topology::Auto => vec![
-            UnitSpec::new("planner", "planner", base.clone()).with_builtins(),
-            UnitSpec::new("coder", "coder", base.clone()).with_builtins(),
-            UnitSpec::new("reviewer", "reviewer", base.clone()).with_builtins(),
+            unit("planner", "planner", &base),
+            unit("coder", "coder", &base),
+            unit("reviewer", "reviewer", &base),
         ],
     };
 
@@ -86,8 +132,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut orchestra = OrchestraConfig::new(topology)
         .with_store_root(&store_root)
         .with_base(base.clone());
-    for unit in units {
-        orchestra = orchestra.with_unit(unit);
+    if !use_mock {
+        match client_factory_or_none().await {
+            Some(factory) => {
+                orchestra = orchestra.with_client_factory(factory);
+            }
+            None => {
+                eprintln!(
+                    "❌ real mode requested but no provider registry is available \
+                     (check ~/.thunder/models.json + auth.json); rerun with --mock for a fixture run"
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+    for unit_spec in units {
+        orchestra = orchestra.with_unit(unit_spec);
     }
 
     println!(

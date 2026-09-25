@@ -56,12 +56,40 @@ thunder/
 | **`Single`** | 单 Agent 自主执行 | 单一全功能 Agent 自主思考与执行 | 绝大多数常规问答、原子命令与独立文件编辑 |
 | **`Sequential`** | 链式串行流水线 | 前序输出注入后续作为输入（Planner ➔ Coder ➔ Reviewer） | 复杂功能规划与渐进式开发流程 |
 | **`Parallel`** | 多视角并行审查 | **角色视角注入**：每个 Unit 强制绑定专属系统提示词与职责边界 | 多维度审查、安全性与性能综合评测 |
-| **`FanOut`** | **真实任务拆解并行** | **结构化任务分解**：`TaskDecomposer` 将庞大指令切片为独立子任务分片并发执行 | 大批量任务分块、多模块独立分析 |
+| **`FanOut`** | **子任务拆解并行** | **启发式任务分解**：`HeuristicDecomposer` 识别编号/项目符号列表切片并发执行；自然语言 prompt 则按角色视角分片 | 批量列表任务分块、多模块独立分析 |
 
 ### 聚合器（Synthesizer）与文件并发保护
 
-- **结果聚合器（`Synthesizer`）**：在 `Parallel` 或 `FanOut` 结束后，由可选的聚合节点将多只 Unit 的独立产出归纳提炼，输出统一的决议报告（`synthesis`），避免用户面对多个零散孤立答案。
-- **跨 Agent 文件写入互斥排队锁**：底层由 `TransactionMiddleware` 的进程内全局文件排队锁（`FILE_MUTATION_LOCKS`）保护。多个 Agent 或多工具并发写入同一文件时排队串行化，杜绝竞态覆盖。
+- **结果聚合器（`Synthesizer`）**：在 `Parallel` 或 `FanOut` 结束后，由可选的聚合节点将多只 Unit 的独立产出归纳提炼，输出统一的决议报告（`synthesis`），避免用户面对多个零散孤立答案。**诚实降级**：仅当真实模式下配置了聚合 Unit 且成功解析 LLM client 时才执行 LLM 综合；否则原样并列各 Unit 产出并标注原因，绝不伪造「已综合」结论。
+- **跨 Agent 文件写入互斥排队锁**：底层由 `TransactionMiddleware` 的**进程内**全局文件排队锁（`FILE_MUTATION_LOCKS`）保护。多个 Agent 或多任务并发写入同一文件时排队串行化，不同文件完全并行；锁表条目在无竞争写入后 best-effort 释放，长跑进程不会无限膨胀。注意：该锁不跨进程（TUI 与 daemon 同时写同一文件时无互斥保证）。
+
+### 真实模式 Client 注入（关键）
+
+B 是纯调度器，**自身不解析传输层**。真实模式（`use_mock = false`）下必须由组合根（TUI / daemon / CLI）注入 `ClientFactory`：
+
+```rust
+use std::sync::Arc;
+use thunder_agent_loop::AgentConfig;
+use thunder_orchestra::{ClientFactory, OrchestraConfig, Topology, UnitSpec};
+
+let factory: ClientFactory = Arc::new(|cfg: &AgentConfig| {
+    my_registry
+        .resolve(&cfg.model)
+        .and_then(|spec| my_client_for(spec, cfg.request_timeout_ms).ok())
+});
+
+let orchestra = OrchestraConfig::new(Topology::Parallel)
+    .with_client_factory(factory)          // 真实模式必需
+    .with_unit(UnitSpec::new("planner", "planner", base.clone()));
+```
+
+**Fail-Fast 语义**：
+- 真实模式下未注入 factory → `dispatch` 在任何 Unit 启动前立即报错（而非运行中途每个 Unit 死在 `UnconfiguredLLMClient` 上）。
+- factory 对某个 Unit 返回 `None` → 报错并指明 Unit 与模型名。
+- 聚合器无法解析 client 时诚实降级（见上节），不伪造综合报告。
+- `health` 真实模式探针同样走 factory。
+
+TUI 已在内部从 `ProviderRegistry` 自动构造 factory（与 `ThunderRoot` 同一 `client_for` 路径），并为 planner/coder/reviewer/synthesizer 注入差异化 persona 系统提示词；CLI 则在 `--mock` 缺席时从默认 registry 解析，解析失败时以退出码 `2` 提示配置缺失。
 
 ---
 
@@ -83,6 +111,8 @@ cd thunder-agent-core/thunder-orchestra
 # 运行全套单测与集成测试
 cargo test --test scheduler_test
 cargo test --test router_test
+# 真实模式（非 mock 分支）注入链路测试
+cargo test --test real_mode_test
 
 # 启动模拟 (Mock) 模式进行流水线验证
 cargo run -- --mock pipeline "add a health check"
@@ -92,6 +122,9 @@ cargo run -- --mock parallel "review the security and performance of src/lib.rs"
 
 # 启动子任务拆解与并发 Fan-Out
 cargo run -- --mock fanout "1. Refactor networking 2. Optimize parser 3. Update tests"
+
+# 真实模式（读取 ~/.thunder/models.json + auth.json；未配置时退出码 2）
+MODEL=deepseek-chat cargo run -- parallel "review src/lib.rs"
 
 # 运行健康检查自检（检查 store/scratch 可写性与 LLM 连通性）
 cargo run -- health --mock
@@ -117,4 +150,6 @@ cargo run -- health --mock
 ```toml
 [dependencies]
 thunder-agent-loop = { path = "../../thunder-agent-loop" }
+# 仅 `thunder-orchestra` 二进制（组合根）用于构建真实模式 factory；库本身不依赖传输层
+thunder-agent-providers = { path = "../../thunder-agent-providers" }
 ```
