@@ -3,6 +3,7 @@ use std::env;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_agent_root::prelude::*;
 use tokio_util::sync::CancellationToken;
 
@@ -80,18 +81,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_mock = args.iter().any(|a| a == "--mock");
 
     let model = env::var("MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let base_cfg = AgentConfig::new(model).with_unlimited_turns();
+    let base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
+
+    // Composition root: one provider registry feeds BOTH the outer agent
+    // (via ThunderRoot) and every orchestra delegate sub-agent (via the
+    // ClientFactory), so LIVE mode has a single source of transport truth.
+    let registry = match ProviderRegistry::load_default().await {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("⚠  Failed to load provider registry (~/.thunder): {err}");
+            ProviderRegistry::default()
+        }
+    };
 
     // 1. Initialize ThunderRoot with extensible plugins
     let mut root = ThunderRoot::new(base_cfg.clone())
         .with_plugin(ConversationPlugin::with_memory_store())
         .with_plugin(SkillsPlugin::default())
-        .with_plugin(McpPlugin::default());
+        .with_plugin(McpPlugin::default())
+        .with_provider_registry(registry.clone());
 
     #[cfg(feature = "orchestra")]
     {
+        use thunder_agent_providers::prelude::client_for;
+
+        let orch_registry = registry.clone();
+        let factory: thunder_orchestra::ClientFactory = Arc::new(move |cfg: &AgentConfig| {
+            orch_registry
+                .resolve(&cfg.model)
+                .and_then(|spec| client_for(spec, cfg.request_timeout_ms).ok())
+        });
         let orch_cfg = thunder_orchestra::OrchestraConfig::new(thunder_orchestra::Topology::Auto)
-            .with_base(base_cfg);
+            .with_base(base_cfg.clone())
+            .with_client_factory(factory);
         root = root.with_plugin(OrchestraPlugin::new(orch_cfg));
     }
 
@@ -104,6 +126,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         root.registry().list_manifests().iter().map(|m| &m.id).collect::<Vec<_>>()
     );
     println!("------------------------------------------------------------");
+
+    if !use_mock && registry.resolve(&model).is_none() {
+        println!(
+            "⚠  MODEL '{}' was not found in the provider registry (~/.thunder/models.json + auth.json). \
+             LIVE mode will fail at the first LLM call. Set MODEL=<configured id> or rerun with --mock.",
+            model
+        );
+        println!("------------------------------------------------------------");
+    }
 
     let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
         Some(Arc::new(CliMockClient {

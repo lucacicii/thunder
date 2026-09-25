@@ -67,6 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`script_plugin`** | TS 脚本引擎 | 触发词动态激活 | 原生执行单文件 TS 插件，支持蓝绿热重载与错误免疫 |
 | **`orchestra`** | 多 Agent 调度 | 触发词动态激活 | 暴露 `delegate_subtask` 工具，支持子 Agent 隔离下钻 |
 
+### `delegate_subtask` 子 Agent 的 client 注入（关键）
+
+`DelegateTool` 每次调用都会经内部 factory 构造**独立的** `AgentLoop`——它既不走 `Scheduler::spawn_unit`，也**不隐式继承**外层 agent 的 LLM client。因此 plugin 会把 `OrchestraConfig` 上的 `client_factory` 转发给每个委托子 Agent（与 `spawn_unit` 同一组合根接缝）：
+
+- **真实模式**：必须 `OrchestraConfig::with_client_factory(...)`（TUI 已自动从 `ProviderRegistry` 构造并注入；`examples/cli.rs` 同源接线）。
+- **无 factory 时诚实失败**：子 Agent 第一次 LLM 调用即报错上浮为 tool error（含 `OrchestraConfig::with_client_factory` 修复指引），不再返回含糊的 "finished with no final content"。
+- **无 base config 时拒绝注册**：不注册幻影 `gpt-4o` 子 Agent，而是 warn 并跳过（需 `OrchestraConfig::with_base`）。
+
+跨 crate 接缝由 `tests/orchestra_plugin_test.rs` 锁住（经 `OrchestraPlugin::tools()` 实际调用 `delegate_subtask`，断言 factory client 被使用）。
+
 ---
 
 ## 📄 开源协议

@@ -67,6 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`script_plugin`** | TS Script Engine | Dynamic Keyword Triggers | Native TypeScript plugin runner with hot-reload and error immunity |
 | **`orchestra`** | Multi-Agent Orchestrator | Dynamic Keyword Triggers | Exposes `delegate_subtask` tool for isolated subagent execution |
 
+### Client injection for `delegate_subtask` sub-agents (critical)
+
+`DelegateTool` builds a **fresh, independent** `AgentLoop` from its internal factory on every invocation — it neither goes through `Scheduler::spawn_unit` nor **implicitly inherits** the outer agent's LLM client. The plugin therefore forwards the `client_factory` from its `OrchestraConfig` into every delegated sub-agent (the same composition-root seam as `spawn_unit`):
+
+- **Real mode**: attach `OrchestraConfig::with_client_factory(...)` (the TUI constructs and injects it automatically from `ProviderRegistry`; `examples/cli.rs` wires the same source).
+- **Without a factory it fails honestly**: the sub-agent's first LLM call surfaces as a tool error naming the `OrchestraConfig::with_client_factory` fix, instead of a vague "finished with no final content".
+- **Without a base config the tool is not registered**: no phantom `gpt-4o` sub-agent — a warning is logged and registration is skipped (attach `OrchestraConfig::with_base`).
+
+The cross-crate seam is locked by `tests/orchestra_plugin_test.rs` (invokes `delegate_subtask` through `OrchestraPlugin::tools()` and asserts the factory client is used).
+
 ---
 
 ## 📄 License
