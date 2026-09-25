@@ -1,9 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_loop::{
-    AgentLoop, AgentTool, ToolDefinition, ToolExecutionContext,
-};
+use thunder_agent_loop::{AgentLoop, AgentTool, FinishReason, ToolDefinition, ToolExecutionContext};
 
 /// Wrap another complete A unit as a tool.
 ///
@@ -63,6 +61,17 @@ impl AgentTool for DelegateTool {
             .start(task.to_string(), Some(ctx.cancellation_token.clone()))
             .map_err(|e| e.to_string())?;
         let result = handle.join().await.map_err(|e| e.to_string())?;
+
+        // Failed sub-agents must surface as tool errors. Swallowing them into
+        // an `Ok("finished with no final content")` hides the root cause
+        // (typically a missing client factory in real mode).
+        if result.finish_reason == FinishReason::Error {
+            return Err(format!(
+                "Delegated agent `{}` failed (finish reason: {:?}). For real (non-mock) \
+                 runs attach a client factory via 'OrchestraConfig::with_client_factory'.",
+                result.agent_id, result.finish_reason
+            ));
+        }
 
         match result.final_content {
             Some(text) if !text.is_empty() => Ok(text),

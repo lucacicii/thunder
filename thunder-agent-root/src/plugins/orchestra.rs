@@ -58,9 +58,26 @@ impl ThunderPlugin for OrchestraPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        let base_cfg = self.config.base.clone().unwrap_or_else(|| {
-            thunder_agent_loop::AgentConfig::new("gpt-4o")
-        });
+        // Honest gating: without a base AgentConfig there is no meaningful
+        // sub-agent to delegate to. Register nothing instead of silently
+        // guessing a model id the user never configured.
+        let base_cfg = match self.config.base.clone() {
+            Some(cfg) => cfg,
+            None => {
+                tracing::warn!(
+                    "OrchestraPlugin: no base AgentConfig configured; the `delegate_subtask` \
+                     tool is not registered (attach one via 'OrchestraConfig::with_base')"
+                );
+                return vec![];
+            }
+        };
+
+        // The delegate sub-agent must resolve its LLM client through the same
+        // composition-root factory as `Scheduler::spawn_unit`. It builds its
+        // own `AgentLoop` and therefore never inherits the outer agent's
+        // client implicitly — without this seam, real-mode delegation dies on
+        // the first LLM call with `UnconfiguredLLMClient`.
+        let client_factory = self.config.client_factory.clone();
 
         // Register a delegate subtask tool
         let delegate_tool = DelegateTool::new(
@@ -68,6 +85,11 @@ impl ThunderPlugin for OrchestraPlugin {
             "Delegate an isolated subtask to a dedicated specialist sub-agent unit",
             move || {
                 let mut agent = thunder_agent_loop::AgentLoop::new(base_cfg.clone());
+                if let Some(factory) = &client_factory {
+                    if let Some(client) = factory(&base_cfg) {
+                        agent = agent.with_custom_client(client);
+                    }
+                }
                 agent.register_tool(Arc::new(thunder_agent_loop::BashTool::default()));
                 agent.register_tool(Arc::new(thunder_agent_loop::ReadFileTool::default()));
                 agent.register_tool(Arc::new(thunder_agent_loop::WriteFileTool::default()));
