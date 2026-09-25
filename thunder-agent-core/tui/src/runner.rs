@@ -49,51 +49,18 @@ impl TuiRunner {
             terminal.draw(|f| draw(f, &mut app, &theme))?;
 
             if let Some(event) = events.next().await {
-                match event {
-                    AppEvent::Key(key) => {
-                        app.handle_key(key, events.sender());
+                let sender = events.sender();
+                Self::dispatch_event(&mut app, event, &sender).await;
+
+                // Batch drain immediate streaming tokens before expensive terminal redraw
+                let mut drained = 0;
+                while drained < 32 {
+                    if let Ok(more) = events.try_next() {
+                        Self::dispatch_event(&mut app, more, &sender).await;
+                        drained += 1;
+                    } else {
+                        break;
                     }
-                    AppEvent::Mouse(mouse) => {
-                        app.handle_mouse(mouse);
-                    }
-                    AppEvent::Agent(observed) => {
-                        app.handle_agent_event(observed);
-                    }
-                    AppEvent::AgentFinished {
-                        agent_id,
-                        success,
-                        final_text,
-                    } => {
-                        app.handle_agent_finished(agent_id, success, final_text);
-                        app.save_current_conversation().await;
-                    }
-                    AppEvent::LoadSession(id) => {
-                        app.load_conversation(&id).await;
-                        app.focus = crate::app::FocusPane::Input;
-                        app.set_status_message(format!("Loaded session: {}", id));
-                    }
-                    AppEvent::SessionDeleted(id) => {
-                        app.set_status_message(format!("Deleted session: {}", id));
-                        app.refresh_sessions().await;
-                    }
-                    AppEvent::OpenPicker {
-                        kind,
-                        title,
-                        items,
-                        empty_message,
-                    } => {
-                        if items.is_empty() {
-                            let msg = empty_message.unwrap_or_else(|| "No items found.".to_string());
-                            app.conversation.add_assistant_message(Some(msg), None);
-                            app.save_current_conversation().await;
-                        } else {
-                            app.picker.open(kind, Some(title), items);
-                        }
-                    }
-                    AppEvent::Tick => {
-                        // Periodic updates if needed
-                    }
-                    _ => {}
                 }
             }
 
@@ -109,5 +76,56 @@ impl TuiRunner {
         terminal.show_cursor()?;
 
         Ok(())
+    }
+
+    async fn dispatch_event(
+        app: &mut App,
+        event: AppEvent,
+        sender: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    ) {
+        match event {
+            AppEvent::Key(key) => {
+                app.handle_key(key, sender.clone());
+            }
+            AppEvent::Mouse(mouse) => {
+                app.handle_mouse(mouse);
+            }
+            AppEvent::Agent(observed) => {
+                app.handle_agent_event(observed);
+            }
+            AppEvent::AgentFinished {
+                agent_id,
+                success,
+                final_text,
+            } => {
+                app.handle_agent_finished(agent_id, success, final_text);
+                app.save_current_conversation().await;
+            }
+            AppEvent::LoadSession(id) => {
+                app.load_conversation(&id).await;
+                app.focus = crate::app::FocusPane::Input;
+                app.set_status_message(format!("Loaded session: {}", id));
+            }
+            AppEvent::SessionDeleted(id) => {
+                app.set_status_message(format!("Deleted session: {}", id));
+                app.refresh_sessions().await;
+            }
+            AppEvent::OpenPicker {
+                kind,
+                title,
+                items,
+                empty_message,
+            } => {
+                if items.is_empty() {
+                    let msg = empty_message.unwrap_or_else(|| "No items found.".to_string());
+                    app.conversation.add_assistant_message(Some(msg), None);
+                    app.save_current_conversation().await;
+                } else {
+                    app.picker.open(kind, Some(title), items);
+                }
+            }
+            AppEvent::Tick => {}
+            _ => {}
+        }
     }
 }

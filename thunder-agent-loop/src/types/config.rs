@@ -21,6 +21,8 @@ pub enum PruningStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextPruningConfig {
     pub max_context_tokens: usize,
+    /// Threshold at which older tool outputs (beyond preserve_last_turns) are trimmed (default: 20_000)
+    pub tool_eviction_threshold_tokens: usize,
     /// Number of recent turns to preserve with full fidelity during pruning / compaction (default: 3)
     pub preserve_last_turns: usize,
     pub pin_system_prompt: bool,
@@ -31,6 +33,7 @@ impl Default for ContextPruningConfig {
     fn default() -> Self {
         Self {
             max_context_tokens: 128_000,
+            tool_eviction_threshold_tokens: 20_000,
             preserve_last_turns: 3,
             pin_system_prompt: true,
             strategy: PruningStrategy::Hybrid,

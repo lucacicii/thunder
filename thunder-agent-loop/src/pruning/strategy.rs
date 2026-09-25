@@ -43,22 +43,37 @@ impl ContextPruner {
     /// Full multi-stage context pruning with Rolling Compaction and Scratchpad Artifacts integration
     pub fn prune_with_artifacts(&self, context: &mut ContextBuffer, artifacts_summary: &str) -> PruneResult {
         let tokens_before = context.estimated_tokens();
-        if tokens_before <= self.config.max_context_tokens {
-            return PruneResult {
-                pruned: false,
-                tokens_before,
-                tokens_after: tokens_before,
-                messages_removed: 0,
-                tool_outputs_truncated: 0,
-                compacted: false,
-            };
-        }
-
         let mut tool_outputs_truncated = 0;
         let mut messages_removed = 0;
         let mut was_compacted = false;
 
-        // Stage 1: Rolling Compaction (Synthesizes Milestone State Digest & retains active window)
+        // Stage 1: Tool Output Eviction (Decoupled from hard max_context_tokens limit)
+        // Evicts bulky raw stdout/stderr from older turns (> preserve_last_turns) once context reaches
+        // tool_eviction_threshold_tokens. All user/assistant dialogues and recent tool outputs remain 100% intact.
+        if tokens_before > self.config.tool_eviction_threshold_tokens
+            && matches!(
+                self.config.strategy,
+                PruningStrategy::TruncateToolResults | PruningStrategy::Hybrid
+            )
+        {
+            tool_outputs_truncated += self.prune_old_tool_results(context);
+        }
+
+        // If context is within model's native context window limit, return early!
+        // Dialogue history and recent context are fully preserved.
+        if context.estimated_tokens() <= self.config.max_context_tokens {
+            let tokens_after = context.estimated_tokens();
+            return PruneResult {
+                pruned: tokens_after < tokens_before,
+                tokens_before,
+                tokens_after,
+                messages_removed: 0,
+                tool_outputs_truncated,
+                compacted: false,
+            };
+        }
+
+        // Stage 2: Rolling Compaction (when nearing the authentic hard max_context_tokens limit)
         if matches!(
             self.config.strategy,
             PruningStrategy::Hybrid
@@ -70,17 +85,7 @@ impl ContextPruner {
             }
         }
 
-        // Stage 2: Truncate Older Tool Outputs if still over budget
-        if context.estimated_tokens() > self.config.max_context_tokens
-            && matches!(
-                self.config.strategy,
-                PruningStrategy::TruncateToolResults | PruningStrategy::Hybrid
-            )
-        {
-            tool_outputs_truncated += self.prune_old_tool_results(context);
-        }
-
-        // Stage 3: Atomic Sliding Window (Preserving Pinned System Prompt & State Digest)
+        // Stage 3: Atomic Sliding Window (only if still exceeding hard budget)
         if context.estimated_tokens() > self.config.max_context_tokens
             && matches!(
                 self.config.strategy,
@@ -90,7 +95,7 @@ impl ContextPruner {
             messages_removed += self.prune_sliding_window(context);
         }
 
-        // Stage 4: Aggressive Tool Output Compression for emergency budget enforcement
+        // Stage 4: Emergency Tool Output Compression for emergency budget enforcement
         if context.estimated_tokens() > self.config.max_context_tokens
             && matches!(self.config.strategy, PruningStrategy::Hybrid)
         {
@@ -139,7 +144,8 @@ impl ContextPruner {
                 }
             }
 
-            if context.estimated_tokens() <= self.config.max_context_tokens {
+            let target_threshold = self.config.tool_eviction_threshold_tokens.min(self.config.max_context_tokens);
+            if context.estimated_tokens() <= target_threshold {
                 break;
             }
         }
