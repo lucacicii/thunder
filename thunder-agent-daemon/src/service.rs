@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -20,7 +19,8 @@ pub struct DaemonService {
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Live pause gates per running task.
     active_pauses: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::pause::PauseGate>>>>,
-    stdout: Arc<Mutex<tokio::io::Stdout>>,
+    output_tx: mpsc::Sender<String>,
+    concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     default_workspace: PathBuf,
     script_plugin: Arc<ScriptPlugin>,
     /// Pending `ask_user_question` calls, keyed by `task_id:question_id`.
@@ -48,12 +48,41 @@ impl DaemonService {
         let store = FsConversationStore::new(store_root).await?;
         let script_plugin = Arc::new(ScriptPlugin::new().with_workspace(default_workspace.clone()));
 
+        let max_tasks = std::env::var("THUNDER_MAX_CONCURRENT_TASKS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(8)
+            .max(1);
+        let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(max_tasks));
+
+        let (output_tx, mut output_rx) = mpsc::channel::<String>(1024);
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut stdout = tokio::io::stdout();
+            let mut buf = Vec::with_capacity(8192);
+            while let Some(line) = output_rx.recv().await {
+                buf.clear();
+                buf.extend_from_slice(line.as_bytes());
+                while let Ok(next) = output_rx.try_recv() {
+                    buf.extend_from_slice(next.as_bytes());
+                    if buf.len() >= 64 * 1024 {
+                        break;
+                    }
+                }
+                if stdout.write_all(&buf).await.is_err() {
+                    break;
+                }
+                let _ = stdout.flush().await;
+            }
+        });
+
         Ok(Self {
             provider_registry: Arc::new(tokio::sync::RwLock::new(registry)),
             store: Arc::new(store),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             active_pauses: Arc::new(Mutex::new(HashMap::new())),
-            stdout: Arc::new(Mutex::new(tokio::io::stdout())),
+            output_tx,
+            concurrency_semaphore,
             default_workspace,
             script_plugin,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
@@ -62,7 +91,7 @@ impl DaemonService {
 
     /// Safely send a newline-delimited JSON response to stdout
     pub async fn send_response(&self, res: DaemonResponse) {
-        write_ndjson(&self.stdout, &res).await;
+        write_ndjson(&self.output_tx, &res).await;
     }
 
     /// Cancel all active tasks during shutdown
@@ -474,6 +503,21 @@ impl DaemonService {
         let cancel_token = CancellationToken::new();
         let pause_gate = Arc::new(thunder_agent_loop::core::pause::PauseGate::new());
 
+        // Acquire concurrency permit up-front to bound simultaneous active tasks
+        let permit = match Arc::clone(&self.concurrency_semaphore).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: false,
+                    data: None,
+                    error: Some("Server busy: maximum concurrent task limit reached".to_string()),
+                })
+                .await;
+                return;
+            }
+        };
+
         // Reject re-entrant task submission if the task_id is already actively running.
         // Prevents task zombie token overwrite, accidental double-clicks, and store race conditions.
         {
@@ -619,7 +663,7 @@ impl DaemonService {
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
         let active_pauses = self.active_pauses.clone();
-        let stdout = self.stdout.clone();
+        let output_tx = self.output_tx.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
         // MCP tools must stay reachable for natural-language prompts (the keyword
         // heuristic would never match them), but only when the workspace actually
@@ -632,6 +676,7 @@ impl DaemonService {
 
         // Spawn async task runner
         tokio::spawn(async move {
+            let _permit = permit;
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
             base_cfg.request_timeout_ms = 120_000;
             if let Some(ref tl) = chosen_thinking {
@@ -659,7 +704,7 @@ impl DaemonService {
                 let tool = crate::ask_user::AskUserQuestionTool::new(
                     task_id.clone(),
                     effective_session_id.clone(),
-                    stdout.clone(),
+                    output_tx.clone(),
                     pending_questions.clone(),
                 );
                 root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
@@ -711,7 +756,7 @@ impl DaemonService {
                     // Stream fine-grained observed events (tokens, tool execution, etc.)
                     if let Some(mut rx) = handle.take_events() {
                         let tid = task_id.clone();
-                        let out = stdout.clone();
+                        let out = output_tx.clone();
                         tokio::spawn(async move {
                             while let Some(event) = rx.recv().await {
                                 collected_for_stream.lock().await.push(event.clone());
@@ -818,7 +863,7 @@ impl DaemonService {
                                     session_id: Some(effective_session_id.clone()),
                                     error: err_msg,
                                 };
-                                write_ndjson(&stdout, &msg).await;
+                                write_ndjson(&output_tx, &msg).await;
                             } else {
                                 info!(
                                     task_id = %task_id,
@@ -833,7 +878,7 @@ impl DaemonService {
                                     finish_reason: finish_reason.clone(),
                                     active_plugins: selection.active_plugin_ids,
                                 };
-                                write_ndjson(&stdout, &msg).await;
+                                write_ndjson(&output_tx, &msg).await;
                             }
                         }
                         Err(err) => {
@@ -843,7 +888,7 @@ impl DaemonService {
                                 session_id: Some(effective_session_id.clone()),
                                 error: err.to_string(),
                             };
-                            write_ndjson(&stdout, &msg).await;
+                            write_ndjson(&output_tx, &msg).await;
                         }
                     }
                 }
@@ -854,7 +899,7 @@ impl DaemonService {
                         session_id: Some(effective_session_id.clone()),
                         error: e.to_string(),
                     };
-                    write_ndjson(&stdout, &msg).await;
+                    write_ndjson(&output_tx, &msg).await;
                 }
             }
 
@@ -864,12 +909,10 @@ impl DaemonService {
     }
 }
 
-async fn write_ndjson(stdout: &Arc<Mutex<tokio::io::Stdout>>, res: &DaemonResponse) {
+async fn write_ndjson(tx: &mpsc::Sender<String>, res: &DaemonResponse) {
     if let Ok(mut json) = serde_json::to_string(res) {
         json.push('\n');
-        let mut o = stdout.lock().await;
-        let _ = o.write_all(json.as_bytes()).await;
-        let _ = o.flush().await;
+        let _ = tx.send(json).await;
     }
 }
 

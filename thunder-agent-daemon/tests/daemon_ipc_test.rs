@@ -479,3 +479,67 @@ async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(),
     let _ = child.wait().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error>> {
+    // Set concurrency limit to 1 via env var
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .env("THUNDER_MAX_CONCURRENT_TASKS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    // 1. Submit first task
+    let req1 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-c1",
+        "task_id": "task-c1",
+        "prompt": "Task 1",
+        "use_mock": true
+    });
+    send(&mut stdin, req1.to_string()).await?;
+
+    let ack1_line = reader.next_line().await?.expect("ack 1 expected");
+    let ack1: serde_json::Value = serde_json::from_str(&ack1_line)?;
+    assert_eq!(ack1["id"], "req-c1");
+    assert_eq!(ack1["success"], true);
+
+    // 2. Immediately submit second task (with a different task_id)
+    let req2 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-c2",
+        "task_id": "task-c2",
+        "prompt": "Task 2",
+        "use_mock": true
+    });
+    send(&mut stdin, req2.to_string()).await?;
+
+    // The second task must immediately receive server busy rejection because limit is 1
+    let mut server_busy = false;
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "response" && resp["id"] == "req-c2" {
+            assert_eq!(resp["success"], false);
+            let err = resp["error"].as_str().unwrap_or_default();
+            assert!(err.contains("Server busy"), "expected server busy error, got: {err}");
+            server_busy = true;
+            break;
+        }
+    }
+    assert!(server_busy, "Expected second task to be rejected due to concurrency limit");
+
+    drop(stdin);
+    let _ = child.wait().await;
+    Ok(())
+}
