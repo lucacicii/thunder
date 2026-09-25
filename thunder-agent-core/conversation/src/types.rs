@@ -22,7 +22,15 @@ impl Default for ConversationStatus {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationStats {
+    /// Estimated size of the current working context, in tokens. Recalculated
+    /// from the message list on every change, so it tracks the *present* context
+    /// window rather than lifetime usage.
     pub total_tokens: usize,
+    /// Cumulative provider-reported usage across every task in this conversation,
+    /// including cache reads/writes (i.e. the billed prompt volume, not just the
+    /// working-context estimate). Never recomputed from message text.
+    #[serde(default)]
+    pub total_used_tokens: usize,
     pub message_count: usize,
     pub turn_count: usize,
     pub tool_calls_count: usize,
@@ -338,6 +346,7 @@ impl Conversation {
             message_count: self.messages.len(),
             turn_count: self.stats.turn_count,
             total_tokens: self.stats.total_tokens,
+            total_used_tokens: self.stats.total_used_tokens,
             tags,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
@@ -447,6 +456,8 @@ pub struct ConversationSummary {
     pub message_count: usize,
     pub turn_count: usize,
     pub total_tokens: usize,
+    #[serde(default)]
+    pub total_used_tokens: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub created_at_ms: u64,

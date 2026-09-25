@@ -119,7 +119,8 @@ async fn bridge_maps_stream_end_to_end() {
         completed.expect("stream must complete");
     assert_eq!(content.as_deref(), Some("Hello world"));
     assert_eq!(finish_reason, "tool_calls");
-    assert_eq!(prompt, Some(11));
+    // prompt_tokens is the full prompt: uncached input (11) + cache read (4) + cache write (1)
+    assert_eq!(prompt, Some(16));
     assert_eq!(completion, Some(22));
     assert_eq!(cached, Some(4));
     assert_eq!(reasoning_tok, Some(6));

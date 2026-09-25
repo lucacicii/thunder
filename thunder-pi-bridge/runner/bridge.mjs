@@ -95922,6 +95922,7 @@ async function handleStream(req, piAi2) {
               input: usage.input ?? 0,
               output: usage.output ?? 0,
               cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
               reasoning: typeof usage.reasoning === "number" ? usage.reasoning : void 0
             }
           });
