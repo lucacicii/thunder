@@ -65,50 +65,27 @@ impl ModelAdapter for OpenAiStandardAdapter {
             payload[field_name] = json!(max_tokens);
         }
 
-        let thinking_level = options.thinking_level.as_deref().or_else(|| {
-            if !spec.default_thinking_level.is_empty() {
-                Some(spec.default_thinking_level.as_str())
-            } else {
-                None
-            }
-        });
+        // Thinking control: the DeepSeek-style `thinking` object is ONLY legal on DeepSeek-family
+        // endpoints (handled by DeepSeekAdapter). Here we emit `reasoning_effort` exclusively,
+        // and only when the model explicitly declares support — unknown params can 400 on strict gateways.
+        if spec.supports_reasoning_effort {
+            let thinking_level = options.thinking_level.as_deref().or_else(|| {
+                if !spec.default_thinking_level.is_empty() && spec.default_thinking_level != "off" {
+                    Some(spec.default_thinking_level.as_str())
+                } else {
+                    None
+                }
+            });
 
-        if let Some(level) = thinking_level {
-            match level.to_lowercase().as_str() {
-                "off" | "false" | "disabled" => {
-                    if spec.reasoning {
-                        payload["thinking"] = json!({ "type": "disabled" });
-                    }
-                }
-                "low" | "minimal" => {
-                    if spec.reasoning {
-                        payload["thinking"] = json!({ "type": "enabled" });
-                    }
-                    if spec.supports_reasoning_effort || spec.reasoning {
-                        payload["reasoning_effort"] = json!("low");
-                    }
-                }
-                "medium" => {
-                    if spec.reasoning {
-                        payload["thinking"] = json!({ "type": "enabled" });
-                    }
-                    if spec.supports_reasoning_effort || spec.reasoning {
-                        payload["reasoning_effort"] = json!("medium");
-                    }
-                }
-                "high" | "max" | "xhigh" => {
-                    if spec.reasoning {
-                        payload["thinking"] = json!({ "type": "enabled" });
-                    }
-                    if spec.supports_reasoning_effort || spec.reasoning {
-                        payload["reasoning_effort"] = json!("high");
-                    }
-                }
-                other => {
-                    if spec.supports_reasoning_effort || spec.reasoning {
-                        payload["reasoning_effort"] = json!(other);
-                    }
-                }
+            if let Some(level) = thinking_level {
+                let level_lower = level.to_lowercase();
+                let effort = match level_lower.as_str() {
+                    "off" | "false" | "disabled" | "low" | "minimal" => "low",
+                    "medium" => "medium",
+                    "high" | "max" | "xhigh" => "high",
+                    other => other,
+                };
+                payload["reasoning_effort"] = json!(effort);
             }
         }
 

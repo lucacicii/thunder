@@ -610,6 +610,11 @@ impl DaemonService {
         let active_pauses = self.active_pauses.clone();
         let stdout = self.stdout.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
+        // MCP tools must stay reachable for natural-language prompts (the keyword
+        // heuristic would never match them), but only when the workspace actually
+        // configures servers — otherwise forcing the plugin is pure overhead.
+        let workspace_has_mcp_config = ws_dir.join("mcp_servers.json").exists()
+            || ws_dir.join(".mcp.json").exists();
         let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
@@ -636,8 +641,8 @@ impl DaemonService {
                 .with_plugin(script_plugin)
                 .with_provider_registry(registry.clone());
 
-            // The ask-user capability is opt-in per role (and forced_plugins
-            // gates activation, so this only participates when listed).
+            // The ask-user capability is opt-in per role: the plugin is only registered
+            // when the role enables it, and its auto_always trigger activates it whenever registered.
             let ask_enabled = chosen_role.as_ref().map(|r| r.ask_user).unwrap_or(false);
             if ask_enabled {
                 let tool = crate::ask_user::AskUserQuestionTool::new(
@@ -660,7 +665,21 @@ impl DaemonService {
                 use_mock,
                 custom_client,
                 cancellation_token: Some(cancel_token),
-                forced_plugins: None,
+                // Smart baseline set instead of the old blanket forcing:
+                // - conversation: one-line prompt cost, keeps session semantics alive
+                // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
+                // - mcp: only when this workspace actually configures MCP servers
+                // Anything else (orchestra, ...) stays keyword-routed and lightweight.
+                forced_plugins: Some({
+                    let mut ids = vec![
+                        "conversation".to_string(),
+                        "skills".to_string(),
+                    ];
+                    if workspace_has_mcp_config {
+                        ids.push("mcp".to_string());
+                    }
+                    ids
+                }),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
                 role: chosen_role.clone(),

@@ -95,7 +95,20 @@ impl ThunderPlugin for SkillsPlugin {
 
         let mut out = String::from("Available specialized skills in registry:\n");
         for skill in &skills {
-            let brief = skill.description.lines().next().unwrap_or("").trim();
+            let brief = skill
+                .description
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+            // Cap each catalog entry: some skill descriptions are single very long sentences
+            // that would otherwise re-bloat the system prompt.
+            let brief: String = if brief.chars().count() > 100 {
+                let truncated: String = brief.chars().take(100).collect();
+                format!("{}…", truncated.trim_end())
+            } else {
+                brief.to_string()
+            };
             out.push_str(&format!("- **{}**: {}\n", skill.name, brief));
         }
         out.push_str("\nYou can use the `load_skill` tool to inspect full instructions for any of the above skills.\n");
