@@ -33,13 +33,4 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { version = "1.43", features = ["full", "test-util"] }
 
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = true
 
-[profile.bench]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
