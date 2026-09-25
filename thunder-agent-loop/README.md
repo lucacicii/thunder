@@ -137,13 +137,15 @@ config.pruning = ContextPruningConfig {
 static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-// 写入流程：获取路径锁 → 写临时文件 → shadow rename 原子提交
+// 写入流程：获取路径锁 → 写临时文件 → shadow rename 原子提交 → 释放锁并 best-effort 清理表项
 let lock = FILE_MUTATION_LOCKS.lock().unwrap()
     .entry(normalized_path)
     .or_insert_with(|| Arc::new(TokioMutex::new(())))
     .clone();
 let _guard = lock.lock().await;
 ```
+
+**作用域与生命周期**：锁表是**进程内**的——同一进程内的所有 Agent、任务与工具（含 daemon 的全部 `run_task`）共享同一张表；**不跨进程**（TUI 与 daemon 同时写同一文件时无互斥保证）。每次无竞争写入完成后 best-effort 释放表项（有等待者时自动跳过），长跑进程不会无限膨胀。
 
 ---
 

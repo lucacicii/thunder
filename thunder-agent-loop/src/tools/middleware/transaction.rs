@@ -16,11 +16,19 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Cross-agent/task per-file mutation mutex map (analogous to Pi's file-mutation-queue).
 /// Serializes concurrent write operations aimed at the exact same normalized file path,
 /// while allowing concurrent writes to distinct files to proceed completely in parallel.
+///
+/// Scope: PROCESS-LOCAL. All agents / tasks inside one OS process (e.g. every
+/// `run_task` of a single daemon) share this table; separate processes (TUI
+/// running alongside the daemon, multiple daemon instances) do NOT coordinate
+/// through it. Entries are released best-effort after each completed write to
+/// keep long-lived processes from growing the table without bound.
 static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-fn get_file_mutation_lock(target_path: &Path) -> Arc<TokioMutex<()>> {
-    let normalized = if let Ok(c) = target_path.canonicalize() {
+/// Canonicalize a target path so that different spellings of the same file
+/// (relative/absolute, symlinked parents) map to a single lock entry.
+fn normalize_lock_path(target_path: &Path) -> PathBuf {
+    if let Ok(c) = target_path.canonicalize() {
         c
     } else if let Some(parent) = target_path.parent() {
         if let Ok(parent_c) = parent.canonicalize() {
@@ -34,13 +42,31 @@ fn get_file_mutation_lock(target_path: &Path) -> Arc<TokioMutex<()>> {
         }
     } else {
         target_path.to_path_buf()
-    };
+    }
+}
 
+fn get_file_mutation_lock(target_path: &Path) -> Arc<TokioMutex<()>> {
+    let normalized = normalize_lock_path(target_path);
     let mut locks = FILE_MUTATION_LOCKS.lock().unwrap();
     locks
         .entry(normalized)
         .or_insert_with(|| Arc::new(TokioMutex::new(())))
         .clone()
+}
+
+/// Best-effort lock-table hygiene: drop this path's entry when the caller's
+/// `Arc` is the only outstanding handle besides the map itself. Any concurrent
+/// waiter keeps its own clone (bumping the count) and blocks removal, so
+/// serialization is never weakened. Call while STILL HOLDING the permit, at
+/// the end of the guarded section.
+fn release_file_mutation_lock(target_path: &Path, lock: &Arc<TokioMutex<()>>) {
+    let normalized = normalize_lock_path(target_path);
+    let mut locks = FILE_MUTATION_LOCKS.lock().unwrap();
+    if let Some(current) = locks.get(&normalized) {
+        if Arc::ptr_eq(current, lock) && Arc::strong_count(lock) == 2 {
+            locks.remove(&normalized);
+        }
+    }
 }
 
 /// RAII Guard that automatically removes an uncommitted temporary file on drop.
@@ -270,6 +296,10 @@ impl TransactionMiddleware {
                 }
             }
         };
+
+        // Lock-table hygiene (still holding the permit): drop the map entry
+        // when no other writer is queued on this path.
+        release_file_mutation_lock(&target_path, &file_lock);
 
         match result {
             Ok(_) => {
@@ -513,6 +543,69 @@ mod tests {
         assert!(target_file.exists());
         let final_content = std::fs::read_to_string(&target_file).expect("read");
         assert!(final_content.starts_with("Write version "));
+        let _ = std::fs::remove_dir_all(&test_root);
+    }
+
+    #[tokio::test]
+    async fn test_lock_table_entry_released_after_write() {
+        // Lock-table hygiene: after a completed write with no queued waiters,
+        // the per-path entry must be dropped so long-lived processes (daemons)
+        // do not grow FILE_MUTATION_LOCKS without bound.
+        let test_root = std::env::temp_dir().join(format!(
+            "thunder_atomic_release_{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&test_root);
+        let ws = test_root.clone();
+        let middleware = TransactionMiddleware::new(&ws);
+
+        let target = ws.join("hygiene.txt");
+        let normalized = normalize_lock_path(&target);
+
+        let lock_before = get_file_mutation_lock(&target);
+        assert!(Arc::strong_count(&lock_before) >= 2); // map + local clone
+
+        let call = ToolCall::new_function(
+            "call_hygiene",
+            "write_file",
+            serde_json::json!({
+                "path": "hygiene.txt",
+                "content": "bye-bye entry\n"
+            })
+            .to_string(),
+        );
+        let ctx = ToolExecutionContext {
+            tool_call_id: "call_hygiene".to_string(),
+            turn: 1,
+            cancellation_token: CancellationToken::new(),
+        };
+        let result = middleware
+            .handle(&call, &ctx, None, Arc::new(DummyTerminal))
+            .await;
+        assert!(!result.is_error);
+
+        // `lock_before` still holds a clone of the ORIGINAL entry; the write's
+        // own release could not remove it while we held this clone. Drop our
+        // probe clone, run one more write, and then verify the map no longer
+        // holds an entry for the path.
+        drop(lock_before);
+        let result2 = middleware
+            .handle(&call, &ctx, None, Arc::new(DummyTerminal))
+            .await;
+        assert!(!result2.is_error);
+
+        let still_present = {
+            let locks = FILE_MUTATION_LOCKS.lock().unwrap();
+            locks.contains_key(&normalized)
+        };
+        assert!(
+            !still_present,
+            "lock-table entry for {:?} must be released after an uncontended write",
+            normalized
+        );
         let _ = std::fs::remove_dir_all(&test_root);
     }
 }
