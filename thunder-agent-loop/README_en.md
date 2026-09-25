@@ -138,13 +138,15 @@ When multiple agent units or concurrent tool calls target the same file path, `T
 static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-// Write flow: acquire path lock → write temp file → atomic shadow-rename commit
+// Write flow: acquire path lock → write temp file → atomic shadow-rename commit → release lock + best-effort table cleanup
 let lock = FILE_MUTATION_LOCKS.lock().unwrap()
     .entry(normalized_path)
     .or_insert_with(|| Arc::new(TokioMutex::new(())))
     .clone();
 let _guard = lock.lock().await;
 ```
+
+**Scope & lifecycle**: the table is **process-local** — every agent, task, and tool inside one OS process (including all daemon `run_task`s) shares it; it does **not** span processes (a TUI running alongside the daemon gets no mutual exclusion). Each uncontended write releases its entry best-effort (skipped when waiters exist), so long-lived processes never grow the table unboundedly.
 
 ---
 
