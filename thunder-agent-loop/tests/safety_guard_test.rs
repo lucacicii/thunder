@@ -70,6 +70,7 @@ fn test_atomic_turn_group_pruning_no_orphans() {
 
     let pruner = ContextPruner::new(ContextPruningConfig {
         max_context_tokens: 150, // Force aggressive pruning
+        tool_eviction_threshold_tokens: 100,
         preserve_last_turns: 1,
         pin_system_prompt: true,
         strategy: PruningStrategy::SlidingWindow,

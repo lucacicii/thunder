@@ -118,15 +118,13 @@ impl SkillLoader {
         paths.push(PathBuf::from(".pi/skills"));
         paths.push(PathBuf::from("skills"));
 
-        // 2. User home directory skill paths
+        // 2. User home directory skill paths (Agent & Thunder standards)
         if let Ok(home) = std::env::var("HOME") {
             let home_path = PathBuf::from(home);
             paths.push(home_path.join(".agents/skills"));
-            paths.push(home_path.join(".pi/agent/npm/node_modules/oh-my-pi/skills"));
+            paths.push(home_path.join(".thunder/skills"));
             paths.push(home_path.join(".pi/agent/skills"));
             paths.push(home_path.join(".pi/skills"));
-            paths.push(home_path.join(".codex/skills"));
-            paths.push(home_path.join(".claude/skills"));
         }
 
         paths

@@ -660,18 +660,7 @@ impl DaemonService {
                 use_mock,
                 custom_client,
                 cancellation_token: Some(cancel_token),
-                forced_plugins: Some({
-                    let mut ids = vec![
-                        "conversation".to_string(),
-                        "skills".to_string(),
-                        "mcp".to_string(),
-                        "script_plugin".to_string(),
-                    ];
-                    if chosen_role.as_ref().map(|r| r.ask_user).unwrap_or(false) {
-                        ids.push("ask_user".to_string());
-                    }
-                    ids
-                }),
+                forced_plugins: None,
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
                 role: chosen_role.clone(),

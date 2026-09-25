@@ -95,10 +95,8 @@ impl ThunderPlugin for SkillsPlugin {
 
         let mut out = String::from("Available specialized skills in registry:\n");
         for skill in &skills {
-            out.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
-            if !skill.triggers.is_empty() {
-                out.push_str(&format!("  Triggers: {}\n", skill.triggers.join(", ")));
-            }
+            let brief = skill.description.lines().next().unwrap_or("").trim();
+            out.push_str(&format!("- **{}**: {}\n", skill.name, brief));
         }
         out.push_str("\nYou can use the `load_skill` tool to inspect full instructions for any of the above skills.\n");
         Some(out)

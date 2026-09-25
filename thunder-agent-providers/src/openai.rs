@@ -4,14 +4,23 @@ use std::sync::Arc;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClient, LLMClientTrait, LLMStreamChunk};
 use tokio_util::sync::CancellationToken;
 
+static SHARED_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+pub fn shared_http_client() -> reqwest::Client {
+    SHARED_HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(20)
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .tcp_nodelay(true)
+                .build()
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
 pub fn openai_completions_client(spec: &ModelSpec, timeout_ms: u64) -> Arc<dyn LLMClientTrait> {
-    Arc::new(LLMClient::from_endpoint(
-        spec.id.clone(),
-        normalize_openai_base(&spec.base_url),
-        spec.api_key.as_deref(),
-        &spec.headers,
-        timeout_ms,
-    ))
+    Arc::new(RoutedOpenAiClient::completions(spec, timeout_ms))
 }
 
 pub fn normalize_openai_base(raw: &str) -> String {
@@ -33,12 +42,13 @@ pub struct RoutedOpenAiClient {
 impl RoutedOpenAiClient {
     pub fn completions(spec: &ModelSpec, timeout_ms: u64) -> Self {
         Self {
-            inner: Arc::new(LLMClient::from_endpoint(
+            inner: Arc::new(LLMClient::from_client(
                 spec.id.clone(),
                 normalize_openai_base(&spec.base_url),
                 spec.api_key.as_deref(),
                 &spec.headers,
                 timeout_ms,
+                shared_http_client(),
             )),
             spec: spec.clone(),
         }
