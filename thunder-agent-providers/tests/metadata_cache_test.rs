@@ -54,6 +54,8 @@ async fn test_provider_registry_update_model_context_window() {
         thinking_levels: vec!["off".to_string()],
         default_thinking_level: "off".to_string(),
         thinking_levels_probed: false,
+        thinking_level_map: None,
+        compat: None,
     });
 
     assert_eq!(registry.models[0].context_window, 128_000);

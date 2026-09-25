@@ -150,9 +150,29 @@ pub struct ModelSpec {
     pub thinking_levels: Vec<String>,
     pub default_thinking_level: String,
     pub thinking_levels_probed: bool,
+    pub thinking_level_map: Option<HashMap<String, Option<String>>>,
+    pub compat: Option<serde_json::Value>,
 }
 
 impl ModelSpec {
+    pub fn to_bridge_model(&self) -> thunder_pi_bridge::BridgeModel {
+        let mut m = thunder_pi_bridge::BridgeModel::new(
+            &self.provider,
+            &self.id,
+            self.api.as_pi_api_str(),
+        );
+        m.name = self.name.clone();
+        m.base_url = self.base_url.clone();
+        m.api_key = self.api_key.clone();
+        m.headers = self.headers.clone();
+        m.reasoning = self.reasoning;
+        m.context_window = self.context_window;
+        m.max_tokens = self.max_tokens;
+        m.thinking_level_map = self.thinking_level_map.clone();
+        m.compat = self.compat.clone();
+        m
+    }
+
     pub fn model_ref(&self) -> ModelRef {
         ModelRef::new(&self.provider, &self.id)
     }
@@ -212,6 +232,12 @@ impl ProviderRegistry {
                     &model.id,
                 );
 
+                let thinking_level_map = model
+                    .thinking_level_map
+                    .clone()
+                    .or_else(|| provider.thinking_level_map.clone());
+                let compat_val = serde_json::to_value(&compat).ok();
+
                 models.push(ModelSpec {
                     provider: provider_id.clone(),
                     id: model.id.clone(),
@@ -232,6 +258,8 @@ impl ProviderRegistry {
                     thinking_levels,
                     default_thinking_level,
                     thinking_levels_probed: model.thinking_levels_probed.unwrap_or(false),
+                    thinking_level_map,
+                    compat: compat_val,
                 });
             }
         }
@@ -503,6 +531,8 @@ fn builtin_models(
                     thinking_levels,
                     default_thinking_level,
                     thinking_levels_probed: false,
+                    thinking_level_map: None,
+                    compat: serde_json::to_value(&compat).ok(),
                 }
             })
             .collect(),
@@ -542,6 +572,8 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
                 thinking_levels,
                 default_thinking_level,
                 thinking_levels_probed: false,
+                thinking_level_map: None,
+                compat: None,
             }
         })
         .collect()

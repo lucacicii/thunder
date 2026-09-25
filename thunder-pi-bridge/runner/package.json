@@ -1,0 +1,10 @@
+{
+	"name": "thunder-pi-bridge",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Thunder LLM transport sidecar backed by @earendil-works/pi-ai",
+	"dependencies": {
+		"@earendil-works/pi-ai": "0.87.1"
+	}
+}

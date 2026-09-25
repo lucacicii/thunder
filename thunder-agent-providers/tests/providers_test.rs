@@ -84,6 +84,8 @@ fn wire_model_is_bare_id_not_selection_id() {
         thinking_levels: vec!["off".to_string()],
         default_thinking_level: "off".to_string(),
         thinking_levels_probed: false,
+        thinking_level_map: None,
+        compat: None,
     };
     assert_eq!(spec.selection_id(), "cc-switch-open-code-go/ox-alpha-free");
     assert_eq!(spec.id, "ox-alpha-free");

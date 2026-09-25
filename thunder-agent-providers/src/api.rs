@@ -43,6 +43,17 @@ impl ProviderApi {
             Self::Ollama => "ollama",
         }
     }
+
+    /// Map to pi-ai wire API identifier string.
+    pub fn as_pi_api_str(self) -> &'static str {
+        match self {
+            Self::OpenAiCompletions => "openai-completions",
+            Self::OpenAiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+            Self::GoogleGenerateContent => "google-generative-ai",
+            Self::Ollama => "openai-completions",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,5 +81,16 @@ impl ModelRef {
 
     pub fn selection_id(&self) -> String {
         format!("{}/{}", self.provider, self.model)
+    }
+}
+
+pub fn normalize_openai_base(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.ends_with("/v1") || trimmed.ends_with("/chat/completions") {
+        trimmed.trim_end_matches("/chat/completions").to_string()
+    } else if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}/v1")
     }
 }

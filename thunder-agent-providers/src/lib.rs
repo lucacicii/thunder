@@ -1,26 +1,25 @@
 //! Multi-provider LLM adapter engine for Thunder.
 //!
-//! Handles vendor-specific protocols, payload transformations, tool mappings,
-//! and streaming event adaptations (OpenAI, Anthropic Claude, Google Gemini, Ollama, DeepSeek).
+//! Exposes pi-ai compatible models.json / auth.json configuration parsing and
+//! proxies streaming LLM execution through `@earendil-works/pi-ai` via `thunder-pi-bridge`.
 
-pub mod adapters;
-pub mod anthropic;
 pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod error;
-pub mod google;
-pub mod openai;
 pub mod probe;
-pub mod responses;
 pub mod source;
 
-use crate::api::ProviderApi;
+pub mod openai {
+    pub use crate::api::normalize_openai_base;
+}
+
 use crate::catalog::{ModelSpec, ProviderRegistry};
 use crate::error::ProviderError;
 use std::sync::Arc;
 use thunder_agent_loop::stream::client::LLMClientTrait;
+use thunder_pi_bridge::PiAiClient;
 
 pub fn client_for(spec: &ModelSpec, timeout_ms: u64) -> Result<Arc<dyn LLMClientTrait>, ProviderError> {
     if !spec.available {
@@ -29,23 +28,8 @@ pub fn client_for(spec: &ModelSpec, timeout_ms: u64) -> Result<Arc<dyn LLMClient
             spec.selection_id()
         )));
     }
-    match spec.api {
-        ProviderApi::OpenAiResponses => {
-            Ok(Arc::new(responses::OpenAiResponsesClient::new(spec.clone())))
-        }
-        ProviderApi::OpenAiCompletions => {
-            Ok(Arc::new(openai::RoutedOpenAiClient::completions(spec, timeout_ms)))
-        }
-        ProviderApi::AnthropicMessages => {
-            Ok(Arc::new(adapters::anthropic::AnthropicClient::new(spec.clone())))
-        }
-        ProviderApi::GoogleGenerateContent => {
-            Ok(Arc::new(adapters::google::GoogleClient::new(spec.clone())))
-        }
-        ProviderApi::Ollama => {
-            Ok(Arc::new(adapters::ollama::OllamaClient::new(spec.clone())))
-        }
-    }
+    let bridge_model = spec.to_bridge_model();
+    Ok(Arc::new(PiAiClient::new_lazy(bridge_model, timeout_ms)))
 }
 
 pub async fn client_for_selection(
@@ -69,8 +53,7 @@ pub async fn has_available_model() -> bool {
 }
 
 pub mod prelude {
-    pub use crate::adapters::{resolve_adapter, ModelAdapter};
-    pub use crate::api::{ModelRef, ProviderApi};
+    pub use crate::api::{normalize_openai_base, ModelRef, ProviderApi};
     pub use crate::catalog::{
         default_metadata_cache_path, ModelMetadataCache, ModelSpec, ProviderRegistry,
         DEFAULT_SAFE_CONTEXT_WINDOW,
