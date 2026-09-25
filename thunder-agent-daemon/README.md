@@ -1,46 +1,53 @@
 # Thunder Daemon (Sidecar for Electron & Desktop UI)
 
-`thunder-daemon` 是专为 Electron、桌面应用及外部宿主设计的轻量级 **STDIO Sidecar 守护进程**。
+> **面向 Electron、桌面应用及外部宿主的轻量级 STDIO Sidecar 守护进程**
 
-## 特性
+[English](README_en.md) | [简体中文](README.md)
 
-- **零端口冲突**：使用标准输入输出（STDIO）进行 NDJSON（Newline Delimited JSON）行传输，不监听网络端口，无防火墙拦截风险。
-- **生命周期天然绑定**：当宿主（Electron 主进程）退出或崩溃时，STDIN 管道自动关闭（EOF），`thunder-daemon` 会干净退出，杜绝后台僵尸进程。
-- **全套引擎能力**：内置 `ThunderRoot` 微内核，动态调度 `ConversationPlugin`、`SkillsPlugin`、`McpPlugin`。
-- **实时流式推送**：原生透传 `ObservedEvent`（包括 `TokenDelta` 打字机 Token、工具执行中/完成状态、Turn 切换）。
-- **任务级取消机制**：支持随时通过 `cancel_task` 中断正在执行的长任务。
-- **角色与权限（Role / Permission）**：按 `role` 激活 `~/.thunder/roles.jsonl` 中定义的角色；
-  角色决定**注册哪些内置工具**（`read` / `write` / `bash`），被禁的工具模型根本看不到。
-- **协作式暂停**：`pause_task` 在下一个工具边界冻结任务，`resume_task` 继续；
-  不打断进行中的工具，也不销毁会话。
-- **反问气泡（ask_user_question）**：agent 可阻塞提问，面板渲染为气泡；
-  回答后任务自动继续。
-- **内置 Mock 降级**：本地调试未配置 API Key 时可一键降级为 Mock 模式，方便 UI 联调。
+`thunder-daemon` 是专为桌面客户端设计的常驻子进程服务。通过标准输入输出（STDIO）进行高性能 NDJSON 消息交互，将完整的 Agent 执行、工具调用、插件装配与多轮会话能力无缝嵌入外部宿主。
 
-## 启动与调试
+---
+
+## 🚀 核心架构与特性
+
+- **零端口冲突与天然绑定**：纯 STDIO 管道通信，不监听任何 TCP/HTTP 端口，无端口占用或防火墙拦截风险；当 Electron/父进程退出或崩溃时，STDIN 管道自动触发 EOF，`thunder-daemon` 毫秒级优雅退出，杜绝后台僵尸进程。
+- **并发控制信号量与背压调度**：内置异步任务信号量（`THUNDER_MAX_CONCURRENT_TASKS` 环境变量可调，默认 `8`），限制并发重度推理任务数量，防止本地资源与模型并发配额耗尽。
+- **异步 STDOUT Actor（消息零交错）**：所有事件流推送统一通过专用 STDOUT Actor 与带缓冲的 MPSC Channel 排队发送。在高并发多任务流式输出时，**确保每一行 NDJSON 绝对完整且不出现字符交错**。
+- **权威历史重载与分层轨迹保留**：任务启动前自动从磁盘存储重载最新权威会话历史，保证多端或重连时消息不错乱；内存轨迹采用分层保留策略——高频微增量（`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`）实时推送至 STDOUT 但不落入内存轨迹，杜绝常驻守护进程内存无限增长。
+- **角色与权限硬隔离（Role / Permission）**：支持从 `~/.thunder/roles.jsonl` 与工作区 `.arp/roles.jsonl` 加载角色。角色的权限档位（`Read` ⊂ `Write` ⊂ `Bash`）决定内置工具是否注册，被禁工具模型在 Prompt 中**物理不可见**。
+- **协作式暂停（Pause）与反问气泡（Ask User）**：
+  - `pause_task` 在下一个工具派发边界安全挂起，不中断进行中的写入操作；`resume_task` 恢复运行。
+  - `ask_user_question` 允许 Agent 向用户发起阻塞式提问，宿主以气泡卡片渲染并通过 `answer_question` 答复继续任务。
+- **日志隔离**：所有系统及调试日志强制输出至 `STDERR`，确保 `STDOUT` 数据流百分之百为纯粹合法的 NDJSON 协议帧。
+
+---
+
+## 🛠️ 启动与调试
 
 ```bash
-# 启动 daemon
+# 1. 启动 daemon
 ./daemon.sh
 
-# 发送测试 Ping
+# 2. 发送测试 Ping
 echo '{"method":"ping","id":"1"}' | ./daemon.sh
 
-# 查询可用模型列表
+# 3. 查询可用模型规格
 echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 ```
 
-## 协议说明
+---
 
-### 1. 宿主指令（STDIN）
+## 📡 协议说明 (NDJSON over STDIN/STDOUT)
 
-每行一条 JSON：
+### 1. 宿主请求指令（STDIN）
+
+每行一条合法 JSON：
 
 ```json
 {"method":"ping","id":"req-1"}
 {"method":"list_models","id":"req-2"}
 {"method":"list_roles","id":"req-3","workspace_dir":"/path/to/repo"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我列出当前目录下的文件","session_id":"sess-001","role":"plan"}
+{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan"}
 {"method":"cancel_task","id":"req-5","task_id":"task-1"}
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}
@@ -49,58 +56,39 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ### 2. 守护进程输出（STDOUT）
 
-- 请求确认：`{"type":"response","id":"req-1","success":true,"data":{...}}`
-- 流式事件：`{"type":"observed_event","task_id":"task-1","event":{...}}`
-- 任务完成：`{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
-- 任务失败：`{"type":"task_failed","task_id":"task-1","error":"..."}`
-- **反问（需回答）**：`{"type":"user_question","task_id":"task-1","question_id":"task-1:q1","questions":[{"question":"...","options":[{"label":"..."}]}]}`
-- **已暂停**：`{"type":"task_paused","task_id":"task-1","reason":"..."}`
+- **请求响应**：`{"type":"response","id":"req-1","success":true,"data":{...}}`
+- **流式增量事件**：`{"type":"observed_event","task_id":"task-1","event":{...}}`
+- **反问挂起（需用户回答）**：`{"type":"user_question","task_id":"task-1","question_id":"task-1:q1","questions":[{"question":"...","options":[{"label":"..."}]}]}`
+- **任务已暂停**：`{"type":"task_paused","task_id":"task-1","reason":"..."}`
+- **任务成功完成**：`{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
+- **任务失败**：`{"type":"task_failed","task_id":"task-1","error":"..."}`
 
-### 角色与权限
+---
 
-`run_task` 的 `role` 字段按 id（或别名）解析，作用域同 `~/.thunder/roles.jsonl` 与
-`<workspace>/.arp/roles.jsonl`。省略 `role` 时行为与历史一致（完全放开）。
+## 🔒 角色权限档位
 
-角色的 `permission` 决定内置工具是否注册：
+| 档位 | `read_file` | `write_file` | `bash` | 说明 |
+| :---: | :---: | :---: | :---: | :--- |
+| **`read`** | ✅ | ❌ | ❌ | 只读审查模式；写文件与命令执行工具不注册，TS 插件写操作同样被阻断 |
+| **`write`** | ✅ | ✅ | ❌ | 代码修改模式；允许读写文件，禁止执行任意终端命令 |
+| **`bash`** (默认) | ✅ | ✅ | ✅ | 完全授权模式；开放所有内置与系统工具 |
 
-| 档位 | `read_file` | `write_file` | `bash` |
-| --- | :---: | :---: | :---: |
-| `read` | ✅ | ❌ | ❌ |
-| `write` | ✅ | ✅ | ❌ |
-| `bash`（默认） | ✅ | ✅ | ✅ |
+---
 
-只读 role 下，TypeScript 插件的 `ctx.fs.writeFile()` / `ctx.exec()` 也会被拒——
-否则插件将成为绕过权限的旁路。
-
-### 暂停语义
-
-`pause_task` 是**协作式**的：在**下一个工具边界**生效，进行中的工具会跑完，
-避免半途打断文件写入。`cancel_task` 仍然是不可逆的。
-
-### 反问流程
-
-1. agent 调用 `ask_user_question` → daemon 推 `user_question` 并**挂起**该任务。
-2. 宿主回答 `answer_question`（`question_id` 全局唯一，形如 `task-1:q1`）。
-3. 工具的返回值即答案文本，loop 继续。
-
-超时（默认 30 分钟）或 `cancel_task` 都会释放挂起的提问。
-
-### 状态机与交叉行为规范（Pause 与 UserQuestion）
-
-任务运行状态机如下：
+## 🔄 状态机流转与交叉行为
 
 ```text
                ┌──────────┐
                │ Running  │
                └────┬─────┘
           pause_task│   ▲ resume_task
-          (工具边界) │   │
+          (工具调度边界)│   │
                     ▼   │
                ┌──────────┐
                │  Paused  │
                └──────────┘
                     ▲
-                    │ 答复完成且曾收到 pause
+                    │ 答复完成且此前曾收到 pause
                     │
          ┌─────────────────────┐
          │ WaitingUserInput    │ ◄── agent 调用 ask_user_question 工具
@@ -108,12 +96,12 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
          └─────────────────────┘
 ```
 
-1. **生命周期边界定位**：
-   - `pause_task`：生效于**工具调度边界（Tool Scheduling Boundary）**。在工具开始执行前检查；若当前已有工具在运行中，该工具会完整跑完，并在下一轮工具调度前进入挂起。
-   - `ask_user_question`：属于**工具内部执行（In-Tool Execution）**。它在工具内部等待宿主的 `answer_question` oneshot 信号。
-2. **交叉场景处理**：
-   - **反问等待中收到 pause**：若任务当前正处于 `user_question` 等待人类输入阶段，`pause_task` 会标记该任务的 PauseGate 为 paused。当前工具（`ask_user_question`）不会被中断，继续等待人类答复。人类通过 `answer_question` 提交回答后，该工具完成返回，任务随之进入下一个工具边界并**立即冻结在 Paused 状态**。
-   - **反问等待中调用 resume**：若任务正在等待用户答复，调用 `resume_task` 不会有立竿见影的效果，因为任务是在等待 `answer_question` 响应，而不是在 PauseGate 上阻塞。
-   - **Paused 状态下收到 cancel**：无论任务处于 Paused 还是 WaitingUserInput，`cancel_task` 均会立刻唤醒并终止任务。
+1. **`pause_task` 生效边界**：位于工具调度边界前。若当前已有工具正在写文件，该工具会完整跑完，并在派发下一个工具前进入挂起。
+2. **反问期间收到 pause**：工具继续等待人类输入；人类提交答复后，该工具完成返回，任务随即在下一个调度边界冻结在 `Paused`。
+3. **取消的绝对优先**：任何状态下收到 `cancel_task`，任务立刻终止并释放所有等待资源。
 
-日志统一输出到 `STDERR`，绝不污染 `STDOUT` 数据流。
+---
+
+## 📄 开源协议
+
+本项目采用 [Apache License 2.0](../LICENSE) 开源许可证。

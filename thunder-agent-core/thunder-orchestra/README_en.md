@@ -1,97 +1,103 @@
 # Thunder Orchestra
 
-Scheduler **B** for composing many [`thunder-agent-loop`](../../thunder-agent-loop) units (part of the `thunder-agent` monorepo).
+> **Multi-Agent Orchestration Scheduler (Scheduler B)**
 
 [English](README_en.md) | [简体中文](README.md)
 
-A (`thunder-agent-loop`) is a complete single-agent unit. This crate is B: it
-creates, starts, joins, and cancels many A's. It never drives A's turns.
+Thunder Orchestra is the high-level scheduler responsible for composing multiple [`thunder-agent-loop`](../../thunder-agent-loop) units.
 
-```
-B  ──depends on──►  A (thunder-agent-loop)
+Under Thunder's **A/B Architectural Contract**:
+- **Agent A (`thunder-agent-loop`)**: A complete single-agent unit driving autonomous multi-turn reasoning, tool execution, and context management.
+- **Agent B (`thunder-orchestra`)**: The high-level scheduler responsible for creating, starting, monitoring, merging, and cancelling multiple A units. **B never drives A's internal turns**.
+
+```text
+B (thunder-orchestra)  ──depends on──►  A (thunder-agent-loop)
 A  never imports B
 ```
 
-## Layout
+---
 
+## Directory Layout
+
+```text
+thunder/
+├── thunder-agent-loop/                               # A (Single-Agent Loop Unit)
+└── thunder-agent-core/
+    └── thunder-orchestra/                            # B (Multi-Agent Scheduler)
+        ├── src/
+        │   ├── config.rs                             # OrchestraConfig, Topology, UnitSpec
+        │   ├── decomposer.rs                         # TaskDecomposer, SubTask decomposition
+        │   ├── delegate.rs                           # DelegateTool (A-calls-A tool bridge)
+        │   ├── router.rs                             # IntentRouter deterministic routing
+        │   ├── scheduler.rs                          # Scheduler (Sequential / Parallel / FanOut)
+        │   ├── store.rs                              # RunStore run trace persistence
+        │   └── synthesizer.rs                        # Synthesizer multi-agent report aggregation
+        └── tests/
 ```
-~/Documents/GitHub/thunder/thunder-agent-loop                # A (Single Agent Unit)
-~/Documents/GitHub/thunder/thunder-agent/                   # thunder-agent monorepo
-└── thunder-orchestra/                                      # B (Scheduler sub-package)
-```
 
-## What B does
+---
 
-| B | Not B |
+## What B Does and Does Not Do
+
+| B Owns | B Never Touches |
 |---|---|
-| Create N `AgentLoop`s with distinct ids | Drive A's inner turns |
-| `start` / `join` / `cancel` per unit | Session UI, Electron, FFI |
-| Demux `ObservedEvent` by `agent_id` | Agent graph inside A |
-| Persist `AgentRunResult.messages` | A's loop, prune, tools |
-| Optional `DelegateTool` (A calling A) | Shared blackboard in A |
+| Creating and managing N `AgentLoop` instances with distinct `agent_id`s | Driving A's internal turn progression |
+| Calling `start` / `join` / `cancel` on units | Session UI, Electron, or FFI rendering |
+| Demultiplexing `ObservedEvent` streams by `agent_id` | Forcing global agent graphs into A's engine |
+| Persisting `AgentRunResult` artifacts to disk | Violating A's loop / prune / tools encapsulation |
+| Providing optional `DelegateTool` (subagent delegation) | Maintaining implicit shared blackboards inside A |
 
-## Test
+---
 
-B has no A-style example runner. Use `./test.sh`.
+## Topologies & Execution Modes
 
-Default contract is **pipeline handoff**: `planner` → `coder`. B only `start` / `join`. The later unit must see the earlier unit's `final_content`. Results land in `./runs/<run_id>/<agent_id>.json`.
+| Topology | Purpose | Role & Division Mechanism | Best For |
+|---|---|---|---|
+| **`Single`** | Single-agent autonomous execution | Single versatile agent reasoning and executing independently | Standard queries, atomic commands, isolated file edits |
+| **`Sequential`** | Chained sequential pipeline | Previous outputs injected as next stage's input (Planner ➔ Coder ➔ Reviewer) | Multi-phase feature development & iterative refinement |
+| **`Parallel`** | Multi-perspective council review | **Role context injection**: Each unit receives dedicated system prompts and responsibility boundaries | Multi-dimensional audits, security and performance evaluations |
+| **`FanOut`** | **True subtask decomposition** | **Structured task decomposition**: `TaskDecomposer` splits complex prompts into distinct subtasks executed concurrently | Batch operations, modular independent analyses |
 
-```bash
-cd ~/Documents/GitHub/thunder/thunder-agent/thunder-orchestra
+### Synthesizer & File Concurrency Protection
 
-# Default: cargo test + mock pipeline + handoff asserts
-./test.sh
+- **Result Synthesizer (`Synthesizer`)**: After `Parallel` or `FanOut` execution completes, an optional synthesis node aggregates individual outputs into a unified resolution report (`synthesis`), sparing users from sifting through disparate answers.
+- **Cross-Agent File Concurrency Lock**: Protected by `TransactionMiddleware`'s process-wide normalized path mutex (`FILE_MUTATION_LOCKS`). Concurrent file writes across units or tools are serialized safely, preventing silent overwrites.
 
-# Scheduler unit tests only
-./test.sh test
+---
 
-# Sequential planner → coder (default prompt: "add a health check")
-./test.sh pipeline
-./test.sh run "add a health check"
+## Testing & Execution
 
-# Parallel planner + reviewer (persist only, no handoff assert)
-./test.sh parallel
-```
+The default verification contract includes:
+- **Pipeline Handoff**: `planner` ➔ `coder`. The later unit must receive the earlier unit's `final_content`.
+- **Parallel Review & Role Injection**: Each unit receives dedicated `role` prompt instructions.
+- **FanOut Decomposition & Concurrent Execution**: Complex tasks are split by numbered lists or roles and dispatched concurrently.
+- **Synthesizer Report Aggregation**: Final structured consensus and summary generation.
 
-Mock (no `OPENAI_API_KEY`) checks:
+Results are persisted under `./runs/<run_id>/<agent_id>.json`.
 
-- `planner.json` and `coder.json` share one `run_id`
-- both units finish `done` with `total_turns == 2`
-- `coder.final_content` contains `planner.final_content`
-- coder's answer is not the raw brief
-
-```bash
-# Live LLM (same env as A; current process must export the key)
-export OPENAI_API_KEY=...
-export OPENAI_API_BASE=https://api.openai.com/v1
-export MODEL=gpt-4o
-./test.sh pipeline "add a health check"
-```
-
-Live mode skips mock-specific turn / text checks. It still requires both units to persist and produce `final_content`.
-
-Direct cargo, if you do not want the script:
+### Commands
 
 ```bash
+cd thunder-agent-core/thunder-orchestra
+
+# Run unit and integration tests
 cargo test --test scheduler_test
+cargo test --test router_test
+
+# Run sequential pipeline mock verification
 cargo run -- --mock pipeline "add a health check"
-cargo run -- parallel "review the repo"
-```
 
-### Health check
+# Run parallel review mock
+cargo run -- --mock parallel "review the security and performance of src/lib.rs"
 
-Before launching a real pipeline, verify the orchestrator with a cheap, scriptable
-self-check: writable store + scratch dirs, and a reachable (or mocked) LLM.
+# Run fan-out subtask decomposition mock
+cargo run -- --mock fanout "1. Refactor networking 2. Optimize parser 3. Update tests"
 
-```bash
-# Standalone: prints a pretty JSON HealthReport, exit 0 for ok/degraded, 1 for failed
+# Run orchestrator health check (writable stores and reachable LLM)
 cargo run -- health --mock
-
-# Or via the runner:
-./test.sh health
 ```
 
-Report shape (pretty JSON):
+### Health Check Output
 
 ```json
 {
@@ -104,13 +110,11 @@ Report shape (pretty JSON):
 }
 ```
 
-`status` ∈ `ok | degraded | failed`. The `health` command is orthogonal to the
-topology and never drives a unit's turns.
+---
 
-## Depend on A
+## Dependency Specification
 
 ```toml
+[dependencies]
 thunder-agent-loop = { path = "../../thunder-agent-loop" }
-# later:
-# thunder-agent-loop = { git = "https://github.com/lucacicii/thunder.git", tag = "v0.1.0" }
 ```

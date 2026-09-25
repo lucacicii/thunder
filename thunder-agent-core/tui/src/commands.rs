@@ -163,6 +163,13 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Orchestration,
     ),
     SlashCommand::new(
+        "fanout",
+        &["decompose"],
+        "<task prompt>",
+        "Decompose task into subtasks and execute them concurrently (fan-out workers)",
+        CommandCategory::Orchestration,
+    ),
+    SlashCommand::new(
         "quit",
         &["exit", "q"],
         "",

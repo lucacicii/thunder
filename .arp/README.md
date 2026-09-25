@@ -1,5 +1,7 @@
 # `.arp/`
 
+[English](README_en.md) | [简体中文](README.md)
+
 Thunder 工作区的项目级 Agent Resume 配置与共享产物目录。参考
 [`agent-resume-panel`](https://github.com/lucacicii/agent-resume-panel) 的 `.arp/` 约定建立。
 

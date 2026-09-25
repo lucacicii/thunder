@@ -64,9 +64,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-## 🧪 Testing
+## 🛠️ Testing
 
 ```bash
 # Run all conversation unit and integration tests
-./test.sh
+cargo test -p thunder-conversation
 ```
+
+---
+
+## 📄 License
+
+This project is licensed under the [Apache License 2.0](../../LICENSE).

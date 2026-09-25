@@ -33,6 +33,7 @@ pub enum ExecutionMode {
     SingleAgent,
     SequentialPipeline,
     ParallelCouncil,
+    FanOut,
 }
 
 impl Default for ExecutionMode {
@@ -48,6 +49,7 @@ impl ExecutionMode {
             Self::SingleAgent => "Single",
             Self::SequentialPipeline => "🔗 Pipeline",
             Self::ParallelCouncil => "⚖️ Parallel",
+            Self::FanOut => "🎯 FanOut",
         }
     }
 
@@ -57,6 +59,7 @@ impl ExecutionMode {
             Self::SingleAgent => "Single Agent Direct Run",
             Self::SequentialPipeline => "Sequential Pipeline (Planner ➔ Coder)",
             Self::ParallelCouncil => "Parallel Multi-Agent (Planner + Reviewer)",
+            Self::FanOut => "Fan-Out Subtask Decomposition (Concurrent Workers)",
         }
     }
 
@@ -64,7 +67,8 @@ impl ExecutionMode {
         match self {
             Self::AutoRouter => Self::SequentialPipeline,
             Self::SequentialPipeline => Self::ParallelCouncil,
-            Self::ParallelCouncil => Self::SingleAgent,
+            Self::ParallelCouncil => Self::FanOut,
+            Self::FanOut => Self::SingleAgent,
             Self::SingleAgent => Self::AutoRouter,
         }
     }
@@ -1232,6 +1236,8 @@ impl App {
             (ExecutionMode::SequentialPipeline, p.to_string())
         } else if let Some(p) = trimmed.strip_prefix("/parallel ").or_else(|| trimmed.strip_prefix("/par ")) {
             (ExecutionMode::ParallelCouncil, p.to_string())
+        } else if let Some(p) = trimmed.strip_prefix("/fanout ").or_else(|| trimmed.strip_prefix("/decompose ")) {
+            (ExecutionMode::FanOut, p.to_string())
         } else if let Some(p) = trimmed.strip_prefix("/single ") {
             (ExecutionMode::SingleAgent, p.to_string())
         } else if let Some(p) = trimmed.strip_prefix("/auto ") {
@@ -1262,6 +1268,9 @@ impl App {
             }
             ExecutionMode::ParallelCouncil => {
                 self.run_orchestra_topology(Topology::Parallel, prompt, cancel, event_tx);
+            }
+            ExecutionMode::FanOut => {
+                self.run_orchestra_topology(Topology::FanOut, prompt, cancel, event_tx);
             }
             ExecutionMode::AutoRouter => {
                 self.run_root_agent(prompt, cancel, event_tx);
