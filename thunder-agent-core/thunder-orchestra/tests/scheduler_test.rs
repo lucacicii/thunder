@@ -153,9 +153,13 @@ async fn parallel_with_synthesis_aggregates_results() {
     assert_eq!(run.results.len(), 2);
     assert!(run.synthesis.is_some());
     let syn = run.synthesis.unwrap();
-    assert!(syn.contains("[Synthesizer Aggregation Report]"));
+    // Mock runs aggregate verbatim under an HONEST label — no fake
+    // "successfully synthesized" verdict without a real LLM pass.
+    assert!(syn.contains("Unit Outputs"), "syn = {syn}");
+    assert!(syn.contains("mock run"), "syn = {syn}");
     assert!(syn.contains("planner"));
     assert!(syn.contains("reviewer"));
+    assert!(!syn.contains("Successfully synthesized"));
 }
 
 #[tokio::test]

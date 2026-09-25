@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use thunder_agent_loop::AgentConfig;
+use std::sync::Arc;
+use thunder_agent_loop::{AgentConfig, LLMClientTrait};
+
+/// Factory the composition root (TUI / daemon / CLI) supplies so B can obtain
+/// a real LLM client per unit without depending on any transport crate.
+///
+/// B stays a pure scheduler: it never resolves providers itself. The host
+/// maps `&AgentConfig` → `Arc<dyn LLMClientTrait>` (typically via
+/// `ProviderRegistry::resolve` + `client_for` from `thunder-agent-providers`).
+/// Returning `None` is a hard error in non-mock runs: units must never start
+/// with the default `UnconfiguredLLMClient`.
+pub type ClientFactory =
+    Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
 
 /// How B should launch the units it owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +68,7 @@ impl UnitSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OrchestraConfig {
     pub topology: Topology,
     pub scratch_root: PathBuf,
@@ -70,6 +82,27 @@ pub struct OrchestraConfig {
     pub synthesize: bool,
     /// Optional dedicated UnitSpec used to run the synthesis aggregator.
     pub synthesizer: Option<UnitSpec>,
+    /// Real-mode LLM client seam. Required whenever units run with
+    /// `use_mock = false`; `Scheduler::dispatch` fails fast without it.
+    pub client_factory: Option<ClientFactory>,
+}
+
+impl std::fmt::Debug for OrchestraConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrchestraConfig")
+            .field("topology", &self.topology)
+            .field("scratch_root", &self.scratch_root)
+            .field("store_root", &self.store_root)
+            .field("units", &self.units)
+            .field("base", &self.base)
+            .field("synthesize", &self.synthesize)
+            .field("synthesizer", &self.synthesizer)
+            .field(
+                "client_factory",
+                &self.client_factory.as_ref().map(|_| "<client-factory>"),
+            )
+            .finish()
+    }
 }
 
 impl OrchestraConfig {
@@ -82,6 +115,7 @@ impl OrchestraConfig {
             base: None,
             synthesize: false,
             synthesizer: None,
+            client_factory: None,
         }
     }
 
@@ -113,6 +147,13 @@ impl OrchestraConfig {
 
     pub fn with_base(mut self, cfg: AgentConfig) -> Self {
         self.base = Some(cfg);
+        self
+    }
+
+    /// Attach the real-mode LLM client factory (composition-root seam).
+    /// Hosts typically build it from `ProviderRegistry` + `client_for`.
+    pub fn with_client_factory(mut self, factory: ClientFactory) -> Self {
+        self.client_factory = Some(factory);
         self
     }
 }

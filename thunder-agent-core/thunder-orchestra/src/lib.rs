@@ -12,7 +12,7 @@ pub mod scheduler;
 pub mod store;
 pub mod synthesizer;
 
-pub use config::{OrchestraConfig, Topology, UnitSpec};
+pub use config::{ClientFactory, OrchestraConfig, Topology, UnitSpec};
 pub use decomposer::{HeuristicDecomposer, SubTask, TaskDecomposer};
 pub use delegate::DelegateTool;
 pub use health::{HealthCheck, HealthReport, HealthStatus};

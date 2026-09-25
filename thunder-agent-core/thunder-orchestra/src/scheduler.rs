@@ -5,8 +5,8 @@ use crate::store::RunStore;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thunder_agent_loop::{
-    AgentError, AgentEvent, AgentHandle, AgentLoop, AgentRunResult, BashTool, ObservedEvent,
-    ReadFileTool, WriteFileTool,
+    AgentError, AgentEvent, AgentHandle, AgentLoop, AgentRunResult, BashTool, LLMClientTrait,
+    ObservedEvent, ReadFileTool, WriteFileTool,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -46,7 +46,7 @@ impl Scheduler {
         run_health(&self.config, use_mock).await
     }
 
-    pub fn spawn_unit(&self, spec: &UnitSpec, use_mock: bool) -> AgentLoop {
+    pub fn spawn_unit(&self, spec: &UnitSpec, use_mock: bool) -> Result<AgentLoop, AgentError> {
         let mut cfg = spec
             .config
             .clone()
@@ -56,16 +56,45 @@ impl Scheduler {
             cfg.system_prompt = Some(sys.clone());
         }
 
+        let unit_model = cfg.model.clone();
+
+        // Resolve the real-mode client BEFORE moving `cfg` into the agent.
+        let resolved: Option<Arc<dyn LLMClientTrait>> = if use_mock {
+            None
+        } else if let Some(factory) = self.config.client_factory.as_ref() {
+            match factory(&cfg) {
+                Some(client) => Some(client),
+                None => {
+                    return Err(AgentError::Config(format!(
+                        "client factory returned no client for unit `{}` (model `{unit_model}`). \
+                         Verify the model resolves in your provider registry (models.json / auth.json).",
+                        spec.id
+                    )));
+                }
+            }
+        } else {
+            // Fail fast: a real-mode run without a factory would silently give
+            // every unit the default `UnconfiguredLLMClient` and die mid-run.
+            return Err(AgentError::Config(
+                "real (non-mock) orchestra runs require a client factory: attach one via \
+                 `OrchestraConfig::with_client_factory` (hosts typically build it from \
+                 `ProviderRegistry` + `client_for`)"
+                    .to_string(),
+            ));
+        };
+
         let mut agent = AgentLoop::new(cfg).with_id(&spec.id);
         if use_mock {
             agent = agent.with_custom_client(Arc::new(crate::mock::RoleMockClient::new(&spec.role)));
+        } else if let Some(client) = resolved {
+            agent = agent.with_custom_client(client);
         }
         if spec.register_builtins {
             agent.register_tool(Arc::new(BashTool::default()));
             agent.register_tool(Arc::new(ReadFileTool::default()));
             agent.register_tool(Arc::new(WriteFileTool::default()));
         }
-        agent
+        Ok(agent)
     }
 
     /// Dispatch every unit according to the configured topology.
@@ -90,6 +119,17 @@ impl Scheduler {
         let run_id = new_run_id();
         let cancel = cancel.unwrap_or_default();
 
+        // Fail fast before any unit starts: real mode without a client factory
+        // is a host wiring bug, not a per-unit runtime failure.
+        if !use_mock && self.config.client_factory.is_none() {
+            return Err(AgentError::Config(
+                "real (non-mock) orchestra runs require a client factory: attach one via \
+                 `OrchestraConfig::with_client_factory` (hosts typically build it from \
+                 `ProviderRegistry` + `client_for`)"
+                    .to_string(),
+            ));
+        }
+
         let (effective_topology, routing_decision) = if self.config.topology == Topology::Auto {
             let decision = self.router.route(&prompt, use_mock).await;
             info!(
@@ -113,10 +153,16 @@ impl Scheduler {
         };
 
         let synthesis = if self.config.synthesize && results.len() > 1 {
+            let synth_client = if use_mock {
+                None
+            } else {
+                self.resolve_synthesizer_client()
+            };
             match crate::synthesizer::Synthesizer::synthesize(
                 &prompt,
                 &results,
                 self.config.synthesizer.as_ref(),
+                synth_client,
                 use_mock,
             )
             .await
@@ -139,6 +185,21 @@ impl Scheduler {
         })
     }
 
+    /// Resolve the LLM client for the synthesis aggregator via the configured
+    /// factory (prefers the dedicated synthesizer spec's config, falls back to
+    /// `base`). Returns `None` when no factory is attached — callers must then
+    /// degrade honestly instead of faking a synthesized report.
+    fn resolve_synthesizer_client(&self) -> Option<Arc<dyn thunder_agent_loop::LLMClientTrait>> {
+        let factory = self.config.client_factory.as_ref()?;
+        let cfg = self
+            .config
+            .synthesizer
+            .as_ref()
+            .map(|s| s.config.clone())
+            .or_else(|| self.config.base.clone())?;
+        factory(&cfg)
+    }
+
     async fn run_single(
         &self,
         run_id: &str,
@@ -158,7 +219,7 @@ impl Scheduler {
             UnitSpec::new("agent", "assistant", base).with_builtins()
         };
 
-        let agent = self.spawn_unit(&spec, use_mock);
+        let agent = self.spawn_unit(&spec, use_mock)?;
         let mut handle = agent.start(prompt.to_string(), Some(cancel))?;
         spawn_event_forwarder(&mut handle, event_tx);
         let result = handle.join().await?;
@@ -191,7 +252,7 @@ impl Scheduler {
                 )
             };
 
-            let agent = self.spawn_unit(spec, use_mock);
+            let agent = self.spawn_unit(spec, use_mock)?;
             let mut handle = agent.start(role_prompt, Some(cancel.clone()))?;
             spawn_event_forwarder(&mut handle, event_tx.clone());
             started.push((spec.role.clone(), handle));
@@ -242,7 +303,7 @@ impl Scheduler {
 
             let mut unit_spec = spec.clone();
             unit_spec.id = format!("{}_{}", spec.id, subtask.id);
-            let agent = self.spawn_unit(&unit_spec, use_mock);
+            let agent = self.spawn_unit(&unit_spec, use_mock)?;
             let mut handle = agent.start(subtask.prompt, Some(cancel.clone()))?;
             spawn_event_forwarder(&mut handle, event_tx.clone());
             started.push((format!("{}: {}", subtask.role, subtask.title), handle));
@@ -276,7 +337,7 @@ impl Scheduler {
                 "You are the `{}` unit.\nIncoming brief:\n{}\n\nDo your part and stop when done.",
                 spec.role, incoming
             );
-            let agent = self.spawn_unit(spec, use_mock);
+            let agent = self.spawn_unit(spec, use_mock)?;
             let mut handle = agent.start(task, Some(cancel.clone()))?;
             spawn_event_forwarder(&mut handle, event_tx.clone());
             let result = handle.join().await?;
