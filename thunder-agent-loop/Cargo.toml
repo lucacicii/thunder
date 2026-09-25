@@ -14,7 +14,7 @@ keywords = ["agent", "llm", "loop", "openai", "tools"]
 categories = ["asynchronous", "api-bindings"]
 
 [dependencies]
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }

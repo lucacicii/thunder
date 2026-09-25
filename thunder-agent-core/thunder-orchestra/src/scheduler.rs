@@ -15,6 +15,7 @@ pub struct ScheduledRun {
     pub run_id: String,
     pub results: Vec<(String, AgentRunResult)>,
     pub routing_decision: Option<RoutingDecision>,
+    pub synthesis: Option<String>,
 }
 
 pub struct Scheduler {
@@ -46,10 +47,14 @@ impl Scheduler {
     }
 
     pub fn spawn_unit(&self, spec: &UnitSpec, use_mock: bool) -> AgentLoop {
-        let cfg = spec
+        let mut cfg = spec
             .config
             .clone()
             .with_scratchpad_dir(self.config.scratch_root.join(&spec.id));
+
+        if let Some(sys) = &spec.system_prompt {
+            cfg.system_prompt = Some(sys.clone());
+        }
 
         let mut agent = AgentLoop::new(cfg).with_id(&spec.id);
         if use_mock {
@@ -102,14 +107,35 @@ impl Scheduler {
 
         let results = match effective_topology {
             Topology::Parallel => self.run_parallel(&run_id, &prompt, use_mock, cancel, event_tx).await?,
+            Topology::FanOut => self.run_fan_out(&run_id, &prompt, use_mock, cancel, event_tx).await?,
             Topology::Sequential => self.run_sequential(&run_id, &prompt, use_mock, cancel, event_tx).await?,
             Topology::Single | Topology::Auto => self.run_single(&run_id, &prompt, use_mock, cancel, event_tx).await?,
+        };
+
+        let synthesis = if self.config.synthesize && results.len() > 1 {
+            match crate::synthesizer::Synthesizer::synthesize(
+                &prompt,
+                &results,
+                self.config.synthesizer.as_ref(),
+                use_mock,
+            )
+            .await
+            {
+                Ok(s) => Some(s),
+                Err(err) => {
+                    tracing::warn!(error = %err, "Failed to synthesize orchestra results");
+                    None
+                }
+            }
+        } else {
+            None
         };
 
         Ok(ScheduledRun {
             run_id,
             results,
             routing_decision,
+            synthesis,
         })
     }
 
@@ -152,8 +178,21 @@ impl Scheduler {
         let mut started: Vec<(String, AgentHandle)> = Vec::new();
 
         for spec in &self.config.units {
+            // Explicitly inject role context & responsibilities to ensure genuine multi-perspective execution
+            let role_prompt = if let Some(sys) = &spec.system_prompt {
+                format!(
+                    "You are the `{}` unit.\nRole Directive:\n{}\n\nTask Brief:\n{}\n\nExecute your role's specific responsibilities and stop when done.",
+                    spec.role, sys, prompt
+                )
+            } else {
+                format!(
+                    "You are the `{}` unit with specialized responsibility in this team.\nTask Brief:\n{}\n\nFocus strictly on your domain ({}) and provide your specialized analysis and output.",
+                    spec.role, prompt, spec.role
+                )
+            };
+
             let agent = self.spawn_unit(spec, use_mock);
-            let mut handle = agent.start(prompt.to_string(), Some(cancel.clone()))?;
+            let mut handle = agent.start(role_prompt, Some(cancel.clone()))?;
             spawn_event_forwarder(&mut handle, event_tx.clone());
             started.push((spec.role.clone(), handle));
         }
@@ -163,6 +202,57 @@ impl Scheduler {
             let result = handle.join().await?;
             persist(self.store(), run_id, &role, &result).await;
             out.push((role, result));
+        }
+        Ok(out)
+    }
+
+    async fn run_fan_out(
+        &self,
+        run_id: &str,
+        prompt: &str,
+        use_mock: bool,
+        cancel: CancellationToken,
+        event_tx: Option<tokio::sync::mpsc::UnboundedSender<ObservedEvent>>,
+    ) -> Result<Vec<(String, AgentRunResult)>, AgentError> {
+        use crate::decomposer::{HeuristicDecomposer, TaskDecomposer};
+        let decomposer = HeuristicDecomposer;
+        let subtasks = decomposer.decompose(prompt, &self.config.units);
+
+        let mut started: Vec<(String, AgentHandle)> = Vec::new();
+
+        for subtask in subtasks {
+            let spec = self
+                .config
+                .units
+                .iter()
+                .find(|u| u.role == subtask.role)
+                .cloned()
+                .unwrap_or_else(|| {
+                    if let Some(first) = self.config.units.first() {
+                        first.clone()
+                    } else {
+                        let base = self
+                            .config
+                            .base
+                            .clone()
+                            .unwrap_or_else(|| thunder_agent_loop::AgentConfig::new("gpt-4o"));
+                        UnitSpec::new(&subtask.id, &subtask.role, base).with_builtins()
+                    }
+                });
+
+            let mut unit_spec = spec.clone();
+            unit_spec.id = format!("{}_{}", spec.id, subtask.id);
+            let agent = self.spawn_unit(&unit_spec, use_mock);
+            let mut handle = agent.start(subtask.prompt, Some(cancel.clone()))?;
+            spawn_event_forwarder(&mut handle, event_tx.clone());
+            started.push((format!("{}: {}", subtask.role, subtask.title), handle));
+        }
+
+        let mut out = Vec::with_capacity(started.len());
+        for (label, handle) in started {
+            let result = handle.join().await?;
+            persist(self.store(), run_id, &label, &result).await;
+            out.push((label, result));
         }
         Ok(out)
     }

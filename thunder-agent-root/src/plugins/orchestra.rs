@@ -26,10 +26,10 @@ impl OrchestraPlugin {
         .with_capability(PluginCapability::ToolProvider)
         .with_triggers(TriggerSpec::new(
             vec![
-                "pipeline", "parallel", "council", "orchestra", "review", "planner", "coder",
-                "audit", "delegate", "编排", "流水线", "并行", "审查", "多智能体", "分工",
+                "pipeline", "orchestra", "subagent", "subtasks", "fanout",
+                "delegate", "编排", "流水线", "多智能体", "分工协作",
             ],
-            "Coordinates multi-agent workflows, sequential pipelines, parallel council reviews, and subagent delegation.",
+            "Coordinates multi-agent workflows, sequential pipelines, and subagent delegation.",
         ));
 
         let scheduler = Scheduler::new(config.clone());

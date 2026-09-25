@@ -21,7 +21,14 @@ async fn test_heuristic_intent_router_classifications() {
     let dec4 = router.heuristic_route("对比评估 SQLite 与 RocksDB 在高并发场景下的性能");
     assert_eq!(dec4.topology, Topology::Parallel);
 
-    // 3. Single direct query triggers
+    // 3. Fan-out independent subtasks triggers
+    let dec_fan = router.heuristic_route("Please decompose and fan out these subtasks in parallel");
+    assert_eq!(dec_fan.topology, Topology::FanOut);
+
+    let dec_fan2 = router.heuristic_route("分块并发拆解执行这三批任务");
+    assert_eq!(dec_fan2.topology, Topology::FanOut);
+
+    // 4. Single direct query triggers
     let dec5 = router.heuristic_route("What is the latest stable version of Rust?");
     assert_eq!(dec5.topology, Topology::Single);
 

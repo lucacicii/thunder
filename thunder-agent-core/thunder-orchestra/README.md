@@ -29,6 +29,20 @@ A  never imports B
 | 落盘 `AgentRunResult.messages` | A 的 loop / prune / tools |
 | 可选 `DelegateTool`（A 调 A） | 在 A 里做共享黑板 |
 
+## 拓扑模式与执行机制
+
+| 拓扑 | 定位 | 角色与分工机制 | 适用场景 |
+|---|---|---|---|
+| `Single` | 单 Agent 自主执行 | 单一全功能 Agent | 绝大多数常规问答、原子命令与独立文件编辑 |
+| `Sequential` | 链式串行流水线 | 前序输出注入后续作为输入（Planner ➔ Coder ➔ Reviewer） | 复杂功能规划与渐进式开发 |
+| `Parallel` | 多视角并行审查 | **角色视角注入**：每个 Unit 强制绑定专属角色指令与职责边界 | 多维度审查、安全性与性能综合评测 |
+| `FanOut` | **真实任务拆解并行** | **结构化任务分解**：`TaskDecomposer` 拆解为独立子任务，分片并发执行 | 大批量任务分块、多模块独立分析 |
+
+### 聚合器（Synthesizer）与文件并发保护
+
+- **结果聚合器（`Synthesizer`）**：在 `Parallel` 或 `FanOut` 结束后，可由可选的聚合节点将多只 Unit 的独立产出归纳提炼，输出统一的决议报告（`synthesis`），避免用户面对多个零散孤立答案。
+- **跨 Agent 文件写入互斥锁**：底层由 `TransactionMiddleware` 的进程内全局文件排队锁（`FILE_MUTATION_LOCKS`）保护。多个 Agent 或多工具并发写入同一文件时排队串行化，杜绝竞态覆盖。
+
 ## 测试
 
 B 没有 A 那种 example runner，用 `./test.sh`。
