@@ -16,8 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin, TriggerSpec};
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
 /// Default wait for a human answer. Absent an answer the tool returns a timeout
@@ -30,7 +29,7 @@ pub type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<QuestionOu
 pub struct AskUserQuestionTool {
     task_id: String,
     session_id: String,
-    stdout: Arc<Mutex<tokio::io::Stdout>>,
+    output_tx: mpsc::Sender<String>,
     pending: PendingQuestions,
     counter: Arc<AtomicU64>,
     timeout: Duration,
@@ -40,13 +39,13 @@ impl AskUserQuestionTool {
     pub fn new(
         task_id: String,
         session_id: String,
-        stdout: Arc<Mutex<tokio::io::Stdout>>,
+        output_tx: mpsc::Sender<String>,
         pending: PendingQuestions,
     ) -> Self {
         Self {
             task_id,
             session_id,
-            stdout,
+            output_tx,
             pending,
             counter: Arc::new(AtomicU64::new(1)),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
@@ -183,13 +182,9 @@ impl AgentTool for AskUserQuestionTool {
                 question_id: question_id.clone(),
                 questions,
             };
-            let line = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-            let mut out = self.stdout.lock().await;
-            out.write_all(line.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
-            out.write_all(b"\n").await.map_err(|e| e.to_string())?;
-            out.flush().await.map_err(|e| e.to_string())?;
+            let mut line = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+            line.push('\n');
+            let _ = self.output_tx.send(line).await;
         }
 
         // Park until answered, cancelled, or timed out. The loop is idle here.
@@ -298,13 +293,11 @@ mod tests {
         pending: PendingQuestions,
         timeout: Duration,
     ) -> AskUserQuestionTool {
-        // Tests never assert on stdout contents; writing to the real stdout keeps
-        // the constructor honest without needing an injectable sink.
-        let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
+        let (output_tx, _rx) = mpsc::channel(32);
         AskUserQuestionTool::new(
             "task-1".to_string(),
             "sess-1".to_string(),
-            stdout,
+            output_tx,
             pending,
         )
         .with_timeout(timeout)
