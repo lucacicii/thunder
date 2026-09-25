@@ -4,21 +4,18 @@
 use crate::model::BridgeModel;
 use crate::process::{default_bridge_dir, PiAiBridge};
 use async_trait::async_trait;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 use thunder_agent_loop::stream::client::{
     ChatRequestOptions, LLMClientTrait, LLMStreamChunk,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 #[derive(Clone)]
 pub struct PiAiClient {
     bridge: Option<Arc<PiAiBridge>>,
     model: BridgeModel,
-    request_timeout_ms: u64,
+    _request_timeout_ms: u64,
 }
 
 impl PiAiClient {
@@ -26,7 +23,7 @@ impl PiAiClient {
         Self {
             bridge: Some(bridge),
             model,
-            request_timeout_ms,
+            _request_timeout_ms: request_timeout_ms,
         }
     }
 
@@ -36,7 +33,7 @@ impl PiAiClient {
         Self {
             bridge: None,
             model,
-            request_timeout_ms,
+            _request_timeout_ms: request_timeout_ms,
         }
     }
 
@@ -79,7 +76,7 @@ impl LLMClientTrait for PiAiClient {
         let id = bridge.next_request_id();
 
         let (tx, rx) = mpsc::channel::<Result<LLMStreamChunk, String>>(64);
-        let last_activity = bridge.register_stream(id.clone(), tx.clone()).await?;
+        let _last_activity = bridge.register_stream(id.clone(), tx.clone()).await?;
 
         let request = StreamRequest {
             cmd: "stream",
@@ -100,40 +97,22 @@ impl LLMClientTrait for PiAiClient {
             return Err(err);
         }
 
-        // Watchdog: cancellation passthrough + chunk-idle timeout.
+        // Watchdog: forward cancellation to the bridge sidecar.
+        // NOTE: Do NOT capture `tx` here! `tx` must only be held by the bridge
+        // dispatcher so that when `done` or `error` is received and `p` is dropped,
+        // the receiver immediately sees EOF instead of hanging.
+        // Also do not unregister eagerly: the sidecar will emit `error` upon abort,
+        // which cleanly consumes and unregisters the stream.
         let bridge_ref = Arc::clone(&bridge);
         let watch_id = id.clone();
-        let idle_limit_ms = self.request_timeout_ms.max(60_000);
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        let _ = bridge_ref.send_line(
-                            serde_json::json!({ "cmd": "cancel", "id": watch_id }).to_string(),
-                        ).await;
-                        let _ = tx.send(Err("Request cancelled by user".to_string())).await;
-                        break;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                        if tx.is_closed() {
-                            break;
-                        }
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
-                        if now.saturating_sub(last_activity.load(Ordering::Relaxed)) > idle_limit_ms {
-                            warn!(id = %watch_id, idle_ms = idle_limit_ms, "Bridge stream idle timeout, cancelling");
-                            let _ = bridge_ref.send_line(
-                                serde_json::json!({ "cmd": "cancel", "id": watch_id }).to_string(),
-                            ).await;
-                            let _ = tx.send(Err("Bridge stream idle timeout".to_string())).await;
-                            break;
-                        }
-                    }
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    let _ = bridge_ref.send_line(
+                        serde_json::json!({ "cmd": "cancel", "id": watch_id }).to_string(),
+                    ).await;
                 }
             }
-            bridge_ref.unregister(&watch_id).await;
         });
 
         Ok(rx)
