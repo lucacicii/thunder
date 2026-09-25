@@ -543,3 +543,67 @@ async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error
     let _ = child.wait().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_daemon_explicit_mock_fallback_notice() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp_home = std::env::temp_dir().join(format!("thunder_empty_home_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    let _ = tokio::fs::create_dir_all(&tmp_home).await;
+
+    // Run daemon with empty HOME so no provider credentials can be found
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .env("HOME", &tmp_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    // Submit task without mock mode explicitly requested
+    let req = serde_json::json!({
+        "method": "run_task",
+        "id": "req-fallback-1",
+        "task_id": "task-fallback-1",
+        "prompt": "Hello",
+        "use_mock": false
+    });
+    send(&mut stdin, req.to_string()).await?;
+
+    let mut saw_fallback_ack = false;
+    let mut saw_fallback_event = false;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "response" && resp["id"] == "req-fallback-1" {
+            assert_eq!(resp["success"], true);
+            assert_eq!(resp["data"]["use_mock"], true);
+            assert_eq!(resp["data"]["fallback_to_mock"], true);
+            assert!(resp["data"]["warning"].as_str().unwrap().contains("falling back to Mock mode"));
+            saw_fallback_ack = true;
+        } else if resp["type"] == "observed_event" {
+            if let Some(act) = resp["event"]["event"].get("action") {
+                if act == "fallback_to_mock" {
+                    saw_fallback_event = true;
+                }
+            }
+        } else if resp["type"] == "task_completed" {
+            break;
+        }
+    }
+
+    assert!(saw_fallback_ack, "Expected fallback_to_mock: true in response ack");
+    assert!(saw_fallback_event, "Expected observed_event with action: fallback_to_mock");
+
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = tokio::fs::remove_dir_all(&tmp_home).await;
+    Ok(())
+}
