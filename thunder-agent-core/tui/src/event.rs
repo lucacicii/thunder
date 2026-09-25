@@ -20,6 +20,7 @@ pub enum AppEvent {
         agent_id: String,
         success: bool,
         final_text: Option<String>,
+        authoritative_messages: Option<Vec<thunder_agent_loop::types::message::ChatMessage>>,
     },
     /// Request to load a specific session by ID
     LoadSession(String),

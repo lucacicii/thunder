@@ -12,6 +12,7 @@ categories = ["asynchronous", "api-bindings"]
 
 [dependencies]
 thunder-agent-loop = { path = "../thunder-agent-loop" }
+thunder-pi-bridge = { path = "../thunder-pi-bridge" }
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
 tokio-util = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }

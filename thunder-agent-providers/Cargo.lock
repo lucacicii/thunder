@@ -1078,6 +1078,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thunder-agent-loop",
+ "thunder-pi-bridge",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "thunder-pi-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thunder-agent-loop",
  "tokio",
  "tokio-util",
  "tracing",

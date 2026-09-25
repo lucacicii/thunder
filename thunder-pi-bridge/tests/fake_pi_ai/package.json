@@ -1,0 +1,7 @@
+{
+	"name": "@earendil-works/pi-ai",
+	"version": "0.0.0-fake",
+	"private": true,
+	"type": "module",
+	"main": "index.js"
+}

@@ -36,7 +36,8 @@ thunder/                          # git 根 = GitHub 上的 lucacicii/thunder
 ├── daemon.sh                     # 启动 STDIO Sidecar Daemon (供 Electron 集成)
 ├── test.sh                       # 全工作区测试
 ├── thunder-agent-loop/           # Agent A：单 Agent 闭环引擎
-├── thunder-agent-providers/      # LLM Provider 适配（OpenAI / Anthropic / Google）
+├── thunder-pi-bridge/            # pi-ai Node Sidecar Transport（统一模型方言与传输）
+├── thunder-agent-providers/      # LLM Catalog 与配置解析
 ├── thunder-agent-skills/         # Skill 解析与注册
 ├── thunder-agent-mcp/            # MCP client / tool bridge
 ├── thunder-agent-root/           # 微内核 host，按任务动态挂插件

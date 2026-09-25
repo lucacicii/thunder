@@ -34,31 +34,35 @@ echo -e "Rust Version:  $(rustc --version)"
 echo -e "Cargo Version: $(cargo --version)"
 echo ""
 
-echo -e "${BLUE}▶ [1/6] Testing thunder-agent-loop (Core Loop Engine)...${NC}"
+echo -e "${BLUE}▶ [1/8] Testing thunder-agent-loop (Core Loop Engine)...${NC}"
 (cd thunder-agent-loop && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-loop passed!${NC}\n"
 
-echo -e "${BLUE}▶ [2/6] Testing thunder-agent-providers (LLM Adapter Catalog)...${NC}"
+echo -e "${BLUE}▶ [2/8] Testing thunder-pi-bridge (pi-ai Node Sidecar Transport)...${NC}"
+(cd thunder-pi-bridge && cargo test --quiet)
+echo -e "${GREEN}✔ thunder-pi-bridge passed!${NC}\n"
+
+echo -e "${BLUE}▶ [3/8] Testing thunder-agent-providers (LLM Catalog & Config)...${NC}"
 (cd thunder-agent-providers && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-providers passed!${NC}\n"
 
-echo -e "${BLUE}▶ [3/6] Testing thunder-agent-skills (Skill Parser & Registry)...${NC}"
+echo -e "${BLUE}▶ [4/8] Testing thunder-agent-skills (Skill Parser & Registry)...${NC}"
 (cd thunder-agent-skills && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-skills passed!${NC}\n"
 
-echo -e "${BLUE}▶ [4/6] Testing thunder-agent-mcp (MCP Client & Tool Bridge)...${NC}"
+echo -e "${BLUE}▶ [5/8] Testing thunder-agent-mcp (MCP Client & Tool Bridge)...${NC}"
 (cd thunder-agent-mcp && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-mcp passed!${NC}\n"
 
-echo -e "${BLUE}▶ [5/6] Testing thunder-agent-root (Microkernel Host & Dynamic Plugins)...${NC}"
+echo -e "${BLUE}▶ [6/8] Testing thunder-agent-root (Microkernel Host & Dynamic Plugins)...${NC}"
 (cd thunder-agent-root && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-root passed!${NC}\n"
 
-echo -e "${BLUE}▶ [6/7] Testing thunder-agent-core (Conversation, Orchestra, TUI)...${NC}"
+echo -e "${BLUE}▶ [7/8] Testing thunder-agent-core (Conversation, Orchestra, TUI)...${NC}"
 (cd thunder-agent-core && cargo test --workspace --quiet)
 echo -e "${GREEN}✔ thunder-agent-core passed!${NC}\n"
 
-echo -e "${BLUE}▶ [7/7] Testing thunder-agent-daemon (STDIO Sidecar Daemon)...${NC}"
+echo -e "${BLUE}▶ [8/8] Testing thunder-agent-daemon (STDIO Sidecar Daemon)...${NC}"
 (cd thunder-agent-daemon && cargo test --quiet)
 echo -e "${GREEN}✔ thunder-agent-daemon passed!${NC}\n"
 

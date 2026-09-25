@@ -76,6 +76,31 @@ impl Default for SkillsPlugin {
     }
 }
 
+static DEFAULT_SKILLS_CACHE: std::sync::OnceLock<tokio::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>>> =
+    std::sync::OnceLock::new();
+
+async fn get_cached_default_skills() -> Vec<Skill> {
+    let cache = DEFAULT_SKILLS_CACHE.get_or_init(|| tokio::sync::RwLock::new(None));
+    {
+        let r = cache.read().await;
+        if let Some((timestamp, skills)) = r.as_ref() {
+            if timestamp.elapsed() < std::time::Duration::from_secs(120) {
+                return skills.clone();
+            }
+        }
+    }
+    let mut w = cache.write().await;
+    if let Some((timestamp, skills)) = w.as_ref() {
+        if timestamp.elapsed() < std::time::Duration::from_secs(120) {
+            return skills.clone();
+        }
+    }
+    let default_paths = SkillLoader::default_search_paths();
+    let loaded = SkillLoader::load_search_paths(&default_paths).await;
+    *w = Some((std::time::Instant::now(), loaded.clone()));
+    loaded
+}
+
 #[cfg(feature = "skills")]
 #[async_trait]
 impl ThunderPlugin for SkillsPlugin {
@@ -116,9 +141,8 @@ impl ThunderPlugin for SkillsPlugin {
     }
 
     async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // 1. Automatically load default system search paths
-        let default_paths = SkillLoader::default_search_paths();
-        let loaded_defaults = SkillLoader::load_search_paths(&default_paths).await;
+        // 1. Automatically load default system search paths (cached with 120s TTL)
+        let loaded_defaults = get_cached_default_skills().await;
         for s in loaded_defaults {
             self.registry.register(s).await;
         }

@@ -796,6 +796,7 @@ impl App {
                                     agent_id: "session_manager".to_string(),
                                     success: false,
                                     final_text: Some(format!("❌ Could not find session `{target_name}` to resume. Use `/resume` to view all saved sessions.")),
+                                    authoritative_messages: None,
                                 });
                             }
                         }
@@ -954,6 +955,7 @@ impl App {
                                         agent_id: "skills_show".to_string(),
                                         success: true,
                                         final_text: Some(content),
+                                        authoritative_messages: None,
                                     });
                                 }
                             });
@@ -985,6 +987,7 @@ impl App {
                                     agent_id: "skills_scanner".to_string(),
                                     success: true,
                                     final_text: Some(content),
+                                    authoritative_messages: None,
                                 });
                             }
                         });
@@ -1005,6 +1008,7 @@ impl App {
                                     agent_id: "skills_lister".to_string(),
                                     success: true,
                                     final_text: Some(content),
+                                    authoritative_messages: None,
                                 });
                             }
                         });
@@ -1041,6 +1045,7 @@ impl App {
                                 agent_id: "mcp_manager".to_string(),
                                 success: true,
                                 final_text: Some(content),
+                                authoritative_messages: None,
                             });
                         }
                     });
@@ -1359,6 +1364,7 @@ impl App {
                                 agent_id: res.agent_id,
                                 success: res.run_result.finish_reason == FinishReason::Done,
                                 final_text: Some(summary),
+                                authoritative_messages: Some(res.run_result.messages),
                             });
                         }
                         Err(err) => {
@@ -1366,6 +1372,7 @@ impl App {
                                 agent_id: "root_agent".to_string(),
                                 success: false,
                                 final_text: Some(err.to_string()),
+                                authoritative_messages: None,
                             });
                         }
                     }
@@ -1375,6 +1382,7 @@ impl App {
                         agent_id: "root_agent".to_string(),
                         success: false,
                         final_text: Some(err.to_string()),
+                        authoritative_messages: None,
                     });
                 }
             }
@@ -1433,6 +1441,7 @@ impl App {
                                 agent_id: result.agent_id,
                                 success: is_ok,
                                 final_text: result.final_content,
+                                authoritative_messages: Some(result.messages),
                             });
                         }
                         Err(err) => {
@@ -1440,6 +1449,7 @@ impl App {
                                 agent_id: "tui_agent".to_string(),
                                 success: false,
                                 final_text: Some(err.to_string()),
+                                authoritative_messages: None,
                             });
                         }
                     }
@@ -1449,6 +1459,7 @@ impl App {
                         agent_id: "tui_agent".to_string(),
                         success: false,
                         final_text: Some(err.to_string()),
+                        authoritative_messages: None,
                     });
                 }
             }
@@ -1535,6 +1546,7 @@ impl App {
                         agent_id: format!("orchestra_{:?}", topology),
                         success: true,
                         final_text: Some(summary_text),
+                        authoritative_messages: None,
                     });
                 }
                 Err(err) => {
@@ -1542,6 +1554,7 @@ impl App {
                         agent_id: "orchestra".to_string(),
                         success: false,
                         final_text: Some(format!("Orchestra dispatch error: {}", err)),
+                        authoritative_messages: None,
                     });
                 }
             }
@@ -1574,6 +1587,7 @@ impl App {
                 agent_id: "health_checker".to_string(),
                 success: true,
                 final_text: Some(out),
+                authoritative_messages: None,
             });
         });
     }
@@ -1661,10 +1675,21 @@ impl App {
         }
     }
 
-    pub fn handle_agent_finished(&mut self, _agent_id: String, success: bool, final_text: Option<String>) {
+    pub fn handle_agent_finished(
+        &mut self,
+        _agent_id: String,
+        success: bool,
+        final_text: Option<String>,
+        authoritative_messages: Option<Vec<ChatMessage>>,
+    ) {
         if success {
             self.agent_status = AgentStatus::Idle;
-            if !self.streaming_delta.is_empty() {
+            if let Some(messages) = authoritative_messages {
+                if !messages.is_empty() {
+                    self.conversation.messages = messages;
+                    self.conversation.recalculate_stats();
+                }
+            } else if !self.streaming_delta.is_empty() {
                 let content = std::mem::take(&mut self.streaming_delta);
                 let tool_calls: Option<Vec<ToolCall>> = if !self.active_tool_calls.is_empty() {
                     Some(

@@ -97,8 +97,9 @@ impl TuiRunner {
                 agent_id,
                 success,
                 final_text,
+                authoritative_messages,
             } => {
-                app.handle_agent_finished(agent_id, success, final_text);
+                app.handle_agent_finished(agent_id, success, final_text, authoritative_messages);
                 app.save_current_conversation().await;
             }
             AppEvent::LoadSession(id) => {
