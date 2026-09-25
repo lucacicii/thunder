@@ -286,3 +286,66 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
     let _ = std::fs::remove_dir_all(std::env::temp_dir().join("thunder_ipc_ws"));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_daemon_rejects_duplicate_task_id() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    // 1. Submit first run_task with a specific task_id
+    let req1 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-dup-1",
+        "task_id": "duplicate-task-1",
+        "prompt": "Task 1",
+        "use_mock": true
+    });
+    send(&mut stdin, req1.to_string()).await?;
+
+    // Ack for req-dup-1 should succeed
+    let ack1_line = reader.next_line().await?.expect("ack 1 expected");
+    let ack1: serde_json::Value = serde_json::from_str(&ack1_line)?;
+    assert_eq!(ack1["id"], "req-dup-1");
+    assert_eq!(ack1["success"], true);
+
+    // 2. Submit second run_task immediately with the SAME task_id
+    let req2 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-dup-2",
+        "task_id": "duplicate-task-1",
+        "prompt": "Task 2 (duplicate)",
+        "use_mock": true
+    });
+    send(&mut stdin, req2.to_string()).await?;
+
+    // Ack for req-dup-2 must fail with conflict error
+    let mut conflict_rejected = false;
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "response" && resp["id"] == "req-dup-2" {
+            assert_eq!(resp["success"], false);
+            let err = resp["error"].as_str().unwrap_or_default();
+            assert!(err.contains("already running"), "expected conflict error, got: {err}");
+            conflict_rejected = true;
+            break;
+        }
+    }
+    assert!(conflict_rejected, "Expected duplicate task submission to be rejected with conflict");
+
+    drop(stdin);
+    let _ = child.wait().await;
+    Ok(())
+}

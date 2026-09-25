@@ -471,6 +471,31 @@ impl DaemonService {
         thinking_level: Option<String>,
         role_id: Option<String>,
     ) {
+        let cancel_token = CancellationToken::new();
+        let pause_gate = Arc::new(thunder_agent_loop::core::pause::PauseGate::new());
+
+        // Reject re-entrant task submission if the task_id is already actively running.
+        // Prevents task zombie token overwrite, accidental double-clicks, and store race conditions.
+        {
+            let mut tasks = self.active_tasks.lock().await;
+            if tasks.contains_key(&task_id) {
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: false,
+                    data: None,
+                    error: Some(format!("Task '{task_id}' is already running (conflict)")),
+                })
+                .await;
+                return;
+            }
+            tasks.insert(task_id.clone(), cancel_token.clone());
+        }
+
+        self.active_pauses
+            .lock()
+            .await
+            .insert(task_id.clone(), Arc::clone(&pause_gate));
+
         let effective_session_id = session_id.unwrap_or_else(|| {
             format!("sess_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
         });
@@ -573,20 +598,6 @@ impl DaemonService {
 
         conversation.add_user_message(&prompt);
         let _ = self.store.save(&conversation).await;
-
-        let cancel_token = CancellationToken::new();
-        self.active_tasks
-            .lock()
-            .await
-            .insert(task_id.clone(), cancel_token.clone());
-
-        // Expose a pause gate for this task so the host can freeze it at the
-        // next tool boundary without killing the run.
-        let pause_gate = Arc::new(thunder_agent_loop::core::pause::PauseGate::new());
-        self.active_pauses
-            .lock()
-            .await
-            .insert(task_id.clone(), Arc::clone(&pause_gate));
 
         // Acknowledge task initiation
         self.send_response(DaemonResponse::Response {
