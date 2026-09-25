@@ -10,6 +10,7 @@ pub fn shared_http_client() -> reqwest::Client {
     SHARED_HTTP_CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
                 .pool_max_idle_per_host(20)
                 .pool_idle_timeout(std::time::Duration::from_secs(90))
                 .tcp_nodelay(true)
