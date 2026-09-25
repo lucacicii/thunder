@@ -62,7 +62,7 @@ Rules:
 ## What stays in A
 
 - Closed autonomous loop (`run` / `start`)
-- Streaming OpenAI-compatible client + `LLMClientTrait`
+- `LLMClientTrait` transport abstraction (implemented in production by `thunder-pi-bridge`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
 - In-memory context pruning
 - Loop-level repetition / error circuit breaker

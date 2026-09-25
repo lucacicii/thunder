@@ -1394,12 +1394,10 @@ name = "thunder-agent-loop"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "futures-util",
  "libc",
  "parking_lot",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
