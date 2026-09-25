@@ -567,10 +567,13 @@ impl DaemonService {
 
         let registry = self.provider_registry.read().await.clone();
         let available = registry.list_available();
+        let has_valid_credentials = available.iter().any(|m| m.available);
 
-        if available.is_empty() && !use_mock {
+        let mut fallback_to_mock = false;
+        if !has_valid_credentials && !use_mock {
             warn!("No available LLM provider credentials found, falling back to Mock mode");
             use_mock = true;
+            fallback_to_mock = true;
         }
 
         let chosen_model = model
@@ -644,21 +647,48 @@ impl DaemonService {
         let _ = self.store.save(&conversation).await;
 
         // Acknowledge task initiation
+        let mut response_data = serde_json::json!({
+            "task_id": task_id,
+            "session_id": effective_session_id,
+            "model": chosen_model,
+            "workspace": chosen_workspace,
+            "shared_roots": chosen_shared_roots,
+            "thinking_level": chosen_thinking,
+            "use_mock": use_mock
+        });
+        if fallback_to_mock {
+            response_data["fallback_to_mock"] = serde_json::Value::Bool(true);
+            response_data["warning"] = serde_json::Value::String(
+                "No available LLM provider credentials found in ~/.thunder/auth.json; falling back to Mock mode".to_string()
+            );
+        }
+
         self.send_response(DaemonResponse::Response {
             id,
             success: true,
-            data: Some(serde_json::json!({
-                "task_id": task_id,
-                "session_id": effective_session_id,
-                "model": chosen_model,
-                "workspace": chosen_workspace,
-                "shared_roots": chosen_shared_roots,
-                "thinking_level": chosen_thinking,
-                "use_mock": use_mock
-            })),
+            data: Some(response_data),
             error: None,
         })
         .await;
+
+        if fallback_to_mock {
+            let warn_evt = DaemonResponse::ObservedEvent {
+                task_id: task_id.clone(),
+                event: ObservedEvent {
+                    agent_id: format!("root_{effective_session_id}"),
+                    event: AgentEvent::TelemetryNotice {
+                        turn: 0,
+                        tool_call_id: "system".to_string(),
+                        layer: "provider".to_string(),
+                        action: "fallback_to_mock".to_string(),
+                        ground_truth: "No configured LLM credentials".to_string(),
+                        self_healed: Some("Falling back to local MockClient".to_string()),
+                        guidance: Some("Configure ~/.thunder/auth.json with valid provider API keys to enable real LLM inference.".to_string()),
+                    },
+                },
+            };
+            self.send_response(warn_evt).await;
+        }
 
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
