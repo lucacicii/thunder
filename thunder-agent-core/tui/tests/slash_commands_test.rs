@@ -89,6 +89,7 @@ async fn test_slash_commands_execution_flow() {
         message_count: 3,
         turn_count: 1,
         total_tokens: 100,
+        total_used_tokens: 100,
         tags: vec![],
         model: None,
         workspace: None,

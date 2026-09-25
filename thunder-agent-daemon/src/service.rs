@@ -849,7 +849,13 @@ impl DaemonService {
                             }
 
                             let task_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
-                            conversation.stats.total_tokens += task_tokens;
+                            // `total_tokens` is the working-context estimate (recomputed
+                            // from the message list); lifetime usage must be tracked apart
+                            // from it or every save silently resets the running total.
+                            conversation.stats.total_used_tokens = conversation
+                                .stats
+                                .total_used_tokens
+                                .saturating_add(task_tokens);
                             conversation.stats.turn_count += res.run_result.stats.total_turns;
                             conversation.stats.tool_calls_count += res.run_result.stats.total_tool_executions;
                             conversation.stats.duration_ms += res.run_result.stats.total_duration_ms;

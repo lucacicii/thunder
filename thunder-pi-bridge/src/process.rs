@@ -100,12 +100,15 @@ impl PiAiBridge {
         format!("req-{}", self.req_counter.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Copy `bridge.mjs` + `package.json` from the crate runner dir when the
-    /// bridge dir does not yet contain them.
+    /// Copy `bridge.mjs` + `package.json` from the crate runner dir into the
+    /// bridge install dir. `package.json` is only created when missing (so a
+    /// local `node_modules` survives), but `bridge.mjs` is refreshed whenever its
+    /// bytes differ. The install dir is long-lived and shared across daemon
+    /// builds; without this check a rebuilt bridge would never be picked up.
     async fn ensure_runner_files(&self) -> Result<(), String> {
         let mjs = self.bridge_dir.join("bridge.mjs");
         let pkg = self.bridge_dir.join("package.json");
-        if mjs.exists() && pkg.exists() {
+        if mjs.exists() && pkg.exists() && !self.bridge_stale(&mjs).await {
             return Ok(());
         }
         let src = Self::runner_source_dir()?;
@@ -115,13 +118,35 @@ impl PiAiBridge {
         for file in ["bridge.mjs", "package.json"] {
             let from = src.join(file);
             let to = self.bridge_dir.join(file);
-            if !to.exists() {
+            // bridge.mjs must stay in sync with the daemon build; package.json is
+            // user-editable (extra deps) so we only seed it once.
+            let should_copy = if file == "bridge.mjs" {
+                !to.exists() || self.bridge_stale(&to).await
+            } else {
+                !to.exists()
+            };
+            if should_copy {
                 tokio::fs::copy(&from, &to)
                     .await
                     .map_err(|e| format!("failed to copy {file} from {from:?} to {to:?}: {e}"))?;
             }
         }
         Ok(())
+    }
+
+    /// True when the installed `bridge.mjs` differs from the one shipped with this
+    /// daemon build (missing source counts as stale).
+    async fn bridge_stale(&self, installed: &Path) -> bool {
+        let Ok(src) = Self::runner_source_dir() else {
+            return false;
+        };
+        let shipped = src.join("bridge.mjs");
+        match (tokio::fs::read(installed).await, tokio::fs::read(&shipped).await) {
+            (Ok(a), Ok(b)) => a != b,
+            // If either side is unreadable, fall back to "not stale" so a transient
+            // IO error cannot clobber a working install.
+            _ => false,
+        }
     }
 
     fn runner_source_dir() -> Result<PathBuf, String> {
@@ -523,6 +548,8 @@ struct RawUsage {
     output: usize,
     #[serde(default)]
     cache_read: usize,
+    #[serde(default)]
+    cache_write: usize,
     reasoning: Option<usize>,
 }
 
@@ -542,7 +569,11 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
                 })
                 .collect(),
             finish_reason: done.finish_reason,
-            prompt_tokens: Some(done.usage.input),
+            // pi-ai reports `input` as the *uncached* portion only; cache reads and
+            // cache writes are separate. Thunder's `prompt_tokens` is the full prompt
+            // (the panel derives cache-hit ratios and context occupancy from it), so
+            // fold both cache buckets back in. `cached_tokens` stays the read subset.
+            prompt_tokens: Some(done.usage.input + done.usage.cache_read + done.usage.cache_write),
             completion_tokens: Some(done.usage.output),
             cached_tokens: Some(done.usage.cache_read),
             reasoning_tokens: done.usage.reasoning,
