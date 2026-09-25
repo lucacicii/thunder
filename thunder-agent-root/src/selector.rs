@@ -24,7 +24,7 @@ impl PluginSelector {
         &self,
         prompt: &str,
         registry: &PluginRegistry,
-        use_mock: bool,
+        _use_mock: bool,
     ) -> PluginSelection {
         let manifests = registry.list_manifests();
         if manifests.is_empty() {
@@ -35,16 +35,8 @@ impl PluginSelector {
             };
         }
 
-        if use_mock || self.base_config.is_none() {
-            return self.heuristic_select(prompt, &manifests);
-        }
-
-        if let Some(base) = &self.base_config {
-            if let Ok(selection) = self.llm_select(prompt, &manifests, base).await {
-                return selection;
-            }
-        }
-
+        // Fast deterministic trigger and keyword matching: avoids adding 1-2s of LLM latency
+        // and extra token cost on every task initiation.
         self.heuristic_select(prompt, &manifests)
     }
 
@@ -82,15 +74,5 @@ impl PluginSelector {
             reason,
             confidence: 0.90,
         }
-    }
-
-    async fn llm_select(
-        &self,
-        prompt: &str,
-        manifests: &[PluginManifest],
-        base: &AgentConfig,
-    ) -> Result<PluginSelection, String> {
-        let _ = (prompt, manifests, base);
-        Err("live LLM plugin selection requires a provider-injected client".to_string())
     }
 }

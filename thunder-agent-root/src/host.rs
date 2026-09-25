@@ -162,6 +162,21 @@ impl ThunderRoot {
         self
     }
 
+    /// Register standard baseline plugins supported by this build configuration:
+    /// - SkillsPlugin: parses skill files from ~/.agents/skills and workspace
+    /// - McpPlugin: discovers Model Context Protocol tool servers
+    pub fn with_standard_plugins(mut self) -> Self {
+        #[cfg(feature = "skills")]
+        {
+            self = self.with_plugin(crate::plugins::SkillsPlugin::default());
+        }
+        #[cfg(feature = "mcp")]
+        {
+            self = self.with_plugin(crate::plugins::McpPlugin::default());
+        }
+        self
+    }
+
     pub fn with_workspace(mut self, path: PathBuf) -> Self {
         self.config.workspace_dir = Some(path.clone());
         self.workspace_root = Some(path);

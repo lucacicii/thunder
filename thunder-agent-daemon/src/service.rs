@@ -722,8 +722,7 @@ impl DaemonService {
                     chosen_shared_roots.iter().map(PathBuf::from).collect(),
                 )
                 .with_plugin(ConversationPlugin::new(store.clone()))
-                .with_plugin(SkillsPlugin::default())
-                .with_plugin(McpPlugin::default())
+                .with_standard_plugins()
                 .with_plugin(script_plugin)
                 .with_provider_registry(registry.clone());
 

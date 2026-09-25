@@ -13,7 +13,7 @@
    - 外部技能解析与 Prompt 注入（`SkillsPlugin`）
    - 模型上下文协议工具发现（`McpPlugin`）
    - 交互终端（`thunder-tui`）
-3. **自主意图驱动（Dynamic Plugin Activation）**：根据用户任务特征，由 `PluginSelector` 自主决定动态挂载激活哪些插件与工具，兼顾最小 Token 消耗与强扩展性。
+3. **动态意图路由（Dynamic Trigger Activation）**：根据用户任务特征与意图触发词，由 `PluginSelector` 结合确定性基线（会话与技能常驻）与启发式关键词快速匹配激活哪些插件与工具，兼顾零额外 LLM 延迟、最小 Token 消耗与强扩展性。
 
 ## 🚀 快速使用
 
