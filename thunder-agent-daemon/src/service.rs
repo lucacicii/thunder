@@ -698,6 +698,7 @@ impl DaemonService {
                 pause_gate: Some(pause_gate_for_run),
             };
 
+            let initial_messages_count = conversation.messages.len();
             let context_input = conversation.as_context_input();
             let start_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
 
@@ -728,12 +729,35 @@ impl DaemonService {
                             let finish_reason = format!("{:?}", res.run_result.finish_reason);
                             let final_content = res.final_content.clone();
 
-                            // Full persistence of message chain (retains bash executions, write_file and tool results)
-                            if !res.run_result.messages.is_empty() {
-                                conversation.messages = res.run_result.messages.clone();
+                            // Load the latest authoritative conversation from store.
+                            // The ConversationPlugin records raw, unpruned tool calls and outputs incrementally
+                            // during the task run, preserving full history against working-context pruning.
+                            let mut conversation = match store.load(&effective_session_id).await {
+                                Ok(Some(fresh)) => fresh,
+                                _ => conversation,
+                            };
+
+                            // Fallback: If ConversationPlugin did not record new messages,
+                            // safely append newly generated messages from run_result without overwriting historical turns.
+                            if conversation.messages.len() <= initial_messages_count {
+                                if res.run_result.messages.len() > initial_messages_count {
+                                    conversation.messages.extend(res.run_result.messages[initial_messages_count..].iter().cloned());
+                                } else if let Some(ref text) = final_content {
+                                    if !text.is_empty() {
+                                        conversation.add_assistant_message(Some(text.clone()), None);
+                                    }
+                                }
                             } else if let Some(ref text) = final_content {
-                                conversation.add_assistant_message(Some(text.clone()), None);
+                                // Ensure final assistant content is persisted if not already captured by the plugin
+                                let already_present = conversation.messages.last().map(|m| match m {
+                                    ChatMessage::Assistant { content: Some(c), .. } => c == text,
+                                    _ => false,
+                                }).unwrap_or(false);
+                                if !already_present && !text.is_empty() {
+                                    conversation.add_assistant_message(Some(text.clone()), None);
+                                }
                             }
+
                             let task_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
                             conversation.stats.total_tokens += task_tokens;
                             conversation.stats.turn_count += res.run_result.stats.total_turns;

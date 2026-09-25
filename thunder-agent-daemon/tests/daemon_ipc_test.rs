@@ -392,3 +392,90 @@ async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::err
     let _ = child.wait().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    let sess_id = format!("sess-history-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+
+    // 1. First task in session
+    let req1 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-hist-1",
+        "task_id": "task-hist-1",
+        "session_id": sess_id,
+        "prompt": "Hello first turn",
+        "use_mock": true
+    });
+    send(&mut stdin, req1.to_string()).await?;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "task_completed" && resp["task_id"] == "task-hist-1" {
+            break;
+        }
+    }
+
+    // 2. Second task in same session
+    let req2 = serde_json::json!({
+        "method": "run_task",
+        "id": "req-hist-2",
+        "task_id": "task-hist-2",
+        "session_id": sess_id,
+        "prompt": "Hello second turn",
+        "use_mock": true
+    });
+    send(&mut stdin, req2.to_string()).await?;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "task_completed" && resp["task_id"] == "task-hist-2" {
+            break;
+        }
+    }
+
+    // 3. Get conversation and verify both turns exist in store history
+    let get_conv = serde_json::json!({
+        "method": "get_conversation",
+        "id": "req-get-conv",
+        "session_id": sess_id
+    });
+    send(&mut stdin, get_conv.to_string()).await?;
+
+    let mut conv_data = serde_json::Value::Null;
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "response" && resp["id"] == "req-get-conv" {
+            conv_data = resp["data"].clone();
+            break;
+        }
+    }
+
+    let messages = conv_data["messages"].as_array().expect("messages array");
+    let contents: Vec<String> = messages.iter().filter_map(|m| {
+        m.get("content").and_then(|c| c.as_str()).map(String::from)
+    }).collect();
+
+    assert!(contents.iter().any(|c| c == "Hello first turn"), "First user prompt must be retained");
+    assert!(contents.iter().any(|c| c == "Hello second turn"), "Second user prompt must be retained");
+    assert!(messages.len() >= 4, "Expected at least 2 user and 2 assistant messages, got: {}", messages.len());
+
+    drop(stdin);
+    let _ = child.wait().await;
+    Ok(())
+}
