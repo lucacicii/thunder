@@ -86,6 +86,20 @@ fn test_deepseek_v4_1_flash_official_spec_adapter() {
     assert_eq!(payload["messages"].as_array().unwrap().len(), 3);
     assert_eq!(payload["messages"][1]["role"], "assistant");
     assert!(payload["messages"][1]["tool_calls"].is_array());
+
+    // Explicit thinking_level = "off" disables thinking mode for lightning-fast simple replies
+    let mut off_options = options.clone();
+    off_options.thinking_level = Some("off".to_string());
+    let off_payload = adapter.adapt_payload(&spec, &off_options);
+    assert_eq!(off_payload["thinking"]["type"], "disabled");
+    assert!(off_payload.get("reasoning_effort").is_none());
+
+    // Explicit thinking_level = "low" sets reasoning_effort = "low"
+    let mut low_options = options.clone();
+    low_options.thinking_level = Some("low".to_string());
+    let low_payload = adapter.adapt_payload(&spec, &low_options);
+    assert_eq!(low_payload["thinking"]["type"], "enabled");
+    assert_eq!(low_payload["reasoning_effort"], "low");
 }
 
 #[test]

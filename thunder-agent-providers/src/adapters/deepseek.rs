@@ -66,10 +66,39 @@ impl ModelAdapter for DeepSeekAdapter {
             payload["tool_choice"] = json!("auto");
         }
 
-        // DeepSeek Thinking Mode support
-        if spec.reasoning || is_deepseek_reasoning_id(&spec.id) {
-            payload["thinking"] = json!({ "type": "enabled" });
-            payload["reasoning_effort"] = json!("high");
+        // DeepSeek Thinking Mode support:
+        // Respect explicit options.thinking_level; fallback to spec.default_thinking_level or "high" for reasoning models.
+        let effective_thinking = options.thinking_level.as_deref().or_else(|| {
+            if !spec.default_thinking_level.is_empty() && spec.default_thinking_level != "off" {
+                Some(spec.default_thinking_level.as_str())
+            } else if spec.reasoning || is_deepseek_reasoning_id(&spec.id) {
+                Some("high")
+            } else {
+                None
+            }
+        });
+
+        match effective_thinking {
+            Some("off") | Some("false") | Some("disabled") => {
+                payload["thinking"] = json!({ "type": "disabled" });
+            }
+            Some("low") | Some("minimal") => {
+                payload["thinking"] = json!({ "type": "enabled" });
+                payload["reasoning_effort"] = json!("low");
+            }
+            Some("medium") => {
+                payload["thinking"] = json!({ "type": "enabled" });
+                payload["reasoning_effort"] = json!("medium");
+            }
+            Some("high") | Some("max") | Some("xhigh") => {
+                payload["thinking"] = json!({ "type": "enabled" });
+                payload["reasoning_effort"] = json!("high");
+            }
+            Some(other) => {
+                payload["thinking"] = json!({ "type": "enabled" });
+                payload["reasoning_effort"] = json!(other);
+            }
+            None => {}
         }
 
         if let Some(temp) = options.temperature {

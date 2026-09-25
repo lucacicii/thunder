@@ -114,22 +114,17 @@ impl LLMClient {
         built.client = client;
         built
     }
-}
 
-#[async_trait]
-impl LLMClientTrait for LLMClient {
-    async fn stream_chat(
-        &self,
-        options: ChatRequestOptions,
-        cancel_token: CancellationToken,
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
-        let url = format!("{}/chat/completions", self.api_base);
-        let model = options.model.unwrap_or_else(|| self.default_model.clone());
+    /// Build standard OpenAI-compatible JSON payload from ChatRequestOptions,
+    /// respecting thinking_level, stream_options, temperature, etc.
+    pub fn build_default_payload(&self, options: &ChatRequestOptions) -> serde_json::Value {
+        let model = options.model.clone().unwrap_or_else(|| self.default_model.clone());
 
         let mut payload = json!({
             "model": model,
             "messages": options.messages,
-            "stream": true
+            "stream": true,
+            "stream_options": { "include_usage": true }
         });
 
         if !options.tools.is_empty() {
@@ -146,6 +141,45 @@ impl LLMClientTrait for LLMClient {
         if let Some(max_tokens) = options.max_tokens {
             payload["max_tokens"] = json!(max_tokens);
         }
+
+        if let Some(ref level) = options.thinking_level {
+            match level.to_lowercase().as_str() {
+                "off" | "false" | "disabled" => {
+                    payload["thinking"] = json!({ "type": "disabled" });
+                }
+                "low" | "minimal" => {
+                    payload["thinking"] = json!({ "type": "enabled" });
+                    payload["reasoning_effort"] = json!("low");
+                }
+                "medium" => {
+                    payload["thinking"] = json!({ "type": "enabled" });
+                    payload["reasoning_effort"] = json!("medium");
+                }
+                "high" | "max" | "xhigh" => {
+                    payload["thinking"] = json!({ "type": "enabled" });
+                    payload["reasoning_effort"] = json!("high");
+                }
+                other => {
+                    payload["reasoning_effort"] = json!(other);
+                }
+            }
+        }
+
+        payload
+    }
+
+    /// Stream an already-adapted JSON payload directly to the completions endpoint.
+    pub async fn stream_chat_payload(
+        &self,
+        payload: serde_json::Value,
+        cancel_token: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        let url = format!("{}/chat/completions", self.api_base);
+        let model = payload
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or(&self.default_model)
+            .to_string();
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let client = self.client.clone();
@@ -371,6 +405,18 @@ impl LLMClientTrait for LLMClient {
         });
 
         Ok(rx)
+    }
+}
+
+#[async_trait]
+impl LLMClientTrait for LLMClient {
+    async fn stream_chat(
+        &self,
+        options: ChatRequestOptions,
+        cancel_token: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        let payload = self.build_default_payload(&options);
+        self.stream_chat_payload(payload, cancel_token).await
     }
 }
 

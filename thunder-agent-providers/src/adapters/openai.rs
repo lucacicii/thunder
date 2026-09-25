@@ -15,9 +15,36 @@ impl ModelAdapter for OpenAiStandardAdapter {
     fn adapt_payload(&self, spec: &ModelSpec, options: &ChatRequestOptions) -> Value {
         let model = options.model.clone().unwrap_or_else(|| spec.id.clone());
 
+        // Transform system messages to developer messages if supported
+        let messages: Vec<Value> = if spec.supports_developer_role {
+            options
+                .messages
+                .iter()
+                .map(|msg| match msg {
+                    ChatMessage::System { content, name } => {
+                        let mut obj = json!({
+                            "role": "developer",
+                            "content": content
+                        });
+                        if let Some(n) = name {
+                            obj["name"] = json!(n);
+                        }
+                        obj
+                    }
+                    other => serde_json::to_value(other).unwrap_or(json!({})),
+                })
+                .collect()
+        } else {
+            options
+                .messages
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(json!({})))
+                .collect()
+        };
+
         let mut payload = json!({
             "model": model,
-            "messages": options.messages,
+            "messages": messages,
             "stream": true,
             "stream_options": { "include_usage": true }
         });
@@ -36,6 +63,53 @@ impl ModelAdapter for OpenAiStandardAdapter {
         if let Some(max_tokens) = options.max_tokens {
             let field_name = &spec.max_tokens_field;
             payload[field_name] = json!(max_tokens);
+        }
+
+        let thinking_level = options.thinking_level.as_deref().or_else(|| {
+            if !spec.default_thinking_level.is_empty() {
+                Some(spec.default_thinking_level.as_str())
+            } else {
+                None
+            }
+        });
+
+        if let Some(level) = thinking_level {
+            match level.to_lowercase().as_str() {
+                "off" | "false" | "disabled" => {
+                    if spec.reasoning {
+                        payload["thinking"] = json!({ "type": "disabled" });
+                    }
+                }
+                "low" | "minimal" => {
+                    if spec.reasoning {
+                        payload["thinking"] = json!({ "type": "enabled" });
+                    }
+                    if spec.supports_reasoning_effort || spec.reasoning {
+                        payload["reasoning_effort"] = json!("low");
+                    }
+                }
+                "medium" => {
+                    if spec.reasoning {
+                        payload["thinking"] = json!({ "type": "enabled" });
+                    }
+                    if spec.supports_reasoning_effort || spec.reasoning {
+                        payload["reasoning_effort"] = json!("medium");
+                    }
+                }
+                "high" | "max" | "xhigh" => {
+                    if spec.reasoning {
+                        payload["thinking"] = json!({ "type": "enabled" });
+                    }
+                    if spec.supports_reasoning_effort || spec.reasoning {
+                        payload["reasoning_effort"] = json!("high");
+                    }
+                }
+                other => {
+                    if spec.supports_reasoning_effort || spec.reasoning {
+                        payload["reasoning_effort"] = json!(other);
+                    }
+                }
+            }
         }
 
         payload
@@ -97,8 +171,18 @@ impl ModelAdapter for OpenAiReasoningAdapter {
         }
 
         // Add reasoning_effort if supported or needed
-        if spec.supports_reasoning_effort {
-            let effort = options.thinking_level.as_deref().unwrap_or("medium");
+        if spec.supports_reasoning_effort || spec.reasoning {
+            let effort = match options.thinking_level.as_deref() {
+                Some("off") => "low",
+                Some(e) => e,
+                None => {
+                    if !spec.default_thinking_level.is_empty() && spec.default_thinking_level != "off" {
+                        spec.default_thinking_level.as_str()
+                    } else {
+                        "medium"
+                    }
+                }
+            };
             payload["reasoning_effort"] = json!(effort);
         }
 

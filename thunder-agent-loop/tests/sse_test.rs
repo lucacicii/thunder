@@ -69,3 +69,35 @@ fn test_sse_parser_usage_with_reasoning_and_cache_tokens() {
     assert_eq!(deltas[0].reasoning_tokens, Some(35));
 }
 
+#[test]
+fn test_llm_client_thinking_level_payload_mapping() {
+    use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClient};
+    use thunder_agent_loop::types::message::ChatMessage;
+    use std::collections::HashMap;
+
+    let client = LLMClient::from_endpoint("deepseek-chat", "http://localhost", None, &HashMap::new(), 5000);
+
+    let mut opts = ChatRequestOptions {
+        messages: vec![ChatMessage::user("ping")],
+        tools: vec![],
+        model: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        thinking_level: Some("off".to_string()),
+    };
+
+    let p_off = client.build_default_payload(&opts);
+    assert_eq!(p_off["thinking"]["type"], "disabled");
+
+    opts.thinking_level = Some("low".to_string());
+    let p_low = client.build_default_payload(&opts);
+    assert_eq!(p_low["thinking"]["type"], "enabled");
+    assert_eq!(p_low["reasoning_effort"], "low");
+
+    opts.thinking_level = Some("high".to_string());
+    let p_high = client.build_default_payload(&opts);
+    assert_eq!(p_high["thinking"]["type"], "enabled");
+    assert_eq!(p_high["reasoning_effort"], "high");
+}
+
