@@ -85,4 +85,35 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 超时（默认 30 分钟）或 `cancel_task` 都会释放挂起的提问。
 
+### 状态机与交叉行为规范（Pause 与 UserQuestion）
+
+任务运行状态机如下：
+
+```text
+               ┌──────────┐
+               │ Running  │
+               └────┬─────┘
+          pause_task│   ▲ resume_task
+          (工具边界) │   │
+                    ▼   │
+               ┌──────────┐
+               │  Paused  │
+               └──────────┘
+                    ▲
+                    │ 答复完成且曾收到 pause
+                    │
+         ┌─────────────────────┐
+         │ WaitingUserInput    │ ◄── agent 调用 ask_user_question 工具
+         │ (user_question 阻塞) │ ──► answer_question 答复后恢复 Running
+         └─────────────────────┘
+```
+
+1. **生命周期边界定位**：
+   - `pause_task`：生效于**工具调度边界（Tool Scheduling Boundary）**。在工具开始执行前检查；若当前已有工具在运行中，该工具会完整跑完，并在下一轮工具调度前进入挂起。
+   - `ask_user_question`：属于**工具内部执行（In-Tool Execution）**。它在工具内部等待宿主的 `answer_question` oneshot 信号。
+2. **交叉场景处理**：
+   - **反问等待中收到 pause**：若任务当前正处于 `user_question` 等待人类输入阶段，`pause_task` 会标记该任务的 PauseGate 为 paused。当前工具（`ask_user_question`）不会被中断，继续等待人类答复。人类通过 `answer_question` 提交回答后，该工具完成返回，任务随之进入下一个工具边界并**立即冻结在 Paused 状态**。
+   - **反问等待中调用 resume**：若任务正在等待用户答复，调用 `resume_task` 不会有立竿见影的效果，因为任务是在等待 `answer_question` 响应，而不是在 PauseGate 上阻塞。
+   - **Paused 状态下收到 cancel**：无论任务处于 Paused 还是 WaitingUserInput，`cancel_task` 均会立刻唤醒并终止任务。
+
 日志统一输出到 `STDERR`，绝不污染 `STDOUT` 数据流。
