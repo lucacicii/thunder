@@ -1,16 +1,16 @@
 # Thunder Agent Providers
 
-Rust adapter layer inspired by `@earendil-works/pi-ai`.
+Model catalog and configuration management layer compatible with `@earendil-works/pi-ai`.
 
-This crate does **not** depend on Node or `pi-ai` at runtime. It reuses Pi's
-`models.json` / `auth.json` conventions and exposes `LLMClientTrait` implementations
-for Thunder Agent Loop.
+This crate loads provider and model specifications from `models.json` and `auth.json`,
+handling model discovery, context window caching, and thinking level mappings.
+LLM execution transport is delegated directly to `@earendil-works/pi-ai` via `thunder-pi-bridge`.
 
-## Supported APIs (phase 1)
+## Supported Provider APIs (via `@earendil-works/pi-ai`)
 
-- `openai-completions`
-- `anthropic-messages`
-- `google-generative-ai`
+- `openai-completions` (OpenAI, DeepSeek, OpenRouter, Qwen, Moonshot, zAI, Groq, Ollama, etc.)
+- `anthropic-messages` (Anthropic Claude 3.5 / 3.7)
+- `google-generative-ai` (Google Gemini)
 
 ## Config
 
