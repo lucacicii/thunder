@@ -759,7 +759,23 @@ impl DaemonService {
                         let out = output_tx.clone();
                         tokio::spawn(async move {
                             while let Some(event) = rx.recv().await {
-                                collected_for_stream.lock().await.push(event.clone());
+                                // Tiered trace retention:
+                                // Filter out high-frequency streaming micro-deltas (TokenDelta, ReasoningDelta, ToolCallChunk)
+                                // from in-memory trace storage to prevent unbounded memory growth on long tasks, while
+                                // still streaming 100% of all events live over stdout for the caller UI.
+                                let is_micro_delta = matches!(
+                                    event.event,
+                                    AgentEvent::TokenDelta { .. }
+                                        | AgentEvent::ReasoningDelta { .. }
+                                        | AgentEvent::ToolCallChunk { .. }
+                                );
+                                if !is_micro_delta {
+                                    let mut collected = collected_for_stream.lock().await;
+                                    if collected.len() < 5000 {
+                                        collected.push(event.clone());
+                                    }
+                                }
+
                                 let res = DaemonResponse::ObservedEvent {
                                     task_id: tid.clone(),
                                     event,
