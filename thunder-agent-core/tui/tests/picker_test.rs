@@ -50,7 +50,7 @@ fn test_picker_state_navigation_and_filtering() {
 
 #[tokio::test]
 async fn test_app_interactive_pickers_integration() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
     // 1. /model with an explicit id still switches immediately
@@ -70,7 +70,7 @@ async fn test_app_interactive_pickers_integration() {
 
 #[tokio::test]
 async fn test_selecting_skill_attaches_handler_without_dumping_playbook() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
     app.picker.open(

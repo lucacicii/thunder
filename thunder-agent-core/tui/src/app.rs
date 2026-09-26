@@ -10,6 +10,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// Host/test seam for resolving the LLM client of a run.
+///
+/// Production leaves this unset: clients are resolved from the provider
+/// registry. Tests inject a fake client here instead of relying on a shipped
+/// "mock mode", so no mock code has to live in the runtime path.
+pub type ClientFactory = Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Chat,
@@ -106,7 +113,8 @@ pub struct App {
     pub provider_registry: ProviderRegistry,
     pub show_sidebar: bool,
     pub should_quit: bool,
-    pub use_mock: bool,
+    /// Optional client factory (tests / embedders). `None` = provider registry.
+    pub client_factory: Option<ClientFactory>,
     pub store: Option<FsConversationStore>,
     pub cancel_token: Option<CancellationToken>,
     pub status_message: Option<(String, std::time::Instant)>,
@@ -118,7 +126,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(model_name: impl Into<String>, use_mock: bool) -> Self {
+    pub fn new(model_name: impl Into<String>) -> Self {
         let model = ModelRef::parse(&model_name.into());
         let initial_conv = Conversation::new(format!("sess_{}", now_ms()))
             .with_title("New Conversation")
@@ -150,7 +158,7 @@ impl App {
             provider_registry: ProviderRegistry::default(),
             show_sidebar: false,
             should_quit: false,
-            use_mock,
+            client_factory: None,
             store: None,
             cancel_token: None,
             status_message: None,
@@ -163,6 +171,13 @@ impl App {
 
     pub fn with_store(mut self, store: FsConversationStore) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Inject a client factory. Tests use this to drive runs against a fake
+    /// `LLMClientTrait` without any mock code shipping in the runtime path.
+    pub fn with_client_factory(mut self, factory: ClientFactory) -> Self {
+        self.client_factory = Some(factory);
         self
     }
 
@@ -1188,8 +1203,8 @@ impl App {
                 out.push_str(&model_line);
                 out.push_str(&format!("\n- {} Workspace: `{}`", if self.workspace_dir.is_dir() { "✔" } else { "❌" }, self.workspace_dir.display()));
                 out.push_str(&format!("\n- {} Session `{}` with {} messages", "✔", self.conversation.id, self.conversation.messages.len()));
-                out.push_str(&format!("\n- Mode: {} | Mock: {}", self.execution_mode.description(), self.use_mock));
-                if !self.use_mock && spec.is_none() {
+                out.push_str(&format!("\n- Mode: {}", self.execution_mode.description()));
+                if spec.is_none() {
                     out.push_str("\n\n⚠️ LIVE mode will fail at the first LLM call until the model is configured.");
                 }
                 self.conversation.add_assistant_message(Some(out), None);
@@ -1248,7 +1263,6 @@ impl App {
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         let model = self.model.selection_id();
-        let use_mock = self.use_mock;
         let timeout_ms = self.request_timeout_ms;
         let mut base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
         base_cfg.temperature = Some(self.temperature);
@@ -1277,16 +1291,15 @@ impl App {
 
         let session_id = self.conversation.id.clone();
         let context_input = self.conversation.as_context_input();
+        let factory_client = self
+            .client_factory
+            .as_ref()
+            .and_then(|f| f(&base_cfg));
 
         tokio::spawn(async move {
-            let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
-                Some(Arc::new(crate::mock::TuiMockClient::default()))
-            } else {
-                None
-            };
             let options = RootRunOptions {
                 session_id: Some(session_id),
-                custom_client,
+                custom_client: factory_client,
                 cancellation_token: Some(cancel),
                 forced_plugins: None,
                 register_builtins: true,
@@ -1357,7 +1370,6 @@ impl App {
 
     fn run_single_agent(&self, _prompt: String, cancel: CancellationToken, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
         let model = self.model.selection_id();
-        let use_mock = self.use_mock;
         let timeout_ms = self.request_timeout_ms;
         let mut config = AgentConfig::new(model.clone()).with_unlimited_turns();
         config.temperature = Some(self.temperature);
@@ -1371,21 +1383,45 @@ impl App {
         }
 
         let context_input = self.conversation.as_context_input();
+        let factory_client = self
+            .client_factory
+            .as_ref()
+            .and_then(|f| f(&config));
 
         tokio::spawn(async move {
-            let mut agent = AgentLoop::new(config).with_id("tui_agent");
-            if use_mock {
-                agent = agent.with_custom_client(Arc::new(crate::mock::TuiMockClient::default()));
-            } else if let Ok((_spec, client)) = client_for_selection(&model, timeout_ms).await {
+            let mut agent = AgentLoop::new(config.clone()).with_id("tui_agent");
+
+            // Resolve the transport: injected factory (tests/embedders) first,
+            // then the provider registry. Never proceed without a client — a
+            // silent `UnconfiguredLLMClient` run only fails later with a
+            // confusing error.
+            let client = match factory_client {
+                Some(client) => Some(client),
+                None => match client_for_selection(&model, timeout_ms).await {
+                    Ok((_spec, client)) => Some(client),
+                    Err(err) => {
+                        let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                            agent_id: "tui_agent".to_string(),
+                            success: false,
+                            final_text: Some(format!(
+                                "❌ No LLM client available for model `{model}`: {err}\n\n\
+                                 Configure it in ~/.thunder/models.json + auth.json, switch \
+                                 with `/model <id>`, or inject a client via \
+                                 `App::with_client_factory`."
+                            )),
+                            authoritative_messages: None,
+                            raw_messages: None,
+                        });
+                        return;
+                    }
+                },
+            };
+            if let Some(client) = client {
                 agent = agent.with_custom_client(client);
-                agent.register_tool(Arc::new(BashTool::default()));
-                agent.register_tool(Arc::new(ReadFileTool::default()));
-                agent.register_tool(Arc::new(WriteFileTool::default()));
-            } else {
-                agent.register_tool(Arc::new(BashTool::default()));
-                agent.register_tool(Arc::new(ReadFileTool::default()));
-                agent.register_tool(Arc::new(WriteFileTool::default()));
             }
+            agent.register_tool(Arc::new(BashTool::default()));
+            agent.register_tool(Arc::new(ReadFileTool::default()));
+            agent.register_tool(Arc::new(WriteFileTool::default()));
 
             match agent.start(context_input, Some(cancel)) {
                 Ok(mut handle) => {
