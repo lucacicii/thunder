@@ -60,10 +60,7 @@
 # 1. Launch via root script (Recommended)
 ./run.sh
 
-# 2. Offline mock demo mode
-cargo run -p thunder-tui --bin thunder-tui -- --mock
-
-# 3. Resume specific session
+# 2. Resume specific session
 cargo run -p thunder-tui --bin thunder-tui -- --session sess_1790253029573
 ```
 

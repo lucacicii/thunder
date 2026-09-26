@@ -188,7 +188,7 @@ src/
 ├── core/                  # Context buffer, state tracker, token estimator, PauseGate
 ├── loop_engine/           # Core loop engine, event emitter, task state machine
 ├── pruning/               # Decoupled pruning & tool output eviction
-├── stream/                # Pure LLMClientTrait contract and mock client
+├── stream/                # Pure LLMClientTrait contract (+ unconfigured placeholder)
 ├── tools/                 # Tool registry, parallel executor, builtin tools
 │   ├── builtin/           # bash, read_file, write_file
 │   └── middleware/        # Middlewares (Security / Resource / Transaction / FILE_MUTATION_LOCKS)

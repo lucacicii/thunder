@@ -17,9 +17,9 @@
    - Asynchronous remote tool invocation (`tools/call`).
 2. **Multi-Source Configuration Parser**:
    - Parses standard `mcpServers` JSON configuration formats (e.g. `mcp_servers.json`, `claude_desktop_config.json`, `.arp/mcp.json`).
-3. **Stdio & Mock Dual Transports**:
+3. **Stdio Transport + Test Double**:
    - Production-grade asynchronous stdio process communication with isolated pipes.
-   - In-memory mock transport for deterministic unit and integration testing.
+   - `MockTransport` is a **test double only** (in-memory, used by unit and integration tests), not a runtime mode.
 4. **Zero-Overhead AgentTool Bridging**:
    - Converts remote `McpTool` definitions into native Rust `AgentTool` instances, integrating directly with the `thunder-agent-loop` dispatch pipeline and onion middlewares.
 

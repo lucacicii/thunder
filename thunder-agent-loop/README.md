@@ -187,7 +187,7 @@ src/
 ├── core/                  # 上下文缓冲 (Context Buffer)、状态追踪、Token 估算、PauseGate
 ├── loop_engine/           # 核心自主循环引擎、事件分发与任务状态机
 ├── pruning/               # 检查点式上下文压缩（含紧急裁剪兜底）
-├── stream/                # LLMClientTrait 纯传输契约与 Mock 实现
+├── stream/                # LLMClientTrait 纯传输契约（含未配置占位实现）
 ├── tools/                 # 工具注册表、并行执行器与内置工具
 │   ├── builtin/           # bash, read_file, write_file
 │   └── middleware/        # 洋葱中间件（Security / Resource / Transaction / FILE_MUTATION_LOCKS）

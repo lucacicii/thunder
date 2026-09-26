@@ -17,9 +17,9 @@
    - 远程工具异步调用（`tools/call`）。
 2. **多源配置解析器**：
    - 兼容解析标准 `mcpServers` JSON 格式配置文件（如 `mcp_servers.json`、`claude_desktop_config.json`、`.arp/mcp.json` 等）。
-3. **Stdio 与 Mock 双模传输**：
+3. **Stdio 传输 + 测试替身**：
    - 工业级异步 Stdio 子进程通信，支持管道独立隔离。
-   - 纯内存 Mock 传输适配器，用于确定性单元与集成测试。
+   - `MockTransport` 仅作为**测试替身**（纯内存、仅供单元与集成测试），不是运行时模式。
 4. **零开销 AgentTool 桥接**：
    - 将远程 MCP 服务的工具定义自动映射为 Rust 端的 `AgentTool`，原生融入 `thunder-agent-loop` 的工具调度与洋葱中间件链路。
 

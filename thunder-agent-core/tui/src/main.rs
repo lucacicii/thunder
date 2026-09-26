@@ -7,6 +7,15 @@ use thunder_tui::prelude::*;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
+    // The offline mock mode is gone: reject the flag explicitly instead of
+    // silently ignoring it (an operator would otherwise believe they were
+    // running against a fake model when a real one is being used).
+    if args.iter().any(|a| a == "--mock") {
+        eprintln!("✖ `--mock` has been removed: the TUI no longer ships a mock mode.");
+        eprintln!("  Configure a provider in ~/.thunder/models.json + auth.json and use a real model.");
+        std::process::exit(2);
+    }
+
     let registry = ProviderRegistry::load_default().await.unwrap_or_default();
     let available = registry.list_available();
 
@@ -22,6 +31,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  or select an explicit model with MODEL=<provider/model-id>.");
         std::process::exit(1);
     };
+
+    if !available.iter().any(|m| m.available) {
+        eprintln!("⚠  No provider credentials found (~/.thunder/auth.json).");
+        eprintln!("   Runs will fail until a provider is configured; use /model to switch afterwards.");
+    }
 
     let store_root = FsConversationStore::default_store_root();
     let store = FsConversationStore::new(store_root).await?;
