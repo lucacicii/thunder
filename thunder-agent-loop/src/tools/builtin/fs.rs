@@ -93,18 +93,15 @@ impl AgentTool for ReadFileTool {
             return Ok(content);
         }
 
-        let lines: Vec<&str> = content.lines().collect();
+        // Stream the requested slice without materializing every line.
         let start = offset.saturating_sub(1);
-        let end = match limit {
-            Some(l) => (start + l).min(lines.len()),
-            None => lines.len(),
-        };
-
-        if start >= lines.len() {
-            return Ok(String::new());
+        let take = limit.unwrap_or(usize::MAX);
+        let mut out = String::new();
+        for line in content.lines().skip(start).take(take) {
+            out.push_str(line);
+            out.push('\n');
         }
-
-        Ok(lines[start..end].join("\n"))
+        Ok(out.trim_end_matches('\n').to_string())
     }
 }
 

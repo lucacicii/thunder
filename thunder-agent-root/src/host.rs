@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
+use thunder_agent_loop::tools::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
@@ -414,6 +414,24 @@ impl ThunderRoot {
                 agent.register_tool(Arc::new(match &ws {
                     Some(dir) => tool.with_default_cwd(dir.clone()),
                     None => tool,
+                }));
+            }
+            // Read-only lookup tools share the read capability tier.
+            if perm.allows_read() {
+                let grep = GrepTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => grep.with_default_cwd(dir.clone()),
+                    None => grep,
+                }));
+                let find = FindTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => find.with_default_cwd(dir.clone()),
+                    None => find,
+                }));
+                let ls = ListDirTool::default();
+                agent.register_tool(Arc::new(match &ws {
+                    Some(dir) => ls.with_default_cwd(dir.clone()),
+                    None => ls,
                 }));
             }
             if perm != Permission::Bash {
