@@ -32,9 +32,9 @@ print_header() {
     echo -e "Rust Version:  $(rustc --version)"
     echo -e "Cargo Version: $(cargo --version)"
     if [ -n "${OPENAI_API_KEY:-}" ]; then
-        echo -e "LLM Mode:      ${GREEN}live${NC} (OPENAI_API_KEY set)"
+        echo -e "Provider:      ${GREEN}OPENAI_API_KEY set${NC}"
     else
-        echo -e "LLM Mode:      ${YELLOW}mock${NC} (OPENAI_API_KEY unset)"
+        echo -e "Provider:      ${YELLOW}OPENAI_API_KEY unset${NC} (configure ~/.thunder/auth.json for live runs)"
     fi
     echo ""
 }
@@ -55,11 +55,6 @@ run_cli() {
     cargo run --example cli -- "$@"
 }
 
-run_mock() {
-    echo -e "${BLUE}▶ Running thunder-root CLI in Mock Mode...${NC}"
-    cargo run --example cli -- --mock "$@"
-}
-
 print_help() {
     cat <<EOF
 Usage: $0 [command] [args]
@@ -67,13 +62,11 @@ Usage: $0 [command] [args]
 Commands:
   (no args)       Run unit and integration tests
   cli [prompt]    Run Thunder-Root CLI example
-  mock [prompt]   Run Thunder-Root CLI in deterministic Mock mode (--mock)
   test            Run tests only
   help            Show this help
 
 Examples:
   $0
-  $0 mock "Review repository performance"
   $0 cli "Implement a custom feature with skills"
 EOF
 }
@@ -91,15 +84,11 @@ case "$cmd" in
         shift
         run_cli "$@"
         ;;
-    mock)
-        shift
-        run_mock "$@"
-        ;;
     "")
         print_header
         run_tests
         echo -e "${GREEN}✨ All Thunder-Root test suites completed successfully.${NC}"
-        echo -e "To run interactive CLI: ${CYAN}./test.sh cli${NC} or ${CYAN}./test.sh mock${NC}"
+        echo -e "To run interactive CLI: ${CYAN}./test.sh cli${NC}"
         ;;
     *)
         run_cli "$@"

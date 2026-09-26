@@ -60,10 +60,7 @@
 # 1. 使用一键脚本启动 (推荐)
 ./run.sh
 
-# 2. 离线 Mock 演示模式
-cargo run -p thunder-tui --bin thunder-tui -- --mock
-
-# 3. 恢复指定历史会话
+# 2. 恢复指定历史会话
 cargo run -p thunder-tui --bin thunder-tui -- --session sess_1790253029573
 ```
 
