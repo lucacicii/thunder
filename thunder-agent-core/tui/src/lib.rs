@@ -1,6 +1,6 @@
 //! # Thunder TUI
 //!
-//! Interactive Terminal User Interface for Thunder Agent and Orchestra.
+//! Interactive Terminal User Interface for Thunder Agent.
 
 pub mod app;
 pub mod commands;

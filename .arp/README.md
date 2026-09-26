@@ -31,7 +31,7 @@ Schema 版本 `1`。字段语义见 agent-resume-panel 的
 
 - 提交信息：Conventional Commits，**英文**描述（`language: en`）。
 - scope 用 crate / 模块短名（`loop`、`core`、`daemon`、`providers`、`skills`、`mcp`、
-  `root`、`tui`、`orchestra`、`conversation`），不用 `thunder-agent-*` 全名，也不用文件路径。
+  `root`、`tui`、`conversation`），不用 `thunder-agent-*` 全名，也不用文件路径。
 - 提交、推送都在工作区根目录完成，不要在子 crate 里再 `git init`（见 [`../WORKSPACE.md`](../WORKSPACE.md)）。
 
 ## `roles.jsonl`（项目级角色）

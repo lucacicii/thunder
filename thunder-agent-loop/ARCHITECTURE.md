@@ -3,8 +3,7 @@
 [English](ARCHITECTURE.md) | [简体中文](ARCHITECTURE_zh.md)
 
 This crate (`thunder-agent-loop`) is **Agent A**: a complete, independently runnable
-single-agent unit. Another Rust application (**Agent B**, e.g. `thunder-orchestra`) may depend on A and
-orchestrate many A instances. A never depends on B.
+single-agent unit. Host applications (e.g. `thunder-agent-root`) depend on the kernel and drive it. The kernel never depends on its hosts.
 
 ```text
 A  = one AgentLoop, one task at a time, full inner turn loop

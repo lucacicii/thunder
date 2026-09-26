@@ -2,7 +2,6 @@ pub mod chat;
 pub mod command_popup;
 pub mod header;
 pub mod help;
-pub mod orchestra;
 pub mod picker_modal;
 pub mod sidebar;
 pub mod status_bar;
@@ -13,7 +12,6 @@ use crate::ui::chat::render_chat;
 use crate::ui::command_popup::render_command_popup;
 use crate::ui::header::render_header;
 use crate::ui::help::render_help_modal;
-use crate::ui::orchestra::render_orchestra_monitor;
 use crate::ui::picker_modal::render_picker_modal;
 use crate::ui::status_bar::{render_input, render_status_bar};
 use crate::ui::theme::Theme;
@@ -36,9 +34,6 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
 
     // 2. Render Main Dialogue Stream (Full screen width, no sidebar)
     match app.mode {
-        ViewMode::OrchestraMonitor => {
-            render_orchestra_monitor(f, app, main_chunks[1], theme);
-        }
         _ => {
             render_chat(f, app, main_chunks[1], theme);
         }

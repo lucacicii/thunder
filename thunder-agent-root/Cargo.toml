@@ -7,13 +7,12 @@ authors = ["thunder-luc"]
 description = "Extensible microkernel host and dynamic plugin orchestration engine for Thunder Agent"
 license = "Apache-2.0"
 readme = "README.md"
-keywords = ["agent", "microkernel", "plugin", "orchestration", "llm"]
+keywords = ["agent", "microkernel", "plugin", "llm"]
 categories = ["command-line-utilities", "asynchronous"]
 
 [dependencies]
 thunder-agent-loop = { path = "../thunder-agent-loop" }
 thunder-conversation = { path = "../thunder-agent-core/conversation", optional = true }
-thunder-orchestra = { path = "../thunder-agent-core/thunder-orchestra", optional = true }
 thunder-agent-skills = { path = "../thunder-agent-skills", optional = true }
 thunder-agent-mcp = { path = "../thunder-agent-mcp", optional = true }
 thunder-agent-plugin = { path = "../thunder-agent-plugin", optional = true }
@@ -28,9 +27,8 @@ futures-util = "0.3"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
 
 [features]
-default = ["conversation", "orchestra", "skills", "mcp", "script-plugin"]
+default = ["conversation", "skills", "mcp", "script-plugin"]
 conversation = ["dep:thunder-conversation"]
-orchestra = ["dep:thunder-orchestra"]
 skills = ["dep:thunder-agent-skills"]
 mcp = ["dep:thunder-agent-mcp"]
 script-plugin = ["dep:thunder-agent-plugin"]

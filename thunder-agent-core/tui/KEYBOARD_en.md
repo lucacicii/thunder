@@ -15,7 +15,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`/resume`** | `/sessions`, `/load_session` | `[# \| id]` | **List all saved sessions or resume by index/ID** |
 | **`/help`** | `/?` | | Show command reference and keyboard shortcut overlay |
 | **`/model`** | `/m` | `[name]` | View active model or hot-switch models (e.g. `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`) |
-| **`/mode`** | `/topology` | `[auto \| pipe \| par \| fanout \| single]` | Switch orchestration topology (Auto / Pipeline / Parallel / Fan-Out / Single) |
+| **`/mode`** | `/topology` | `[auto \| single]` | Switch execution mode (plugin host / direct single agent) |
 | **`/skills`** | `/skill`, `/sk` | `[list \| load <name> \| scan]` | Browse skill directory, load playbook instructions, or trigger rescan |
 | **`/mcp`** | `/server`, `/tools` | `[list \| servers \| reload]` | List connected MCP servers & tools, or reload configuration |
 | **`/compact`** | `/prune`, `/compress` | | Manually compress context, extract summary, and prune older turns |
@@ -40,8 +40,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`Tab`** | **Auto-complete / Focus** | Auto-complete slash command; otherwise toggle focus between Input and Chat |
 | **`↑ / ↓`** | **Select / History** | Navigate candidate list in slash popup; browse prompt history in normal state |
 | **`Ctrl + N`** | **New Session** | Clear chat stream and create a fresh blank session |
-| **`Ctrl + P`** | **Cycle Topology** | Fast-cycle topology: `Auto ➔ Pipeline ➔ Parallel ➔ FanOut ➔ Single` |
-| **`Ctrl + M`** | **Toggle Monitor** | Switch between standard chat stream and Orchestra Topology Monitor |
+| **`Ctrl + P`** | **Cycle Mode** | Fast-cycle execution mode: `Auto ➔ Single` |
 | **`Ctrl + H`** | **Help Modal** | Toggle keyboard shortcut help card overlay |
 | **`Ctrl + C`** | **Cancel / Exit** | Cancel active agent task if running; cleanly exit if idle |
 | **`Esc`** | **Close / Dismiss** | Dismiss command palette, close help modal, or cancel running task |

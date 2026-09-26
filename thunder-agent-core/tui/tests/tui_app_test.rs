@@ -24,27 +24,6 @@ async fn test_app_execution_mode_cycling() {
     let (tx, _rx) = mpsc::unbounded_channel();
     assert_eq!(app.execution_mode, ExecutionMode::AutoRouter);
 
-    // Ctrl+P cycles to SequentialPipeline
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        tx.clone(),
-    );
-    assert_eq!(app.execution_mode, ExecutionMode::SequentialPipeline);
-
-    // Ctrl+P cycles to ParallelCouncil
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        tx.clone(),
-    );
-    assert_eq!(app.execution_mode, ExecutionMode::ParallelCouncil);
-
-    // Ctrl+P cycles to FanOut
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        tx.clone(),
-    );
-    assert_eq!(app.execution_mode, ExecutionMode::FanOut);
-
     // Ctrl+P cycles to SingleAgent
     app.handle_key(
         KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
@@ -136,7 +115,7 @@ async fn test_app_streaming_event_ingestion() {
     assert!(matches!(app.conversation.messages.last(), Some(thunder_agent_loop::ChatMessage::Tool { .. })));
 
     // 4. Finish
-    app.handle_agent_finished("agent_1".to_string(), true, None, None);
+    app.handle_agent_finished("agent_1".to_string(), true, None, None, None);
     assert_eq!(app.agent_status, AgentStatus::Idle);
     assert_eq!(app.conversation.messages.len(), 4); // System + Assistant text + Tool Call + Tool Result
 }
@@ -156,19 +135,7 @@ async fn test_app_new_session_and_shortcuts() {
     );
     assert_eq!(app.conversation.messages.len(), 1); // New session has System message
 
-    // Ctrl+M toggles monitor
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
-        tx.clone(),
-    );
-    assert_eq!(app.mode, ViewMode::OrchestraMonitor);
-
-    // Ctrl+M toggles back
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
-        tx.clone(),
-    );
-    assert_eq!(app.mode, ViewMode::Chat);
+    // Ctrl+H toggles help
 }
 
 #[tokio::test]

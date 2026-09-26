@@ -50,7 +50,6 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── thunder-agent-daemon/         # STDIO Sidecar daemon (Electron / desktop integration)
 └── thunder-agent-core/           # Core modules collection
     ├── conversation/             # Session & Turn storage (thunder-conversation)
-    ├── thunder-orchestra/        # Agent B: Multi-agent scheduler
     └── tui/                      # Interactive terminal UI (thunder-tui)
 ```
 
@@ -69,10 +68,10 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 ┌────────────────────┐   ┌───────────────────────────┐
 │ thunder-agent-loop │ ◄─┤  thunder-agent-providers  │
 └─────────┬──────────┘   └─────────────┬─────────────┘
-          │ (A: Unit)                  │
+          │ (Kernel: Unit)             │
           ▼                            │
 ┌──────────────────────────────────────┴─────────────────────────────────┐
-│ Plugin Ecosystem: skills / plugin / mcp / conversation / orchestra    │
+│ Plugin Ecosystem: skills / plugin / mcp / conversation                  │
 └──────────────────────────────────────┬─────────────────────────────────┘
                                        │
                                        ▼
@@ -90,14 +89,14 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 
 ### Core Design Principles
 
-1. **A/B Contract Boundary**:
-   - **A = `thunder-agent-loop`**: Owns atomic execution for a single AgentLoop (multi-turn reasoning, streaming events, tool execution, context pruning). Has no awareness of multi-agent topologies, outer schedulers, or session stores.
-   - **B = `thunder-orchestra`**: Coordinates multiple A units (start, await, cancel, pipeline handoffs, task decomposition, and result synthesis). B **never drives A's internal turns**.
+1. **Single-Agent Kernel Boundary**:
+   - **Kernel = `thunder-agent-loop`**: Owns atomic execution for a single AgentLoop (multi-turn reasoning, streaming events, tool execution, context pruning). Has no awareness of multi-agent topologies, outer schedulers, or session stores.
+   - Hosts (root / daemon / tui) drive the kernel only through `start` / `join` / `cancel`, and never drive the kernel's internal turns.
 2. **Pure Transport Abstraction & Pi-Bridge**:
    - `thunder-agent-loop` defines `LLMClientTrait` as a pure transport contract without internal HTTP or dialect dependencies.
    - In production, calls are delegated through `thunder-pi-bridge` to `@earendil-works/pi-ai`, achieving zero-maintenance support for multi-provider dialects and reasoning effort levels.
 3. **Concurrent Mutation Safety**:
-   - Whether under multi-agent parallelism (`Parallel` / `FanOut`) or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` using process-wide physical path mutexes, preventing silent overwrites.
+   - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` using process-wide physical path mutexes, preventing silent overwrites.
 4. **Deterministic Lightweight Host**:
    - `thunder-agent-root` maintains standard baseline plugins (conversation + skills) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
 
@@ -114,7 +113,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 ```bash
 ./run.sh          # Launch thunder-tui interactive terminal
 ./daemon.sh       # Launch thunder-agent-daemon sidecar
-./test.sh         # Execute all tests across all 11 workspace crates
+./test.sh         # Execute all tests across all 10 workspace crates
 ```
 
 ### Individual Package Commands
@@ -122,7 +121,6 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 ```bash
 # Test specific crates
 cargo test -p thunder-agent-loop
-cargo test -p thunder-orchestra
 cargo test -p thunder-conversation
 cargo test -p thunder-agent-daemon
 
@@ -137,5 +135,5 @@ cargo build --workspace --release
 ## 5. Development Conventions
 
 - **Single Repository**: All development is committed to the workspace root. Never create nested `.git` repositories in subpackages.
-- **Commit Format**: Conventional Commits in English (e.g. `feat(orchestra): ...`, `refactor(loop): ...`).
+- **Commit Format**: Conventional Commits in English (e.g. `feat(root): ...`, `refactor(loop): ...`).
 - **Continuous Integration**: Ensure `./test.sh` passes 100% locally before pushing.

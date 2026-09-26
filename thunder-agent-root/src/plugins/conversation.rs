@@ -26,10 +26,10 @@ impl ConversationPlugin {
             "0.1.0",
         )
         .with_capability(PluginCapability::MemoryPersistence)
-        .with_triggers(TriggerSpec::new(
-            vec!["history", "session", "conversation", "save", "load", "会话", "历史", "记录"],
-            "Manages multi-turn dialogue history, context pruning, and persistent session storage.",
-        ));
+        // Baseline plugin: always active. Session history semantics must not
+        // flicker per message — a changing system prompt / toolset busts the
+        // provider prompt cache for the whole request prefix.
+        .with_triggers(TriggerSpec::always());
 
         Self {
             manifest,

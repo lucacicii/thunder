@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [简体中文](ARCHITECTURE_zh.md)
 
-本 Crate（`thunder-agent-loop`）是 **Agent A**：一个完整、可独立运行的单 Agent 闭环单元。另一个 Rust 应用（**Agent B**，如 `thunder-orchestra`）可以依赖 A 并编排多个 A 实例。**A 绝不依赖 B**。
+本 Crate（`thunder-agent-loop`）是 **Agent 内核**：一个完整、可独立运行的单 Agent 闭环单元。宿主应用（如 `thunder-agent-root`）可以依赖内核并驱动它执行任务。**内核绝不依赖宿主**。
 
 ```text
 A  = 单个 AgentLoop，一次跑一个任务，拥有完整的内部 turn 闭环
@@ -83,7 +83,7 @@ let result = handle.join().await?;
 ## 依赖流向
 
 ```text
-B (thunder-orchestra)  ──依赖于──►  A (thunder-agent-loop)
+Host (thunder-agent-root)  ──依赖于──►  Kernel (thunder-agent-loop)
 A  绝不引用任何 B
 ```
 

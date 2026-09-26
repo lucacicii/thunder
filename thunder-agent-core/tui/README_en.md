@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-tui` is the official interactive terminal client for the Thunder Agent ecosystem. Deeply integrated with `thunder-agent-root` and `thunder-orchestra`, it provides a full-width chat stream, interactive slash command system, real-time token streaming typewriter effect, collapsible reasoning chains, multi-agent orchestra monitor, and synthesis resolution reports.
+`thunder-tui` is the official interactive terminal client for the Thunder Agent ecosystem. Deeply integrated with `thunder-agent-root`, it provides a full-width chat stream, interactive slash command system, real-time token streaming typewriter effect, and collapsible reasoning chains.
 
 ---
 
@@ -23,8 +23,7 @@
   - `Enter`: Submit prompt / run agent loop.
   - `Tab`: Auto-complete slash command / switch focus.
   - `Ctrl + N`: Create clean new session.
-  - `Ctrl + P`: Fast cycle topology modes (`Auto` ➔ `Pipeline` ➔ `Parallel` ➔ `FanOut` ➔ `Single`).
-  - `Ctrl + M`: Toggle orchestra topology monitor.
+  - `Ctrl + P`: Fast cycle execution modes (`Auto` ➔ `Single`).
   - `Ctrl + H`: Toggle keyboard shortcut help popup.
   - `Ctrl + C` / `Esc`: Cancel running task or exit TUI cleanly.
 - **Crash-Safe Terminal Handling**: Panic hooks guarantee clean restoration to Normal terminal mode on unexpected errors.
@@ -38,7 +37,7 @@
 | **`/resume`** | `[# \| id]` | List saved sessions or restore by index/ID |
 | **`/help`** | | Display command reference and keyboard shortcuts |
 | **`/model`** | `[name]` | View active model or hot-switch models (e.g. `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`) |
-| **`/mode`** | `[auto \| pipe \| par \| fanout \| single]` | Switch orchestration topology |
+| **`/mode`** | `[auto \| single]` | Switch execution mode (plugin host / direct single agent) |
 | **`/skills`** | `[list \| load \| scan]` | Browse skill directory, load playbook instructions, or rescan |
 | **`/mcp`** | `[list \| servers \| reload]` | List connected MCP servers and tools, or reload configs |
 | **`/compact`** | | Compress context, extract conversation summary, and trim older turns |
@@ -47,7 +46,7 @@
 | **`/workspace`** | `[path]` | View active directory or switch workspace |
 | **`/export`** | `[path]` | Export chat and tool execution log to Markdown |
 | **`/clear`** | | Clear current chat stream and create a fresh session |
-| **`/health`** | | Run orchestrator and environment health checks |
+| **`/health`** | | Run local agent and environment diagnostics |
 | **`/pipeline`** | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
 | **`/parallel`** | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
 | **`/fanout`** | `<task>` | Run task directly in decomposed subtask fan-out mode |

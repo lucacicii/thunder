@@ -8,7 +8,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-loop` 是 Thunder 生态中的核心执行单元（**Agent A**）。它专注于驱动单个 Agent 实例完成单次任务的完整生命周期（自主多轮推理、流式 Token 与思考链解析、并行工具调用、解耦上下文裁剪及状态落盘），并为外部编排调度器（**Agent B**，如 `thunder-orchestra`）提供高内聚、低耦合的嵌入底座。
+`thunder-agent-loop` 是 Thunder 生态中的核心执行单元（**Agent 内核**）。它专注于驱动单个 Agent 实例完成单次任务的完整生命周期（自主多轮推理、流式 Token 与思考链解析、并行工具调用、解耦上下文裁剪及状态落盘），并为宿主层（`thunder-agent-root` / `thunder-agent-daemon` / `thunder-tui`）提供高内聚、低耦合的嵌入底座。
 
 ---
 
@@ -16,7 +16,7 @@
 
 - **自主循环与安全兜底**：默认设定 **50 轮安全上限**，防止失控无限死循环；同时提供 `.with_unlimited_turns()` 显式解除限制，由 LLM 自主结论或完成标志（`finish_reason: "stop"` / 无工具调用）驱动终止。
 - **纯契约传输解耦**：完全解耦 HTTP 与特定方言依赖，通过纯异步流式契约 `LLMClientTrait` 对接模型。生产环境无缝对接 `thunder-pi-bridge`（Node.js Sidecar 运行 `@earendil-works/pi-ai`）。
-- **解耦工具裁剪（Tool Eviction）**：独创将**工具输出裁剪阈值**（`tool_eviction_threshold_tokens: 20_000`）与**模型物理上下文窗口**彻底解耦。当工具产出过多日志时自动压缩老旧工具结果，同时完整保留用户与 Assistant 的真实多轮对话至模型上下文上限（如 DeepSeek 1M tokens）。
+- **检查点式上下文压缩（Checkpoint Compaction）**：默认策略下，两次压缩之间请求前缀**字节级稳定**（供应商 Prompt Cache 全量命中）；仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，才一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal / Progress / Key Decisions / Next Steps / Critical Context + 读写文件清单），尾部 `keep_recent_tokens` 原文保留。摘要请求禁用缓存写入（`cache_retention: "none"`）；失败自动降级为机械压实；压缩前原始轨迹经 `AgentRunResult.raw_messages` 保留。
 - **跨 Agent 文件写入互斥排队锁（`FILE_MUTATION_LOCKS`）**：在 `TransactionMiddleware` 中内置进程内全局规范化路径排队锁。多个 Agent 或多工具并发写入同一文件时排队串行化执行，杜绝静默覆盖。
 - **极致性能与低开销**：单任务调度框架纯净开销仅 **~5.7 微秒 (0.0057 ms)**，高并发常驻内存 (RSS) **< 10 MB**，零垃圾回收停顿 (No GC)。
 - **原生并行工具调度**：支持异步非阻塞子进程（Bash）与内存函数（Native Tools），内置超时熔断与 Head/Tail 智能文本截断。
@@ -108,7 +108,7 @@ tokio::spawn(async move {
 
 ---
 
-### 3. 解耦工具裁剪与上下文配置
+### 3. 检查点式上下文压缩配置
 
 ```rust
 use thunder_agent_loop::prelude::*;
@@ -117,11 +117,15 @@ let mut config = AgentConfig::new("deepseek-chat");
 config.pruning = ContextPruningConfig {
     // 模型最大物理上下文（如 1,000,000 tokens）
     max_context_tokens: 1_000_000,
-    // 工具输出解耦裁剪阈值：仅当历史 Tool 输出累计超过 20,000 tokens 时才触发旧输出压缩
-    tool_eviction_threshold_tokens: 20_000,
-    preserve_last_turns: 3,
+    // 触发阈值：estimated > max_context_tokens - reserve_tokens 时压缩
+    reserve_tokens: 16_384,
+    // 尾部保留原文的 token 预算（永不进入摘要）
+    keep_recent_tokens: 20_000,
+    // 可选：摘要专用小模型（默认复用主模型）
+    summarizer_model: None,
+    summarizer_max_tokens: 4096,
     pin_system_prompt: true,
-    strategy: PruningStrategy::Hybrid, // 混合策略：工具输出压缩 + 滑动窗口
+    strategy: PruningStrategy::Checkpoint, // 默认；Hybrid 保留为机械降级路径
 };
 ```
 
@@ -183,7 +187,7 @@ handle.resume();         // 恢复执行
 src/
 ├── core/                  # 上下文缓冲 (Context Buffer)、状态追踪、Token 估算、PauseGate
 ├── loop_engine/           # 核心自主循环引擎、事件分发与任务状态机
-├── pruning/               # 解耦上下文裁剪与工具日志驱逐策略
+├── pruning/               # 检查点式上下文压缩（含机械降级路径）
 ├── stream/                # LLMClientTrait 纯传输契约与 Mock 实现
 ├── tools/                 # 工具注册表、并行执行器与内置工具
 │   ├── builtin/           # bash, read_file, write_file

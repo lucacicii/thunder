@@ -21,7 +21,6 @@ tokio = { version = "1.43", features = ["full"] }
 tokio-util = "0.7"
 thunder-agent-loop = { path = "../../thunder-agent-loop" }
 thunder-conversation = { path = "../conversation" }
-thunder-orchestra = { path = "../thunder-orchestra" }
 thunder-agent-skills = { path = "../../thunder-agent-skills" }
 thunder-agent-mcp = { path = "../../thunder-agent-mcp" }
 thunder-agent-root = { path = "../../thunder-agent-root" }

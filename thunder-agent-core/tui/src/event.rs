@@ -13,7 +13,7 @@ pub enum AppEvent {
     Resize(u16, u16),
     /// Periodic tick for animations and status refresh
     Tick,
-    /// Live agent event stream from single agent loop or orchestra
+    /// Live agent event stream
     Agent(ObservedEvent),
     /// Agent run finished with final status
     AgentFinished {
@@ -21,6 +21,9 @@ pub enum AppEvent {
         success: bool,
         final_text: Option<String>,
         authoritative_messages: Option<Vec<thunder_agent_loop::types::message::ChatMessage>>,
+        /// Raw pre-compaction transcript, present only when checkpoint
+        /// compaction fired during the run. Persisted as a sidecar file.
+        raw_messages: Option<Vec<thunder_agent_loop::types::message::ChatMessage>>,
     },
     /// Request to load a specific session by ID
     LoadSession(String),

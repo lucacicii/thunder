@@ -32,7 +32,7 @@ Missing groups mean **unconfigured**, not an empty override. **Never** put API k
 ## Repository Conventions
 
 - Commit messages: Conventional Commits with **English** descriptions (`language: en`).
-- Scopes use short crate / module names (`loop`, `core`, `daemon`, `providers`, `skills`, `mcp`, `root`, `tui`, `orchestra`, `conversation`), not full `thunder-agent-*` names and not file paths.
+- Scopes use short crate / module names (`loop`, `core`, `daemon`, `providers`, `skills`, `mcp`, `root`, `tui`, `conversation`), not full `thunder-agent-*` names and not file paths.
 - All commits and pushes happen at the workspace root. Never run `git init` inside sub-crates (see [`../WORKSPACE.md`](../WORKSPACE.md)).
 
 ## `roles.jsonl` (Project-Level Roles)

@@ -83,9 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = env::var("MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
 
-    // Composition root: one provider registry feeds BOTH the outer agent
-    // (via ThunderRoot) and every orchestra delegate sub-agent (via the
-    // ClientFactory), so LIVE mode has a single source of transport truth.
+    // Composition root: one provider registry feeds the outer agent
+    // (via ThunderRoot), so LIVE mode has a single source of transport truth.
     let registry = match ProviderRegistry::load_default().await {
         Ok(r) => r,
         Err(err) => {
@@ -100,22 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_plugin(SkillsPlugin::default())
         .with_plugin(McpPlugin::default())
         .with_provider_registry(registry.clone());
-
-    #[cfg(feature = "orchestra")]
-    {
-        use thunder_agent_providers::prelude::client_for;
-
-        let orch_registry = registry.clone();
-        let factory: thunder_orchestra::ClientFactory = Arc::new(move |cfg: &AgentConfig| {
-            orch_registry
-                .resolve(&cfg.model)
-                .and_then(|spec| client_for(spec, cfg.request_timeout_ms).ok())
-        });
-        let orch_cfg = thunder_orchestra::OrchestraConfig::new(thunder_orchestra::Topology::Auto)
-            .with_base(base_cfg.clone())
-            .with_client_factory(factory);
-        root = root.with_plugin(OrchestraPlugin::new(orch_cfg));
-    }
 
     println!("============================================================");
     println!("⚡ Thunder-Root Microkernel Host CLI");
