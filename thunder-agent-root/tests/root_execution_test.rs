@@ -75,7 +75,6 @@ async fn test_thunder_root_end_to_end_execution() {
 
     let options = RootRunOptions {
         session_id: Some(session_id.clone()),
-        use_mock: true,
         custom_client: Some(custom_client),
         cancellation_token: None,
         forced_plugins: None,

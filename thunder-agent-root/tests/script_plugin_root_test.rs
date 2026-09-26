@@ -100,7 +100,6 @@ export default definePlugin({
 
     let options = RootRunOptions {
         session_id: Some("test_ts_root_sess".to_string()),
-        use_mock: false,
         custom_client: Some(client),
         cancellation_token: None,
         forced_plugins: Some(vec!["script_plugin".to_string()]),

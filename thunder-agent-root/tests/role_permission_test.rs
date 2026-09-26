@@ -64,7 +64,6 @@ async fn tools_for(permission: Permission) -> Vec<String> {
 
     let options = RootRunOptions {
         session_id: Some(format!("role_perm_{}", permission.as_str())),
-        use_mock: true,
         custom_client: Some(client),
         cancellation_token: None,
         forced_plugins: Some(vec![]),

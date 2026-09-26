@@ -20,7 +20,6 @@ use tracing::{error, info, warn};
 #[derive(Clone)]
 pub struct RootRunOptions {
     pub session_id: Option<String>,
-    pub use_mock: bool,
     pub custom_client: Option<Arc<dyn LLMClientTrait>>,
     pub cancellation_token: Option<CancellationToken>,
     pub forced_plugins: Option<Vec<String>>,
@@ -39,7 +38,6 @@ impl Default for RootRunOptions {
     fn default() -> Self {
         Self {
             session_id: None,
-            use_mock: false,
             custom_client: None,
             cancellation_token: None,
             forced_plugins: None,
@@ -259,7 +257,7 @@ impl ThunderRoot {
             }
         } else {
             self.selector
-                .select_for_session(Some(&session_id), &prompt_str, &self.registry, options.use_mock)
+                .select_for_session(Some(&session_id), &prompt_str, &self.registry)
                 .await
         };
 

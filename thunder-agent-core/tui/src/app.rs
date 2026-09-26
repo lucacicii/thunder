@@ -1286,7 +1286,6 @@ impl App {
             };
             let options = RootRunOptions {
                 session_id: Some(session_id),
-                use_mock,
                 custom_client,
                 cancellation_token: Some(cancel),
                 forced_plugins: None,

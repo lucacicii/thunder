@@ -747,7 +747,6 @@ impl DaemonService {
 
             let options = RootRunOptions {
                 session_id: Some(effective_session_id.clone()),
-                use_mock,
                 custom_client,
                 cancellation_token: Some(cancel_token),
                 // Smart baseline set instead of the old blanket forcing:

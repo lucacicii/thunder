@@ -43,17 +43,16 @@ impl PluginSelector {
         session_id: Option<&str>,
         prompt: &str,
         registry: &PluginRegistry,
-        use_mock: bool,
     ) -> PluginSelection {
         let Some(session_id) = session_id else {
-            return self.select(prompt, registry, use_mock).await;
+            return self.select(prompt, registry).await;
         };
 
         if let Some(cached) = SELECTION_CACHE.lock().unwrap().get(session_id) {
             return cached.clone();
         }
 
-        let selection = self.select(prompt, registry, use_mock).await;
+        let selection = self.select(prompt, registry).await;
         SELECTION_CACHE
             .lock()
             .unwrap()
@@ -61,12 +60,7 @@ impl PluginSelector {
         selection
     }
 
-    pub async fn select(
-        &self,
-        prompt: &str,
-        registry: &PluginRegistry,
-        _use_mock: bool,
-    ) -> PluginSelection {
+    pub async fn select(&self, prompt: &str, registry: &PluginRegistry) -> PluginSelection {
         let manifests = registry.list_manifests();
         if manifests.is_empty() {
             return PluginSelection {

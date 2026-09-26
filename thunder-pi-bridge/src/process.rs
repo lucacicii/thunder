@@ -554,7 +554,7 @@ fn now_epoch_ms() -> u64 {
 /// `idle_timeout` and deliver a terminal error to their receivers. Returns the
 /// number of streams failed. Streams never seen activity (`last == 0`) are
 /// exempt — the reader stamps activity on registration-adjacent events.
-pub(crate) async fn scan_once(
+async fn scan_once(
     pending: &Arc<Mutex<HashMap<String, DispatchTarget>>>,
     now_ms: u64,
     idle_timeout: Duration,
