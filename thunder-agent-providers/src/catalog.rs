@@ -297,10 +297,19 @@ impl ProviderRegistry {
         })
     }
 
+    /// Load the standard config chain from disk.
+    ///
+    /// **This is a pure read**: it never performs network I/O. Thinking-level
+    /// probing is deliberately *not* run here, because this is called on hot
+    /// request paths (list models, generate title, resolve a client per run).
+    /// Call [`ProviderRegistry::probe_unprobed_models`] explicitly once at
+    /// startup instead — it persists its findings to `models.json`, so the
+    /// enrichment only ever has to happen once per machine.
     pub async fn load_default() -> Result<Self, ProviderError> {
         Self::load_from_sources(&crate::source::ConfigSource::default_chain(None)).await
     }
 
+    /// Load and merge the given sources. Pure read; never touches the network.
     pub async fn load_from_sources(
         sources: &[crate::source::ConfigSource],
     ) -> Result<Self, ProviderError> {
@@ -313,10 +322,17 @@ impl ProviderRegistry {
                 .extend(fallback_openai_catalog(&auth, &cache));
         }
 
-        // Active probing for unprobed reasoning models
-        registry.probe_unprobed_models().await;
-
         Ok(registry)
+    }
+
+    /// Best-effort probe of unprobed reasoning models, then persist findings.
+    ///
+    /// Intended as a **one-shot startup action**, not a per-request one: every
+    /// probed model is written back to `models.json` with
+    /// `thinkingLevelsProbed: true`, so subsequent calls (and subsequent loads)
+    /// skip the network entirely.
+    pub async fn probe_and_persist_unprobed_models(&mut self) {
+        self.probe_unprobed_models().await;
     }
 
     /// Actively probe unprobed reasoning models.

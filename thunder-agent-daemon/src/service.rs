@@ -47,6 +47,24 @@ pub enum QuestionOutcome {
     Cancelled,
 }
 
+/// Kick off a detached, best-effort thinking-level probe.
+///
+/// Deliberately fire-and-forget: a slow or unreachable provider must not delay
+/// daemon startup, and a failure is harmless (the heuristics in the catalog
+/// provide sane levels until a later run persists real ones).
+fn spawn_thinking_level_probe() {
+    tokio::spawn(async {
+        let mut registry = match ProviderRegistry::load_default().await {
+            Ok(r) => r,
+            Err(err) => {
+                warn!(error = %err, "Skipping thinking-level probe: registry load failed");
+                return;
+            }
+        };
+        registry.probe_and_persist_unprobed_models().await;
+    });
+}
+
 impl DaemonService {
     /// Inject a client factory (tests/embedders). Without it, clients resolve
     /// from the provider registry exactly as in production.
@@ -64,6 +82,10 @@ impl DaemonService {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         let registry = ProviderRegistry::load_default().await.unwrap_or_default();
+        // One-shot thinking-level enrichment, off the request path. Findings are
+        // persisted to models.json, so the per-request reloads below stay pure
+        // reads and never block a `list_models` / `generate_title` call on HTTP.
+        spawn_thinking_level_probe();
         let store_root = FsConversationStore::default_store_root();
         let store = FsConversationStore::new(store_root).await?;
         let script_plugin = Arc::new(ScriptPlugin::new().with_workspace(default_workspace.clone()));
