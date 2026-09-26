@@ -1,5 +1,0 @@
-target/
-node_modules/
-runner/node_modules/
-tests/fake_pi_ai/node_modules/
-*.log

@@ -1,7 +1,0 @@
-# Rust build artifacts
-target/
-
-# Local environment files
-.env
-.env.*
-!.env.example

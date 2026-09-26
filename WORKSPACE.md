@@ -17,6 +17,7 @@ https://github.com/lucacicii/thunder
 - git 根目录即本工作区根目录
 - remote 指向 `origin → lucacicii/thunder`
 - 所有提交、分支、标签与推送均在工作区根目录执行，切勿在子目录中重复执行 `git init`
+- 各子 Crate 目录**不再保留**独立的 `LICENSE`、`run.sh` 或 `.gitignore` 副本：这些属于工作区根级资产，通过 `[workspace.package]` 继承与根级忽略规则统一治理
 
 克隆仓库：
 

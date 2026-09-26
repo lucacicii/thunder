@@ -12,11 +12,12 @@ GitHub Repository:
 
 https://github.com/lucacicii/thunder
 
-The entire ecosystem is governed as a **single Git monorepo** with a **unified Cargo workspace** (a single root `Cargo.toml` managing 11 crates and sharing a single `Cargo.lock`), eliminating nested repositories or git submodules.
+The entire ecosystem is governed as a **single Git monorepo** with a **unified Cargo workspace** (a single root `Cargo.toml` managing 10 crates and sharing a single `Cargo.lock`), eliminating nested repositories or git submodules.
 
 - Git root is this workspace root.
 - Remote points to `origin → lucacicii/thunder`.
 - All commits, branches, tags, and pushes happen in the monorepo root. Never run `git init` in subdirectories.
+- Sub-crate directories keep **no** copies of `LICENSE`, `run.sh`, or `.gitignore`. Those are root-level assets, governed centrally via `[workspace.package]` inheritance and root ignore rules.
 
 Clone:
 
@@ -35,7 +36,7 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── README_en.md                  # English entry document
 ├── WORKSPACE.md                  # Chinese workspace guide
 ├── WORKSPACE_en.md               # English workspace guide
-├── Cargo.toml                    # Unified workspace config (11 crates)
+├── Cargo.toml                    # Unified workspace config (10 crates)
 ├── Cargo.lock                    # Unified lockfile
 ├── run.sh                        # Launch TUI terminal
 ├── daemon.sh                     # Launch STDIO Sidecar daemon
