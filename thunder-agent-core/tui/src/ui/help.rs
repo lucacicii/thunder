@@ -26,15 +26,11 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled("Ctrl + P       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
-            Span::styled("Cycle mode: Auto ➔ Pipeline ➔ Parallel ➔ Single", theme.text_style()),
+            Span::styled("Cycle mode: Auto ➔ Single", theme.text_style()),
         ]),
         Line::from(vec![
             Span::styled("Ctrl + B       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
             Span::styled("Toggle sidebar visibility", theme.text_style()),
-        ]),
-        Line::from(vec![
-            Span::styled("Ctrl + M       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
-            Span::styled("Toggle Orchestra multi-agent monitor", theme.text_style()),
         ]),
         Line::from(vec![
             Span::styled("Ctrl + H       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
@@ -59,8 +55,8 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
             Span::styled("View or switch active LLM model (gpt-4o, claude-3-7, etc.)", theme.muted_style()),
         ]),
         Line::from(vec![
-            Span::styled("/mode [auto|pipe|par|dir] ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Switch orchestration topology mode", theme.muted_style()),
+            Span::styled("/mode [auto|single]       ", Style::default().fg(theme.assistant_bubble)),
+            Span::styled("Switch execution mode (plugin host or direct single agent)", theme.muted_style()),
         ]),
         Line::from(vec![
             Span::styled("/skills [list|load|scan]  ", Style::default().fg(theme.assistant_bubble)),
@@ -96,15 +92,7 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled("/health                   ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Run Orchestra system diagnostic probe", theme.muted_style()),
-        ]),
-        Line::from(vec![
-            Span::styled("/pipeline <task>          ", Style::default().fg(theme.accent_secondary)),
-            Span::styled("Directly run Sequential Pipeline (Planner ➔ Coder)", theme.muted_style()),
-        ]),
-        Line::from(vec![
-            Span::styled("/parallel <task>          ", Style::default().fg(theme.accent_secondary)),
-            Span::styled("Directly run Parallel Council (Planner + Reviewer)", theme.muted_style()),
+            Span::styled("Run local agent and environment diagnostics", theme.muted_style()),
         ]),
         Line::from(vec![
             Span::styled("/quit                     ", Style::default().fg(theme.error_color)),

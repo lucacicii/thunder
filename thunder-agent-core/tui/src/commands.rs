@@ -4,7 +4,6 @@ pub enum CommandCategory {
     General,
     Config,
     SkillsAndMcp,
-    Orchestration,
     Session,
 }
 
@@ -14,7 +13,6 @@ impl CommandCategory {
             Self::General => "General",
             Self::Config => "Configuration",
             Self::SkillsAndMcp => "Skills & MCP",
-            Self::Orchestration => "Orchestration",
             Self::Session => "Session",
         }
     }
@@ -81,9 +79,9 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
     SlashCommand::new(
         "mode",
         &["topology"],
-        "[auto | single | pipeline | parallel]",
-        "Switch orchestration execution mode",
-        CommandCategory::Orchestration,
+        "[auto | single]",
+        "Switch execution mode (plugin host or direct single agent)",
+        CommandCategory::Config,
     ),
     SlashCommand::new(
         "skills",
@@ -145,29 +143,8 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         "health",
         &["doctor", "status"],
         "",
-        "Run multi-agent orchestra and environment health checks",
+        "Run agent and environment health checks",
         CommandCategory::General,
-    ),
-    SlashCommand::new(
-        "pipeline",
-        &["seq"],
-        "<task prompt>",
-        "Execute task directly using sequential multi-agent pipeline (Planner ➔ Coder)",
-        CommandCategory::Orchestration,
-    ),
-    SlashCommand::new(
-        "parallel",
-        &["par", "council"],
-        "<task prompt>",
-        "Execute task directly using parallel council agents (Planner + Reviewer)",
-        CommandCategory::Orchestration,
-    ),
-    SlashCommand::new(
-        "fanout",
-        &["decompose"],
-        "<task prompt>",
-        "Decompose task into subtasks and execute them concurrently (fan-out workers)",
-        CommandCategory::Orchestration,
     ),
     SlashCommand::new(
         "quit",

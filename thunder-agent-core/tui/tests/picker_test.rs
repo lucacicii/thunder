@@ -62,10 +62,10 @@ async fn test_app_interactive_pickers_integration() {
     assert!(app.picker.is_open);
     assert_eq!(app.picker.kind, PickerKind::SelectMode);
 
-    // Navigate to Pipeline
+    // Navigate to Single Agent
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()), tx.clone());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx.clone());
-    assert_eq!(app.execution_mode, ExecutionMode::SequentialPipeline);
+    assert_eq!(app.execution_mode, ExecutionMode::SingleAgent);
 }
 
 #[tokio::test]

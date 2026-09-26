@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 fn test_slash_command_autocomplete_filtering() {
     // 1. Slash prefix returns all commands
     let all = filter_commands("/");
-    assert_eq!(all.len(), 17);
+    assert_eq!(all.len(), 14);
 
     // 2. Filter by prefix
     let sk = filter_commands("/sk");
@@ -107,8 +107,8 @@ async fn test_slash_commands_execution_flow() {
     assert_eq!(app.model.selection_id(), "openai/claude-3-7-sonnet");
 
     // 4. Test /mode
-    app.execute_slash_command("/mode pipeline", tx.clone());
-    assert_eq!(app.execution_mode, ExecutionMode::SequentialPipeline);
+    app.execute_slash_command("/mode single", tx.clone());
+    assert_eq!(app.execution_mode, ExecutionMode::SingleAgent);
 
     // 5. Test /config
     app.execute_slash_command("/config temperature 0.8", tx.clone());

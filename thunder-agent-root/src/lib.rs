@@ -3,7 +3,7 @@
 //! Extensible microkernel host and autonomous plugin orchestration engine for Thunder Agent.
 //!
 //! Built around `thunder-agent-loop` as the fundamental core unit, treating
-//! conversation storage, multi-agent orchestration, skills parsers, and MCP tool discovery
+//! conversation storage, skills parsers, and MCP tool discovery
 //! as dynamically discoverable and registerable plugins.
 
 pub mod error;
@@ -22,8 +22,6 @@ pub mod prelude {
     };
     #[cfg(feature = "conversation")]
     pub use crate::plugins::ConversationPlugin;
-    #[cfg(feature = "orchestra")]
-    pub use crate::plugins::OrchestraPlugin;
     #[cfg(feature = "skills")]
     pub use crate::plugins::skills::*;
     #[cfg(feature = "mcp")]

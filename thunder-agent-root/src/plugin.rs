@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PluginCapability {
     MemoryPersistence,
-    MultiAgentOrchestration,
     ToolProvider,
     SkillProvider,
     McpProvider,

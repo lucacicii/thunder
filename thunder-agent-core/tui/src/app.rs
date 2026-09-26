@@ -4,60 +4,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
 use thunder_conversation::prelude::*;
-use thunder_orchestra::{ClientFactory, OrchestraConfig, Scheduler, Topology, UnitSpec};
 use thunder_agent_root::prelude::*;
 use thunder_agent_providers::prelude::*;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// Default role personas for TUI-orchestrated units so Parallel Council runs
-/// carry genuinely different system prompts instead of a shared base prompt.
-fn orchestra_role_persona(role: &str) -> Option<&'static str> {
-    match role {
-        "planner" => Some(
-            "You are the Planning Specialist. Decompose the brief into concrete, ordered steps, \
-             surface risks and dependencies, and produce a precise actionable plan. \
-             Do not modify files yourself.",
-        ),
-        "coder" => Some(
-            "You are the Implementation Specialist. Execute the incoming plan with precise, \
-             minimal edits, verify changes with available tools, and report exactly what changed.",
-        ),
-        "reviewer" => Some(
-            "You are the Review & Risk Specialist. Critique the work for correctness, quality, \
-             and security; list defects by severity and propose concrete fixes.",
-        ),
-        _ => None,
-    }
-}
-
-fn orchestra_units(base: &AgentConfig) -> Vec<UnitSpec> {
-    ["planner", "coder", "reviewer"]
-        .into_iter()
-        .map(|role| {
-            let mut spec = UnitSpec::new(role, role, base.clone()).with_builtins();
-            if let Some(persona) = orchestra_role_persona(role) {
-                spec = spec.with_system_prompt(persona);
-            }
-            spec
-        })
-        .collect()
-}
-
-fn synthesizer_unit(base: &AgentConfig) -> UnitSpec {
-    UnitSpec::new("synthesizer", "synthesizer", base.clone()).with_system_prompt(
-        "You are the Synthesis and Review Aggregator. Merge the unit outputs into one unified, \
-         decisive report: highlight consensus, resolve discrepancies, and state the final \
-         actionable conclusion. Be concise.",
-    )
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Chat,
     SessionList,
-    OrchestraMonitor,
     Help,
 }
 
@@ -73,9 +29,6 @@ pub enum FocusPane {
 pub enum ExecutionMode {
     AutoRouter,
     SingleAgent,
-    SequentialPipeline,
-    ParallelCouncil,
-    FanOut,
 }
 
 impl Default for ExecutionMode {
@@ -89,28 +42,19 @@ impl ExecutionMode {
         match self {
             Self::AutoRouter => "⚡ Auto",
             Self::SingleAgent => "Single",
-            Self::SequentialPipeline => "🔗 Pipeline",
-            Self::ParallelCouncil => "⚖️ Parallel",
-            Self::FanOut => "🎯 FanOut",
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::AutoRouter => "Autonomous LLM Routing (Auto Single / Pipeline / Parallel)",
+            Self::AutoRouter => "Plugin-Host Agent (Conversation + Skills + MCP)",
             Self::SingleAgent => "Single Agent Direct Run",
-            Self::SequentialPipeline => "Sequential Pipeline (Planner ➔ Coder)",
-            Self::ParallelCouncil => "Parallel Multi-Agent (Planner + Reviewer)",
-            Self::FanOut => "Fan-Out Subtask Decomposition (Concurrent Workers)",
         }
     }
 
     pub fn next(&self) -> Self {
         match self {
-            Self::AutoRouter => Self::SequentialPipeline,
-            Self::SequentialPipeline => Self::ParallelCouncil,
-            Self::ParallelCouncil => Self::FanOut,
-            Self::FanOut => Self::SingleAgent,
+            Self::AutoRouter => Self::SingleAgent,
             Self::SingleAgent => Self::AutoRouter,
         }
     }
@@ -169,6 +113,8 @@ pub struct App {
     pub last_error: Option<String>,
     pub last_max_scroll: usize,
     pub active_skill: Option<thunder_agent_skills::SkillHandle>,
+    /// Raw pre-compaction transcript pending a sidecar write (checkpoint mode).
+    pub pending_raw_transcript: Option<Vec<ChatMessage>>,
 }
 
 impl App {
@@ -211,6 +157,7 @@ impl App {
             last_error: None,
             last_max_scroll: 0,
             active_skill: None,
+            pending_raw_transcript: None,
         }
     }
 
@@ -222,22 +169,6 @@ impl App {
     pub fn with_provider_registry(mut self, registry: ProviderRegistry) -> Self {
         self.provider_registry = registry;
         self
-    }
-
-    /// Real-mode LLM seam for every orchestra run launched by this TUI:
-    /// resolves each unit's own `AgentConfig.model` through the provider
-    /// registry (same `client_for` path as `ThunderRoot`), so units never fall
-    /// back to `UnconfiguredLLMClient`. Returns `None` in mock mode.
-    fn orchestra_client_factory(&self) -> Option<ClientFactory> {
-        if self.use_mock {
-            return None;
-        }
-        let registry = self.provider_registry.clone();
-        Some(Arc::new(move |cfg: &AgentConfig| {
-            registry
-                .resolve(&cfg.model)
-                .and_then(|spec| client_for(spec, cfg.request_timeout_ms).ok())
-        }))
     }
 
     pub async fn refresh_sessions(&mut self) {
@@ -254,6 +185,14 @@ impl App {
     pub async fn save_current_conversation(&mut self) {
         if let Some(store) = &self.store {
             let _ = store.save(&self.conversation).await;
+            // Flush any raw pre-compaction transcript captured this run
+            // (sidecar file; the projection stays the working history).
+            if let Some(raw) = self.pending_raw_transcript.take() {
+                let session_id = self.conversation.id.clone();
+                if let Err(e) = store.save_raw_transcript(&session_id, &raw).await {
+                    tracing::warn!(error = %e, session_id = %session_id, "failed to persist raw transcript");
+                }
+            }
             self.refresh_sessions().await;
         }
     }
@@ -331,12 +270,6 @@ impl App {
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
             }
-            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.mode = match self.mode {
-                    ViewMode::OrchestraMonitor => ViewMode::Chat,
-                    _ => ViewMode::OrchestraMonitor,
-                };
-            }
             KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mode = match self.mode {
                     ViewMode::Help => ViewMode::Chat,
@@ -373,7 +306,7 @@ impl App {
                 self.cycle_focus();
             }
             KeyCode::Esc => match self.mode {
-                ViewMode::Help | ViewMode::SessionList | ViewMode::OrchestraMonitor => {
+                ViewMode::Help | ViewMode::SessionList => {
                     self.mode = ViewMode::Chat;
                     self.focus = FocusPane::Input;
                 }
@@ -776,10 +709,7 @@ impl App {
             }
             PickerKind::SelectMode => {
                 let new_mode = match item.id.as_str() {
-                    "auto" => ExecutionMode::AutoRouter,
                     "single" => ExecutionMode::SingleAgent,
-                    "pipeline" => ExecutionMode::SequentialPipeline,
-                    "parallel" => ExecutionMode::ParallelCouncil,
                     _ => ExecutionMode::AutoRouter,
                 };
                 self.execution_mode = new_mode;
@@ -859,6 +789,7 @@ impl App {
                                     success: false,
                                     final_text: Some(format!("❌ Could not find session `{target_name}` to resume. Use `/resume` to view all saved sessions.")),
                                     authoritative_messages: None,
+                                raw_messages: None,
                                 });
                             }
                         }
@@ -937,15 +868,13 @@ impl App {
                 true
             }
 
-            // 4. /mode [auto | single | pipeline | parallel]
+            // 4. /mode [auto | single]
             "mode" | "topology" => {
                 if let Some(m_str) = args.first() {
                     self.conversation.add_user_message(raw_cmd);
                     let new_mode = match m_str.to_lowercase().as_str() {
                         "auto" | "router" => Some(ExecutionMode::AutoRouter),
                         "single" | "direct" => Some(ExecutionMode::SingleAgent),
-                        "pipeline" | "seq" | "sequential" => Some(ExecutionMode::SequentialPipeline),
-                        "parallel" | "par" | "council" => Some(ExecutionMode::ParallelCouncil),
                         _ => None,
                     };
 
@@ -955,16 +884,14 @@ impl App {
                         self.conversation.add_assistant_message(Some(out), None);
                         self.set_status_message(format!("Mode: {}", self.execution_mode.description()));
                     } else {
-                        let out = format!("❌ Unknown mode `{m_str}`. Available: `auto`, `single`, `pipeline`, `parallel`");
+                        let out = format!("❌ Unknown mode `{m_str}`. Available: `auto`, `single`");
                         self.conversation.add_assistant_message(Some(out), None);
                     }
                     self.save_and_refresh();
                 } else {
                     let items = vec![
-                        PickerItem::new("auto", "⚡ Auto Router", "Autonomous Intent Routing (Auto Single / Pipeline / Parallel)").with_badge("Recommended"),
-                        PickerItem::new("pipeline", "🔗 Sequential Pipeline", "Two-Stage Pipeline (Planner ➔ Coder)").with_badge("Multi-Agent"),
-                        PickerItem::new("parallel", "⚖️ Parallel Council", "Multi-Perspective Council (Planner + Reviewer)").with_badge("Multi-Agent"),
-                        PickerItem::new("single", "Single Agent", "Single Agent Direct Run without Delegation").with_badge("Direct"),
+                        PickerItem::new("auto", "⚡ Auto (Plugin Host)", "ThunderRoot Microkernel Host (Conversation + Skills + MCP)").with_badge("Recommended"),
+                        PickerItem::new("single", "Single Agent", "Single Agent Direct Run without Plugin Host").with_badge("Direct"),
                     ];
                     self.picker.open(
                         PickerKind::SelectMode,
@@ -1018,6 +945,7 @@ impl App {
                                         success: true,
                                         final_text: Some(content),
                                         authoritative_messages: None,
+                                raw_messages: None,
                                     });
                                 }
                             });
@@ -1050,6 +978,7 @@ impl App {
                                     success: true,
                                     final_text: Some(content),
                                     authoritative_messages: None,
+                                raw_messages: None,
                                 });
                             }
                         });
@@ -1071,6 +1000,7 @@ impl App {
                                     success: true,
                                     final_text: Some(content),
                                     authoritative_messages: None,
+                                raw_messages: None,
                                 });
                             }
                         });
@@ -1108,6 +1038,7 @@ impl App {
                                 success: true,
                                 final_text: Some(content),
                                 authoritative_messages: None,
+                                raw_messages: None,
                             });
                         }
                     });
@@ -1244,40 +1175,29 @@ impl App {
                 true
             }
 
-            // 12. /health or /doctor
+            // 12. /health or /doctor — lightweight local diagnostics (no LLM call)
             "health" | "doctor" => {
                 self.conversation.add_user_message(raw_cmd);
-                self.run_orchestra_health(event_tx);
-                true
-            }
-
-            // 13. /pipeline <task>
-            "pipeline" | "seq" => {
-                let task_prompt = args.join(" ");
-                if task_prompt.trim().is_empty() {
-                    self.conversation.add_user_message(raw_cmd);
-                    self.conversation.add_assistant_message(Some("⚠️ Usage: `/pipeline <task description>`".to_string()), None);
-                    self.save_and_refresh();
-                    return true;
+                let model = self.model.selection_id();
+                let spec = self.provider_registry.resolve(&model);
+                let mut out = String::from("### 🩺 Thunder Health Report\n\n");
+                let model_line = match &spec {
+                    Some(s) => format!("- ✔ Model `{}` resolves (provider: {}, context window: {})", model, s.provider, s.context_window),
+                    None => format!("- ❌ Model `{}` not found in provider registry (~/.thunder/models.json + auth.json)", model),
+                };
+                out.push_str(&model_line);
+                out.push_str(&format!("\n- {} Workspace: `{}`", if self.workspace_dir.is_dir() { "✔" } else { "❌" }, self.workspace_dir.display()));
+                out.push_str(&format!("\n- {} Session `{}` with {} messages", "✔", self.conversation.id, self.conversation.messages.len()));
+                out.push_str(&format!("\n- Mode: {} | Mock: {}", self.execution_mode.description(), self.use_mock));
+                if !self.use_mock && spec.is_none() {
+                    out.push_str("\n\n⚠️ LIVE mode will fail at the first LLM call until the model is configured.");
                 }
-                self.submit_prompt(format!("/pipeline {task_prompt}"), event_tx);
+                self.conversation.add_assistant_message(Some(out), None);
+                self.save_and_refresh();
                 true
             }
 
-            // 14. /parallel <task>
-            "parallel" | "par" | "council" => {
-                let task_prompt = args.join(" ");
-                if task_prompt.trim().is_empty() {
-                    self.conversation.add_user_message(raw_cmd);
-                    self.conversation.add_assistant_message(Some("⚠️ Usage: `/parallel <task description>`".to_string()), None);
-                    self.save_and_refresh();
-                    return true;
-                }
-                self.submit_prompt(format!("/parallel {task_prompt}"), event_tx);
-                true
-            }
-
-            // 15. /quit or /exit
+            // 13. /quit or /exit
             "quit" | "exit" | "q" => {
                 self.should_quit = true;
                 true
@@ -1290,13 +1210,7 @@ impl App {
     pub fn submit_prompt(&mut self, raw_prompt: String, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
         let trimmed = raw_prompt.trim();
 
-        let (mode, prompt) = if let Some(p) = trimmed.strip_prefix("/pipeline ").or_else(|| trimmed.strip_prefix("/seq ")) {
-            (ExecutionMode::SequentialPipeline, p.to_string())
-        } else if let Some(p) = trimmed.strip_prefix("/parallel ").or_else(|| trimmed.strip_prefix("/par ")) {
-            (ExecutionMode::ParallelCouncil, p.to_string())
-        } else if let Some(p) = trimmed.strip_prefix("/fanout ").or_else(|| trimmed.strip_prefix("/decompose ")) {
-            (ExecutionMode::FanOut, p.to_string())
-        } else if let Some(p) = trimmed.strip_prefix("/single ") {
+        let (mode, prompt) = if let Some(p) = trimmed.strip_prefix("/single ") {
             (ExecutionMode::SingleAgent, p.to_string())
         } else if let Some(p) = trimmed.strip_prefix("/auto ") {
             (ExecutionMode::AutoRouter, p.to_string())
@@ -1321,15 +1235,6 @@ impl App {
             ExecutionMode::SingleAgent => {
                 self.run_single_agent(prompt, cancel, event_tx);
             }
-            ExecutionMode::SequentialPipeline => {
-                self.run_orchestra_topology(Topology::Sequential, prompt, cancel, event_tx);
-            }
-            ExecutionMode::ParallelCouncil => {
-                self.run_orchestra_topology(Topology::Parallel, prompt, cancel, event_tx);
-            }
-            ExecutionMode::FanOut => {
-                self.run_orchestra_topology(Topology::FanOut, prompt, cancel, event_tx);
-            }
             ExecutionMode::AutoRouter => {
                 self.run_root_agent(prompt, cancel, event_tx);
             }
@@ -1352,14 +1257,6 @@ impl App {
             base_cfg.pruning.max_context_tokens = spec.context_window;
         }
 
-        let mut orchestra_cfg = OrchestraConfig::new(Topology::Auto).with_base(base_cfg.clone());
-        if let Some(factory) = self.orchestra_client_factory() {
-            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
-        }
-        for unit in orchestra_units(&base_cfg) {
-            orchestra_cfg = orchestra_cfg.with_unit(unit);
-        }
-
         let mut skills_plugin = SkillsPlugin::default();
         if let Some(handle) = &self.active_skill {
             skills_plugin = skills_plugin.with_skill(
@@ -1374,7 +1271,6 @@ impl App {
         let root = ThunderRoot::new(base_cfg.clone())
             .with_workspace(self.workspace_dir.clone())
             .with_plugin(ConversationPlugin::with_memory_store())
-            .with_plugin(OrchestraPlugin::new(orchestra_cfg))
             .with_plugin(skills_plugin)
             .with_plugin(McpPlugin::default())
             .with_provider_registry(self.provider_registry.clone());
@@ -1433,6 +1329,7 @@ impl App {
                                 success: res.run_result.finish_reason == FinishReason::Done,
                                 final_text: Some(summary),
                                 authoritative_messages: Some(res.run_result.messages),
+                                raw_messages: res.run_result.raw_messages,
                             });
                         }
                         Err(err) => {
@@ -1441,6 +1338,7 @@ impl App {
                                 success: false,
                                 final_text: Some(err.to_string()),
                                 authoritative_messages: None,
+                                raw_messages: None,
                             });
                         }
                     }
@@ -1451,6 +1349,7 @@ impl App {
                         success: false,
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
+                                raw_messages: None,
                     });
                 }
             }
@@ -1510,6 +1409,7 @@ impl App {
                                 success: is_ok,
                                 final_text: result.final_content,
                                 authoritative_messages: Some(result.messages),
+                                raw_messages: result.raw_messages,
                             });
                         }
                         Err(err) => {
@@ -1518,6 +1418,7 @@ impl App {
                                 success: false,
                                 final_text: Some(err.to_string()),
                                 authoritative_messages: None,
+                                raw_messages: None,
                             });
                         }
                     }
@@ -1528,147 +1429,10 @@ impl App {
                         success: false,
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
+                                raw_messages: None,
                     });
                 }
             }
-        });
-    }
-
-    fn run_orchestra_topology(
-        &self,
-        topology: Topology,
-        prompt: String,
-        cancel: CancellationToken,
-        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
-    ) {
-        let model = self.model.selection_id();
-        let use_mock = self.use_mock;
-        let mut base_cfg = AgentConfig::new(model).with_unlimited_turns();
-        base_cfg.temperature = Some(self.temperature);
-        base_cfg.request_timeout_ms = self.request_timeout_ms;
-        if let Some(spec) = self.provider_registry.resolve(&base_cfg.model) {
-            base_cfg.pruning.max_context_tokens = spec.context_window;
-        }
-
-        let mut orchestra_cfg = OrchestraConfig::new(topology)
-            .with_base(base_cfg.clone())
-            .with_synthesizer_unit(synthesizer_unit(&base_cfg));
-        if let Some(factory) = self.orchestra_client_factory() {
-            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
-        }
-        for unit in orchestra_units(&base_cfg) {
-            orchestra_cfg = orchestra_cfg.with_unit(unit);
-        }
-
-        let scheduler = Scheduler::new(orchestra_cfg);
-
-        tokio::spawn(async move {
-            let (tx_obs, mut rx_obs) = mpsc::unbounded_channel::<ObservedEvent>();
-            let tx_forward = event_tx.clone();
-            tokio::spawn(async move {
-                while let Some(obs) = rx_obs.recv().await {
-                    let _ = tx_forward.send(crate::event::AppEvent::Agent(obs));
-                }
-            });
-
-            match scheduler
-                .dispatch_with_events(prompt, use_mock, Some(cancel), Some(tx_obs))
-                .await
-            {
-                Ok(run) => {
-                    let mut summary_text = String::new();
-                    if let Some(dec) = &run.routing_decision {
-                        summary_text.push_str(&format!(
-                            "> ⚡ **Autonomous Routing**: Selected `{:?}` (Reason: {})\n\n",
-                            dec.topology, dec.reason
-                        ));
-                    }
-
-                    if let Some(synthesis) = &run.synthesis {
-                        summary_text.push_str(&format!(
-                            "### 🎯 Synthesized Report\n\n{}\n\n---\n\n",
-                            synthesis.trim()
-                        ));
-                    }
-
-                    match topology {
-                        Topology::Sequential | Topology::Auto if run.results.len() > 1 => {
-                            summary_text.push_str(&format!("### 🔗 Pipeline Completed (run_id: {})\n\n", run.run_id));
-                            for (role, res) in &run.results {
-                                summary_text.push_str(&format!("**[{role}] ({:?})**\n", res.finish_reason));
-                                if let Some(content) = &res.final_content {
-                                    summary_text.push_str(&format!("{}\n\n", content.trim()));
-                                }
-                            }
-                        }
-                        Topology::Parallel | Topology::FanOut => {
-                            summary_text.push_str(&format!("### ⚖️ Parallel Execution Summary (run_id: {})\n\n", run.run_id));
-                            for (role, res) in &run.results {
-                                summary_text.push_str(&format!("#### Role: `{role}`\n"));
-                                if let Some(content) = &res.final_content {
-                                    summary_text.push_str(&format!("{}\n\n", content.trim()));
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some((_, first_res)) = run.results.first() {
-                                if let Some(content) = &first_res.final_content {
-                                    summary_text.push_str(content.trim());
-                                }
-                            }
-                        }
-                    };
-
-                    let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
-                        agent_id: format!("orchestra_{:?}", topology),
-                        success: true,
-                        final_text: Some(summary_text),
-                        authoritative_messages: None,
-                    });
-                }
-                Err(err) => {
-                    let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
-                        agent_id: "orchestra".to_string(),
-                        success: false,
-                        final_text: Some(format!("Orchestra dispatch error: {}", err)),
-                        authoritative_messages: None,
-                    });
-                }
-            }
-        });
-    }
-
-    fn run_orchestra_health(&self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
-        let model = self.model.selection_id();
-        let use_mock = self.use_mock;
-        let base_cfg = AgentConfig::new(model).with_unlimited_turns();
-
-        let mut orchestra_cfg = OrchestraConfig::new(Topology::Sequential).with_base(base_cfg);
-        if let Some(factory) = self.orchestra_client_factory() {
-            orchestra_cfg = orchestra_cfg.with_client_factory(factory);
-        }
-        let scheduler = Scheduler::new(orchestra_cfg);
-
-        tokio::spawn(async move {
-            let report = scheduler.health(use_mock).await;
-            let status_badge = match report.status {
-                thunder_orchestra::HealthStatus::Ok => "✔ HEALTHY",
-                thunder_orchestra::HealthStatus::Degraded => "⚠️ DEGRADED",
-                thunder_orchestra::HealthStatus::Failed => "❌ FAILED",
-            };
-
-            let mut out = format!("### 🩺 Orchestra System Health Report: {}\n\n", status_badge);
-            for check in report.checks {
-                let check_badge = if check.passed { "✔" } else { "❌" };
-                out.push_str(&format!("- {} **{}**: {}\n", check_badge, check.name, check.detail));
-            }
-
-            let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
-                agent_id: "health_checker".to_string(),
-                success: true,
-                final_text: Some(out),
-                authoritative_messages: None,
-            });
         });
     }
 
@@ -1751,6 +1515,20 @@ impl App {
                 self.agent_status = AgentStatus::Error(message.clone());
                 self.set_status_message(format!("Error: {}", message));
             }
+            AgentEvent::ContextCompacted {
+                tokens_before,
+                tokens_after,
+                ..
+            } => {
+                info!(
+                    "[{}] context compacted: {} -> {} estimated tokens",
+                    event.agent_id, tokens_before, tokens_after
+                );
+                self.set_status_message(format!(
+                    "🗜 Context compacted: ~{} → ~{} tokens (older history summarized)",
+                    tokens_before, tokens_after
+                ));
+            }
             _ => {}
         }
     }
@@ -1761,7 +1539,12 @@ impl App {
         success: bool,
         final_text: Option<String>,
         authoritative_messages: Option<Vec<ChatMessage>>,
+        raw_messages: Option<Vec<ChatMessage>>,
     ) {
+        // Preserve the raw pre-compaction transcript (if a checkpoint compaction
+        // fired) so the working history can be a checkpoint projection while the
+        // original history stays auditable on disk.
+        self.pending_raw_transcript = raw_messages;
         if success {
             self.agent_status = AgentStatus::Idle;
             if let Some(messages) = authoritative_messages {

@@ -25,10 +25,10 @@ impl SkillsPlugin {
         )
         .with_capability(PluginCapability::SkillProvider)
         .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::new(
-            vec!["skill", "skills", "技能", "playbook", "workflow", "prompt template", "custom tool", "spec"],
-            "Provides specialized domain skills, custom workflows, and expert prompt templates.",
-        ));
+        // Baseline plugin: always active (documented as "会话与技能常驻").
+        // Keyword flicker on generic words like "spec" previously toggled this
+        // plugin per message, destabilizing the cached request prefix.
+        .with_triggers(TriggerSpec::always());
 
         Self {
             manifest,

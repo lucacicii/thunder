@@ -10,7 +10,6 @@ members = [
     "thunder-agent-plugin",
     "thunder-agent-daemon",
     "thunder-agent-core/conversation",
-    "thunder-agent-core/thunder-orchestra",
     "thunder-agent-core/tui",
 ]
 

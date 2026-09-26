@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-root` 是基于 [`thunder-agent-loop`](../thunder-agent-loop) 构建的微内核宿主。它负责将单 Agent 闭环引擎与多轮会话持久化、外部技能发现、MCP 远程工具、TypeScript 脚本插件及多 Agent 编排流水线无缝组装，对外提供统一的宿主级执行入口。
+`thunder-agent-root` 是基于 [`thunder-agent-loop`](../thunder-agent-loop) 构建的微内核宿主。它负责将单 Agent 闭环引擎与多轮会话持久化、外部技能发现、MCP 远程工具、TypeScript 脚本插件无缝组装，对外提供统一的宿主级执行入口。
 
 ---
 
@@ -16,15 +16,14 @@
      - **`SkillsPlugin`**：Playbook 技能库发现、Prompt 注入与动态加载工具。
      - **`McpPlugin`**：Model Context Protocol 远程服务连接与工具桥接。
      - **`ScriptPlugin`**：TypeScript 单文件无编译插件执行与热重载。
-     - **`OrchestraPlugin`**：多 Agent 编排调度与子任务下钻委托。
 2. **确定性极速意图路由（Zero-LLM Latency Activation）**：
    - 彻底摒弃带来 1~2 秒延迟的二次 LLM 意图分类。
    - `PluginSelector` 确立**确定性基线**：会话与技能插件对每次任务常驻激活；
-   - 复杂扩展（如多 Agent 编排、MCP 服务器等）仅在用户 Prompt 命中特定意图关键词时精准激活，兼顾**零额外延迟、最小 Token 消耗与最强可扩展性**。
+   - 复杂扩展（如 MCP 服务器等）仅在用户 Prompt 命中特定意图关键词时精准激活，兼顾**零额外延迟、最小 Token 消耗与最强可扩展性**。
 3. **全局技能扫描缓存（120s TTL）**：
    - 内置 `DEFAULT_SKILLS_CACHE`，对本地与全局技能目录文件树建立带 120 秒有效期的全局缓存，消除高频对话下的磁盘 I/O 阻塞。
 4. **一键标准插件装配（`with_standard_plugins`）**：
-   - 开箱即用的一键链式装配方法，默认挂载技能（Skills）与 MCP 标准插件；会话与编排插件可按需追加。
+   - 开箱即用的一键链式装配方法，默认挂载技能（Skills）与 MCP 标准插件；会话插件可按需追加。
 
 ---
 
@@ -38,7 +37,7 @@ use thunder_agent_root::prelude::*;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_cfg = AgentConfig::new("deepseek-chat");
 
-    // 一键挂载标准插件集（技能、MCP），可再按需追加会话与编排插件
+    // 一键挂载标准插件集（技能、MCP），可再按需追加会话插件
     let mut root = ThunderRoot::new(base_cfg)
         .with_standard_plugins()
         .with_plugin(ConversationPlugin::with_memory_store());
@@ -65,17 +64,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`skills`** | 技能库解析 | **基线常驻** | 扫描 `~/.agents/skills`，暴露 `load_skill` / `list_skills` 工具 |
 | **`mcp`** | MCP 客户端 | 触发词动态激活 | 连接外部 MCP 服务器并暴露远程工具 |
 | **`script_plugin`** | TS 脚本引擎 | 触发词动态激活 | 原生执行单文件 TS 插件，支持蓝绿热重载与错误免疫 |
-| **`orchestra`** | 多 Agent 调度 | 触发词动态激活 | 暴露 `delegate_subtask` 工具，支持子 Agent 隔离下钻 |
-
-### `delegate_subtask` 子 Agent 的 client 注入（关键）
-
-`DelegateTool` 每次调用都会经内部 factory 构造**独立的** `AgentLoop`——它既不走 `Scheduler::spawn_unit`，也**不隐式继承**外层 agent 的 LLM client。因此 plugin 会把 `OrchestraConfig` 上的 `client_factory` 转发给每个委托子 Agent（与 `spawn_unit` 同一组合根接缝）：
-
-- **真实模式**：必须 `OrchestraConfig::with_client_factory(...)`（TUI 已自动从 `ProviderRegistry` 构造并注入；`examples/cli.rs` 同源接线）。
-- **无 factory 时诚实失败**：子 Agent 第一次 LLM 调用即报错上浮为 tool error（含 `OrchestraConfig::with_client_factory` 修复指引），不再返回含糊的 "finished with no final content"。
-- **无 base config 时拒绝注册**：不注册幻影 `gpt-4o` 子 Agent，而是 warn 并跳过（需 `OrchestraConfig::with_base`）。
-
-跨 crate 接缝由 `tests/orchestra_plugin_test.rs` 锁住（经 `OrchestraPlugin::tools()` 实际调用 `delegate_subtask`，断言 factory client 被使用）。
 
 ---
 

@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-tui` 是 Thunder Agent 体系的官方交互式终端客户端。它深度集成了 `thunder-agent-root` 与 `thunder-orchestra`，提供全宽对话流、交互式斜杠命令系统、实时流式打字机效果、深度思考链折叠展示、多 Agent 拓扑监视器以及结果聚合报告渲染。
+`thunder-tui` 是 Thunder Agent 体系的官方交互式终端客户端。它深度集成 `thunder-agent-root`，提供全宽对话流、交互式斜杠命令系统、实时流式打字机效果以及深度思考链折叠展示。
 
 ---
 
@@ -23,8 +23,7 @@
   - `Enter`：发送指令 / 启动 Agent 循环。
   - `Tab`：自动补全斜杠命令 / 切换输入框焦点。
   - `Ctrl + N`：新建会话。
-  - `Ctrl + P`：快速轮转编排模式（`Auto` ➔ `Pipeline` ➔ `Parallel` ➔ `FanOut` ➔ `Single`）。
-  - `Ctrl + M`：切换编排拓扑监视器视图。
+  - `Ctrl + P`：快速轮转执行模式（`Auto` ➔ `Single`）。
   - `Ctrl + H`：弹出快捷键帮助浮层。
   - `Ctrl + C` / `Esc`：终止当前运行中的 Agent 任务或退出 TUI。
 - **崩溃安全恢复**：内置终端 Panic Hook 保证终端在发生异常时平稳恢复 Normal 模式，杜绝终端乱码或光标丢失。
@@ -38,7 +37,7 @@
 | **`/resume`** | `[# \| id]` | 列出全部历史会话，或按编号/ID恢复会话 |
 | **`/help`** | | 呼出所有命令与快捷键参考 |
 | **`/model`** | `[name]` | 查看当前模型或热切换模型（如 `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`） |
-| **`/mode`** | `[auto \| pipe \| par \| fanout \| single]` | 切换执行拓扑模式（自动路由 / 串行流水线 / 并行评审 / 任务拆解分片 / 单 Agent） |
+| **`/mode`** | `[auto \| single]` | 切换执行模式（插件宿主 / 单 Agent 直连） |
 | **`/skills`** | `[list \| load \| scan]` | 浏览技能库目录、读取 Playbook 提示词或重新扫描目录 |
 | **`/mcp`** | `[list \| servers \| reload]` | 列出已连接的 MCP 服务及动态工具，或重载配置 |
 | **`/compact`** | | 自动压缩历史上下文，提取会话摘要并裁剪老旧轮次 |

@@ -34,8 +34,8 @@ echo -e "Rust Version:  $(rustc --version)"
 echo -e "Cargo Version: $(cargo --version)"
 echo ""
 
-echo -e "${BLUE}▶ Running cargo test --workspace (11 Crates, Unified Target)...${NC}"
+echo -e "${BLUE}▶ Running cargo test --workspace (10 Crates, Unified Target)...${NC}"
 cargo test --workspace --quiet "$@"
 
-echo -e "${GREEN}✔ All 11 workspace packages passed!${NC}\n"
+echo -e "${GREEN}✔ All 10 workspace packages passed!${NC}\n"
 echo -e "${GREEN}✨ All Thunder crates and test suites completed successfully!${NC}"

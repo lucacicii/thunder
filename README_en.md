@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-Thunder is a modern AI Agent ecosystem built in Rust. Managed under a single Git monorepo and a unified Cargo workspace, it provides an end-to-end architecture spanning ultra-fast single-agent execution units, unified LLM transport, dynamic microkernel plugin composition, and multi-agent coordination (sequential pipelines, role-injected parallel reviews, task decomposition fan-out, and synthesis aggregation).
+Thunder is a modern AI Agent ecosystem built in Rust. Managed under a single Git monorepo and a unified Cargo workspace, it provides an end-to-end architecture spanning ultra-fast single-agent execution units, unified LLM transport, and dynamic microkernel plugin composition (conversation, skills, MCP, TS script plugins).
 
 Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorepo layout, architecture dependencies, and development conventions, see **[WORKSPACE.md](WORKSPACE.md)** (or **[WORKSPACE_en.md](WORKSPACE_en.md)**).
 
@@ -12,15 +12,16 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 
 ## ⚡ Core Architectural Pillars
 
-1. **A/B Architecture Contract (Unit vs Scheduler)**:
-   - **Agent A (`thunder-agent-loop`)**: Atomic closed execution unit for a single task. Responsible for driving multi-turn reasoning, streaming token parsing, concurrent tool execution, and context pruning. Never couples multi-agent graph or shared blackboard logic.
-   - **Agent B (`thunder-orchestra`)**: High-level scheduler that coordinates N independent A units. Supports sequential pipelines (`Sequential`), role-bound council reviews (`Parallel`), and structured subtask partitioning (`FanOut`), unified by a `Synthesizer` node into a consolidated report.
+1. **Single-Agent Closed-Loop Kernel (`thunder-agent-loop`)**:
+   - Atomic closed execution unit for a single task. Responsible for driving multi-turn reasoning, streaming token parsing, concurrent tool execution, and context pruning. Never couples multi-agent graph or shared blackboard logic.
+   - Tool calls are dispatched concurrently (`ToolExecutor::execute_all`), so a single agent already gains parallel tool-execution benefits while keeping a stable conversation prefix to maximize provider-side prompt cache hits.
 2. **`pi-bridge` Single Transport Convergence**:
    - Replaced high-maintenance custom Rust model dialect adapters with a single Node.js sidecar running `@earendil-works/pi-ai`, pre-bundled via esbuild.
    - Zero `npm install` required on fresh checkouts. Seamlessly unifies dialect handling, token accounting, and thinking level mappings across OpenAI, Anthropic Claude, DeepSeek, Google Gemini, Ollama, and more.
-3. **Decoupled Tool Eviction & Large Context Preservation**:
-   - Decoupled **tool output eviction** (`tool_eviction_threshold_tokens: 20_000`) from the model's total physical context window limit.
-   - Trims noisy older tool execution logs during tool-heavy workloads while preserving human-assistant dialogue history up to the model's full context capacity (e.g. DeepSeek 1M tokens).
+3. **Checkpoint Context Compaction**:
+   - Between two compactions the request prefix stays **byte-identical**, maximizing provider-side prompt cache hits.
+   - Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) does it swap older history for a single LLM-generated structured checkpoint (Goal / Progress / Decisions / Next Steps + read/modified file lists), keeping the last `keep_recent_tokens` verbatim.
+   - Degrades to mechanical compaction when summarization fails; the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
 4. **Cross-Agent File Mutation Queue Lock (`FILE_MUTATION_LOCKS`)**:
    - Process-wide path-based queue mutex in `thunder-agent-loop`. Serializes concurrent write operations to the same physical file across parallel agents or simultaneous tool calls, preventing race conditions and silent overwrites.
 5. **Deterministic Zero-Latency Plugin Activation**:
@@ -30,7 +31,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 
 ---
 
-## 📦 Workspace Package Matrix (11 Workspace Crates)
+## 📦 Workspace Package Matrix (10 Workspace Crates)
 
 | Crate | Path | Description |
 | :--- | :--- | :--- |
@@ -43,8 +44,8 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 | **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **Microkernel Host**: Dynamic plugin assembler with trigger routing, executing prompts into structured run results |
 | **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with role permissions, concurrency semaphores, pause, and ask-user |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Conversation Store**: Atomic filesystem and in-memory session persistence, `index.json` fast index, and multi-topology tracking |
-| **`thunder-orchestra`** | [`thunder-agent-core/thunder-orchestra`](thunder-agent-core/thunder-orchestra) | **Agent B**: Multi-agent scheduler with Sequential, Parallel, Fan-Out, role prompt injection, and result synthesis |
-| **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming, reasoning fold, and orchestra monitor |
+| **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Session Store**: Atomic Fs storage with in-memory dual mode, `index.json` fast indexing, and topology stage tracking |
+| **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming and reasoning fold |
 
 ---
 
@@ -67,7 +68,7 @@ cd thunder
 # 3. Launch STDIO Sidecar daemon (for desktop / Electron integration)
 ./daemon.sh
 
-# 4. Run workspace test suite across all 11 packages
+# 4. Run workspace test suite across all 10 packages
 ./test.sh
 ```
 
