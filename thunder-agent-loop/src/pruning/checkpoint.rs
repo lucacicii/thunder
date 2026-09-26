@@ -132,6 +132,20 @@ fn is_user_message(msg: &ChatMessage) -> bool {
 // Cut point selection
 // ============================================================================
 
+/// Lowest index that may be rewritten by compaction: right after the pinned
+/// system prompt, or after an existing checkpoint message when present.
+pub fn region_floor(buffer: &ContextBuffer) -> usize {
+    if buffer
+        .get_entry(1)
+        .map(|e| is_checkpoint_message(&e.message))
+        .unwrap_or(false)
+    {
+        2
+    } else {
+        1
+    }
+}
+
 /// Find the index where the kept (verbatim) region starts.
 ///
 /// Walks backwards from the end accumulating token estimates until
@@ -149,15 +163,7 @@ pub fn find_cut_index(buffer: &ContextBuffer, keep_recent_tokens: usize) -> Opti
     }
 
     // Lowest legal cut: after system prompt + optional existing checkpoint.
-    let floor = if buffer
-        .get_entry(1)
-        .map(|e| is_checkpoint_message(&e.message))
-        .unwrap_or(false)
-    {
-        2
-    } else {
-        1
-    };
+    let floor = region_floor(buffer);
 
     let mut acc = 0usize;
     let mut cut = len;

@@ -16,7 +16,7 @@
 
 - **自主循环与安全兜底**：默认设定 **50 轮安全上限**，防止失控无限死循环；同时提供 `.with_unlimited_turns()` 显式解除限制，由 LLM 自主结论或完成标志（`finish_reason: "stop"` / 无工具调用）驱动终止。
 - **纯契约传输解耦**：完全解耦 HTTP 与特定方言依赖，通过纯异步流式契约 `LLMClientTrait` 对接模型。生产环境无缝对接 `thunder-pi-bridge`（Node.js Sidecar 运行 `@earendil-works/pi-ai`）。
-- **检查点式上下文压缩（Checkpoint Compaction）**：默认策略下，两次压缩之间请求前缀**字节级稳定**（供应商 Prompt Cache 全量命中）；仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，才一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal / Progress / Key Decisions / Next Steps / Critical Context + 读写文件清单），尾部 `keep_recent_tokens` 原文保留。摘要请求禁用缓存写入（`cache_retention: "none"`）；失败自动降级为机械压实；压缩前原始轨迹经 `AgentRunResult.raw_messages` 保留。
+- **检查点式上下文压缩（Checkpoint Compaction）**：默认策略下，两次压缩之间请求前缀**字节级稳定**（供应商 Prompt Cache 全量命中）；仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，才一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal / Progress / Key Decisions / Next Steps / Critical Context + 读写文件清单），尾部 `keep_recent_tokens` 原文保留。摘要请求禁用缓存写入（`cache_retention: "none"`）；摘要不可用时退化为**紧急裁剪**（原子地丢弃最老的完整轮次，绝不切断 tool call/result 配对）；压缩前原始轨迹经 `AgentRunResult.raw_messages` 保留。
 - **跨 Agent 文件写入互斥排队锁（`FILE_MUTATION_LOCKS`）**：在 `TransactionMiddleware` 中内置进程内全局规范化路径排队锁。多个 Agent 或多工具并发写入同一文件时排队串行化执行，杜绝静默覆盖。
 - **极致性能与低开销**：单任务调度框架纯净开销仅 **~5.7 微秒 (0.0057 ms)**，高并发常驻内存 (RSS) **< 10 MB**，零垃圾回收停顿 (No GC)。
 - **原生并行工具调度**：支持异步非阻塞子进程（Bash）与内存函数（Native Tools），内置超时熔断与 Head/Tail 智能文本截断。
@@ -125,7 +125,6 @@ config.pruning = ContextPruningConfig {
     summarizer_model: None,
     summarizer_max_tokens: 4096,
     pin_system_prompt: true,
-    strategy: PruningStrategy::Checkpoint, // 默认；Hybrid 保留为机械降级路径
 };
 ```
 
@@ -187,7 +186,7 @@ handle.resume();         // 恢复执行
 src/
 ├── core/                  # 上下文缓冲 (Context Buffer)、状态追踪、Token 估算、PauseGate
 ├── loop_engine/           # 核心自主循环引擎、事件分发与任务状态机
-├── pruning/               # 检查点式上下文压缩（含机械降级路径）
+├── pruning/               # 检查点式上下文压缩（含紧急裁剪兜底）
 ├── stream/                # LLMClientTrait 纯传输契约与 Mock 实现
 ├── tools/                 # 工具注册表、并行执行器与内置工具
 │   ├── builtin/           # bash, read_file, write_file

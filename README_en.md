@@ -21,7 +21,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 3. **Checkpoint Context Compaction**:
    - Between two compactions the request prefix stays **byte-identical**, maximizing provider-side prompt cache hits.
    - Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) does it swap older history for a single LLM-generated structured checkpoint (Goal / Progress / Decisions / Next Steps + read/modified file lists), keeping the last `keep_recent_tokens` verbatim.
-   - Degrades to mechanical compaction when summarization fails; the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
+   - Falls back to an emergency trim (atomically dropping the oldest complete turns) when summarization is unavailable; the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
 4. **Cross-Agent File Mutation Queue Lock (`FILE_MUTATION_LOCKS`)**:
    - Process-wide path-based queue mutex in `thunder-agent-loop`. Serializes concurrent write operations to the same physical file across parallel agents or simultaneous tool calls, preventing race conditions and silent overwrites.
 5. **Deterministic Zero-Latency Plugin Activation**:

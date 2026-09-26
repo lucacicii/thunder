@@ -16,7 +16,7 @@
 
 - **Bounded Autonomous Loop**: Configured with a default **50 turns ceiling** to safeguard against infinite loops, paired with an explicit `.with_unlimited_turns()` escape hatch where termination is driven purely by model completion (`finish_reason: "stop"` or absence of tool calls).
 - **Pure Transport Decoupling**: Free of HTTP or provider-specific protocol dependencies. Operates over a clean asynchronous stream contract (`LLMClientTrait`). In production, seamlessly powered by `thunder-pi-bridge` (a Node.js sidecar running `@earendil-works/pi-ai`).
-- **Checkpoint Context Compaction**: Between two compactions the request prefix stays byte-identical (full provider prompt-cache hits). Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) is older history swapped for a single LLM-generated structured checkpoint (Goal / Progress / Key Decisions / Next Steps / Critical Context + read/modified file lists), keeping the last `keep_recent_tokens` verbatim. Summarization requests opt out of cache writes (`cache_retention: "none"`); failures degrade to mechanical compaction; the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
+- **Checkpoint Context Compaction**: Between two compactions the request prefix stays byte-identical (full provider prompt-cache hits). Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) is older history swapped for a single LLM-generated structured checkpoint (Goal / Progress / Key Decisions / Next Steps / Critical Context + read/modified file lists), keeping the last `keep_recent_tokens` verbatim. Summarization requests opt out of cache writes (`cache_retention: "none"`); when summarization is unavailable it degrades to an **emergency trim** (atomically dropping the oldest complete turns, never splitting a tool call from its result); the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
 - **Cross-Agent File Write Mutex (`FILE_MUTATION_LOCKS`)**: Built into `TransactionMiddleware`. Provides process-wide normalized path mutexes so concurrent agents or parallel tools writing to the same file serialize cleanly, eliminating silent overwrites.
 - **Ultra-Low Latency & Footprint**: Framework scheduling overhead is only **~5.7 µs (0.0057 ms)** per task. Resident memory (RSS) under 10k concurrency is **< 10 MB**, with zero garbage collection pause.
 - **Native Parallel Tool Dispatch**: Executes native functions and non-blocking asynchronous Bash subprocesses concurrently with timeout fuses and head/tail smart truncation.
@@ -125,7 +125,6 @@ config.pruning = ContextPruningConfig {
     summarizer_model: None,
     summarizer_max_tokens: 4096,
     pin_system_prompt: true,
-    strategy: PruningStrategy::Checkpoint, // default; Hybrid retained as the mechanical fallback
 };
 ```
 

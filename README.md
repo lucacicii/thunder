@@ -21,7 +21,7 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 3. **上下文检查点压缩（Checkpoint Compaction）**：
    - 默认策略下，两次压缩之间请求前缀**字节级稳定**，最大化供应商侧 Prompt Cache 命中率。
    - 仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal/Progress/Decisions/Next Steps + 读/写文件清单），尾部 `keep_recent_tokens` 原文保留。
-   - 摘要失败自动降级为机械压实；原始压缩前轨迹通过 `AgentRunResult.raw_messages` 保留，不会静默销毁。
+   - 摘要不可用时退化为紧急裁剪（原子丢弃最老完整轮次）；原始压缩前轨迹通过 `AgentRunResult.raw_messages` 保留，不会静默销毁。
 4. **跨 Agent 文件写入互斥排队锁（`FILE_MUTATION_LOCKS`）**：
    - 进程内全局物理路径排队锁，确保多个并发 Agent 或工具在并发写入同一文件时排队串行化执行，杜绝竞态覆盖。
 5. **确定性极速插件路由**：

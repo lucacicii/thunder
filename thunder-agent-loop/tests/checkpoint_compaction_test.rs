@@ -218,7 +218,7 @@ async fn checkpoint_compaction_replaces_history_and_emits_event() {
 }
 
 #[tokio::test]
-async fn failed_summarization_degrades_to_mechanical_compaction() {
+async fn failed_summarization_falls_back_to_emergency_trim() {
     let client = Arc::new(CheckpointMockClient {
         turn_counter: AtomicUsize::new(0),
         summary_calls: AtomicUsize::new(0),
@@ -242,8 +242,8 @@ async fn failed_summarization_degrades_to_mechanical_compaction() {
         client.summary_calls.load(Ordering::SeqCst) >= 1,
         "the failing summarization path must have been attempted"
     );
-    // …and no checkpoint message was fabricated: the legacy digest/sliding
-    // window did the work instead.
+    // …and no checkpoint message was fabricated: the emergency trim (drop
+    // oldest complete turns) bounded the context instead.
     let messages = &result.messages;
     if messages.len() >= 2 {
         assert!(
@@ -251,7 +251,7 @@ async fn failed_summarization_degrades_to_mechanical_compaction() {
             "no checkpoint may be installed from a failed summary"
         );
     }
-    // History was still bounded by the hard window (mechanical fallback ran).
+    // History was still bounded by the hard window (emergency trim ran).
     assert!(
         result.messages.len() < 30,
         "mechanical fallback must keep the history bounded"

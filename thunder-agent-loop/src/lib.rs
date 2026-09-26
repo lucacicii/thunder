@@ -25,7 +25,7 @@ pub mod prelude {
     pub use crate::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
     pub use crate::tools::scratchpad::{Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager};
     pub use crate::types::config::{
-        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission, PruningStrategy,
+        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission,
         DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
     };
     pub use crate::types::error::AgentError;
