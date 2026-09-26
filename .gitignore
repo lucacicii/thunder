@@ -18,3 +18,7 @@ target/
 # Runtime
 runs/
 .thunder_test.log
+
+# Test / probe artifacts (run logs, scratch probes)
+*.log
+.tmp_*/

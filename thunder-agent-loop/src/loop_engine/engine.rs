@@ -366,14 +366,13 @@ impl AgentLoop {
                     break;
                 }
 
-                let artifacts_summary = scratchpad.format_artifacts_summary();
                 // Snapshot the raw transcript right before the first checkpoint
                 // compaction rewrites history (pi-style: raw log is preserved).
                 if raw_log.is_none() && pruner.should_compact(context.estimated_tokens()) {
                     raw_log = Some(context.get_messages());
                 }
                 let prune_res = pruner
-                    .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                    .prune(&mut context, Some(&summarizer), &cancel_token)
                     .await;
                 if prune_res.checkpoint {
                     emitter
@@ -390,9 +389,9 @@ impl AgentLoop {
                         tokens_before = prune_res.tokens_before,
                         tokens_after = prune_res.tokens_after,
                         messages_removed = prune_res.messages_removed,
-                        tools_truncated = prune_res.tool_outputs_truncated,
-                        compacted = prune_res.compacted,
-                        "Context successfully pruned / compacted"
+                        checkpoint = prune_res.checkpoint,
+                        emergency = prune_res.emergency,
+                        "Context pruned"
                     );
                 }
 
@@ -468,7 +467,7 @@ impl AgentLoop {
                                 );
                                 pruner.update_max_tokens(detected_limit);
                                 let _ = pruner
-                                    .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                                    .prune(&mut context, Some(&summarizer), &cancel_token)
                                     .await;
                                 continue;
                             }
@@ -577,7 +576,7 @@ impl AgentLoop {
                             );
                             pruner.update_max_tokens(detected_limit);
                             let _ = pruner
-                                .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                                .prune(&mut context, Some(&summarizer), &cancel_token)
                             .await;
                             continue;
                         }

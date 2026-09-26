@@ -6,7 +6,7 @@ use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::pruning::strategy::ContextPruner;
 use thunder_agent_loop::tools::builtin::bash::BashTool;
 use thunder_agent_loop::tools::sanitizer::{is_binary_data, sanitize_tool_output, strip_ansi_escapes};
-use thunder_agent_loop::types::config::{AgentConfig, ContextPruningConfig, PruningStrategy};
+use thunder_agent_loop::types::config::{AgentConfig, ContextPruningConfig};
 use thunder_agent_loop::types::event::FinishReason;
 use thunder_agent_loop::types::message::{ChatMessage, Role, ToolCall};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
@@ -69,18 +69,20 @@ fn test_atomic_turn_group_pruning_no_orphans() {
     }
 
     let pruner = ContextPruner::new(ContextPruningConfig {
-            reserve_tokens: 16_384,
-            keep_recent_tokens: 20_000,
-            summarizer_model: None,
-            summarizer_max_tokens: 4096,
-        max_context_tokens: 150, // Force aggressive pruning
-        tool_eviction_threshold_tokens: 100,
-        preserve_last_turns: 1,
+        reserve_tokens: 32,
+        keep_recent_tokens: 40,
+        summarizer_model: None,
+        summarizer_max_tokens: 4096,
+        max_context_tokens: 220, // Force the emergency trim to run
         pin_system_prompt: true,
-        strategy: PruningStrategy::SlidingWindow,
     });
 
-    pruner.prune(&mut ctx);
+    let removed = pruner.emergency_trim(&mut ctx);
+    assert!(removed > 0, "emergency trim must drop old turns");
+    assert!(
+        ctx.estimated_tokens() <= 220,
+        "emergency trim must respect the hard window"
+    );
 
     // Verify context validity: System prompt must be index 0
     let messages = ctx.get_messages();
