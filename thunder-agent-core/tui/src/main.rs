@@ -9,17 +9,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let registry = ProviderRegistry::load_default().await.unwrap_or_default();
     let available = registry.list_available();
-    let use_mock = args.iter().any(|a| a == "--mock") || available.is_empty();
 
-    let model = env::var("MODEL")
+    // No silent mock fallback: without a usable model the only honest move is
+    // to say so and exit.
+    let Some(model) = env::var("MODEL")
         .ok()
         .or_else(|| available.first().map(|m| m.selection_id()))
-        .unwrap_or_else(|| "openai/gpt-4o".to_string());
+    else {
+        eprintln!("✖ No LLM model available.");
+        eprintln!();
+        eprintln!("  Configure at least one provider in ~/.thunder/models.json + auth.json,");
+        eprintln!("  or select an explicit model with MODEL=<provider/model-id>.");
+        std::process::exit(1);
+    };
 
     let store_root = FsConversationStore::default_store_root();
     let store = FsConversationStore::new(store_root).await?;
 
-    let mut app = App::new(model, use_mock)
+    let mut app = App::new(model)
         .with_store(store)
         .with_provider_registry(registry);
 

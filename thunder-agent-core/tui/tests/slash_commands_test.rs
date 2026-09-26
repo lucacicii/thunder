@@ -33,7 +33,7 @@ fn test_slash_command_autocomplete_filtering() {
 
 #[tokio::test]
 async fn test_slash_command_enter_and_tab_autocomplete() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
     // 1. Typing '/' and pressing Enter should autocomplete to the first command (e.g. /resume )
@@ -67,7 +67,7 @@ async fn test_slash_commands_execution_flow() {
     let tmp_dir = tempdir().unwrap();
     let fs_store = FsConversationStore::new(tmp_dir.path()).await.unwrap();
 
-    let mut app = App::new("gpt-4o", true).with_store(fs_store);
+    let mut app = App::new("gpt-4o").with_store(fs_store);
     let (tx, _rx) = mpsc::unbounded_channel();
 
     // 1. Test /help

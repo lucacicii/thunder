@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 #[tokio::test]
 async fn test_app_state_and_focus_cycle() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     assert_eq!(app.mode, ViewMode::Chat);
     assert_eq!(app.focus, FocusPane::Input);
 
@@ -20,7 +20,7 @@ async fn test_app_state_and_focus_cycle() {
 
 #[tokio::test]
 async fn test_app_execution_mode_cycling() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
     assert_eq!(app.execution_mode, ExecutionMode::AutoRouter);
 
@@ -41,7 +41,7 @@ async fn test_app_execution_mode_cycling() {
 
 #[tokio::test]
 async fn test_app_streaming_event_ingestion() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
     // 1. Simulate key input
@@ -122,7 +122,7 @@ async fn test_app_streaming_event_ingestion() {
 
 #[tokio::test]
 async fn test_app_new_session_and_shortcuts() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
     app.conversation.add_user_message("Old message");
@@ -140,7 +140,7 @@ async fn test_app_new_session_and_shortcuts() {
 
 #[tokio::test]
 async fn test_app_scrolling_and_mouse() {
-    let mut app = App::new("gpt-4o", true);
+    let mut app = App::new("gpt-4o");
     app.last_max_scroll = 50;
     app.auto_scroll = true;
 
