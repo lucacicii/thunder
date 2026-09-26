@@ -11,15 +11,18 @@
 ## 🚀 Core Responsibilities
 
 1. **Model Catalog Discovery & Parsing**:
-   - Loads `~/.pi/agent/models.json` and project-level `models.json`.
+   - Loads the user-level `~/.thunder/models.json` (or `$THUNDER_CONFIG_DIR/models.json`) and the project-level `<workspace>/.thunder/models.json`.
    - Caches model specification metadata: context window size, max output tokens, and capability flags (tools / reasoning).
 2. **Credential & Availability Resolution**:
-   - Parses `~/.pi/agent/auth.json` and environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`).
+   - Parses `~/.thunder/auth.json` and environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`).
    - Annotates each model's `available` status for upstream routing and UI decisions.
 3. **Thinking Level Mapping**:
    - Aligns generic `thinking_level` semantics to provider-specific effort tiers.
-4. **Pure Catalog Layer (Transport-Free)**:
-   - Contains no HTTP client or transport implementation. Model invocations are performed exclusively through `PiAiClient` (`thunder-pi-bridge`).
+4. **Active Thinking-Level Probing**:
+   - For reasoning-candidate models in the local catalog that have not yet been probed (`thinking_levels_probed != true`), issues a single lightweight request through an internal HTTP client to infer the supported thinking levels from the provider's error/enum response (see `src/probe.rs`).
+   - Results are written back into `models.json` and flagged as probed, so subsequent loads skip the network entirely.
+
+> ⚠️ Transport responsibility: this crate **does not** own model-invocation transport — all LLM execution goes through `thunder-pi-bridge`. It is *not* "zero-HTTP" though: `src/probe.rs` holds a `reqwest` client used solely for the one-time thinking-level probe above. Actual inference traffic never flows through it.
 
 ---
 
