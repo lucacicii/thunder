@@ -1020,6 +1020,11 @@ impl DaemonService {
                                 .unwrap()
                                 .as_millis()
                                 as u64;
+                            // Wall-clock time from task receipt (before root execution,
+                            // i.e. right after the user message arrived) to completion.
+                            // Distinct from `duration_ms`, which is the agent-loop's
+                            // internal duration (used for tokens-per-second math).
+                            let wall_duration_ms = finished_at_ms.saturating_sub(start_time_ms);
                             let trace_data = serde_json::json!({
                                 "task_id": task_id,
                                 "session_id": effective_session_id,
@@ -1029,6 +1034,7 @@ impl DaemonService {
                                 "started_at_ms": start_time_ms,
                                 "finished_at_ms": finished_at_ms,
                                 "duration_ms": res.run_result.stats.total_duration_ms,
+                                "wall_duration_ms": wall_duration_ms,
                                 "finish_reason": finish_reason,
                                 "stats": res.run_result.stats,
                                 "final_content": final_content,

@@ -24,7 +24,7 @@ pub mod prelude {
     pub use crate::stream::client::{
         ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient,
     };
-    pub use crate::tools::builtin::{BashTool, ReadFileTool, WriteFileTool};
+    pub use crate::tools::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
     pub use crate::tools::scratchpad::{
         Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager,
     };

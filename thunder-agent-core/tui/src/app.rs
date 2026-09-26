@@ -1601,6 +1601,9 @@ impl App {
             agent.register_tool(Arc::new(BashTool::default()));
             agent.register_tool(Arc::new(ReadFileTool::default()));
             agent.register_tool(Arc::new(WriteFileTool::default()));
+            agent.register_tool(Arc::new(GrepTool::default()));
+            agent.register_tool(Arc::new(FindTool::default()));
+            agent.register_tool(Arc::new(ListDirTool::default()));
 
             match agent.start(context_input, Some(cancel)) {
                 Ok(mut handle) => {

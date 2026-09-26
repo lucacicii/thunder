@@ -186,11 +186,15 @@ impl AgentLoop {
         self
     }
 
-    /// Convenience builder to register standard built-in tools (bash, read_file, write_file).
+    /// Convenience builder to register standard built-in tools
+    /// (bash, read_file, write_file, grep, find, ls).
     pub fn with_builtins(mut self) -> Self {
         self.register_tool(Arc::new(crate::tools::builtin::BashTool::default()));
         self.register_tool(Arc::new(crate::tools::builtin::ReadFileTool::default()));
         self.register_tool(Arc::new(crate::tools::builtin::WriteFileTool::default()));
+        self.register_tool(Arc::new(crate::tools::builtin::GrepTool::default()));
+        self.register_tool(Arc::new(crate::tools::builtin::FindTool::default()));
+        self.register_tool(Arc::new(crate::tools::builtin::ListDirTool::default()));
         self
     }
 
@@ -413,7 +417,7 @@ impl AgentLoop {
                 let now_ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs();
+                    .as_millis() as u64;
 
                 info!(agent_id = %agent_id, turn = turn, estimated_tokens = context.estimated_tokens(), "Turn started");
                 emitter

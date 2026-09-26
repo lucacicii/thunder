@@ -133,3 +133,285 @@ async fn test_turn_off_transactions_without_modifying_code() {
     assert!(!cfg_bare.middleware.enable_resource_guard);
     assert!(!cfg_bare.middleware.enable_output_post_processor);
 }
+
+// ════════════════════════════════════════════════════════════
+// grep / find / ls — embedded ripgrep-core tools
+// ════════════════════════════════════════════════════════════
+
+use thunder_agent_loop::tools::builtin::fs::ReadFileTool;
+use thunder_agent_loop::tools::builtin::fs_ext::{FindTool, ListDirTool};
+use thunder_agent_loop::tools::builtin::search::GrepTool;
+
+fn test_ctx() -> ToolExecutionContext {
+    ToolExecutionContext {
+        tool_call_id: "grep_test".to_string(),
+        turn: 1,
+        cancellation_token: CancellationToken::new(),
+    }
+}
+
+/// Creates:
+/// ```text
+/// root/
+///   .gitignore        → "vendor/\n"
+///   src/a.ts          → "hello alpha\nsecond line\nhello again\n"
+///   src/b.ts          → "hello beta\n"
+///   docs/note.md      → "hello gamma\n"
+///   src/c.ts          → "hello one\nmid\nmid2\nmid3\nhello five\n"
+///   vendor/ignored.ts → "hello hidden\n"   (gitignored)
+///   blob.bin          → "hello \0 binary \n" (binary)
+/// ```
+fn grep_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::create_dir_all(root.join("vendor")).unwrap();
+    std::fs::write(root.join(".gitignore"), "vendor/\n").unwrap();
+    std::fs::write(
+        root.join("src/a.ts"),
+        "hello alpha\nsecond line\nhello again\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/b.ts"), "hello beta\n").unwrap();
+    std::fs::write(
+        root.join("src/c.ts"),
+        "hello one\nmid\nmid2\nmid3\nhello five\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("docs/note.md"), "hello gamma\n").unwrap();
+    std::fs::write(root.join("vendor/ignored.ts"), "hello hidden\n").unwrap();
+    std::fs::write(root.join("blob.bin"), b"hello \0 binary\n").unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn grep_finds_matches_with_file_line_format() {
+    let dir = grep_fixture();
+    let tool = GrepTool::default();
+    let out = tool
+        .execute(
+            json!({ "pattern": "hello", "path": dir.path().to_str().unwrap() }),
+            &test_ctx(),
+        )
+        .await
+        .expect("grep ok");
+
+    assert!(out.contains("src/a.ts:1:hello alpha"), "got: {out}");
+    assert!(out.contains("src/a.ts:3:hello again"));
+    assert!(out.contains("src/b.ts:1:hello beta"));
+    assert!(out.contains("docs/note.md:1:hello gamma"));
+    // gitignored + binary files never appear
+    assert!(!out.contains("ignored.ts"), "gitignore violated: {out}");
+    assert!(!out.contains("blob.bin"), "binary leaked: {out}");
+}
+
+#[tokio::test]
+async fn grep_respects_limit_and_notes_truncation() {
+    let dir = grep_fixture();
+    let tool = GrepTool::default();
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "hello",
+                "path": dir.path().to_str().unwrap(),
+                "limit": 2
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("grep ok");
+
+    let match_lines = out.lines().filter(|l| l.contains(":hello")).count();
+    assert_eq!(match_lines, 2, "got: {out}");
+    assert!(out.contains("[Output truncated"), "missing note: {out}");
+}
+
+#[tokio::test]
+async fn grep_literal_and_ignore_case() {
+    let dir = grep_fixture();
+    let tool = GrepTool::default();
+
+    // literal: a regex metachar pattern still matches literally
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "a.t",
+                "path": format!("{}/src/a.ts", dir.path().display()),
+                "literal": true
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("literal ok");
+    assert!(out.starts_with("No matches found"), "got: {out}");
+
+    // ignoreCase
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "HELLO",
+                "path": dir.path().to_str().unwrap(),
+                "ignoreCase": true
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("icase ok");
+    assert!(out.contains(":1:hello alpha"), "got: {out}");
+}
+
+#[tokio::test]
+async fn grep_context_lines_with_separator() {
+    let dir = grep_fixture();
+    let tool = GrepTool::default();
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "hello",
+                "path": format!("{}/src", dir.path().display()),
+                "context": 1
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("ctx ok");
+
+    // a.ts matches at lines 1 and 3 (one contiguous group incl. context
+    // line 2); c.ts matches at lines 1 and 5 — its context groups are split
+    // by an in-file `--` separator.
+    assert!(out.contains("a.ts:1:hello alpha"), "got: {out}");
+    assert!(out.contains("a.ts-2:second line"), "got: {out}");
+    assert!(out.contains("a.ts:3:hello again"));
+    assert!(out.contains("b.ts:1:hello beta"));
+    assert!(out.contains("c.ts:1:hello one"), "got: {out}");
+    assert!(out.contains("c.ts-2:mid"));
+    assert!(out.contains("--"), "missing group separator: {out}");
+    assert!(out.contains("c.ts-4:mid3"), "got: {out}");
+    assert!(out.contains("c.ts:5:hello five"));
+
+    // Without context there are no separators at all.
+    let plain = tool
+        .execute(
+            json!({ "pattern": "hello", "path": format!("{}/src", dir.path().display()) }),
+            &test_ctx(),
+        )
+        .await
+        .expect("plain ok");
+    assert!(!plain.contains("--"), "unexpected separator: {plain}");
+}
+
+#[tokio::test]
+async fn grep_glob_filter_and_truncates_long_lines() {
+    let dir = grep_fixture();
+    let tool = GrepTool::default();
+
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "hello",
+                "path": dir.path().to_str().unwrap(),
+                "glob": "*.md"
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("glob ok");
+    assert!(out.contains("note.md:1:hello gamma"), "got: {out}");
+    assert!(!out.contains("a.ts"), "glob leaked .ts: {out}");
+
+    // long line truncation (500 chars)
+    let long = "x".repeat(2000);
+    let file = dir.path().join("src/long.ts");
+    std::fs::write(&file, format!("{long}\n")).unwrap();
+    let out = tool
+        .execute(
+            json!({ "pattern": "x+", "path": file.to_str().unwrap() }),
+            &test_ctx(),
+        )
+        .await
+        .expect("long ok");
+    assert!(out.contains("… (line truncated)"), "got: {out}");
+    assert!(out.chars().count() < 700, "line not truncated: {out}");
+}
+
+#[tokio::test]
+async fn find_matches_glob_respecting_gitignore() {
+    let dir = grep_fixture();
+    let tool = FindTool::default();
+
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "*.ts",
+                "path": dir.path().to_str().unwrap()
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("find ok");
+
+    assert!(out.contains("src/a.ts"), "got: {out}");
+    assert!(out.contains("src/b.ts"));
+    assert!(!out.contains("vendor/ignored.ts"), "gitignore violated: {out}");
+    assert!(!out.contains("note.md"), "glob leaked .md: {out}");
+}
+
+#[tokio::test]
+async fn find_limit_truncation() {
+    let dir = grep_fixture();
+    let tool = FindTool::default();
+    let out = tool
+        .execute(
+            json!({
+                "pattern": "*.ts",
+                "path": dir.path().to_str().unwrap(),
+                "limit": 1
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("find ok");
+    let count = out.lines().filter(|l| l.ends_with(".ts")).count();
+    assert_eq!(count, 1, "got: {out}");
+}
+
+#[tokio::test]
+async fn ls_lists_dirs_first_sorted_with_sizes() {
+    let dir = grep_fixture();
+    let tool = ListDirTool::default();
+    let out = tool
+        .execute(
+            json!({ "path": dir.path().to_str().unwrap() }),
+            &test_ctx(),
+        )
+        .await
+        .expect("ls ok");
+
+    let lines: Vec<&str> = out.lines().collect();
+    let first_dir_idx = lines.iter().position(|l| l.starts_with("docs/")).unwrap();
+    assert!(lines.iter().take(first_dir_idx).all(|l| l.ends_with('/')), "dirs first: {out}");
+    assert!(out.contains("src/"));
+    assert!(out.contains("vendor/"));
+    assert!(out.contains(".gitignore"));
+    assert!(out.contains("blob.bin ("));
+    assert!(out.contains(" bytes)"));
+}
+
+#[tokio::test]
+async fn read_file_offset_limit_streaming() {
+    let dir = grep_fixture();
+    let tool = ReadFileTool::default();
+    let out = tool
+        .execute(
+            json!({
+                "path": format!("{}/src/a.ts", dir.path().display()),
+                "offset": 2,
+                "limit": 2
+            }),
+            &test_ctx(),
+        )
+        .await
+        .expect("read ok");
+    assert_eq!(out, "second line\nhello again");
+}
