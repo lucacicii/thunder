@@ -209,6 +209,12 @@ impl ThunderRoot {
         &self.selector
     }
 
+    /// Drop the cached per-session plugin selection so the next execute()
+    /// re-runs the heuristic (e.g. after plugin reloads or registry changes).
+    pub fn invalidate_session_selection(&self, session_id: &str) {
+        crate::selector::invalidate_session_selection(session_id);
+    }
+
     /// Autonomously select plugins, initialize context, configure and start the root AgentLoop unit.
     pub async fn execute(
         &self,
@@ -243,7 +249,8 @@ impl ThunderRoot {
 
         let cancel = options.cancellation_token.unwrap_or_default();
 
-        // 1. Select active plugins
+        // 1. Select active plugins — session-locked: the first message decides
+        // for the whole session so the combined prompt + toolset stay stable.
         let selection = if let Some(forced) = options.forced_plugins {
             PluginSelection {
                 active_plugin_ids: forced,
@@ -252,7 +259,7 @@ impl ThunderRoot {
             }
         } else {
             self.selector
-                .select(&prompt_str, &self.registry, options.use_mock)
+                .select_for_session(Some(&session_id), &prompt_str, &self.registry, options.use_mock)
                 .await
         };
 

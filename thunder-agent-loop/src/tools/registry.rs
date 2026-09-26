@@ -3,14 +3,18 @@ use crate::tools::sanitizer::sanitize_tool_output;
 use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::message::ToolCall;
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn AgentTool>>,
+    /// `BTreeMap` (NOT `HashMap`): tool definitions are serialized into every
+    /// LLM request, and a stable, deterministic order keeps the request prefix
+    /// byte-identical across turns — a hard prerequisite for provider-side
+    /// prompt caching. A `HashMap` would randomize the order per instance.
+    tools: BTreeMap<String, Arc<dyn AgentTool>>,
     max_output_bytes: usize,
     default_timeout: Duration,
     scratchpad: Option<ScratchpadManager>,
@@ -25,7 +29,7 @@ impl Default for ToolRegistry {
 impl ToolRegistry {
     pub fn new(max_output_bytes: usize, default_timeout: Duration) -> Self {
         Self {
-            tools: HashMap::new(),
+            tools: BTreeMap::new(),
             max_output_bytes,
             default_timeout,
             scratchpad: None,
@@ -63,6 +67,7 @@ impl ToolRegistry {
     }
 
     pub fn get_definitions(&self) -> Vec<ToolDefinition> {
+        // BTreeMap iteration is name-ordered: stable across instances and runs.
         self.tools.values().map(|t| t.definition()).collect()
     }
 
