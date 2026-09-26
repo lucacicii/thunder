@@ -113,7 +113,6 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
 
     let options = RootRunOptions {
         session_id: Some(session_id.clone()),
-        use_mock: true,
         custom_client: Some(custom_client),
         cancellation_token: None,
         forced_plugins: Some(vec!["skills".to_string(), "mcp".to_string()]),

@@ -1,73 +1,7 @@
-use async_trait::async_trait;
 use std::env;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_agent_root::prelude::*;
-use tokio_util::sync::CancellationToken;
-
-struct CliMockClient {
-    turn: AtomicUsize,
-}
-
-#[async_trait]
-impl LLMClientTrait for CliMockClient {
-    async fn stream_chat(
-        &self,
-        options: ChatRequestOptions,
-        _cancel_token: CancellationToken,
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let turn = self.turn.fetch_add(1, Ordering::SeqCst);
-
-        tokio::spawn(async move {
-            if turn == 0 {
-                let text = "I am ThunderRoot. Let me inspect the project structure with bash tool.\n";
-                for ch in text.chars() {
-                    let _ = tx.send(Ok(LLMStreamChunk::Token(ch.to_string()))).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-
-                let _ = tx
-                    .send(Ok(LLMStreamChunk::Completed {
-                        content: Some(text.to_string()),
-                        tool_calls: vec![ToolCall::new_function(
-                            "call_bash_1",
-                            "bash",
-                            "{\"command\":\"echo \\\"ThunderRoot Kernel is operational with dynamic plugins!\\\"\"}",
-                        )],
-                        finish_reason: "tool_calls".to_string(),
-                        prompt_tokens: Some(options.messages.len() * 15),
-                        completion_tokens: Some(30),
-                        cached_tokens: None,
-                        reasoning_tokens: None,
-                    }))
-                    .await;
-            } else {
-                let text = "ThunderRoot execution finished successfully. All active plugins responded as expected.";
-                for word in text.split(' ') {
-                    let _ = tx.send(Ok(LLMStreamChunk::Token(format!("{} ", word)))).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
-                }
-
-                let _ = tx
-                    .send(Ok(LLMStreamChunk::Completed {
-                        content: Some(text.to_string()),
-                        tool_calls: vec![],
-                        finish_reason: "stop".to_string(),
-                        prompt_tokens: Some(options.messages.len() * 15),
-                        completion_tokens: Some(25),
-                        cached_tokens: None,
-                        reasoning_tokens: None,
-                    }))
-                    .await;
-            }
-        });
-
-        Ok(rx)
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,8 +11,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "Review repository architecture and manage conversation session".to_string()
     };
-
-    let use_mock = args.iter().any(|a| a == "--mock");
 
     let model = env::var("MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
@@ -94,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 1. Initialize ThunderRoot with extensible plugins
-    let mut root = ThunderRoot::new(base_cfg.clone())
+    let root = ThunderRoot::new(base_cfg.clone())
         .with_plugin(ConversationPlugin::with_memory_store())
         .with_plugin(SkillsPlugin::default())
         .with_plugin(McpPlugin::default())
@@ -104,33 +36,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("⚡ Thunder-Root Microkernel Host CLI");
     println!("============================================================");
     println!("▶ User Prompt: {}", prompt);
-    println!("▶ Mode: {}", if use_mock { "MOCK (deterministic)" } else { "LIVE LLM" });
+    println!("▶ Mode: LIVE LLM");
     println!("▶ Registered Plugins in Registry: {:?}", 
         root.registry().list_manifests().iter().map(|m| &m.id).collect::<Vec<_>>()
     );
     println!("------------------------------------------------------------");
 
-    if !use_mock && registry.resolve(&model).is_none() {
-        println!(
-            "⚠  MODEL '{}' was not found in the provider registry (~/.thunder/models.json + auth.json). \
-             LIVE mode will fail at the first LLM call. Set MODEL=<configured id> or rerun with --mock.",
+    if registry.resolve(&model).is_none() {
+        eprintln!(
+            "✖  MODEL '{}' was not found in the provider registry (~/.thunder/models.json + auth.json).\n\
+                Configure a provider there, or run with MODEL=<configured id>.",
             model
         );
-        println!("------------------------------------------------------------");
+        std::process::exit(1);
     }
-
-    let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
-        Some(Arc::new(CliMockClient {
-            turn: AtomicUsize::new(0),
-        }))
-    } else {
-        None
-    };
 
     let options = RootRunOptions {
         session_id: Some("cli_session_1".to_string()),
-        use_mock,
-        custom_client,
+        custom_client: None,
         cancellation_token: None,
         forced_plugins: None,
         register_builtins: true,
