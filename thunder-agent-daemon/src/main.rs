@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{error, info};
 
 mod ask_user;
+#[cfg(feature = "testing-mock")]
 mod mock;
 mod protocol;
 mod service;

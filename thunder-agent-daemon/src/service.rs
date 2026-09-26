@@ -10,8 +10,17 @@ use thunder_agent_providers::prelude::*;
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
 
+#[cfg(feature = "testing-mock")]
 use crate::mock::DaemonMockClient;
 use crate::protocol::{DaemonRequest, DaemonResponse};
+
+/// Host/test seam for resolving the LLM client of a task run.
+///
+/// Production leaves this unset and models resolve through the provider
+/// registry. Tests embed the daemon in-process and inject a fake client here
+/// instead of driving mock behaviour through the wire protocol.
+pub type ClientFactory =
+    Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
 
 pub struct DaemonService {
     provider_registry: Arc<tokio::sync::RwLock<ProviderRegistry>>,
@@ -23,6 +32,8 @@ pub struct DaemonService {
     concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     default_workspace: PathBuf,
     script_plugin: Arc<ScriptPlugin>,
+    /// Optional client factory (tests / embedders). `None` = provider registry.
+    client_factory: Option<ClientFactory>,
     /// Pending `ask_user_question` calls, keyed by `task_id:question_id`.
     ///
     /// Dual key on purpose: the daemon multiplexes concurrent tasks, so a bare
@@ -38,6 +49,17 @@ pub enum QuestionOutcome {
 }
 
 impl DaemonService {
+    /// Inject a client factory (tests/embedders). Without it, clients resolve
+    /// from the provider registry exactly as in production.
+    ///
+    /// Currently only exercised by out-of-tree embedders and future in-process
+    /// tests; the daemon binary itself never calls it.
+    #[allow(dead_code)]
+    pub fn with_client_factory(mut self, factory: ClientFactory) -> Self {
+        self.client_factory = Some(factory);
+        self
+    }
+
     pub async fn new(workspace: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
         let default_workspace = workspace.unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -85,6 +107,7 @@ impl DaemonService {
             concurrency_semaphore,
             default_workspace,
             script_plugin,
+            client_factory: None,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -494,12 +517,31 @@ impl DaemonService {
         prompt: String,
         session_id: Option<String>,
         model: Option<String>,
-        mut use_mock: bool,
+        use_mock: bool,
         workspace_dir: Option<String>,
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         role_id: Option<String>,
     ) {
+        // Reject mock-mode requests early when this build has no mock compiled
+        // in: a release daemon must never imply it produced real model output.
+        #[cfg(not(feature = "testing-mock"))]
+        if use_mock {
+            self.send_response(DaemonResponse::Response {
+                id,
+                success: false,
+                data: None,
+                error: Some(
+                    "mock mode is not compiled into this build; rebuild with \
+                     `--features thunder-agent-daemon/testing-mock` or configure a real \
+                     provider in ~/.thunder/models.json + auth.json"
+                        .to_string(),
+                ),
+            })
+            .await;
+            return;
+        }
+
         let cancel_token = CancellationToken::new();
         let pause_gate = Arc::new(thunder_agent_loop::core::pause::PauseGate::new());
 
@@ -569,11 +611,11 @@ impl DaemonService {
         let available = registry.list_available();
         let has_valid_credentials = available.iter().any(|m| m.available);
 
-        let mut fallback_to_mock = false;
-        if !has_valid_credentials && !use_mock {
-            warn!("No available LLM provider credentials found, falling back to Mock mode");
-            use_mock = true;
-            fallback_to_mock = true;
+        if !has_valid_credentials {
+            // No silent mock fallback: a daemon that answers with canned text
+            // while the operator believes it is calling a real model is worse
+            // than an explicit failure.
+            warn!("No available LLM provider credentials found");
         }
 
         let chosen_model = model
@@ -647,7 +689,7 @@ impl DaemonService {
         let _ = self.store.save(&conversation).await;
 
         // Acknowledge task initiation
-        let mut response_data = serde_json::json!({
+        let response_data = serde_json::json!({
             "task_id": task_id,
             "session_id": effective_session_id,
             "model": chosen_model,
@@ -656,12 +698,6 @@ impl DaemonService {
             "thinking_level": chosen_thinking,
             "use_mock": use_mock
         });
-        if fallback_to_mock {
-            response_data["fallback_to_mock"] = serde_json::Value::Bool(true);
-            response_data["warning"] = serde_json::Value::String(
-                "No available LLM provider credentials found in ~/.thunder/auth.json; falling back to Mock mode".to_string()
-            );
-        }
 
         self.send_response(DaemonResponse::Response {
             id,
@@ -671,29 +707,11 @@ impl DaemonService {
         })
         .await;
 
-        if fallback_to_mock {
-            let warn_evt = DaemonResponse::ObservedEvent {
-                task_id: task_id.clone(),
-                event: ObservedEvent {
-                    agent_id: format!("root_{effective_session_id}"),
-                    event: AgentEvent::TelemetryNotice {
-                        turn: 0,
-                        tool_call_id: "system".to_string(),
-                        layer: "provider".to_string(),
-                        action: "fallback_to_mock".to_string(),
-                        ground_truth: "No configured LLM credentials".to_string(),
-                        self_healed: Some("Falling back to local MockClient".to_string()),
-                        guidance: Some("Configure ~/.thunder/auth.json with valid provider API keys to enable real LLM inference.".to_string()),
-                    },
-                },
-            };
-            self.send_response(warn_evt).await;
-        }
-
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
         let active_pauses = self.active_pauses.clone();
         let output_tx = self.output_tx.clone();
+        let client_factory = self.client_factory.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
         // MCP tools must stay reachable for natural-language prompts (the keyword
         // heuristic would never match them), but only when the workspace actually
@@ -715,6 +733,11 @@ impl DaemonService {
             if let Some(spec) = registry.resolve(&chosen_model) {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
             }
+
+            // Transport resolution order: injected factory (in-process tests /
+            // embedders) → feature-gated test mock → provider registry (handled
+            // inside ThunderRoot when `custom_client` is None).
+            let injected = client_factory.as_ref().and_then(|f| f(&base_cfg));
 
             let mut root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
@@ -739,11 +762,15 @@ impl DaemonService {
                 root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
             }
 
-            let custom_client: Option<Arc<dyn LLMClientTrait>> = if use_mock {
-                Some(Arc::new(DaemonMockClient))
+            #[cfg(feature = "testing-mock")]
+            let mock = if use_mock {
+                Some(Arc::new(DaemonMockClient) as Arc<dyn LLMClientTrait>)
             } else {
                 None
             };
+            #[cfg(not(feature = "testing-mock"))]
+            let mock: Option<Arc<dyn LLMClientTrait>> = None;
+            let custom_client: Option<Arc<dyn LLMClientTrait>> = injected.or(mock);
 
             let options = RootRunOptions {
                 session_id: Some(effective_session_id.clone()),
