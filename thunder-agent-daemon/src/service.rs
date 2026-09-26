@@ -708,17 +708,11 @@ impl DaemonService {
         // (and plugin RPCs) exist at all for this run.
         let role_registry =
             RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
-        let chosen_role = role_id
-            .as_deref()
-            .and_then(|r| role_registry.resolve(r))
-            .filter(|role| role.enabled);
+        // Single-sourced role→permission derivation (see `RoleRegistry::resolve_for_run`).
+        let (chosen_role, chosen_permission) = role_registry.resolve_for_run(role_id.as_deref());
         if role_id.is_some() && chosen_role.is_none() {
             warn!(role = ?role_id, "Requested role not found or disabled; running unconstrained");
         }
-        let chosen_permission = chosen_role
-            .as_ref()
-            .map(|r| r.permission)
-            .unwrap_or_default();
         if let Some(role) = &chosen_role {
             info!(
                 role = %role.display_name(),
@@ -787,13 +781,15 @@ impl DaemonService {
             // inside ThunderRoot when `custom_client` is None).
             let injected = client_factory.as_ref().and_then(|f| f(&base_cfg));
 
-            let mut root = ThunderRoot::new(base_cfg)
+            let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
                 .with_extra_roots(chosen_shared_roots.iter().map(PathBuf::from).collect())
-                .with_plugin(ConversationPlugin::new(store.clone()))
-                .with_standard_plugins()
-                .with_plugin(script_plugin)
                 .with_provider_registry(registry.clone());
+            // Baseline capability set is assembled centrally so every host
+            // exposes the same plugins (conversation + skills + mcp + script host).
+            let mut root = StandardHostBuilder::new(store.clone())
+                .with_script_plugin(script_plugin)
+                .build(root);
 
             // The ask-user capability is opt-in per role: the plugin is only registered
             // when the role enables it, and its auto_always trigger activates it whenever registered.
@@ -827,13 +823,7 @@ impl DaemonService {
                 // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
                 // - mcp: only when this workspace actually configures MCP servers
                 // Anything else stays keyword-routed and lightweight.
-                forced_plugins: Some({
-                    let mut ids = vec!["conversation".to_string(), "skills".to_string()];
-                    if workspace_has_mcp_config {
-                        ids.push("mcp".to_string());
-                    }
-                    ids
-                }),
+                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
                 role: chosen_role.clone(),
