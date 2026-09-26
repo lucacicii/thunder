@@ -30,7 +30,14 @@ impl McpPlugin {
         .with_capability(PluginCapability::McpProvider)
         .with_capability(PluginCapability::ToolProvider)
         .with_triggers(TriggerSpec::new(
-            vec!["mcp", "model context protocol", "server tool", "external tool", "mcp server", "stdio tool"],
+            vec![
+                "mcp",
+                "model context protocol",
+                "server tool",
+                "external tool",
+                "mcp server",
+                "stdio tool",
+            ],
             "Connects to external MCP servers to discover and invoke external tool endpoints.",
         ));
 
@@ -79,8 +86,13 @@ impl McpPlugin {
         self
     }
 
-    pub async fn with_stdio_server(self, name: impl Into<String>, config: &McpServerConfig) -> Result<Self, PluginError> {
-        self.manager.add_stdio_server(name, config)
+    pub async fn with_stdio_server(
+        self,
+        name: impl Into<String>,
+        config: &McpServerConfig,
+    ) -> Result<Self, PluginError> {
+        self.manager
+            .add_stdio_server(name, config)
             .await
             .map_err(|e| PluginError::InitFailed(e.to_string()))?;
         let tools = self.manager.discover_all_tools().await;
@@ -138,7 +150,10 @@ impl ThunderPlugin for McpPlugin {
                 out.push_str("\nAvailable remote MCP tools:\n");
                 for tool in guard.iter() {
                     let def = tool.definition();
-                    out.push_str(&format!("- `{}`: {}\n", def.function.name, def.function.description));
+                    out.push_str(&format!(
+                        "- `{}`: {}\n",
+                        def.function.name, def.function.description
+                    ));
                 }
             }
         }
@@ -163,7 +178,10 @@ impl ThunderPlugin for McpPlugin {
         }
 
         let tools = self.manager.discover_all_tools().await;
-        info!(tool_count = tools.len(), "McpPlugin updated discovered tools");
+        info!(
+            tool_count = tools.len(),
+            "McpPlugin updated discovered tools"
+        );
         let mut guard = self.discovered_tools.write().await;
         *guard = tools;
 
@@ -172,7 +190,11 @@ impl ThunderPlugin for McpPlugin {
 
     async fn on_event(&self, _event: &ObservedEvent, _ctx: &PluginContext) {}
 
-    async fn on_finish(&self, _result: &AgentRunResult, _ctx: &PluginContext) -> Result<(), PluginError> {
+    async fn on_finish(
+        &self,
+        _result: &AgentRunResult,
+        _ctx: &PluginContext,
+    ) -> Result<(), PluginError> {
         Ok(())
     }
 }

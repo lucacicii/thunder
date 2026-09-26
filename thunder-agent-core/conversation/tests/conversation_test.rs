@@ -61,7 +61,10 @@ async fn test_conversation_memory_crud() {
     assert_eq!(list[0].id, "conv_001");
 
     // Fork
-    let forked = manager.fork("conv_001", "conv_001_fork", Some(1)).await.unwrap();
+    let forked = manager
+        .fork("conv_001", "conv_001_fork", Some(1))
+        .await
+        .unwrap();
     assert_eq!(forked.id, "conv_001_fork");
     assert_eq!(forked.parent_id.as_deref(), Some("conv_001"));
 
@@ -85,14 +88,22 @@ async fn test_conversation_fs_store() {
     conv.add_user_message("Write a rust function");
     conv.add_assistant_message(
         Some("Let me calculate that".to_string()),
-        Some(vec![ToolCall::new_function("call_1", "calc", "{\"expr\":\"1+1\"}")]),
+        Some(vec![ToolCall::new_function(
+            "call_1",
+            "calc",
+            "{\"expr\":\"1+1\"}",
+        )]),
     );
     conv.add_tool_message("call_1", "2", Some("calc".to_string()));
     conv.add_assistant_message(Some("The result is 2.".to_string()), None);
     manager.save(&conv).await.unwrap();
 
     // Reload from disk
-    let loaded = manager.get("fs_conv_1").await.unwrap().expect("should load");
+    let loaded = manager
+        .get("fs_conv_1")
+        .await
+        .unwrap()
+        .expect("should load");
     assert_eq!(loaded.messages.len(), 4);
     assert_eq!(loaded.stats.tool_calls_count, 1);
     assert_eq!(loaded.stats.turn_count, 1);
@@ -152,13 +163,21 @@ async fn raw_transcript_sidecar_round_trips() {
     assert!(path.exists(), "sidecar file must be written");
     assert_eq!(path.file_name().unwrap(), "raw_transcript.jsonl");
 
-    let loaded = store.load_raw_transcript("sess_raw").await.unwrap().unwrap();
+    let loaded = store
+        .load_raw_transcript("sess_raw")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.len(), raw.len());
     assert_eq!(loaded[1].content_str(), Some("do the thing"));
 
     // Overwrite is idempotent (atomic tmp+rename, not append-duplicating).
     store.save_raw_transcript("sess_raw", &raw).await.unwrap();
-    let loaded_again = store.load_raw_transcript("sess_raw").await.unwrap().unwrap();
+    let loaded_again = store
+        .load_raw_transcript("sess_raw")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded_again.len(), raw.len(), "no duplicate accumulation");
 
     // Missing session → None, not an error.

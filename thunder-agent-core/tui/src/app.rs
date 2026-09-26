@@ -3,9 +3,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
-use thunder_conversation::prelude::*;
-use thunder_agent_root::prelude::*;
 use thunder_agent_providers::prelude::*;
+use thunder_agent_root::prelude::*;
+use thunder_conversation::prelude::*;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -32,16 +32,11 @@ pub enum FocusPane {
     Monitor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
+    #[default]
     AutoRouter,
     SingleAgent,
-}
-
-impl Default for ExecutionMode {
-    fn default() -> Self {
-        Self::AutoRouter
-    }
 }
 
 impl ExecutionMode {
@@ -190,7 +185,9 @@ impl App {
         if let Some(store) = &self.store {
             if let Ok(list) = store.list(&ConversationFilter::new()).await {
                 self.session_list = list;
-                if self.selected_session_idx >= self.session_list.len() && !self.session_list.is_empty() {
+                if self.selected_session_idx >= self.session_list.len()
+                    && !self.session_list.is_empty()
+                {
                     self.selected_session_idx = self.session_list.len() - 1;
                 }
             }
@@ -246,7 +243,11 @@ impl App {
         self.status_message = Some((msg.into(), std::time::Instant::now()));
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
         // 1. If interactive picker dropdown is active, route all keys to the picker
         if self.picker.is_open {
             match self.picker.handle_key(key) {
@@ -297,16 +298,26 @@ impl App {
             KeyCode::PageDown => {
                 self.scroll_down(10);
             }
-            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) || self.input.is_empty() => {
+            KeyCode::Home
+                if key.modifiers.contains(KeyModifiers::CONTROL) || self.input.is_empty() =>
+            {
                 self.scroll_to_top();
             }
-            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) || self.input.is_empty() => {
+            KeyCode::End
+                if key.modifiers.contains(KeyModifiers::CONTROL) || self.input.is_empty() =>
+            {
                 self.scroll_to_bottom();
             }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.scroll_up(1);
             }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Down
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.scroll_down(1);
             }
             KeyCode::Tab => {
@@ -346,18 +357,30 @@ impl App {
         }
     }
 
-    fn handle_input_key(&mut self, key: KeyEvent, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+    fn handle_input_key(
+        &mut self,
+        key: KeyEvent,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
         match key.code {
             KeyCode::Enter => {
                 if self.input.starts_with('/') {
                     let trimmed = self.input.trim();
                     let matches = crate::commands::filter_commands(&self.input);
 
-                    let token = trimmed.trim_start_matches('/').split_whitespace().next().unwrap_or("");
-                    let is_exact_command = crate::commands::ALL_COMMANDS.iter().any(|cmd| cmd.matches(token));
+                    let token = trimmed
+                        .trim_start_matches('/')
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("");
+                    let is_exact_command = crate::commands::ALL_COMMANDS
+                        .iter()
+                        .any(|cmd| cmd.matches(token));
 
                     // If input is just "/" or an incomplete partial prefix, Enter autocompletes the selected command
-                    if (trimmed == "/" || (!is_exact_command && !matches.is_empty())) && !matches.is_empty() {
+                    if (trimmed == "/" || (!is_exact_command && !matches.is_empty()))
+                        && !matches.is_empty()
+                    {
                         let selected = matches[self.command_popup_idx % matches.len()];
                         self.input = format!("/{} ", selected.name);
                         self.command_popup_idx = 0;
@@ -365,7 +388,10 @@ impl App {
                     }
                 }
 
-                if !self.input.trim().is_empty() && (self.agent_status == AgentStatus::Idle || matches!(self.agent_status, AgentStatus::Done | AgentStatus::Error(_))) {
+                if !self.input.trim().is_empty()
+                    && (self.agent_status == AgentStatus::Idle
+                        || matches!(self.agent_status, AgentStatus::Done | AgentStatus::Error(_)))
+                {
                     let prompt = std::mem::take(&mut self.input);
                     self.command_popup_idx = 0;
                     self.input_history.push(prompt.clone());
@@ -524,7 +550,11 @@ impl App {
         }
     }
 
-    fn handle_sidebar_key(&mut self, key: KeyEvent, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+    fn handle_sidebar_key(
+        &mut self,
+        key: KeyEvent,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_session_idx > 0 {
@@ -532,7 +562,9 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.session_list.is_empty() && self.selected_session_idx + 1 < self.session_list.len() {
+                if !self.session_list.is_empty()
+                    && self.selected_session_idx + 1 < self.session_list.len()
+                {
                     self.selected_session_idx += 1;
                 }
             }
@@ -577,11 +609,16 @@ impl App {
     fn spawn_skills_picker(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
         self.set_status_message("Scanning skills directories...");
         tokio::spawn(async move {
-            let (skills, _) = thunder_agent_skills::loader::SkillLoader::scan_default_and_report().await;
+            let (skills, _) =
+                thunder_agent_skills::loader::SkillLoader::scan_default_and_report().await;
             let items: Vec<PickerItem> = skills
                 .into_iter()
                 .map(|s| {
-                    let tag = s.tags.first().cloned().unwrap_or_else(|| "skill".to_string());
+                    let tag = s
+                        .tags
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "skill".to_string());
                     let brief = s.description.lines().next().unwrap_or("").to_string();
                     PickerItem::new(&s.name, &s.name, brief).with_badge(tag)
                 })
@@ -624,7 +661,10 @@ impl App {
                 kind: PickerKind::SelectModel,
                 title: "🧠 Select Active LLM Model (↑/↓ to move, Enter to select)".to_string(),
                 items,
-                empty_message: Some("No models available. Add ~/.thunder/models.json or configure provider auth.".to_string()),
+                empty_message: Some(
+                    "No models available. Add ~/.thunder/models.json or configure provider auth."
+                        .to_string(),
+                ),
             });
         });
     }
@@ -633,7 +673,8 @@ impl App {
         self.set_status_message("Scanning MCP configuration files...");
         let ws = self.workspace_dir.clone();
         tokio::spawn(async move {
-            let cfg_opt = thunder_agent_mcp::config::McpConfig::find_and_load_from_workspace(&ws).await;
+            let cfg_opt =
+                thunder_agent_mcp::config::McpConfig::find_and_load_from_workspace(&ws).await;
             let items = if let Some((path, cfg)) = cfg_opt {
                 cfg.mcp_servers
                     .into_iter()
@@ -641,9 +682,18 @@ impl App {
                         PickerItem::new(
                             &name,
                             &name,
-                            format!("{} {}  ({})", srv.command, srv.args.join(" "), path.display()),
+                            format!(
+                                "{} {}  ({})",
+                                srv.command,
+                                srv.args.join(" "),
+                                path.display()
+                            ),
                         )
-                        .with_badge(if srv.disabled { "Disabled" } else { "Active" })
+                        .with_badge(if srv.disabled {
+                            "Disabled"
+                        } else {
+                            "Active"
+                        })
                     })
                     .collect()
             } else {
@@ -664,7 +714,8 @@ impl App {
         let handle = thunder_agent_skills::SkillHandle::from_picker(name, description);
         let confirm = handle.confirm_line();
         self.active_skill = Some(handle);
-        self.conversation.add_user_message(format!("/skills {name}"));
+        self.conversation
+            .add_user_message(format!("/skills {name}"));
         self.conversation.add_assistant_message(Some(confirm), None);
         self.set_status_message(format!("Skill attached: {name}"));
         self.save_and_refresh();
@@ -714,9 +765,12 @@ impl App {
                 let new_model = item.id.clone();
                 let old = self.model.selection_id();
                 self.model = ModelRef::parse(&new_model);
-                self.conversation.add_user_message(format!("/model {new_model}"));
+                self.conversation
+                    .add_user_message(format!("/model {new_model}"));
                 self.conversation.add_assistant_message(
-                    Some(format!("✔ Active LLM model switched from `{old}` to **`{new_model}`**.")),
+                    Some(format!(
+                        "✔ Active LLM model switched from `{old}` to **`{new_model}`**."
+                    )),
                     None,
                 );
                 self.set_status_message(format!("Switched model to {}", new_model));
@@ -728,9 +782,14 @@ impl App {
                     _ => ExecutionMode::AutoRouter,
                 };
                 self.execution_mode = new_mode;
-                self.conversation.add_user_message(format!("/mode {}", item.id));
+                self.conversation
+                    .add_user_message(format!("/mode {}", item.id));
                 self.conversation.add_assistant_message(
-                    Some(format!("✔ Execution mode switched to **`{}`** ({})", self.execution_mode.badge(), self.execution_mode.description())),
+                    Some(format!(
+                        "✔ Execution mode switched to **`{}`** ({})",
+                        self.execution_mode.badge(),
+                        self.execution_mode.description()
+                    )),
                     None,
                 );
                 self.set_status_message(format!("Mode: {}", self.execution_mode.description()));
@@ -741,9 +800,15 @@ impl App {
                 let _ = event_tx;
             }
             PickerKind::SelectMcp => {
-                self.conversation.add_user_message(format!("/mcp show {}", item.id));
+                self.conversation
+                    .add_user_message(format!("/mcp show {}", item.id));
                 self.conversation.add_assistant_message(
-                    Some(format!("### 🔌 MCP Server Endpoint: `{}`\n\n- **Status**: {}\n- **Command**: {}", item.title, item.badge.as_deref().unwrap_or("Active"), item.description)),
+                    Some(format!(
+                        "### 🔌 MCP Server Endpoint: `{}`\n\n- **Status**: {}\n- **Command**: {}",
+                        item.title,
+                        item.badge.as_deref().unwrap_or("Active"),
+                        item.description
+                    )),
                     None,
                 );
                 self.save_and_refresh();
@@ -797,7 +862,8 @@ impl App {
                     tokio::spawn(async move {
                         if let Some(conv_opt) = rx.recv().await {
                             if let Some(conv) = conv_opt {
-                                let _ = event_tx_clone.send(crate::event::AppEvent::LoadSession(conv.id));
+                                let _ = event_tx_clone
+                                    .send(crate::event::AppEvent::LoadSession(conv.id));
                             } else {
                                 let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
                                     agent_id: "session_manager".to_string(),
@@ -816,9 +882,14 @@ impl App {
                         .iter()
                         .map(|s| {
                             let title = s.title.as_deref().unwrap_or("Untitled Conversation");
-                            let brief_title = title.lines().next().unwrap_or("Untitled").to_string();
-                            PickerItem::new(&s.id, brief_title, format!("ID: {} | Updated: {}", s.id, s.updated_at_ms))
-                                .with_badge(format!("{} turns", s.turn_count))
+                            let brief_title =
+                                title.lines().next().unwrap_or("Untitled").to_string();
+                            PickerItem::new(
+                                &s.id,
+                                brief_title,
+                                format!("ID: {} | Updated: {}", s.id, s.updated_at_ms),
+                            )
+                            .with_badge(format!("{} turns", s.turn_count))
                         })
                         .collect();
 
@@ -832,7 +903,10 @@ impl App {
                     } else {
                         self.picker.open(
                             PickerKind::ResumeSession,
-                            Some("📁 Select Session to Resume (↑/↓ to move, Enter to resume)".to_string()),
+                            Some(
+                                "📁 Select Session to Resume (↑/↓ to move, Enter to resume)"
+                                    .to_string(),
+                            ),
                             items,
                         );
                     }
@@ -895,9 +969,16 @@ impl App {
 
                     if let Some(m) = new_mode {
                         self.execution_mode = m;
-                        let out = format!("✔ Execution mode switched to **`{}`** ({})\n", self.execution_mode.badge(), self.execution_mode.description());
+                        let out = format!(
+                            "✔ Execution mode switched to **`{}`** ({})\n",
+                            self.execution_mode.badge(),
+                            self.execution_mode.description()
+                        );
                         self.conversation.add_assistant_message(Some(out), None);
-                        self.set_status_message(format!("Mode: {}", self.execution_mode.description()));
+                        self.set_status_message(format!(
+                            "Mode: {}",
+                            self.execution_mode.description()
+                        ));
                     } else {
                         let out = format!("❌ Unknown mode `{m_str}`. Available: `auto`, `single`");
                         self.conversation.add_assistant_message(Some(out), None);
@@ -905,8 +986,18 @@ impl App {
                     self.save_and_refresh();
                 } else {
                     let items = vec![
-                        PickerItem::new("auto", "⚡ Auto (Plugin Host)", "ThunderRoot Microkernel Host (Conversation + Skills + MCP)").with_badge("Recommended"),
-                        PickerItem::new("single", "Single Agent", "Single Agent Direct Run without Plugin Host").with_badge("Direct"),
+                        PickerItem::new(
+                            "auto",
+                            "⚡ Auto (Plugin Host)",
+                            "ThunderRoot Microkernel Host (Conversation + Skills + MCP)",
+                        )
+                        .with_badge("Recommended"),
+                        PickerItem::new(
+                            "single",
+                            "Single Agent",
+                            "Single Agent Direct Run without Plugin Host",
+                        )
+                        .with_badge("Direct"),
                     ];
                     self.picker.open(
                         PickerKind::SelectMode,
@@ -937,15 +1028,26 @@ impl App {
                         if let Some(skill_name) = args.get(1) {
                             self.conversation.add_user_message(raw_cmd);
                             let s_name = skill_name.to_string();
-                            let default_paths = thunder_agent_skills::loader::SkillLoader::default_search_paths();
+                            let default_paths =
+                                thunder_agent_skills::loader::SkillLoader::default_search_paths();
 
                             let (tx, mut rx) = mpsc::unbounded_channel::<String>();
                             tokio::spawn(async move {
-                                let skills = thunder_agent_skills::loader::SkillLoader::load_search_paths(&default_paths).await;
-                                if let Some(found) = skills.into_iter().find(|s| s.name.eq_ignore_ascii_case(&s_name)) {
+                                let skills =
+                                    thunder_agent_skills::loader::SkillLoader::load_search_paths(
+                                        &default_paths,
+                                    )
+                                    .await;
+                                if let Some(found) = skills
+                                    .into_iter()
+                                    .find(|s| s.name.eq_ignore_ascii_case(&s_name))
+                                {
                                     let out = thunder_agent_skills::SkillRegistry::new();
                                     let _ = out.register(found.clone()).await;
-                                    let rendered = out.render_skill_markdown(&found.name).await.unwrap_or_else(|| found.prompt_instructions.clone());
+                                    let rendered = out
+                                        .render_skill_markdown(&found.name)
+                                        .await
+                                        .unwrap_or_else(|| found.prompt_instructions.clone());
                                     let _ = tx.send(rendered);
                                 } else {
                                     let _ = tx.send(format!("❌ Skill `{s_name}` not found. Use `/skills` to browse available skills."));
@@ -955,13 +1057,15 @@ impl App {
                             let event_tx_clone = event_tx.clone();
                             tokio::spawn(async move {
                                 if let Some(content) = rx.recv().await {
-                                    let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
-                                        agent_id: "skills_show".to_string(),
-                                        success: true,
-                                        final_text: Some(content),
-                                        authoritative_messages: None,
-                                raw_messages: None,
-                                    });
+                                    let _ = event_tx_clone.send(
+                                        crate::event::AppEvent::AgentFinished {
+                                            agent_id: "skills_show".to_string(),
+                                            success: true,
+                                            final_text: Some(content),
+                                            authoritative_messages: None,
+                                            raw_messages: None,
+                                        },
+                                    );
                                 }
                             });
                         } else {
@@ -974,10 +1078,19 @@ impl App {
                         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
                         tokio::spawn(async move {
                             if let Some(p) = custom_path {
-                                let mut paths = thunder_agent_skills::loader::SkillLoader::default_search_paths();
+                                let mut paths =
+                                    thunder_agent_skills::loader::SkillLoader::default_search_paths(
+                                    );
                                 paths.push(p);
-                                let loaded = thunder_agent_skills::loader::SkillLoader::load_search_paths(&paths).await;
-                                let report = format!("✔ Scanned and indexed **{}** skill(s) including custom path.", loaded.len());
+                                let loaded =
+                                    thunder_agent_skills::loader::SkillLoader::load_search_paths(
+                                        &paths,
+                                    )
+                                    .await;
+                                let report = format!(
+                                    "✔ Scanned and indexed **{}** skill(s) including custom path.",
+                                    loaded.len()
+                                );
                                 let _ = tx.send(report);
                             } else {
                                 let (_, report) = thunder_agent_skills::loader::SkillLoader::scan_default_and_report().await;
@@ -988,13 +1101,14 @@ impl App {
                         let event_tx_clone = event_tx.clone();
                         tokio::spawn(async move {
                             if let Some(content) = rx.recv().await {
-                                let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
-                                    agent_id: "skills_scanner".to_string(),
-                                    success: true,
-                                    final_text: Some(content),
-                                    authoritative_messages: None,
-                                raw_messages: None,
-                                });
+                                let _ =
+                                    event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                        agent_id: "skills_scanner".to_string(),
+                                        success: true,
+                                        final_text: Some(content),
+                                        authoritative_messages: None,
+                                        raw_messages: None,
+                                    });
                             }
                         });
                     }
@@ -1002,7 +1116,10 @@ impl App {
                         self.conversation.add_user_message(raw_cmd);
                         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
                         tokio::spawn(async move {
-                            let (skills, _) = thunder_agent_skills::loader::SkillLoader::scan_default_and_report().await;
+                            let (skills, _) =
+                                thunder_agent_skills::loader::SkillLoader::scan_default_and_report(
+                                )
+                                .await;
                             let out = thunder_agent_skills::registry::SkillRegistry::format_skills_catalog_markdown(&skills);
                             let _ = tx.send(out);
                         });
@@ -1010,13 +1127,14 @@ impl App {
                         let event_tx_clone = event_tx.clone();
                         tokio::spawn(async move {
                             if let Some(content) = rx.recv().await {
-                                let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
-                                    agent_id: "skills_lister".to_string(),
-                                    success: true,
-                                    final_text: Some(content),
-                                    authoritative_messages: None,
-                                raw_messages: None,
-                                });
+                                let _ =
+                                    event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                        agent_id: "skills_lister".to_string(),
+                                        success: true,
+                                        final_text: Some(content),
+                                        authoritative_messages: None,
+                                        raw_messages: None,
+                                    });
                             }
                         });
                     }
@@ -1036,7 +1154,10 @@ impl App {
 
                     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
                     tokio::spawn(async move {
-                        if let Some((path, cfg)) = thunder_agent_mcp::config::McpConfig::find_and_load_from_workspace(&ws).await {
+                        if let Some((path, cfg)) =
+                            thunder_agent_mcp::config::McpConfig::find_and_load_from_workspace(&ws)
+                                .await
+                        {
                             let out = cfg.render_servers_markdown(Some(&path));
                             let _ = tx.send(out);
                         } else {
@@ -1067,7 +1188,10 @@ impl App {
             "clear" | "new" | "reset" => {
                 self.new_session();
                 self.conversation.add_assistant_message(
-                    Some("✨ Started a fresh conversation session. How can I help you today?".to_string()),
+                    Some(
+                        "✨ Started a fresh conversation session. How can I help you today?"
+                            .to_string(),
+                    ),
                     None,
                 );
                 self.save_and_refresh();
@@ -1084,24 +1208,36 @@ impl App {
                         "temperature" | "temp" => {
                             if let Ok(t) = val.parse::<f32>() {
                                 self.temperature = t;
-                                self.conversation.add_assistant_message(Some(format!("✔ `temperature` set to `{t}`")), None);
+                                self.conversation.add_assistant_message(
+                                    Some(format!("✔ `temperature` set to `{t}`")),
+                                    None,
+                                );
                             }
                         }
                         "max_turns" | "turns" => {
                             if let Ok(turns) = val.parse::<usize>() {
                                 self.max_turns = turns;
-                                self.conversation.add_assistant_message(Some(format!("✔ `max_turns` set to `{turns}`")), None);
+                                self.conversation.add_assistant_message(
+                                    Some(format!("✔ `max_turns` set to `{turns}`")),
+                                    None,
+                                );
                             }
                         }
                         "timeout" | "timeout_ms" => {
                             if let Ok(ms) = val.parse::<u64>() {
                                 self.request_timeout_ms = ms;
-                                self.conversation.add_assistant_message(Some(format!("✔ `request_timeout_ms` set to `{ms}`")), None);
+                                self.conversation.add_assistant_message(
+                                    Some(format!("✔ `request_timeout_ms` set to `{ms}`")),
+                                    None,
+                                );
                             }
                         }
                         "model" => {
                             self.model = ModelRef::parse(val);
-                            self.conversation.add_assistant_message(Some(format!("✔ `model` set to `{val}`")), None);
+                            self.conversation.add_assistant_message(
+                                Some(format!("✔ `model` set to `{val}`")),
+                                None,
+                            );
                         }
                         other => {
                             self.conversation.add_assistant_message(Some(format!("❌ Unknown config key `{other}`. Available: `model`, `temperature`, `max_turns`, `timeout_ms`")), None);
@@ -1111,12 +1247,30 @@ impl App {
                     let mut out = String::from("### ⚙️ Thunder Runtime Configuration\n\n");
                     out.push_str("| Parameter | Value | Description |\n");
                     out.push_str("|---|---|---|\n");
-                    out.push_str(&format!("| `model` | `{}` | Active LLM model |\n", self.model.selection_id()));
-                    out.push_str(&format!("| `mode` | `{:?}` | Execution mode |\n", self.execution_mode));
-                    out.push_str(&format!("| `workspace` | `{}` | Working directory |\n", self.workspace_dir.display()));
-                    out.push_str(&format!("| `temperature` | `{}` | Sampling temperature |\n", self.temperature));
-                    out.push_str(&format!("| `max_turns` | `{}` | Loop turn guard limit |\n", self.max_turns));
-                    out.push_str(&format!("| `timeout_ms` | `{} ms` | Request timeout |\n", self.request_timeout_ms));
+                    out.push_str(&format!(
+                        "| `model` | `{}` | Active LLM model |\n",
+                        self.model.selection_id()
+                    ));
+                    out.push_str(&format!(
+                        "| `mode` | `{:?}` | Execution mode |\n",
+                        self.execution_mode
+                    ));
+                    out.push_str(&format!(
+                        "| `workspace` | `{}` | Working directory |\n",
+                        self.workspace_dir.display()
+                    ));
+                    out.push_str(&format!(
+                        "| `temperature` | `{}` | Sampling temperature |\n",
+                        self.temperature
+                    ));
+                    out.push_str(&format!(
+                        "| `max_turns` | `{}` | Loop turn guard limit |\n",
+                        self.max_turns
+                    ));
+                    out.push_str(&format!(
+                        "| `timeout_ms` | `{} ms` | Request timeout |\n",
+                        self.request_timeout_ms
+                    ));
                     out.push_str("\n*Update values with `/config <key> <value>` (e.g. `/config temperature 0.7`)*");
                     self.conversation.add_assistant_message(Some(out), None);
                 }
@@ -1179,10 +1333,16 @@ impl App {
                 let doc = ConversationExporter::to_markdown(&self.conversation);
 
                 if let Err(e) = std::fs::write(&target_path, doc) {
-                    let out = format!("❌ Failed to export conversation to `{}`: {e}", target_path.display());
+                    let out = format!(
+                        "❌ Failed to export conversation to `{}`: {e}",
+                        target_path.display()
+                    );
                     self.conversation.add_assistant_message(Some(out), None);
                 } else {
-                    let out = format!("✔ Conversation successfully exported to: **`{}`**", target_path.display());
+                    let out = format!(
+                        "✔ Conversation successfully exported to: **`{}`**",
+                        target_path.display()
+                    );
                     self.conversation.add_assistant_message(Some(out), None);
                     self.set_status_message(format!("Exported to {}", target_path.display()));
                 }
@@ -1201,8 +1361,21 @@ impl App {
                     None => format!("- ❌ Model `{}` not found in provider registry (~/.thunder/models.json + auth.json)", model),
                 };
                 out.push_str(&model_line);
-                out.push_str(&format!("\n- {} Workspace: `{}`", if self.workspace_dir.is_dir() { "✔" } else { "❌" }, self.workspace_dir.display()));
-                out.push_str(&format!("\n- {} Session `{}` with {} messages", "✔", self.conversation.id, self.conversation.messages.len()));
+                out.push_str(&format!(
+                    "\n- {} Workspace: `{}`",
+                    if self.workspace_dir.is_dir() {
+                        "✔"
+                    } else {
+                        "❌"
+                    },
+                    self.workspace_dir.display()
+                ));
+                out.push_str(&format!(
+                    "\n- {} Session `{}` with {} messages",
+                    "✔",
+                    self.conversation.id,
+                    self.conversation.messages.len()
+                ));
                 out.push_str(&format!("\n- Mode: {}", self.execution_mode.description()));
                 if spec.is_none() {
                     out.push_str("\n\n⚠️ LIVE mode will fail at the first LLM call until the model is configured.");
@@ -1222,7 +1395,11 @@ impl App {
         }
     }
 
-    pub fn submit_prompt(&mut self, raw_prompt: String, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+    pub fn submit_prompt(
+        &mut self,
+        raw_prompt: String,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
         let trimmed = raw_prompt.trim();
 
         let (mode, prompt) = if let Some(p) = trimmed.strip_prefix("/single ") {
@@ -1273,13 +1450,11 @@ impl App {
 
         let mut skills_plugin = SkillsPlugin::default();
         if let Some(handle) = &self.active_skill {
-            skills_plugin = skills_plugin.with_skill(
-                thunder_agent_skills::Skill::new(
-                    handle.name.clone(),
-                    handle.description.clone(),
-                    handle.system_prompt_fragment(),
-                ),
-            );
+            skills_plugin = skills_plugin.with_skill(thunder_agent_skills::Skill::new(
+                handle.name.clone(),
+                handle.description.clone(),
+                handle.system_prompt_fragment(),
+            ));
         }
 
         let root = ThunderRoot::new(base_cfg.clone())
@@ -1291,10 +1466,7 @@ impl App {
 
         let session_id = self.conversation.id.clone();
         let context_input = self.conversation.as_context_input();
-        let factory_client = self
-            .client_factory
-            .as_ref()
-            .and_then(|f| f(&base_cfg));
+        let factory_client = self.client_factory.as_ref().and_then(|f| f(&base_cfg));
 
         tokio::spawn(async move {
             let options = RootRunOptions {
@@ -1361,14 +1533,19 @@ impl App {
                         success: false,
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
-                                raw_messages: None,
+                        raw_messages: None,
                     });
                 }
             }
         });
     }
 
-    fn run_single_agent(&self, _prompt: String, cancel: CancellationToken, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+    fn run_single_agent(
+        &self,
+        _prompt: String,
+        cancel: CancellationToken,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
         let model = self.model.selection_id();
         let timeout_ms = self.request_timeout_ms;
         let mut config = AgentConfig::new(model.clone()).with_unlimited_turns();
@@ -1383,10 +1560,7 @@ impl App {
         }
 
         let context_input = self.conversation.as_context_input();
-        let factory_client = self
-            .client_factory
-            .as_ref()
-            .and_then(|f| f(&config));
+        let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
 
         tokio::spawn(async move {
             let mut agent = AgentLoop::new(config.clone()).with_id("tui_agent");
@@ -1464,7 +1638,7 @@ impl App {
                         success: false,
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
-                                raw_messages: None,
+                        raw_messages: None,
                     });
                 }
             }
@@ -1522,17 +1696,18 @@ impl App {
                 result,
                 ..
             } => {
-                if let Some(tc) = self.active_tool_calls.iter_mut().find(|c| c.id == tool_call_id) {
+                if let Some(tc) = self
+                    .active_tool_calls
+                    .iter_mut()
+                    .find(|c| c.id == tool_call_id)
+                {
                     tc.result = Some(result.output.clone());
                     tc.is_error = result.is_error;
                     tc.duration_ms = result.duration_ms;
                 }
 
-                self.conversation.add_tool_message(
-                    &tool_call_id,
-                    result.output,
-                    Some(name),
-                );
+                self.conversation
+                    .add_tool_message(&tool_call_id, result.output, Some(name));
                 self.active_tool_calls.retain(|c| c.id != tool_call_id);
                 self.agent_status = AgentStatus::Thinking;
             }
@@ -1600,21 +1775,31 @@ impl App {
                     None
                 };
 
-                self.conversation.add_assistant_message(Some(content), tool_calls);
+                self.conversation
+                    .add_assistant_message(Some(content), tool_calls);
 
                 for tc in &self.active_tool_calls {
                     if let Some(res) = &tc.result {
-                        self.conversation.add_tool_message(&tc.id, res, Some(tc.name.clone()));
+                        self.conversation
+                            .add_tool_message(&tc.id, res, Some(tc.name.clone()));
                     }
                 }
             } else if let Some(final_content) = final_text {
-                let already_present = self.conversation.messages.last().map(|m| match m {
-                    ChatMessage::Assistant { content: Some(c), .. } => c == &final_content,
-                    _ => false,
-                }).unwrap_or(false);
+                let already_present = self
+                    .conversation
+                    .messages
+                    .last()
+                    .map(|m| match m {
+                        ChatMessage::Assistant {
+                            content: Some(c), ..
+                        } => c == &final_content,
+                        _ => false,
+                    })
+                    .unwrap_or(false);
 
                 if !already_present && !final_content.is_empty() {
-                    self.conversation.add_assistant_message(Some(final_content), None);
+                    self.conversation
+                        .add_assistant_message(Some(final_content), None);
                 }
             }
             self.last_error = None;
@@ -1628,7 +1813,8 @@ impl App {
             }).unwrap_or_else(|| "Agent execution failed. No available LLM provider or the request was interrupted.".to_string());
 
             self.agent_status = AgentStatus::Error(err_msg.clone());
-            self.conversation.add_assistant_message(Some(format!("❌ {}", err_msg)), None);
+            self.conversation
+                .add_assistant_message(Some(format!("❌ {}", err_msg)), None);
             self.set_status_message(format!("Error: {}", err_msg));
         }
 
@@ -1642,8 +1828,19 @@ impl App {
 fn fallback_model_items() -> Vec<PickerItem> {
     vec![
         PickerItem::new("openai/gpt-4o", "GPT-4o", "openai-completions").with_badge("openai"),
-        PickerItem::new("openai/gpt-4o-mini", "GPT-4o Mini", "openai-completions").with_badge("openai"),
-        PickerItem::new("anthropic/claude-3-7-sonnet-latest", "Claude 3.7 Sonnet", "anthropic-messages").with_badge("anthropic"),
-        PickerItem::new("deepseek/deepseek-chat", "DeepSeek V3", "openai-completions").with_badge("deepseek"),
+        PickerItem::new("openai/gpt-4o-mini", "GPT-4o Mini", "openai-completions")
+            .with_badge("openai"),
+        PickerItem::new(
+            "anthropic/claude-3-7-sonnet-latest",
+            "Claude 3.7 Sonnet",
+            "anthropic-messages",
+        )
+        .with_badge("anthropic"),
+        PickerItem::new(
+            "deepseek/deepseek-chat",
+            "DeepSeek V3",
+            "openai-completions",
+        )
+        .with_badge("deepseek"),
     ]
 }

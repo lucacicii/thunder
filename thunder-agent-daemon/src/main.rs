@@ -58,7 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Attempt to salvage request id so the caller Promise/channel deterministically rejects
                 let maybe_id = serde_json::from_str::<serde_json::Value>(trimmed)
                     .ok()
-                    .and_then(|v| v.get("id").and_then(|id_val| id_val.as_str().map(String::from)));
+                    .and_then(|v| {
+                        v.get("id")
+                            .and_then(|id_val| id_val.as_str().map(String::from))
+                    });
 
                 let res = DaemonResponse::Response {
                     id: maybe_id,

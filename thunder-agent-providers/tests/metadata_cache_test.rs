@@ -28,8 +28,7 @@ fn test_metadata_cache_resolution_hierarchy() {
     assert_eq!(from_cache, 65536);
 
     // 3. Fallback to safe default when completely unknown
-    let unknown =
-        loaded_cache.resolve_context_window("other/unknown-model", "unknown-model", None);
+    let unknown = loaded_cache.resolve_context_window("other/unknown-model", "unknown-model", None);
     assert_eq!(unknown, DEFAULT_SAFE_CONTEXT_WINDOW);
 }
 

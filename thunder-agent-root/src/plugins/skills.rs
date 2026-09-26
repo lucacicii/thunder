@@ -76,8 +76,9 @@ impl Default for SkillsPlugin {
     }
 }
 
-static DEFAULT_SKILLS_CACHE: std::sync::OnceLock<tokio::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>>> =
-    std::sync::OnceLock::new();
+static DEFAULT_SKILLS_CACHE: std::sync::OnceLock<
+    tokio::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>>,
+> = std::sync::OnceLock::new();
 
 async fn get_cached_default_skills() -> Vec<Skill> {
     let cache = DEFAULT_SKILLS_CACHE.get_or_init(|| tokio::sync::RwLock::new(None));
@@ -120,12 +121,7 @@ impl ThunderPlugin for SkillsPlugin {
 
         let mut out = String::from("Available specialized skills in registry:\n");
         for skill in &skills {
-            let brief = skill
-                .description
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim();
+            let brief = skill.description.lines().next().unwrap_or("").trim();
             // Cap each catalog entry: some skill descriptions are single very long sentences
             // that would otherwise re-bloat the system prompt.
             let brief: String = if brief.chars().count() > 100 {

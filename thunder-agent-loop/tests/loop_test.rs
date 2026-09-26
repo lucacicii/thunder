@@ -43,7 +43,9 @@ impl LLMClientTrait for MockLLMClient {
 
             if count < stop_threshold {
                 // Emit progressive tool call with advancing argument
-                let _ = tx.send(Ok(LLMStreamChunk::Token(format!("Step {}...", count)))).await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Token(format!("Step {}...", count))))
+                    .await;
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
                         content: Some(format!("Step {}...", count)),
@@ -61,7 +63,9 @@ impl LLMClientTrait for MockLLMClient {
                     .await;
             } else {
                 // Final response
-                let _ = tx.send(Ok(LLMStreamChunk::Token(" Done at last.".to_string()))).await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Token(" Done at last.".to_string())))
+                    .await;
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
                         content: Some(" Done at last.".to_string()),
@@ -99,7 +103,11 @@ impl AgentTool for AddTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let x = args.get("x").and_then(|v| v.as_f64()).ok_or("Missing x")?;
         let y = args.get("y").and_then(|v| v.as_f64()).ok_or("Missing y")?;
         Ok(json!({ "sum": x + y }).to_string())
@@ -130,11 +138,21 @@ async fn test_agent_loop_full_lifecycle() {
     let mut event_types = Vec::new();
     while let Ok(observed) = event_sub.try_recv() {
         match observed.event {
-            thunder_agent_loop::types::event::AgentEvent::TurnStart { .. } => event_types.push("turn_start"),
-            thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. } => event_types.push("token_delta"),
-            thunder_agent_loop::types::event::AgentEvent::ToolExecResult { .. } => event_types.push("tool_exec_result"),
-            thunder_agent_loop::types::event::AgentEvent::TurnEnd { .. } => event_types.push("turn_end"),
-            thunder_agent_loop::types::event::AgentEvent::LoopComplete { .. } => event_types.push("loop_complete"),
+            thunder_agent_loop::types::event::AgentEvent::TurnStart { .. } => {
+                event_types.push("turn_start")
+            }
+            thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. } => {
+                event_types.push("token_delta")
+            }
+            thunder_agent_loop::types::event::AgentEvent::ToolExecResult { .. } => {
+                event_types.push("tool_exec_result")
+            }
+            thunder_agent_loop::types::event::AgentEvent::TurnEnd { .. } => {
+                event_types.push("turn_end")
+            }
+            thunder_agent_loop::types::event::AgentEvent::LoopComplete { .. } => {
+                event_types.push("loop_complete")
+            }
             _ => {}
         }
     }
@@ -147,8 +165,7 @@ async fn test_agent_loop_full_lifecycle() {
 #[tokio::test]
 async fn test_agent_loop_unlimited_turns() {
     // Default config has NO max turns (unlimited)
-    let config = AgentConfig::new("test-model")
-        .with_unlimited_turns();
+    let config = AgentConfig::new("test-model").with_unlimited_turns();
 
     assert!(config.max_turns.is_none());
 
@@ -157,7 +174,10 @@ async fn test_agent_loop_unlimited_turns() {
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
     agent.register_tool(Arc::new(AddTool));
 
-    let result = agent.run("Execute multi-step long task", None).await.unwrap();
+    let result = agent
+        .run("Execute multi-step long task", None)
+        .await
+        .unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::Done);
     assert_eq!(result.stats.total_turns, 13); // 12 tool turns + 1 final turn
@@ -178,7 +198,9 @@ async fn test_agent_loop_mid_stream_cancellation_classified_correctly() {
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             tokio::spawn(async move {
                 // Emit one token and then wait for cancel
-                let _ = tx.send(Ok(LLMStreamChunk::Token("Processing...".to_string()))).await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Token("Processing...".to_string())))
+                    .await;
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
                         let _ = tx.send(Err("Stream aborted by cancellation".to_string())).await;
@@ -202,7 +224,10 @@ async fn test_agent_loop_mid_stream_cancellation_classified_correctly() {
         token_clone.cancel();
     });
 
-    let result = agent.run("Cancel this task mid stream", Some(token)).await.unwrap();
+    let result = agent
+        .run("Cancel this task mid stream", Some(token))
+        .await
+        .unwrap();
 
     // Verify it is classified as Cancelled and NOT Error
     assert_eq!(result.finish_reason, FinishReason::Cancelled);
@@ -268,7 +293,11 @@ async fn test_reasoning_only_final_turn_captured_in_final_content() {
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             tokio::spawn(async move {
                 // Model outputs pure reasoning in final turn (content is empty)
-                let _ = tx.send(Ok(LLMStreamChunk::ReasoningToken("Detailed analysis and conclusion...".to_string()))).await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::ReasoningToken(
+                        "Detailed analysis and conclusion...".to_string(),
+                    )))
+                    .await;
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
                         content: None, // No content
@@ -346,7 +375,9 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                         }))
                         .await;
                 } else {
-                    let _ = tx.send(Ok(LLMStreamChunk::Token("Sum is 3.".to_string()))).await;
+                    let _ = tx
+                        .send(Ok(LLMStreamChunk::Token("Sum is 3.".to_string())))
+                        .await;
                     let _ = tx
                         .send(Ok(LLMStreamChunk::Completed {
                             content: None,
@@ -380,7 +411,15 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
     let tool_turn_assistant = result
         .messages
         .iter()
-        .find(|m| matches!(m, ChatMessage::Assistant { tool_calls: Some(_), .. }))
+        .find(|m| {
+            matches!(
+                m,
+                ChatMessage::Assistant {
+                    tool_calls: Some(_),
+                    ..
+                }
+            )
+        })
         .expect("expected an assistant tool-call message");
     assert_eq!(
         tool_turn_assistant.content_str(),
@@ -421,8 +460,16 @@ async fn test_turn_stats_includes_reasoning_and_fallback_estimation() {
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             tokio::spawn(async move {
                 // Emit both reasoning and answer tokens
-                let _ = tx.send(Ok(LLMStreamChunk::ReasoningToken("Step 1: plan deeply. Step 2: verify.".to_string()))).await;
-                let _ = tx.send(Ok(LLMStreamChunk::Token("The final result is verified.".to_string()))).await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::ReasoningToken(
+                        "Step 1: plan deeply. Step 2: verify.".to_string(),
+                    )))
+                    .await;
+                let _ = tx
+                    .send(Ok(LLMStreamChunk::Token(
+                        "The final result is verified.".to_string(),
+                    )))
+                    .await;
                 // Provider omits usage counts entirely
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
@@ -446,12 +493,17 @@ async fn test_turn_stats_includes_reasoning_and_fallback_estimation() {
     let result = agent.run("Think and answer", None).await.unwrap();
     assert_eq!(result.finish_reason, FinishReason::Done);
     // Overall completion tokens estimated must be > 0 and include the reasoning tokens
-    assert!(result.stats.total_completion_tokens > 0, "total completion tokens should be estimated");
-    assert!(result.stats.total_reasoning_tokens > 0, "reasoning tokens should be recorded via estimation");
+    assert!(
+        result.stats.total_completion_tokens > 0,
+        "total completion tokens should be estimated"
+    );
+    assert!(
+        result.stats.total_reasoning_tokens > 0,
+        "reasoning tokens should be recorded via estimation"
+    );
     // total_completion_tokens must be >= total_reasoning_tokens
     assert!(
         result.stats.total_completion_tokens >= result.stats.total_reasoning_tokens,
         "completion tokens should include reasoning tokens"
     );
 }
-

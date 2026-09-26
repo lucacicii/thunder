@@ -72,7 +72,11 @@ impl TuiRunner {
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         Ok(())
@@ -100,7 +104,13 @@ impl TuiRunner {
                 authoritative_messages,
                 raw_messages,
             } => {
-                app.handle_agent_finished(agent_id, success, final_text, authoritative_messages, raw_messages);
+                app.handle_agent_finished(
+                    agent_id,
+                    success,
+                    final_text,
+                    authoritative_messages,
+                    raw_messages,
+                );
                 app.save_current_conversation().await;
             }
             AppEvent::LoadSession(id) => {

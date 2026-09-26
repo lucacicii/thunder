@@ -20,14 +20,14 @@ pub mod prelude {
     pub use crate::plugin::{
         PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec,
     };
-    #[cfg(feature = "conversation")]
-    pub use crate::plugins::ConversationPlugin;
-    #[cfg(feature = "skills")]
-    pub use crate::plugins::skills::*;
     #[cfg(feature = "mcp")]
     pub use crate::plugins::mcp::*;
     #[cfg(feature = "script-plugin")]
     pub use crate::plugins::script_plugin::*;
+    #[cfg(feature = "skills")]
+    pub use crate::plugins::skills::*;
+    #[cfg(feature = "conversation")]
+    pub use crate::plugins::ConversationPlugin;
     pub use crate::registry::{ActivePluginSet, PluginRegistry};
     pub use crate::roles::{Persona, RoleRegistry, RoleSpec};
     pub use crate::selector::{PluginSelection, PluginSelector};

@@ -10,16 +10,27 @@ struct BigOutputTool;
 #[async_trait]
 impl AgentTool for BigOutputTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new_function("big_output", "Produces 100KB of log output", json!({ "type": "object", "properties": {} }))
+        ToolDefinition::new_function(
+            "big_output",
+            "Produces 100KB of log output",
+            json!({ "type": "object", "properties": {} }),
+        )
     }
 
-    async fn execute(&self, _args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let mut out = String::new();
         for i in 1..=1000 {
             if i == 500 {
                 out.push_str(&format!("Line {:04}: CRITICAL_KEY_VALUE_42981\n", i));
             } else {
-                out.push_str(&format!("Line {:04}: Normal background execution log message\n", i));
+                out.push_str(&format!(
+                    "Line {:04}: Normal background execution log message\n",
+                    i
+                ));
             }
         }
         Ok(out)
@@ -28,7 +39,8 @@ impl AgentTool for BigOutputTool {
 
 #[tokio::test]
 async fn test_scratchpad_large_output_and_lossless_retrieval() {
-    let temp_dir = std::env::temp_dir().join(format!("thunder_test_scratch_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("thunder_test_scratch_{}", std::process::id()));
     let config = ScratchpadConfig {
         base_dir: temp_dir.clone(),
         threshold_bytes: 1024, // 1KB threshold

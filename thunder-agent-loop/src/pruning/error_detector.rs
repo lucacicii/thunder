@@ -1,17 +1,14 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-static RE_OPENAI: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)maximum context length is (\d+) tokens?").unwrap()
-});
+static RE_OPENAI: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)maximum context length is (\d+) tokens?").unwrap());
 
-static RE_ANTHROPIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)>\s*(\d+)\s*maximum").unwrap()
-});
+static RE_ANTHROPIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)>\s*(\d+)\s*maximum").unwrap());
 
-static RE_RANGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)should be \[\s*\d+\s*,\s*(\d+)\s*\]").unwrap()
-});
+static RE_RANGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)should be \[\s*\d+\s*,\s*(\d+)\s*\]").unwrap());
 
 static RE_GENERIC_LIMIT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:maximum limit of|maximum context window of|maximum allowed (?:tokens )?is|limit of)\s*(\d+)").unwrap()

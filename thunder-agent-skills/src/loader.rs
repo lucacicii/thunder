@@ -11,19 +11,26 @@ impl SkillLoader {
     pub async fn load_file(path: impl AsRef<Path>) -> Result<Skill, SkillError> {
         let p = path.as_ref();
         if !p.exists() {
-            return Err(SkillError::NotFound(format!("Skill file not found: {}", p.display())));
+            return Err(SkillError::NotFound(format!(
+                "Skill file not found: {}",
+                p.display()
+            )));
         }
 
-        let content = tokio::fs::read_to_string(p)
-            .await
-            .map_err(|e| SkillError::IoError(format!("Failed to read skill file {}: {e}", p.display())))?;
+        let content = tokio::fs::read_to_string(p).await.map_err(|e| {
+            SkillError::IoError(format!("Failed to read skill file {}: {e}", p.display()))
+        })?;
 
-        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
 
         match ext.as_str() {
             "json" => SkillParser::parse_json(&content, Some(p)),
             "yaml" | "yml" => SkillParser::parse_yaml(&content, Some(p)),
-            "md" | "markdown" | _ => SkillParser::parse_markdown(&content, Some(p)),
+            _ => SkillParser::parse_markdown(&content, Some(p)),
         }
     }
 
@@ -31,7 +38,10 @@ impl SkillLoader {
     pub async fn load_dir(dir: impl AsRef<Path>) -> Result<Vec<Skill>, SkillError> {
         let dir_path = dir.as_ref();
         if !dir_path.exists() {
-            return Err(SkillError::NotFound(format!("Skill directory not found: {}", dir_path.display())));
+            return Err(SkillError::NotFound(format!(
+                "Skill directory not found: {}",
+                dir_path.display()
+            )));
         }
 
         let mut skills = Vec::new();
@@ -63,8 +73,17 @@ impl SkillLoader {
                         stack.push(entry_path);
                     }
                 } else if entry_path.is_file() {
-                    let ext = entry_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-                    if ext == "md" || ext == "markdown" || ext == "json" || ext == "yaml" || ext == "yml" {
+                    let ext = entry_path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if ext == "md"
+                        || ext == "markdown"
+                        || ext == "json"
+                        || ext == "yaml"
+                        || ext == "yml"
+                    {
                         match Self::load_file(&entry_path).await {
                             Ok(skill) => {
                                 debug!(skill_name = %skill.name, path = %entry_path.display(), "Loaded skill");
@@ -134,7 +153,10 @@ impl SkillLoader {
     pub async fn scan_default_and_report() -> (Vec<Skill>, String) {
         let paths = Self::default_search_paths();
         let loaded = Self::load_search_paths(&paths).await;
-        let mut report = format!("✔ Scanned and indexed **{}** skill(s) across default search paths.\n\n", loaded.len());
+        let mut report = format!(
+            "✔ Scanned and indexed **{}** skill(s) across default search paths.\n\n",
+            loaded.len()
+        );
         for s in &loaded {
             let brief = s.description.lines().next().unwrap_or("").trim();
             report.push_str(&format!("- **`{}`**: {}\n", s.name, brief));

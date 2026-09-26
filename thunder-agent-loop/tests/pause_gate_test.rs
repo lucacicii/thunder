@@ -109,10 +109,7 @@ async fn pause_holds_at_tool_boundary_and_resume_continues() {
         .expect("loop finishes after resume")
         .expect("join ok");
 
-    assert!(
-        runs.load(Ordering::SeqCst) >= 1,
-        "tool ran after resume"
-    );
+    assert!(runs.load(Ordering::SeqCst) >= 1, "tool ran after resume");
     // Turn 1 issues the tool call, turn 2 concludes. Both happen after resume,
     // which is exactly what proves the pause held the loop rather than skipping work.
     assert_eq!(result.stats.total_turns, 2, "both turns ran after resume");

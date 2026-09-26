@@ -86,7 +86,10 @@ impl ToolRegistry {
             None => {
                 let available = self.tools.keys().cloned().collect::<Vec<_>>().join(", ");
                 return ToolExecutionResult::error(
-                    format!("Error: Tool '{}' not found. Available tools: [{}]", tool_name, available),
+                    format!(
+                        "Error: Tool '{}' not found. Available tools: [{}]",
+                        tool_name, available
+                    ),
                     start.elapsed(),
                 );
             }
@@ -137,7 +140,10 @@ impl ToolRegistry {
                 // If ScratchpadManager is configured, persist oversized output losslessly
                 if let Some(ref sp) = self.scratchpad {
                     if original_bytes > sp.threshold_bytes() {
-                        match sp.process_tool_output(tool_name, turn, sanitized.clone()).await {
+                        match sp
+                            .process_tool_output(tool_name, turn, sanitized.clone())
+                            .await
+                        {
                             Ok(persisted_handle) => {
                                 return ToolExecutionResult {
                                     output: persisted_handle,
@@ -164,7 +170,12 @@ impl ToolRegistry {
         }
     }
 
-    fn format_and_truncate(&self, output: String, is_error: bool, duration: Duration) -> ToolExecutionResult {
+    fn format_and_truncate(
+        &self,
+        output: String,
+        is_error: bool,
+        duration: Duration,
+    ) -> ToolExecutionResult {
         let original_bytes = output.len();
         if original_bytes <= self.max_output_bytes {
             return ToolExecutionResult {

@@ -85,7 +85,10 @@ impl RootRunHandle {
 
     pub async fn join(self) -> Result<RootRunResult, AgentError> {
         let run_result = self.handle.join().await?;
-        let _ = self.active_set.dispatch_finish(&run_result, &self.ctx).await;
+        let _ = self
+            .active_set
+            .dispatch_finish(&run_result, &self.ctx)
+            .await;
 
         Ok(RootRunResult {
             agent_id: self.agent_id,
@@ -128,7 +131,9 @@ impl ThunderRoot {
 
     pub async fn with_providers(mut self) -> Self {
         if let Ok(registry) = ProviderRegistry::load_from_sources(
-            &thunder_agent_providers::source::ConfigSource::default_chain(self.workspace_root.as_deref()),
+            &thunder_agent_providers::source::ConfigSource::default_chain(
+                self.workspace_root.as_deref(),
+            ),
         )
         .await
         {
@@ -241,9 +246,12 @@ impl ThunderRoot {
                 .unwrap_or_else(|| "General task".to_string()),
         };
 
-        let session_id = options
-            .session_id
-            .unwrap_or_else(|| format!("sess_{}", thunder_agent_loop::types::event::TurnStats::default().turn + 1));
+        let session_id = options.session_id.unwrap_or_else(|| {
+            format!(
+                "sess_{}",
+                thunder_agent_loop::types::event::TurnStats::default().turn + 1
+            )
+        });
 
         let cancel = options.cancellation_token.unwrap_or_default();
 
@@ -268,7 +276,9 @@ impl ThunderRoot {
             "ThunderRoot executing prompt"
         );
 
-        let active_set = self.registry.create_active_set(&selection.active_plugin_ids);
+        let active_set = self
+            .registry
+            .create_active_set(&selection.active_plugin_ids);
 
         // 2. Prepare Plugin Context
         let mut ctx = PluginContext::new(&session_id).with_cancellation(cancel.clone());
@@ -281,7 +291,8 @@ impl ThunderRoot {
         active_set.dispatch_init(&ctx).await?;
 
         // 4. Construct Root AgentLoop
-        let mut base_prompt = String::from("You are an autonomous engineering assistant powered by Thunder Agent.");
+        let mut base_prompt =
+            String::from("You are an autonomous engineering assistant powered by Thunder Agent.");
         if let Some(ws) = &self.workspace_root {
             base_prompt.push_str("\n\n### Workspaces\n");
             base_prompt.push_str(&format!(
@@ -294,7 +305,8 @@ impl ThunderRoot {
                      unless the user explicitly instructs otherwise.",
                 );
             } else {
-                base_prompt.push_str("Referenced repositories (read/write allowed, absolute paths):\n");
+                base_prompt
+                    .push_str("Referenced repositories (read/write allowed, absolute paths):\n");
                 for root in &self.extra_roots {
                     base_prompt.push_str(&format!("- {}\n", root.display()));
                 }

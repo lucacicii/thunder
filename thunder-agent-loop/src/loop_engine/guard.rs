@@ -40,7 +40,11 @@ impl LoopGuard {
     }
 
     /// Records a tool invocation and checks if a repetition pattern / loop degradation is detected
-    pub fn record_and_check_repetition(&mut self, tool_name: &str, arguments: &str) -> Option<String> {
+    pub fn record_and_check_repetition(
+        &mut self,
+        tool_name: &str,
+        arguments: &str,
+    ) -> Option<String> {
         let record = ActionRecord {
             tool_name: tool_name.to_string(),
             arguments: arguments.trim().to_string(),
@@ -53,8 +57,14 @@ impl LoopGuard {
 
         // Check if the last `repetition_threshold` actions are identical
         if self.recent_actions.len() >= self.repetition_threshold {
-            let recent_slice = self.recent_actions.iter().rev().take(self.repetition_threshold);
-            let all_match = recent_slice.clone().all(|r| r.tool_name == record.tool_name && r.arguments == record.arguments);
+            let recent_slice = self
+                .recent_actions
+                .iter()
+                .rev()
+                .take(self.repetition_threshold);
+            let all_match = recent_slice
+                .clone()
+                .all(|r| r.tool_name == record.tool_name && r.arguments == record.arguments);
 
             if all_match {
                 return Some(format!(
@@ -114,8 +124,12 @@ mod tests {
     fn test_loop_guard_repetition_detection_and_hard_limit() {
         let mut guard = LoopGuard::new(10, 3, 5, 5);
 
-        assert!(guard.record_and_check_repetition("bash", "ls -la").is_none());
-        assert!(guard.record_and_check_repetition("bash", "ls -la").is_none());
+        assert!(guard
+            .record_and_check_repetition("bash", "ls -la")
+            .is_none());
+        assert!(guard
+            .record_and_check_repetition("bash", "ls -la")
+            .is_none());
         let warning = guard.record_and_check_repetition("bash", "ls -la");
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("executed the exact same tool"));

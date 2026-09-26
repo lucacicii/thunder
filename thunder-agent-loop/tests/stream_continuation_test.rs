@@ -22,15 +22,21 @@ impl LLMClientTrait for DroppedStreamMockClient {
             if count == 0 {
                 // Attempt 1: emit partial tokens, then drop connection mid-stream!
                 let _ = tx
-                    .send(Ok(LLMStreamChunk::Token("Part 1: The engine of Thunder ".to_string())))
+                    .send(Ok(LLMStreamChunk::Token(
+                        "Part 1: The engine of Thunder ".to_string(),
+                    )))
                     .await;
                 let _ = tx
-                    .send(Err("Network connection dropped: connection reset by peer".to_string()))
+                    .send(Err(
+                        "Network connection dropped: connection reset by peer".to_string()
+                    ))
                     .await;
             } else {
                 // Attempt 2: continuation resumed! Emit remainder and complete
                 let _ = tx
-                    .send(Ok(LLMStreamChunk::Token("Part 2: seamlessly auto-healed!".to_string())))
+                    .send(Ok(LLMStreamChunk::Token(
+                        "Part 2: seamlessly auto-healed!".to_string(),
+                    )))
                     .await;
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {

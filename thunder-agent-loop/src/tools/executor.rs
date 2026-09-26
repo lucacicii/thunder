@@ -31,8 +31,12 @@ impl ToolExecutor {
         extra_workspace_roots: Vec<std::path::PathBuf>,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
     ) -> Self {
-        let pipeline =
-            ToolPipeline::standard(workspace_root, &extra_workspace_roots, registry.clone(), scratchpad);
+        let pipeline = ToolPipeline::standard(
+            workspace_root,
+            &extra_workspace_roots,
+            registry.clone(),
+            scratchpad,
+        );
         Self { registry, pipeline }
     }
 

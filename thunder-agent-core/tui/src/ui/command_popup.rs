@@ -21,7 +21,10 @@ pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &
 
     let visible = matches.len().min(MAX_VISIBLE_COMMANDS);
     let popup_height = (visible as u16) + 2;
-    let popup_width = input_area.width.max(50).min(f.area().width.saturating_sub(4));
+    let popup_width = input_area
+        .width
+        .max(50)
+        .min(f.area().width.saturating_sub(4));
 
     let x = input_area.x;
     let y = input_area.y.saturating_sub(popup_height);
@@ -45,7 +48,12 @@ pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &
         let is_selected = actual_idx == selected_idx;
 
         let cursor_span = if is_selected {
-            Span::styled(" ▶ ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD))
+            Span::styled(
+                " ▶ ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::raw("   ")
         };
@@ -53,9 +61,13 @@ pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &
         let cmd_span = Span::styled(
             format!("/{}", cmd.name),
             if is_selected {
-                Style::default().fg(Color::Rgb(255, 255, 255)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Rgb(255, 255, 255))
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.accent_primary).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.accent_primary)
+                    .add_modifier(Modifier::BOLD)
             },
         );
 

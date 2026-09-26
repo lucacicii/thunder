@@ -72,12 +72,18 @@ impl OrchestrationHelper {
         run_id: &str,
         branch_results: &[(String, AgentRunResult)], // (role, result)
     ) {
-        let mut synthesis = format!("### Parallel Multi-Agent Execution Summary (run_id: {run_id})\n\n");
+        let mut synthesis =
+            format!("### Parallel Multi-Agent Execution Summary (run_id: {run_id})\n\n");
 
         for (role, result) in branch_results {
-            synthesis.push_str(&format!("#### Agent Role: `{role}` (id: `{}`)\n", result.agent_id));
-            synthesis.push_str(&format!("- Status: `{:?}` | Turns: {} | Tool Calls: {}\n", 
-                result.finish_reason, result.stats.total_turns, result.stats.total_tool_executions));
+            synthesis.push_str(&format!(
+                "#### Agent Role: `{role}` (id: `{}`)\n",
+                result.agent_id
+            ));
+            synthesis.push_str(&format!(
+                "- Status: `{:?}` | Turns: {} | Tool Calls: {}\n",
+                result.finish_reason, result.stats.total_turns, result.stats.total_tool_executions
+            ));
             if let Some(content) = &result.final_content {
                 synthesis.push_str(&format!("\n{}\n\n", content.trim()));
             } else {
@@ -106,7 +112,10 @@ impl OrchestrationHelper {
         // Record tool message with sub-conversation reference
         let content = match &result.final_content {
             Some(c) => format!("{c}\n[sub_conversation_id: {sub_id_str}]"),
-            None => format!("[sub_conversation_id: {sub_id_str} finished with status: {:?}]", result.finish_reason),
+            None => format!(
+                "[sub_conversation_id: {sub_id_str} finished with status: {:?}]",
+                result.finish_reason
+            ),
         };
 
         parent.add_tool_message(tool_id_str, content, Some(name_str));

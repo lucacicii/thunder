@@ -30,7 +30,9 @@ Analyze high dividend yield stocks and payout ratios.
     assert_eq!(skill.author.as_deref(), Some("lucas"));
     assert_eq!(skill.tags, vec!["finance", "stock"]);
     assert_eq!(skill.triggers, vec!["分红奶牛", "连续分红"]);
-    assert!(skill.prompt_instructions.contains("Analyze high dividend yield stocks"));
+    assert!(skill
+        .prompt_instructions
+        .contains("Analyze high dividend yield stocks"));
 }
 
 #[test]
@@ -43,7 +45,10 @@ Check for unwraps, race conditions, and proper error handling.
 
     let skill = SkillParser::parse_markdown(md, None).expect("Parse should succeed");
     assert_eq!(skill.name, "code-review");
-    assert_eq!(skill.description, "Perform systematic code review on Rust projects");
+    assert_eq!(
+        skill.description,
+        "Perform systematic code review on Rust projects"
+    );
     assert!(skill.prompt_instructions.contains("Check for unwraps"));
 }
 
@@ -66,16 +71,24 @@ fn test_parse_json_skill() {
 async fn test_skill_registry_and_matching() {
     let registry = SkillRegistry::new();
 
-    let s1 = Skill::new("git-master", "Perform atomic commits and rebase operations", "Follow conventional commits.")
-        .with_trigger("git")
-        .with_trigger("commit")
-        .with_tag("vcs");
+    let s1 = Skill::new(
+        "git-master",
+        "Perform atomic commits and rebase operations",
+        "Follow conventional commits.",
+    )
+    .with_trigger("git")
+    .with_trigger("commit")
+    .with_tag("vcs");
 
-    let s2 = Skill::new("debugging", "Systematic hypothesis-driven debugging", "Formulate hypotheses before testing.")
-        .with_trigger("debug")
-        .with_trigger("error")
-        .with_trigger("crash")
-        .with_tag("dev");
+    let s2 = Skill::new(
+        "debugging",
+        "Systematic hypothesis-driven debugging",
+        "Formulate hypotheses before testing.",
+    )
+    .with_trigger("debug")
+    .with_trigger("error")
+    .with_trigger("crash")
+    .with_tag("dev");
 
     registry.register(s1).await;
     registry.register(s2).await;
@@ -83,11 +96,15 @@ async fn test_skill_registry_and_matching() {
     assert_eq!(registry.len().await, 2);
 
     // Test prompt matching
-    let matches = registry.match_prompt("I have a git rebase conflict on commit").await;
+    let matches = registry
+        .match_prompt("I have a git rebase conflict on commit")
+        .await;
     assert!(!matches.is_empty());
     assert_eq!(matches[0].name, "git-master");
 
-    let matches_debug = registry.match_prompt("My program encountered an error and crash").await;
+    let matches_debug = registry
+        .match_prompt("My program encountered an error and crash")
+        .await;
     assert!(!matches_debug.is_empty());
     assert_eq!(matches_debug[0].name, "debugging");
 }
@@ -114,7 +131,9 @@ async fn test_skill_loader_directory_scan() {
     )
     .unwrap();
 
-    let skills = SkillLoader::load_dir(dir.path()).await.expect("Dir load should succeed");
+    let skills = SkillLoader::load_dir(dir.path())
+        .await
+        .expect("Dir load should succeed");
     assert_eq!(skills.len(), 2);
 
     let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -150,10 +169,16 @@ async fn test_skill_tools_execution() {
     assert!(list_res.contains("playwright-qa"));
 
     // 2. Load skill
-    let load_res = load_tool.execute(json!({"skill_name": "playwright-qa"}), &ctx).await.unwrap();
+    let load_res = load_tool
+        .execute(json!({"skill_name": "playwright-qa"}), &ctx)
+        .await
+        .unwrap();
     assert!(load_res.contains("Launch browser in headless mode"));
 
     // 3. Search skill
-    let search_res = search_tool.execute(json!({"query": "browser testing"}), &ctx).await.unwrap();
+    let search_res = search_tool
+        .execute(json!({"query": "browser testing"}), &ctx)
+        .await
+        .unwrap();
     assert!(search_res.contains("playwright-qa"));
 }

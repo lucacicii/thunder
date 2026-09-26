@@ -66,7 +66,11 @@ impl AgentTool for AddTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let x = args["x"].as_f64().ok_or("x")?;
         let y = args["y"].as_f64().ok_or("y")?;
         Ok(json!({"sum": x + y}).to_string())

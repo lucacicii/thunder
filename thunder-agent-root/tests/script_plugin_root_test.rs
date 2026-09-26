@@ -85,7 +85,9 @@ export default definePlugin({
   ]
 });
 "#;
-    tokio::fs::write(plugins_dir.join("echo_plugin.ts"), ts_content).await.unwrap();
+    tokio::fs::write(plugins_dir.join("echo_plugin.ts"), ts_content)
+        .await
+        .unwrap();
 
     let script_plugin = ScriptPlugin::new().with_workspace(ws_dir.clone());
 
@@ -116,11 +118,17 @@ export default definePlugin({
         .expect("Root execution should succeed");
 
     assert_eq!(result.run_result.finish_reason, FinishReason::Done);
-    assert!(result.final_content.unwrap().contains("TypeScript tool completed"));
+    assert!(result
+        .final_content
+        .unwrap()
+        .contains("TypeScript tool completed"));
 
     // Verify file written via ctx.fs.writeFile exists and has correct content
     let out_file = ws_dir.join("out.txt");
-    assert!(out_file.exists(), "out.txt should have been written via atomic transaction");
+    assert!(
+        out_file.exists(),
+        "out.txt should have been written via atomic transaction"
+    );
     let content = tokio::fs::read_to_string(&out_file).await.unwrap();
     assert_eq!(content, "Saved: hello from root agent");
 }

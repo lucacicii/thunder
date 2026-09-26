@@ -26,10 +26,10 @@ impl Default for Theme {
             border_focus: Color::Rgb(56, 189, 248), // Electric Cyan
             accent_primary: Color::Rgb(56, 189, 248),
             accent_secondary: Color::Rgb(168, 85, 247), // Purple
-            user_bubble: Color::Rgb(96, 165, 250),     // Blue
+            user_bubble: Color::Rgb(96, 165, 250),      // Blue
             assistant_bubble: Color::Rgb(52, 211, 153), // Emerald Green
-            tool_bubble: Color::Rgb(251, 191, 36),     // Amber
-            error_color: Color::Rgb(248, 113, 113),    // Red
+            tool_bubble: Color::Rgb(251, 191, 36),      // Amber
+            error_color: Color::Rgb(248, 113, 113),     // Red
             text_main: Color::Rgb(240, 246, 252),
             text_muted: Color::Rgb(139, 148, 158),
             highlight: Color::Rgb(255, 215, 0),

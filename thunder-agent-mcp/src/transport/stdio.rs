@@ -21,7 +21,10 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Spawn the external command and initialize bidirectional JSON-RPC stdio transport.
-    pub async fn spawn(name: impl Into<String>, config: &McpServerConfig) -> Result<Self, McpError> {
+    pub async fn spawn(
+        name: impl Into<String>,
+        config: &McpServerConfig,
+    ) -> Result<Self, McpError> {
         let server_name = name.into();
         info!(server = %server_name, cmd = %config.command, args = ?config.args, "Spawning MCP stdio server process");
 
@@ -51,14 +54,12 @@ impl StdioTransport {
             .stdin
             .take()
             .ok_or_else(|| McpError::TransportError("Failed to capture child stdin".to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| McpError::TransportError("Failed to capture child stdout".to_string()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| McpError::TransportError("Failed to capture child stderr".to_string()))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            McpError::TransportError("Failed to capture child stdout".to_string())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            McpError::TransportError("Failed to capture child stderr".to_string())
+        })?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
         let pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>> =

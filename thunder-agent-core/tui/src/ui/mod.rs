@@ -22,10 +22,10 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Header status bar
-            Constraint::Min(4),     // Full-width dialogue stream
-            Constraint::Length(1),  // Claude Code-style inline prompt line (❯ ...)
-            Constraint::Length(1),  // Minimal status footer
+            Constraint::Length(1), // Header status bar
+            Constraint::Min(4),    // Full-width dialogue stream
+            Constraint::Length(1), // Claude Code-style inline prompt line (❯ ...)
+            Constraint::Length(1), // Minimal status footer
         ])
         .split(f.area());
 
@@ -33,10 +33,8 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     render_header(f, app, main_chunks[0], theme);
 
     // 2. Render Main Dialogue Stream (Full screen width, no sidebar)
-    match app.mode {
-        _ => {
-            render_chat(f, app, main_chunks[1], theme);
-        }
+    {
+        render_chat(f, app, main_chunks[1], theme);
     }
 
     // 3. Render Claude Code-style interactive inline prompt line

@@ -1,35 +1,35 @@
 [package]
 name = "thunder-agent-loop"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "Ultra-lightweight, high-performance, minimal-resource Agent Loop Engine in Rust"
-license = "Apache-2.0"
+license.workspace = true
 readme = "README.md"
-repository = "https://github.com/lucacicii/thunder"
-homepage = "https://github.com/lucacicii/thunder"
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/thunder-agent-loop"
 keywords = ["agent", "llm", "loop", "openai", "tools"]
 categories = ["asynchronous", "api-bindings"]
 
+[lints]
+workspace = true
+
 [dependencies]
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-async-trait = "0.1"
-parking_lot = "0.12"
-tokio-util = "0.7"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
-regex = "1.10"
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+regex.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-tempfile = "3.10"
-
-
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true

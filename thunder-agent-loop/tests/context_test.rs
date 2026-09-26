@@ -17,7 +17,10 @@ fn test_context_buffer_token_accounting() {
 
     let messages = ctx.get_messages();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].content_str(), Some("You are a helpful coding assistant."));
+    assert_eq!(
+        messages[0].content_str(),
+        Some("You are a helpful coding assistant.")
+    );
 }
 
 #[test]

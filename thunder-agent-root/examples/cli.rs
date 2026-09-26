@@ -37,8 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("============================================================");
     println!("▶ User Prompt: {}", prompt);
     println!("▶ Mode: LIVE LLM");
-    println!("▶ Registered Plugins in Registry: {:?}", 
-        root.registry().list_manifests().iter().map(|m| &m.id).collect::<Vec<_>>()
+    println!(
+        "▶ Registered Plugins in Registry: {:?}",
+        root.registry()
+            .list_manifests()
+            .iter()
+            .map(|m| &m.id)
+            .collect::<Vec<_>>()
     );
     println!("------------------------------------------------------------");
 
@@ -65,7 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut handle = root.execute(prompt, options).await?;
     println!("🔍 Dynamic Plugin Selection Result:");
-    println!("   Active Plugins : {:?}", handle.selection.active_plugin_ids);
+    println!(
+        "   Active Plugins : {:?}",
+        handle.selection.active_plugin_ids
+    );
     println!("   Decision Reason: {}", handle.selection.reason);
     println!("   Confidence     : {:.2}", handle.selection.confidence);
     println!("------------------------------------------------------------");
@@ -91,10 +99,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = handle.join().await?;
     println!("\n------------------------------------------------------------");
-    println!("🏁 Root Execution Finished (Status: {:?})", result.run_result.finish_reason);
-    println!("📊 Total Turns: {}, Tool Executions: {}", 
-        result.run_result.stats.total_turns, 
-        result.run_result.stats.total_tool_executions
+    println!(
+        "🏁 Root Execution Finished (Status: {:?})",
+        result.run_result.finish_reason
+    );
+    println!(
+        "📊 Total Turns: {}, Tool Executions: {}",
+        result.run_result.stats.total_turns, result.run_result.stats.total_tool_executions
     );
     if let Some(final_text) = result.final_content {
         println!("📝 Final Output:\n{}", final_text);

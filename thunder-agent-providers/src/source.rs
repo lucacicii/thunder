@@ -15,7 +15,11 @@ impl ConfigSource {
         let root = std::env::var("THUNDER_CONFIG_DIR")
             .ok()
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".thunder")));
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".thunder"))
+            });
         root.map(|dir| Self {
             name: "thunder-user".to_string(),
             models_path: dir.join("models.json"),

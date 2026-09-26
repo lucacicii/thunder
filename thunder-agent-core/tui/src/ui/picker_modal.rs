@@ -12,8 +12,12 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
     }
 
     let area = f.area();
-    let modal_width = (area.width * 75 / 100).max(50).min(area.width.saturating_sub(4));
-    let modal_height = (area.height * 70 / 100).max(12).min(area.height.saturating_sub(2));
+    let modal_width = (area.width * 75 / 100)
+        .max(50)
+        .min(area.width.saturating_sub(4));
+    let modal_height = (area.height * 70 / 100)
+        .max(12)
+        .min(area.height.saturating_sub(2));
 
     let x = (area.width.saturating_sub(modal_width)) / 2;
     let y = (area.height.saturating_sub(modal_height)) / 2;
@@ -37,7 +41,11 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
         format!(
             " {} [{}/{}] ",
             app.picker.title,
-            if filtered.is_empty() { 0 } else { selected_idx + 1 },
+            if filtered.is_empty() {
+                0
+            } else {
+                selected_idx + 1
+            },
             filtered.len()
         )
     };
@@ -80,7 +88,9 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
     } else {
         Span::styled(
             format!(" \"{}\" ", app.picker.filter_text),
-            Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.highlight)
+                .add_modifier(Modifier::BOLD),
         )
     };
 
@@ -93,7 +103,10 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
                     .add_modifier(Modifier::BOLD),
             ),
             filter_display,
-            Span::styled(format!(" [{} result(s)]", filtered.len()), theme.muted_style()),
+            Span::styled(
+                format!(" [{} result(s)]", filtered.len()),
+                theme.muted_style(),
+            ),
         ])),
         chunks[0],
     );
@@ -116,7 +129,9 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
             let cursor_span = if is_selected {
                 Span::styled(
                     " ▶ ",
-                    Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.highlight)
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::raw("   ")
@@ -139,7 +154,9 @@ pub fn render_picker_modal(f: &mut Frame, app: &App, theme: &Theme) {
                 Span::styled(
                     format!(" [{}] ", badge),
                     if is_selected {
-                        Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.highlight)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.accent_secondary)
                     },

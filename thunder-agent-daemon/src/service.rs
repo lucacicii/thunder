@@ -19,8 +19,7 @@ use crate::protocol::{DaemonRequest, DaemonResponse};
 /// Production leaves this unset and models resolve through the provider
 /// registry. Tests embed the daemon in-process and inject a fake client here
 /// instead of driving mock behaviour through the wire protocol.
-pub type ClientFactory =
-    Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
+pub type ClientFactory = Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
 
 pub struct DaemonService {
     provider_registry: Arc<tokio::sync::RwLock<ProviderRegistry>>,
@@ -61,9 +60,8 @@ impl DaemonService {
     }
 
     pub async fn new(workspace: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
-        let default_workspace = workspace.unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        let default_workspace = workspace
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         let registry = ProviderRegistry::load_default().await.unwrap_or_default();
         let store_root = FsConversationStore::default_store_root();
@@ -302,7 +300,8 @@ impl DaemonService {
                         .send_response(DaemonResponse::TaskPaused {
                             task_id,
                             session_id: None,
-                            reason: "Paused by user; will hold at the next tool boundary".to_string(),
+                            reason: "Paused by user; will hold at the next tool boundary"
+                                .to_string(),
                         })
                         .await;
                 }
@@ -325,7 +324,12 @@ impl DaemonService {
                 .await;
             }
 
-            DaemonRequest::AnswerQuestion { id, question_id, answers, cancelled } => {
+            DaemonRequest::AnswerQuestion {
+                id,
+                question_id,
+                answers,
+                cancelled,
+            } => {
                 // question_id is globally unique (`task_id:qN`), so no task lookup
                 // is needed here.
                 let outcome = if cancelled {
@@ -392,13 +396,26 @@ impl DaemonService {
                 .await;
             }
 
-            DaemonRequest::GenerateTitle { id, session_id, force } => {
+            DaemonRequest::GenerateTitle {
+                id,
+                session_id,
+                force,
+            } => {
                 // Reload the registry so the latest utilityModel config is honored
                 if let Ok(fresh) = ProviderRegistry::load_default().await {
                     *self.provider_registry.write().await = fresh;
                 }
                 let registry = self.provider_registry.read().await.clone();
-                match generate_conversation_title(&self.store, &registry, &session_id, force, None, None).await {
+                match generate_conversation_title(
+                    &self.store,
+                    &registry,
+                    &session_id,
+                    force,
+                    None,
+                    None,
+                )
+                .await
+                {
                     Ok(title) => {
                         self.send_response(DaemonResponse::Response {
                             id,
@@ -420,7 +437,11 @@ impl DaemonService {
                 }
             }
 
-            DaemonRequest::SetConversationTitle { id, session_id, title } => {
+            DaemonRequest::SetConversationTitle {
+                id,
+                session_id,
+                title,
+            } => {
                 let trimmed = title.trim().to_string();
                 if trimmed.is_empty() {
                     self.send_response(DaemonResponse::Response {
@@ -440,7 +461,11 @@ impl DaemonService {
                         Ok(Some(mut conv)) => {
                             conv.title = Some(final_title);
                             conv.title_source = Some("manual".to_string());
-                            conv.updated_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                            conv.updated_at_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                                as u64;
                             match self.store.save(&conv).await {
                                 Ok(_) => {
                                     info!(session_id = %session_id, "Conversation title set manually");
@@ -456,8 +481,12 @@ impl DaemonService {
                                     self.send_response(DaemonResponse::Response {
                                         id,
                                         success: false,
-                                        data: Some(serde_json::json!({ "error_kind": "store_error" })),
-                                        error: Some(format!("[store_error] failed to persist title: {e}")),
+                                        data: Some(
+                                            serde_json::json!({ "error_kind": "store_error" }),
+                                        ),
+                                        error: Some(format!(
+                                            "[store_error] failed to persist title: {e}"
+                                        )),
                                     })
                                     .await;
                                 }
@@ -468,7 +497,9 @@ impl DaemonService {
                                 id,
                                 success: false,
                                 data: Some(serde_json::json!({ "error_kind": "not_found" })),
-                                error: Some(format!("[not_found] conversation `{session_id}` not found")),
+                                error: Some(format!(
+                                    "[not_found] conversation `{session_id}` not found"
+                                )),
                             })
                             .await;
                         }
@@ -477,7 +508,9 @@ impl DaemonService {
                                 id,
                                 success: false,
                                 data: Some(serde_json::json!({ "error_kind": "store_error" })),
-                                error: Some(format!("[store_error] failed to load conversation: {e}")),
+                                error: Some(format!(
+                                    "[store_error] failed to load conversation: {e}"
+                                )),
                             })
                             .await;
                         }
@@ -485,14 +518,23 @@ impl DaemonService {
                 }
             }
 
-            DaemonRequest::GetTrace { id, session_id, task_id } => {
-                let trace = load_task_trace(self.store.root(), &session_id, task_id.as_deref()).await;
+            DaemonRequest::GetTrace {
+                id,
+                session_id,
+                task_id,
+            } => {
+                let trace =
+                    load_task_trace(self.store.root(), &session_id, task_id.as_deref()).await;
                 let found = trace.is_some();
                 self.send_response(DaemonResponse::Response {
                     id,
                     success: found,
                     data: trace,
-                    error: if !found { Some("Trace not found".to_string()) } else { None },
+                    error: if !found {
+                        Some("Trace not found".to_string())
+                    } else {
+                        None
+                    },
                 })
                 .await;
             }
@@ -583,7 +625,13 @@ impl DaemonService {
             .insert(task_id.clone(), Arc::clone(&pause_gate));
 
         let effective_session_id = session_id.unwrap_or_else(|| {
-            format!("sess_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
+            format!(
+                "sess_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            )
         });
 
         // Load or create conversation
@@ -633,8 +681,7 @@ impl DaemonService {
             existing_ws.clone()
         } else {
             // Brand new conversation: bind the incoming workspace_dir or default workspace
-            workspace_dir
-                .unwrap_or_else(|| self.default_workspace.to_string_lossy().to_string())
+            workspace_dir.unwrap_or_else(|| self.default_workspace.to_string_lossy().to_string())
         };
 
         // Shared roots follow a merge policy instead of first-bind-wins: hosts
@@ -659,7 +706,8 @@ impl DaemonService {
         // Resolve the requested role against global + workspace scopes.
         // Permission is the load-bearing part: it decides which built-in tools
         // (and plugin RPCs) exist at all for this run.
-        let role_registry = RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
+        let role_registry =
+            RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
         let chosen_role = role_id
             .as_deref()
             .and_then(|r| role_registry.resolve(r))
@@ -716,8 +764,8 @@ impl DaemonService {
         // MCP tools must stay reachable for natural-language prompts (the keyword
         // heuristic would never match them), but only when the workspace actually
         // configures servers — otherwise forcing the plugin is pure overhead.
-        let workspace_has_mcp_config = ws_dir.join("mcp_servers.json").exists()
-            || ws_dir.join(".mcp.json").exists();
+        let workspace_has_mcp_config =
+            ws_dir.join("mcp_servers.json").exists() || ws_dir.join(".mcp.json").exists();
         let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
@@ -741,9 +789,7 @@ impl DaemonService {
 
             let mut root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
-                .with_extra_roots(
-                    chosen_shared_roots.iter().map(PathBuf::from).collect(),
-                )
+                .with_extra_roots(chosen_shared_roots.iter().map(PathBuf::from).collect())
                 .with_plugin(ConversationPlugin::new(store.clone()))
                 .with_standard_plugins()
                 .with_plugin(script_plugin)
@@ -782,10 +828,7 @@ impl DaemonService {
                 // - mcp: only when this workspace actually configures MCP servers
                 // Anything else stays keyword-routed and lightweight.
                 forced_plugins: Some({
-                    let mut ids = vec![
-                        "conversation".to_string(),
-                        "skills".to_string(),
-                    ];
+                    let mut ids = vec!["conversation".to_string(), "skills".to_string()];
                     if workspace_has_mcp_config {
                         ids.push("mcp".to_string());
                     }
@@ -800,7 +843,10 @@ impl DaemonService {
 
             let initial_messages_count = conversation.messages.len();
             let context_input = conversation.as_context_input();
-            let start_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+            let start_time_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
@@ -857,18 +903,29 @@ impl DaemonService {
                             // safely append newly generated messages from run_result without overwriting historical turns.
                             if conversation.messages.len() <= initial_messages_count {
                                 if res.run_result.messages.len() > initial_messages_count {
-                                    conversation.messages.extend(res.run_result.messages[initial_messages_count..].iter().cloned());
+                                    conversation.messages.extend(
+                                        res.run_result.messages[initial_messages_count..]
+                                            .iter()
+                                            .cloned(),
+                                    );
                                 } else if let Some(ref text) = final_content {
                                     if !text.is_empty() {
-                                        conversation.add_assistant_message(Some(text.clone()), None);
+                                        conversation
+                                            .add_assistant_message(Some(text.clone()), None);
                                     }
                                 }
                             } else if let Some(ref text) = final_content {
                                 // Ensure final assistant content is persisted if not already captured by the plugin
-                                let already_present = conversation.messages.last().map(|m| match m {
-                                    ChatMessage::Assistant { content: Some(c), .. } => c == text,
-                                    _ => false,
-                                }).unwrap_or(false);
+                                let already_present = conversation
+                                    .messages
+                                    .last()
+                                    .map(|m| match m {
+                                        ChatMessage::Assistant {
+                                            content: Some(c), ..
+                                        } => c == text,
+                                        _ => false,
+                                    })
+                                    .unwrap_or(false);
                                 if !already_present && !text.is_empty() {
                                     conversation.add_assistant_message(Some(text.clone()), None);
                                 }
@@ -897,7 +954,8 @@ impl DaemonService {
                                 }
                             }
 
-                            let task_tokens = res.run_result.stats.total_prompt_tokens + res.run_result.stats.total_completion_tokens;
+                            let task_tokens = res.run_result.stats.total_prompt_tokens
+                                + res.run_result.stats.total_completion_tokens;
                             // `total_tokens` is the working-context estimate (recomputed
                             // from the message list); lifetime usage must be tracked apart
                             // from it or every save silently resets the running total.
@@ -906,14 +964,17 @@ impl DaemonService {
                                 .total_used_tokens
                                 .saturating_add(task_tokens);
                             conversation.stats.turn_count += res.run_result.stats.total_turns;
-                            conversation.stats.tool_calls_count += res.run_result.stats.total_tool_executions;
-                            conversation.stats.duration_ms += res.run_result.stats.total_duration_ms;
+                            conversation.stats.tool_calls_count +=
+                                res.run_result.stats.total_tool_executions;
+                            conversation.stats.duration_ms +=
+                                res.run_result.stats.total_duration_ms;
                             let _ = store.save(&conversation).await;
 
                             // Auto-generate concise conversation title on the first turn,
                             // or later whenever the title is still a placeholder (self-heal,
                             // e.g. for conversations created before this feature existed).
-                            let is_first_turn = conversation.stats.turn_count <= res.run_result.stats.total_turns;
+                            let is_first_turn =
+                                conversation.stats.turn_count <= res.run_result.stats.total_turns;
                             if (is_first_turn || conversation.is_title_placeholder()) && !use_mock {
                                 let store_clone = store.clone();
                                 let reg_clone = registry.clone();
@@ -938,7 +999,11 @@ impl DaemonService {
 
                             // Save full end-to-end task trace
                             let events = collected_events.lock().await.clone();
-                            let finished_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                            let finished_at_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                                as u64;
                             let trace_data = serde_json::json!({
                                 "task_id": task_id,
                                 "session_id": effective_session_id,
@@ -953,9 +1018,17 @@ impl DaemonService {
                                 "final_content": final_content,
                                 "events": events,
                             });
-                            save_task_trace(store.root(), &effective_session_id, &task_id, &trace_data).await;
+                            save_task_trace(
+                                store.root(),
+                                &effective_session_id,
+                                &task_id,
+                                &trace_data,
+                            )
+                            .await;
 
-                            if res.run_result.finish_reason == thunder_agent_loop::types::event::FinishReason::Error {
+                            if res.run_result.finish_reason
+                                == thunder_agent_loop::types::event::FinishReason::Error
+                            {
                                 let err_msg = "Thunder agent task ended with FinishReason::Error (see observed error events for details)".to_string();
                                 error!(task_id = %task_id, finish_reason = %finish_reason, "Task finished with error");
                                 let msg = DaemonResponse::TaskFailed {
@@ -1113,7 +1186,10 @@ pub struct TitleGenError {
 
 impl TitleGenError {
     fn new(kind: &str, detail: impl Into<String>) -> Self {
-        Self { kind: kind.to_string(), detail: detail.into() }
+        Self {
+            kind: kind.to_string(),
+            detail: detail.into(),
+        }
     }
 }
 
@@ -1126,7 +1202,9 @@ impl std::fmt::Display for TitleGenError {
 /// Strip quotes/prefixes from a raw model-generated title.
 fn clean_generated_title(raw: &str) -> String {
     raw.trim()
-        .trim_matches(|c: char| c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`')
+        .trim_matches(|c: char| {
+            c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`'
+        })
         .trim_start_matches("Title:")
         .trim_start_matches("标题:")
         .trim_start_matches("标题：")
@@ -1177,8 +1255,12 @@ pub async fn generate_conversation_title(
     )
     .await;
     match &result {
-        Ok(title) => info!(session_id = %session_id, title = %title, "Conversation title generated"),
-        Err(e) => warn!(session_id = %session_id, error = %e, "Conversation title generation failed"),
+        Ok(title) => {
+            info!(session_id = %session_id, title = %title, "Conversation title generated")
+        }
+        Err(e) => {
+            warn!(session_id = %session_id, error = %e, "Conversation title generation failed")
+        }
     }
     result
 }
@@ -1194,8 +1276,18 @@ async fn generate_conversation_title_inner(
     // Load the freshest conversation state from the store
     let conv = match store.load(session_id).await {
         Ok(Some(c)) => c,
-        Ok(None) => return Err(TitleGenError::new("not_found", format!("conversation `{session_id}` not found"))),
-        Err(e) => return Err(TitleGenError::new("store_error", format!("failed to load conversation: {e}"))),
+        Ok(None) => {
+            return Err(TitleGenError::new(
+                "not_found",
+                format!("conversation `{session_id}` not found"),
+            ))
+        }
+        Err(e) => {
+            return Err(TitleGenError::new(
+                "store_error",
+                format!("failed to load conversation: {e}"),
+            ))
+        }
     };
 
     // Never overwrite a manual title unless explicitly forced
@@ -1206,8 +1298,14 @@ async fn generate_conversation_title_inner(
         ));
     }
 
-    let prompt = prompt_override.or_else(|| first_message_text(&conv, true))
-        .ok_or_else(|| TitleGenError::new("empty_title", "conversation has no user message to summarize"))?;
+    let prompt = prompt_override
+        .or_else(|| first_message_text(&conv, true))
+        .ok_or_else(|| {
+            TitleGenError::new(
+                "empty_title",
+                "conversation has no user message to summarize",
+            )
+        })?;
     let assistant_text = assistant_override.or_else(|| first_message_text(&conv, false));
 
     // Resolve the utility model used for background naming
@@ -1216,7 +1314,10 @@ async fn generate_conversation_title_inner(
         Some(s) => {
             return Err(TitleGenError::new(
                 "no_utility_model",
-                format!("utility model `{}` is not available (missing API key or base URL)", s.selection_id()),
+                format!(
+                    "utility model `{}` is not available (missing API key or base URL)",
+                    s.selection_id()
+                ),
             ));
         }
         None => {
@@ -1227,11 +1328,21 @@ async fn generate_conversation_title_inner(
         }
     };
 
-    let client = thunder_agent_providers::client_for(&utility_spec, 60_000)
-        .map_err(|e| TitleGenError::new("client_error", format!("failed to create client for `{}`: {e}", utility_spec.selection_id())))?;
+    let client = thunder_agent_providers::client_for(&utility_spec, 60_000).map_err(|e| {
+        TitleGenError::new(
+            "client_error",
+            format!(
+                "failed to create client for `{}`: {e}",
+                utility_spec.selection_id()
+            ),
+        )
+    })?;
 
     let user_excerpt = truncate_chars(&prompt, 300);
-    let assistant_excerpt = assistant_text.as_deref().map(|t| truncate_chars(t, 300)).unwrap_or_default();
+    let assistant_excerpt = assistant_text
+        .as_deref()
+        .map(|t| truncate_chars(t, 300))
+        .unwrap_or_default();
 
     let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (between 4 and 10 Chinese characters or 2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
         + &user_excerpt
@@ -1255,7 +1366,15 @@ async fn generate_conversation_title_inner(
     let mut rx = client
         .stream_chat(options, cancel_token)
         .await
-        .map_err(|e| TitleGenError::new("api_error", format!("utility model `{}` request failed: {e}", utility_spec.selection_id())))?;
+        .map_err(|e| {
+            TitleGenError::new(
+                "api_error",
+                format!(
+                    "utility model `{}` request failed: {e}",
+                    utility_spec.selection_id()
+                ),
+            )
+        })?;
 
     let mut generated_title = String::new();
     while let Some(chunk) = rx.recv().await {
@@ -1263,7 +1382,9 @@ async fn generate_conversation_title_inner(
             Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Token(token)) => {
                 generated_title.push_str(&token);
             }
-            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Completed { content, .. }) => {
+            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Completed {
+                content, ..
+            }) => {
                 if let Some(c) = content {
                     if generated_title.trim().is_empty() {
                         generated_title = c;
@@ -1274,7 +1395,10 @@ async fn generate_conversation_title_inner(
             Err(e) => {
                 return Err(TitleGenError::new(
                     "api_error",
-                    format!("utility model `{}` stream error: {e}", utility_spec.selection_id()),
+                    format!(
+                        "utility model `{}` stream error: {e}",
+                        utility_spec.selection_id()
+                    ),
                 ));
             }
         }
@@ -1284,7 +1408,10 @@ async fn generate_conversation_title_inner(
     if cleaned.is_empty() {
         return Err(TitleGenError::new(
             "empty_title",
-            format!("utility model `{}` returned no usable content (raw output empty after cleaning)", utility_spec.selection_id()),
+            format!(
+                "utility model `{}` returned no usable content (raw output empty after cleaning)",
+                utility_spec.selection_id()
+            ),
         ));
     }
     let final_title = clamp_title(cleaned);
@@ -1292,11 +1419,19 @@ async fn generate_conversation_title_inner(
     // Re-load to avoid clobbering concurrent writes, then persist
     let mut conv = match store.load(session_id).await {
         Ok(Some(c)) => c,
-        _ => return Err(TitleGenError::new("store_error", format!("conversation `{session_id}` disappeared during title generation"))),
+        _ => {
+            return Err(TitleGenError::new(
+                "store_error",
+                format!("conversation `{session_id}` disappeared during title generation"),
+            ))
+        }
     };
     conv.title = Some(final_title.clone());
     conv.title_source = Some("auto".to_string());
-    conv.updated_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    conv.updated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     store
         .save(&conv)
         .await
@@ -1359,9 +1494,15 @@ mod title_tests {
         let mut conv = Conversation::new("s1");
         conv.messages.push(ChatMessage::system("sys"));
         conv.messages.push(ChatMessage::user("帮我总结新闻"));
-        conv.messages.push(ChatMessage::assistant_text("好的,总结如下"));
-        assert_eq!(first_message_text(&conv, true).as_deref(), Some("帮我总结新闻"));
-        assert_eq!(first_message_text(&conv, false).as_deref(), Some("好的,总结如下"));
+        conv.messages
+            .push(ChatMessage::assistant_text("好的,总结如下"));
+        assert_eq!(
+            first_message_text(&conv, true).as_deref(),
+            Some("帮我总结新闻")
+        );
+        assert_eq!(
+            first_message_text(&conv, false).as_deref(),
+            Some("好的,总结如下")
+        );
     }
 }
-

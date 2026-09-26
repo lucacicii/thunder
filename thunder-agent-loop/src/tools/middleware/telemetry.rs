@@ -17,7 +17,11 @@ pub struct SystemNotice {
 }
 
 impl SystemNotice {
-    pub fn new(layer: impl Into<String>, action: impl Into<String>, ground_truth: impl Into<String>) -> Self {
+    pub fn new(
+        layer: impl Into<String>,
+        action: impl Into<String>,
+        ground_truth: impl Into<String>,
+    ) -> Self {
         Self {
             layer: layer.into(),
             action: action.into(),

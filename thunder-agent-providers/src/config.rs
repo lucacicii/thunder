@@ -60,7 +60,12 @@ pub struct ModelFileConfig {
     pub default_thinking_level: Option<String>,
     #[serde(default, alias = "thinking_level_map", alias = "thinkingLevelMap")]
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
-    #[serde(default, alias = "thinking_levels_probed", alias = "thinkingLevelsProbed", alias = "probed")]
+    #[serde(
+        default,
+        alias = "thinking_levels_probed",
+        alias = "thinkingLevelsProbed",
+        alias = "probed"
+    )]
     pub thinking_levels_probed: Option<bool>,
 }
 
@@ -153,7 +158,9 @@ impl ModelsFile {
         default_thinking_level: &str,
     ) -> Result<PathBuf, ProviderError> {
         let config_path = Self::primary_config_path().ok_or_else(|| {
-            ProviderError::Config("Cannot locate primary models.json configuration path".to_string())
+            ProviderError::Config(
+                "Cannot locate primary models.json configuration path".to_string(),
+            )
         })?;
 
         let raw = if config_path.exists() {
@@ -164,8 +171,9 @@ impl ModelsFile {
             "{}".to_string()
         };
 
-        let mut root: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| ProviderError::Config(format!("Failed to parse {}: {e}", config_path.display())))?;
+        let mut root: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+            ProviderError::Config(format!("Failed to parse {}: {e}", config_path.display()))
+        })?;
 
         let mut updated = false;
 
@@ -175,9 +183,18 @@ impl ModelsFile {
                     for m in models.iter_mut() {
                         if m.get("id").and_then(|v| v.as_str()) == Some(model_id) {
                             if let Some(obj) = m.as_object_mut() {
-                                obj.insert("thinkingLevels".to_string(), serde_json::json!(thinking_levels));
-                                obj.insert("defaultThinkingLevel".to_string(), serde_json::json!(default_thinking_level));
-                                obj.insert("thinkingLevelsProbed".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "thinkingLevels".to_string(),
+                                    serde_json::json!(thinking_levels),
+                                );
+                                obj.insert(
+                                    "defaultThinkingLevel".to_string(),
+                                    serde_json::json!(default_thinking_level),
+                                );
+                                obj.insert(
+                                    "thinkingLevelsProbed".to_string(),
+                                    serde_json::json!(true),
+                                );
                                 updated = true;
                                 break;
                             }
@@ -191,11 +208,14 @@ impl ModelsFile {
             if let Some(parent) = config_path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
-            let serialized = serde_json::to_string_pretty(&root)
-                .map_err(|e| ProviderError::Config(format!("Failed to serialize models.json: {e}")))?;
+            let serialized = serde_json::to_string_pretty(&root).map_err(|e| {
+                ProviderError::Config(format!("Failed to serialize models.json: {e}"))
+            })?;
             tokio::fs::write(&config_path, serialized)
                 .await
-                .map_err(|e| ProviderError::Config(format!("Failed to write {}: {e}", config_path.display())))?;
+                .map_err(|e| {
+                    ProviderError::Config(format!("Failed to write {}: {e}", config_path.display()))
+                })?;
         }
 
         Ok(config_path)
@@ -206,7 +226,9 @@ impl ModelsFile {
         utility_model: &str,
     ) -> Result<PathBuf, ProviderError> {
         let config_path = Self::primary_config_path().ok_or_else(|| {
-            ProviderError::Config("Cannot locate primary models.json configuration path".to_string())
+            ProviderError::Config(
+                "Cannot locate primary models.json configuration path".to_string(),
+            )
         })?;
 
         let raw = if config_path.exists() {
@@ -217,8 +239,9 @@ impl ModelsFile {
             "{}".to_string()
         };
 
-        let mut root: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| ProviderError::Config(format!("Failed to parse {}: {e}", config_path.display())))?;
+        let mut root: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+            ProviderError::Config(format!("Failed to parse {}: {e}", config_path.display()))
+        })?;
 
         if let Some(obj) = root.as_object_mut() {
             obj.insert("utilityModel".to_string(), serde_json::json!(utility_model));
@@ -231,7 +254,9 @@ impl ModelsFile {
             .map_err(|e| ProviderError::Config(format!("Failed to serialize models.json: {e}")))?;
         tokio::fs::write(&config_path, serialized)
             .await
-            .map_err(|e| ProviderError::Config(format!("Failed to write {}: {e}", config_path.display())))?;
+            .map_err(|e| {
+                ProviderError::Config(format!("Failed to write {}: {e}", config_path.display()))
+            })?;
 
         Ok(config_path)
     }

@@ -68,27 +68,25 @@ impl ConversationExporter {
             }
 
             for asst in &turn.assistant_messages {
-                match asst {
-                    ChatMessage::Assistant {
-                        content,
-                        tool_calls,
-                        ..
-                    } => {
-                        if let Some(c) = content {
-                            if !c.is_empty() {
-                                md.push_str(&format!("**Assistant**:\n{}\n\n", c));
-                            }
-                        }
-                        if let Some(calls) = tool_calls {
-                            for call in calls {
-                                md.push_str(&format!(
-                                    "🔧 *Tool Call*: `{}` (id: `{}`)\n```json\n{}\n```\n\n",
-                                    call.function.name, call.id, call.function.arguments
-                                ));
-                            }
+                if let ChatMessage::Assistant {
+                    content,
+                    tool_calls,
+                    ..
+                } = asst
+                {
+                    if let Some(c) = content {
+                        if !c.is_empty() {
+                            md.push_str(&format!("**Assistant**:\n{}\n\n", c));
                         }
                     }
-                    _ => {}
+                    if let Some(calls) = tool_calls {
+                        for call in calls {
+                            md.push_str(&format!(
+                                "🔧 *Tool Call*: `{}` (id: `{}`)\n```json\n{}\n```\n\n",
+                                call.function.name, call.id, call.function.arguments
+                            ));
+                        }
+                    }
                 }
             }
 

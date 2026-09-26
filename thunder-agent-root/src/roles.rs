@@ -111,8 +111,7 @@ impl RoleSpec {
     /// Whether this role id or one of its aliases matches `token` (case-insensitive).
     pub fn matches(&self, token: &str) -> bool {
         let t = token.trim().trim_start_matches('/');
-        self.id.eq_ignore_ascii_case(t)
-            || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(t))
+        self.id.eq_ignore_ascii_case(t) || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(t))
     }
 }
 
@@ -141,7 +140,11 @@ impl RoleRegistry {
     /// `~/.thunder/roles.jsonl`. `<workspace>` wins on conflicting ids.
     pub async fn load_default(workspace: Option<&Path>) -> Self {
         let mut sources: Vec<PathBuf> = Vec::new();
-        sources.extend(Self::thunder_home().map(|dir| vec![dir.join("roles.jsonl")]).unwrap_or_default());
+        sources.extend(
+            Self::thunder_home()
+                .map(|dir| vec![dir.join("roles.jsonl")])
+                .unwrap_or_default(),
+        );
         if let Some(ws) = workspace {
             sources.push(ws.join(".arp").join("roles.jsonl"));
         }
@@ -224,10 +227,7 @@ impl RoleRegistry {
 
     /// Look up by id or alias.
     pub fn resolve(&self, token: &str) -> Option<RoleSpec> {
-        self.roles
-            .values()
-            .find(|r| r.matches(token))
-            .cloned()
+        self.roles.values().find(|r| r.matches(token)).cloned()
     }
 
     pub fn get(&self, id: &str) -> Option<&RoleSpec> {
@@ -311,7 +311,11 @@ mod tests {
         let reg = RoleRegistry::load_from_sources(vec![f]).await;
 
         assert_eq!(reg.resolve("plan").unwrap().id, "plan");
-        assert_eq!(reg.resolve("/p").unwrap().id, "plan", "alias + leading slash");
+        assert_eq!(
+            reg.resolve("/p").unwrap().id,
+            "plan",
+            "alias + leading slash"
+        );
         assert_eq!(reg.resolve("P").unwrap().id, "plan", "case-insensitive");
         assert!(reg.resolve("writer").unwrap().aliases.is_empty());
         assert!(reg.resolve("nope").is_none());
@@ -327,7 +331,10 @@ mod tests {
         )
         .await;
         let reg = RoleRegistry::load_from_sources(vec![f]).await;
-        assert_eq!(reg.get("plan").unwrap().persona.as_text(), "Line one.\nLine two.");
+        assert_eq!(
+            reg.get("plan").unwrap().persona.as_text(),
+            "Line one.\nLine two."
+        );
     }
 
     #[tokio::test]
@@ -409,7 +416,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_files_are_not_an_error() {
-        let reg = RoleRegistry::load_from_sources(vec![PathBuf::from("/nonexistent/roles.jsonl")]).await;
+        let reg =
+            RoleRegistry::load_from_sources(vec![PathBuf::from("/nonexistent/roles.jsonl")]).await;
         assert!(reg.is_empty());
     }
 

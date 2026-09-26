@@ -58,7 +58,12 @@ impl LLMClientTrait for CheckpointMockClient {
             let tool_calls_seen = options
                 .messages
                 .last()
-                .map(|m| m.content_str().unwrap_or_default().matches("write_file").count())
+                .map(|m| {
+                    m.content_str()
+                        .unwrap_or_default()
+                        .matches("write_file")
+                        .count()
+                })
                 .unwrap_or(0);
             let _ = tool_calls_seen;
             tokio::spawn(async move {
@@ -95,7 +100,10 @@ impl LLMClientTrait for CheckpointMockClient {
                         tool_calls: vec![ToolCall::new_function(
                             format!("call_{count}"),
                             "write_file",
-                            format!("{{\"path\":\"f{count}.txt\",\"content\":\"{}\"}}", "d".repeat(2000)),
+                            format!(
+                                "{{\"path\":\"f{count}.txt\",\"content\":\"{}\"}}",
+                                "d".repeat(2000)
+                            ),
                         )],
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(30),
@@ -177,17 +185,27 @@ async fn checkpoint_compaction_replaces_history_and_emits_event() {
     let mut saw_compaction_event = false;
     if let Some(mut rx) = handle.take_events() {
         while let Some(observed) = rx.recv().await {
-            if let AgentEvent::ContextCompacted { tokens_before, tokens_after, .. } = observed.event
+            if let AgentEvent::ContextCompacted {
+                tokens_before,
+                tokens_after,
+                ..
+            } = observed.event
             {
                 saw_compaction_event = true;
-                assert!(tokens_after < tokens_before, "compaction must shrink the context");
+                assert!(
+                    tokens_after < tokens_before,
+                    "compaction must shrink the context"
+                );
             }
         }
     }
     let result = handle.join().await.unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::Done);
-    assert!(saw_compaction_event, "ContextCompacted event must be emitted");
+    assert!(
+        saw_compaction_event,
+        "ContextCompacted event must be emitted"
+    );
     assert!(
         client.summary_calls.load(Ordering::SeqCst) >= 1,
         "the summarization path must have been exercised"
@@ -203,16 +221,23 @@ async fn checkpoint_compaction_replaces_history_and_emits_event() {
     );
     if let ChatMessage::System { name, content, .. } = &messages[1] {
         assert_eq!(name.as_deref(), Some(CHECKPOINT_MESSAGE_NAME));
-        assert!(content.contains("## Goal"), "structured summary format expected");
+        assert!(
+            content.contains("## Goal"),
+            "structured summary format expected"
+        );
     }
     // The raw pre-compaction transcript is preserved for hosts.
-    let raw = result.raw_messages.as_ref().expect("raw transcript preserved");
+    let raw = result
+        .raw_messages
+        .as_ref()
+        .expect("raw transcript preserved");
     assert!(
         raw.len() > messages.len(),
         "raw log must be larger than the projection"
     );
     assert!(
-        raw.iter().any(|m| matches!(m, ChatMessage::User { .. }) && m.content_str() == Some("please do the work")),
+        raw.iter().any(|m| matches!(m, ChatMessage::User { .. })
+            && m.content_str() == Some("please do the work")),
         "raw log retains the original user message"
     );
 }

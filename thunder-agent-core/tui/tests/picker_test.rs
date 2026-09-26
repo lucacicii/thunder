@@ -55,7 +55,10 @@ async fn test_app_interactive_pickers_integration() {
 
     // 1. /model with an explicit id still switches immediately
     app.execute_slash_command("/model anthropic/claude-3-7-sonnet-latest", tx.clone());
-    assert_eq!(app.model.selection_id(), "anthropic/claude-3-7-sonnet-latest");
+    assert_eq!(
+        app.model.selection_id(),
+        "anthropic/claude-3-7-sonnet-latest"
+    );
 
     // 2. Trigger /mode without args -> opens mode picker
     app.execute_slash_command("/mode", tx.clone());
@@ -63,8 +66,14 @@ async fn test_app_interactive_pickers_integration() {
     assert_eq!(app.picker.kind, PickerKind::SelectMode);
 
     // Navigate to Single Agent
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.execution_mode, ExecutionMode::SingleAgent);
 }
 
@@ -86,13 +95,18 @@ async fn test_selecting_skill_attaches_handler_without_dumping_playbook() {
 
     let handle = app.active_skill.expect("skill handler should be attached");
     assert_eq!(handle.name, "code-review");
-    assert!(!handle.system_prompt_fragment().contains("## Review Instructions"));
+    assert!(!handle
+        .system_prompt_fragment()
+        .contains("## Review Instructions"));
 
     let dumped = app.conversation.messages.iter().any(|m| match m {
-        thunder_agent_loop::types::message::ChatMessage::Assistant { content: Some(c), .. } => {
-            c.contains("## Review Instructions") || c.contains("prompt_instructions")
-        }
+        thunder_agent_loop::types::message::ChatMessage::Assistant {
+            content: Some(c), ..
+        } => c.contains("## Review Instructions") || c.contains("prompt_instructions"),
         _ => false,
     });
-    assert!(!dumped, "full skill playbook must not be dumped into TUI chat");
+    assert!(
+        !dumped,
+        "full skill playbook must not be dumped into TUI chat"
+    );
 }

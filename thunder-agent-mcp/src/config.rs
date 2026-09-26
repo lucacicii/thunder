@@ -85,23 +85,32 @@ impl McpConfig {
 
         // 2. Try raw `{ "server_a": { "command": "..." } }` map
         if let Ok(servers) = serde_json::from_str::<HashMap<String, McpServerConfig>>(content) {
-            return Ok(McpConfig { mcp_servers: servers });
+            return Ok(McpConfig {
+                mcp_servers: servers,
+            });
         }
 
         // Return deserialization error
-        serde_json::from_str::<McpConfig>(content)
-            .map_err(|e| McpError::SerializationError(format!("Failed to parse MCP config JSON: {e}")))
+        serde_json::from_str::<McpConfig>(content).map_err(|e| {
+            McpError::SerializationError(format!("Failed to parse MCP config JSON: {e}"))
+        })
     }
 
     /// Load configuration from a file.
     pub async fn from_file(path: impl AsRef<Path>) -> Result<Self, McpError> {
         let p = path.as_ref();
         if !p.exists() {
-            return Err(McpError::IoError(format!("MCP config file not found: {}", p.display())));
+            return Err(McpError::IoError(format!(
+                "MCP config file not found: {}",
+                p.display()
+            )));
         }
 
         let content = tokio::fs::read_to_string(p).await.map_err(|e| {
-            McpError::IoError(format!("Failed to read MCP config file {}: {e}", p.display()))
+            McpError::IoError(format!(
+                "Failed to read MCP config file {}: {e}",
+                p.display()
+            ))
         })?;
 
         Self::parse_json(&content)
@@ -123,7 +132,9 @@ impl McpConfig {
             candidates.push(home_path.join("mcp_servers.json"));
             candidates.push(home_path.join(".cursor/mcp.json"));
             candidates.push(home_path.join(".claude.json"));
-            candidates.push(home_path.join("Library/Application Support/Claude/claude_desktop_config.json"));
+            candidates.push(
+                home_path.join("Library/Application Support/Claude/claude_desktop_config.json"),
+            );
             candidates.push(home_path.join(".config/claude/claude_desktop_config.json"));
         }
 
@@ -154,7 +165,11 @@ impl McpConfig {
         out.push_str("|---|---|---|---|\n");
 
         for (name, srv) in &self.mcp_servers {
-            let status = if srv.disabled { "⏸ Disabled" } else { "🟢 Enabled" };
+            let status = if srv.disabled {
+                "⏸ Disabled"
+            } else {
+                "🟢 Enabled"
+            };
             out.push_str(&format!(
                 "| **`{}`** | `{}` | `{}` | {} |\n",
                 name,

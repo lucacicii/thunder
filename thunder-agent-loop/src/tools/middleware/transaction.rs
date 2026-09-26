@@ -123,7 +123,8 @@ impl TransactionMiddleware {
     }
 
     pub fn default_for_workspace(ws: Option<PathBuf>) -> Self {
-        let root = ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let root =
+            ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         Self::new(root)
     }
 
@@ -222,9 +223,13 @@ impl TransactionMiddleware {
         let write_future = async {
             // Ensure parent directory of target exists
             if let Some(parent) = target_path.parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| format!("Failed to create parent directory '{}': {}", parent.display(), e))?;
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    format!(
+                        "Failed to create parent directory '{}': {}",
+                        parent.display(),
+                        e
+                    )
+                })?;
             }
 
             // Write to shadow temp file
@@ -234,7 +239,13 @@ impl TransactionMiddleware {
                 .truncate(true)
                 .open(&temp_path)
                 .await
-                .map_err(|e| format!("Failed to open temp shadow file '{}': {}", temp_path.display(), e))?;
+                .map_err(|e| {
+                    format!(
+                        "Failed to open temp shadow file '{}': {}",
+                        temp_path.display(),
+                        e
+                    )
+                })?;
 
             file.write_all(content.as_bytes())
                 .await
@@ -257,10 +268,11 @@ impl TransactionMiddleware {
                     guard.commit();
                     Ok(())
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                Err(err) if is_cross_device(&err) => {
                     // Fallback for cross-device mount links: use hidden temp in target's parent dir
                     if let Some(parent) = target_path.parent() {
-                        let fallback_name = format!(".{}.tmp", temp_path.file_name().unwrap().to_string_lossy());
+                        let fallback_name =
+                            format!(".{}.tmp", temp_path.file_name().unwrap().to_string_lossy());
                         let fallback_temp = parent.join(fallback_name);
                         let mut fallback_guard = TempFileGuard::new(fallback_temp.clone());
 
@@ -368,7 +380,8 @@ impl ToolMiddleware for TransactionMiddleware {
         if call.function.name == "write_file" {
             let start = Instant::now();
 
-            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&call.function.arguments);
+            let parsed: Result<serde_json::Value, _> =
+                serde_json::from_str(&call.function.arguments);
             let args = match parsed {
                 Ok(v) => v,
                 Err(err) => {
@@ -390,12 +403,17 @@ impl ToolMiddleware for TransactionMiddleware {
                     p.to_path_buf()
                 };
 
-                match self.execute_atomic_write(target_path, content_str, ctx, timeout).await {
+                match self
+                    .execute_atomic_write(target_path, content_str, ctx, timeout)
+                    .await
+                {
                     Ok((output_msg, notice)) => {
-                        return ToolExecutionResult::success(output_msg, start.elapsed()).with_telemetry(notice);
+                        return ToolExecutionResult::success(output_msg, start.elapsed())
+                            .with_telemetry(notice);
                     }
                     Err((err_msg, notice)) => {
-                        return ToolExecutionResult::error(err_msg, start.elapsed()).with_telemetry(notice);
+                        return ToolExecutionResult::error(err_msg, start.elapsed())
+                            .with_telemetry(notice);
                     }
                 }
             }
@@ -403,6 +421,27 @@ impl ToolMiddleware for TransactionMiddleware {
 
         // Pass through non-write tools to the next middleware
         next.handle(call, ctx, timeout).await
+    }
+}
+
+/// Cross-device rename detection.
+///
+/// `std::io::ErrorKind::CrossesDevices` is only stable since Rust 1.85, while
+/// this crate targets Rust 1.80, so we match the raw OS error code instead.
+fn is_cross_device(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        err.raw_os_error() == Some(libc::EXDEV)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE
+        err.raw_os_error() == Some(17)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = err;
+        false
     }
 }
 
@@ -428,7 +467,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_atomic_write_success_and_telemetry() {
-        let test_root = std::env::temp_dir().join(format!("thunder_atomic_test_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        let test_root = std::env::temp_dir().join(format!(
+            "thunder_atomic_test_{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = std::fs::create_dir_all(&test_root);
         let ws = test_root.clone();
         let middleware = TransactionMiddleware::new(&ws);
@@ -459,13 +504,21 @@ mod tests {
         let content = std::fs::read_to_string(&target_file).expect("read");
         assert_eq!(content, "Hello Atomic Thunder!");
         assert!(result.output.contains("[System Telemetry: Transaction"));
-        assert!(result.output.contains("Atomic shadow write & rename completed"));
+        assert!(result
+            .output
+            .contains("Atomic shadow write & rename completed"));
         let _ = std::fs::remove_dir_all(&test_root);
     }
 
     #[tokio::test]
     async fn test_atomic_write_cancellation_preserves_original() {
-        let test_root = std::env::temp_dir().join(format!("thunder_atomic_test_cancel_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        let test_root = std::env::temp_dir().join(format!(
+            "thunder_atomic_test_cancel_{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = std::fs::create_dir_all(&test_root);
         let ws = test_root.clone();
         let middleware = TransactionMiddleware::new(&ws);
@@ -506,7 +559,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_writes_are_serialized_safely() {
-        let test_root = std::env::temp_dir().join(format!("thunder_atomic_concurrent_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        let test_root = std::env::temp_dir().join(format!(
+            "thunder_atomic_concurrent_{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = std::fs::create_dir_all(&test_root);
         let ws = test_root.clone();
         let middleware = Arc::new(TransactionMiddleware::new(&ws));

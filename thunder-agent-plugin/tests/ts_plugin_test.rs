@@ -20,7 +20,11 @@ async fn test_ts_plugin_lifecycle_and_hot_reload() {
     let runner_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("runner")
         .join("host.mjs");
-    assert!(runner_path.exists(), "Runner script must exist at {:?}", runner_path);
+    assert!(
+        runner_path.exists(),
+        "Runner script must exist at {:?}",
+        runner_path
+    );
 
     // 1. Create a sample TypeScript plugin
     let plugin_file = plugins_dir.join("calc_plugin.ts");
@@ -101,7 +105,10 @@ export default definePlugin({
 
     // Verify ctx.fs.writeFile created file atomically in workspace
     let written_file = ws_dir.join("result.txt");
-    assert!(written_file.exists(), "result.txt should be written via atomic delegation");
+    assert!(
+        written_file.exists(),
+        "result.txt should be written via atomic delegation"
+    );
     let content = tokio::fs::read_to_string(&written_file).await.unwrap();
     assert_eq!(content, "Result: 42");
 
@@ -133,7 +140,10 @@ export default definePlugin({
         .await
         .expect("Execution should succeed");
 
-    assert_eq!(result_v2, "Sum: 30", "Should reflect updated hot-reloaded code");
+    assert_eq!(
+        result_v2, "Sum: 30",
+        "Should reflect updated hot-reloaded code"
+    );
 
     // 5. Test Syntax Error Immunity: Saving invalid code does NOT crash or unload
     let invalid_ts = r#"
@@ -151,7 +161,10 @@ export default definePlugin({
         .await
         .expect("Execution should continue using prior active version");
 
-    assert_eq!(result_v3, "Sum: 10", "Should remain on working version despite syntax error");
+    assert_eq!(
+        result_v3, "Sum: 10",
+        "Should remain on working version despite syntax error"
+    );
 }
 
 /// Security: a read-only role must not be bypassed through the plugin RPC

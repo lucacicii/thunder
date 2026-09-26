@@ -13,7 +13,11 @@ pub struct JsonRpcRequest {
 }
 
 impl JsonRpcRequest {
-    pub fn new(id: impl Into<serde_json::Value>, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+    pub fn new(
+        id: impl Into<serde_json::Value>,
+        method: impl Into<String>,
+        params: Option<serde_json::Value>,
+    ) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id: id.into(),
@@ -187,7 +191,10 @@ impl CallToolResult {
                     if !out.is_empty() {
                         out.push('\n');
                     }
-                    out.push_str(&format!("[Resource {uri}]: {}", text.as_deref().unwrap_or("")));
+                    out.push_str(&format!(
+                        "[Resource {uri}]: {}",
+                        text.as_deref().unwrap_or("")
+                    ));
                 }
             }
         }

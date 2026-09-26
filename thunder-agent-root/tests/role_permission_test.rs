@@ -74,7 +74,10 @@ async fn tools_for(permission: Permission) -> Vec<String> {
         pause_gate: None,
     };
 
-    let handle = root.execute("probe tools", options).await.expect("root execute");
+    let handle = root
+        .execute("probe tools", options)
+        .await
+        .expect("root execute");
     handle.join().await.expect("join");
 
     let out = seen.lock().await.clone();
@@ -84,9 +87,18 @@ async fn tools_for(permission: Permission) -> Vec<String> {
 #[tokio::test]
 async fn read_role_exposes_only_read_file() {
     let tools = tools_for(Permission::Read).await;
-    assert!(tools.contains(&"read_file".to_string()), "read_file present: {tools:?}");
-    assert!(!tools.contains(&"write_file".to_string()), "write_file must be absent: {tools:?}");
-    assert!(!tools.contains(&"bash".to_string()), "bash must be absent: {tools:?}");
+    assert!(
+        tools.contains(&"read_file".to_string()),
+        "read_file present: {tools:?}"
+    );
+    assert!(
+        !tools.contains(&"write_file".to_string()),
+        "write_file must be absent: {tools:?}"
+    );
+    assert!(
+        !tools.contains(&"bash".to_string()),
+        "bash must be absent: {tools:?}"
+    );
 }
 
 #[tokio::test]
@@ -94,13 +106,19 @@ async fn write_role_adds_write_file_but_not_bash() {
     let tools = tools_for(Permission::Write).await;
     assert!(tools.contains(&"read_file".to_string()), "{tools:?}");
     assert!(tools.contains(&"write_file".to_string()), "{tools:?}");
-    assert!(!tools.contains(&"bash".to_string()), "bash must be absent: {tools:?}");
+    assert!(
+        !tools.contains(&"bash".to_string()),
+        "bash must be absent: {tools:?}"
+    );
 }
 
 #[tokio::test]
 async fn bash_role_exposes_all_three() {
     let tools = tools_for(Permission::Bash).await;
     for expected in ["read_file", "write_file", "bash"] {
-        assert!(tools.contains(&expected.to_string()), "{expected} missing: {tools:?}");
+        assert!(
+            tools.contains(&expected.to_string()),
+            "{expected} missing: {tools:?}"
+        );
     }
 }

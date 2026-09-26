@@ -12,7 +12,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // running against a fake model when a real one is being used).
     if args.iter().any(|a| a == "--mock") {
         eprintln!("✖ `--mock` has been removed: the TUI no longer ships a mock mode.");
-        eprintln!("  Configure a provider in ~/.thunder/models.json + auth.json and use a real model.");
+        eprintln!(
+            "  Configure a provider in ~/.thunder/models.json + auth.json and use a real model."
+        );
         std::process::exit(2);
     }
 
@@ -34,7 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !available.iter().any(|m| m.available) {
         eprintln!("⚠  No provider credentials found (~/.thunder/auth.json).");
-        eprintln!("   Runs will fail until a provider is configured; use /model to switch afterwards.");
+        eprintln!(
+            "   Runs will fail until a provider is configured; use /model to switch afterwards."
+        );
     }
 
     let store_root = FsConversationStore::default_store_root();

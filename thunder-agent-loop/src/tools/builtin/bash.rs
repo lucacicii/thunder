@@ -58,7 +58,11 @@ impl AgentTool for BashTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let command = args
             .get("command")
             .and_then(|v| v.as_str())
@@ -190,14 +194,21 @@ impl AgentTool for BashTool {
             combined = if status.success() {
                 "(Command executed successfully with no output)".to_string()
             } else {
-                format!("(Command exited with status {:?} and no output)", status.code())
+                format!(
+                    "(Command exited with status {:?} and no output)",
+                    status.code()
+                )
             };
         }
 
         if status.success() {
             Ok(combined)
         } else {
-            Err(format!("Process exit error ({:?}):\n{}", status.code(), combined))
+            Err(format!(
+                "Process exit error ({:?}):\n{}",
+                status.code(),
+                combined
+            ))
         }
     }
 }
@@ -205,6 +216,10 @@ impl AgentTool for BashTool {
 #[cfg(unix)]
 fn kill_process_tree(child: &tokio::process::Child) {
     if let Some(pid) = child.id() {
+        // SAFETY: `kill(2)` is async-signal-safe and takes only the PID we just
+        // read from the child handle plus a constant signal number. Negative pid
+        // targets the child's process group so shell-spawned grandchildren die too.
+        #[allow(unsafe_code)]
         unsafe {
             let _ = libc::kill(-(pid as i32), libc::SIGKILL);
         }

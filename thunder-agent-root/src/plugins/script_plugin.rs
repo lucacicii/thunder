@@ -73,19 +73,21 @@ impl ThunderPlugin for ScriptPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        futures_util::FutureExt::now_or_never(async {
-            self.cached_tools.read().await.clone()
-        }).unwrap_or_default()
+        futures_util::FutureExt::now_or_never(async { self.cached_tools.read().await.clone() })
+            .unwrap_or_default()
     }
 
     fn system_prompt_contribution(&self) -> Option<String> {
-        futures_util::FutureExt::now_or_never(async {
-            self.cached_prompt.read().await.clone()
-        }).unwrap_or_default()
+        futures_util::FutureExt::now_or_never(async { self.cached_prompt.read().await.clone() })
+            .unwrap_or_default()
     }
 
     async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        let ws = ctx.workspace_dir.clone().or_else(|| self.workspace_dir.clone()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let ws = ctx
+            .workspace_dir
+            .clone()
+            .or_else(|| self.workspace_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         let mut lock = self.engine.write().await;
         if lock.is_none() {
@@ -103,7 +105,9 @@ impl ThunderPlugin for ScriptPlugin {
 
     async fn on_event(&self, event: &ObservedEvent, ctx: &PluginContext) {
         if let Some(engine) = self.engine.read().await.as_ref() {
-            engine.dispatch_event(event, &ctx.session_id, ctx.workspace_dir.as_ref()).await;
+            engine
+                .dispatch_event(event, &ctx.session_id, ctx.workspace_dir.as_ref())
+                .await;
         }
     }
 }

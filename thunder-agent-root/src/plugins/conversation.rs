@@ -69,7 +69,12 @@ impl ThunderPlugin for ConversationPlugin {
 
     async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
         let mut active = self.active_conversation.write().await;
-        if active.is_none() || active.as_ref().map(|c| c.id != ctx.session_id).unwrap_or(false) {
+        if active.is_none()
+            || active
+                .as_ref()
+                .map(|c| c.id != ctx.session_id)
+                .unwrap_or(false)
+        {
             // Load or initialize conversation for this session
             let loaded = self
                 .store
@@ -80,7 +85,9 @@ impl ThunderPlugin for ConversationPlugin {
             let conv = loaded.unwrap_or_else(|| {
                 Conversation::new(&ctx.session_id)
                     .with_title("Thunder Root Session")
-                    .with_system_prompt("You are a helpful, fast, autonomous AI engineering assistant.")
+                    .with_system_prompt(
+                        "You are a helpful, fast, autonomous AI engineering assistant.",
+                    )
             });
 
             *active = Some(conv);
@@ -114,11 +121,7 @@ impl ThunderPlugin for ConversationPlugin {
                     result,
                     ..
                 } => {
-                    conv.add_tool_message(
-                        tool_call_id,
-                        result.output.clone(),
-                        Some(name.clone()),
-                    );
+                    conv.add_tool_message(tool_call_id, result.output.clone(), Some(name.clone()));
                 }
                 AgentEvent::TurnEnd { .. } => {
                     // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
@@ -129,14 +132,24 @@ impl ThunderPlugin for ConversationPlugin {
         }
     }
 
-    async fn on_finish(&self, result: &AgentRunResult, _ctx: &PluginContext) -> Result<(), PluginError> {
+    async fn on_finish(
+        &self,
+        result: &AgentRunResult,
+        _ctx: &PluginContext,
+    ) -> Result<(), PluginError> {
         let mut active = self.active_conversation.write().await;
         if let Some(conv) = active.as_mut() {
             if let Some(final_text) = &result.final_content {
-                let already_present = conv.messages.last().map(|m| match m {
-                    ChatMessage::Assistant { content: Some(c), .. } => c == final_text,
-                    _ => false,
-                }).unwrap_or(false);
+                let already_present = conv
+                    .messages
+                    .last()
+                    .map(|m| match m {
+                        ChatMessage::Assistant {
+                            content: Some(c), ..
+                        } => c == final_text,
+                        _ => false,
+                    })
+                    .unwrap_or(false);
 
                 if !already_present && !final_text.is_empty() {
                     conv.add_assistant_message(Some(final_text.clone()), None);

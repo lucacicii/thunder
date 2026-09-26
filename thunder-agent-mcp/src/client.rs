@@ -20,7 +20,10 @@ pub struct McpClient {
 
 impl McpClient {
     /// Connect to an external MCP server process via stdio transport.
-    pub async fn connect_stdio(name: impl Into<String>, config: &McpServerConfig) -> Result<Self, McpError> {
+    pub async fn connect_stdio(
+        name: impl Into<String>,
+        config: &McpServerConfig,
+    ) -> Result<Self, McpError> {
         let server_name = name.into();
         let transport = StdioTransport::spawn(&server_name, config).await?;
         let client = Self::from_transport(server_name, Arc::new(transport));
@@ -32,7 +35,10 @@ impl McpClient {
     }
 
     /// Construct an McpClient from any transport implementation.
-    pub fn from_transport(server_name: impl Into<String>, transport: Arc<dyn McpTransport>) -> Self {
+    pub fn from_transport(
+        server_name: impl Into<String>,
+        transport: Arc<dyn McpTransport>,
+    ) -> Self {
         Self {
             server_name: server_name.into(),
             transport,
@@ -63,7 +69,10 @@ impl McpClient {
         let req = JsonRpcRequest::new(
             id,
             "initialize",
-            Some(serde_json::to_value(&params).map_err(|e| McpError::SerializationError(e.to_string()))?),
+            Some(
+                serde_json::to_value(&params)
+                    .map_err(|e| McpError::SerializationError(e.to_string()))?,
+            ),
         );
 
         let resp = self.transport.send_request(req).await?;
@@ -80,8 +89,9 @@ impl McpClient {
             McpError::ProtocolError("Missing result in initialize response".to_string())
         })?;
 
-        let init_result: InitializeResult = serde_json::from_value(result_val)
-            .map_err(|e| McpError::ProtocolError(format!("Failed to deserialize initialize result: {e}")))?;
+        let init_result: InitializeResult = serde_json::from_value(result_val).map_err(|e| {
+            McpError::ProtocolError(format!("Failed to deserialize initialize result: {e}"))
+        })?;
 
         {
             let mut info_guard = self.server_info.write().await;
@@ -122,8 +132,9 @@ impl McpClient {
             McpError::ProtocolError("Missing result in tools/list response".to_string())
         })?;
 
-        let list_res: ListToolsResult = serde_json::from_value(result_val)
-            .map_err(|e| McpError::ProtocolError(format!("Failed to deserialize tools/list result: {e}")))?;
+        let list_res: ListToolsResult = serde_json::from_value(result_val).map_err(|e| {
+            McpError::ProtocolError(format!("Failed to deserialize tools/list result: {e}"))
+        })?;
 
         Ok(list_res.tools)
     }
@@ -143,7 +154,10 @@ impl McpClient {
         let req = JsonRpcRequest::new(
             id,
             "tools/call",
-            Some(serde_json::to_value(&params).map_err(|e| McpError::SerializationError(e.to_string()))?),
+            Some(
+                serde_json::to_value(&params)
+                    .map_err(|e| McpError::SerializationError(e.to_string()))?,
+            ),
         );
 
         let resp = self.transport.send_request(req).await?;
@@ -160,8 +174,9 @@ impl McpClient {
             McpError::ProtocolError("Missing result in tools/call response".to_string())
         })?;
 
-        let call_res: CallToolResult = serde_json::from_value(result_val)
-            .map_err(|e| McpError::ProtocolError(format!("Failed to deserialize tools/call result: {e}")))?;
+        let call_res: CallToolResult = serde_json::from_value(result_val).map_err(|e| {
+            McpError::ProtocolError(format!("Failed to deserialize tools/call result: {e}"))
+        })?;
 
         Ok(call_res)
     }

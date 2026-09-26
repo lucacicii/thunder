@@ -5,9 +5,7 @@ use crate::model::BridgeModel;
 use crate::process::{default_bridge_dir, PiAiBridge};
 use async_trait::async_trait;
 use std::sync::Arc;
-use thunder_agent_loop::stream::client::{
-    ChatRequestOptions, LLMClientTrait, LLMStreamChunk,
-};
+use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -75,7 +73,9 @@ impl LLMClientTrait for PiAiClient {
     ) -> Result<mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
         let bridge = match &self.bridge {
             Some(b) => Arc::clone(b),
-            None => global_bridge().await.map_err(|e| format!("pi-ai bridge init failed: {e}"))?,
+            None => global_bridge()
+                .await
+                .map_err(|e| format!("pi-ai bridge init failed: {e}"))?,
         };
         let id = bridge.next_request_id();
 
@@ -132,7 +132,8 @@ impl LLMClientTrait for PiAiClient {
 /// Launch failures are NOT cached: a missing node/npm on first call can be
 /// fixed and the next call retries transparently.
 pub async fn global_bridge() -> Result<Arc<PiAiBridge>, String> {
-    static GLOBAL: tokio::sync::Mutex<Option<Arc<PiAiBridge>>> = tokio::sync::Mutex::const_new(None);
+    static GLOBAL: tokio::sync::Mutex<Option<Arc<PiAiBridge>>> =
+        tokio::sync::Mutex::const_new(None);
     let mut guard = GLOBAL.lock().await;
     if let Some(bridge) = guard.as_ref() {
         return Ok(Arc::clone(bridge));

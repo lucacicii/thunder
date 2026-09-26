@@ -9,7 +9,9 @@ use thunder_pi_bridge::{PiAiBridge, PiAiClient};
 use tokio_util::sync::CancellationToken;
 
 fn fake_pi_ai_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fake_pi_ai")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fake_pi_ai")
 }
 
 async fn node_available() -> bool {
@@ -29,13 +31,10 @@ async fn launch_test_bridge() -> Option<Arc<PiAiBridge>> {
         return None;
     }
     let dir = std::env::temp_dir().join(format!("thunder-bridge-test-{}", std::process::id()));
-    let bridge = PiAiBridge::launch_with_timeout(
-        dir,
-        Some(fake_pi_ai_dir()),
-        Duration::from_secs(20),
-    )
-    .await
-    .expect("bridge should launch against the fake pi-ai");
+    let bridge =
+        PiAiBridge::launch_with_timeout(dir, Some(fake_pi_ai_dir()), Duration::from_secs(20))
+            .await
+            .expect("bridge should launch against the fake pi-ai");
     Some(bridge)
 }
 
@@ -52,11 +51,14 @@ fn echo_request() -> ChatRequestOptions {
         messages: vec![
             ChatMessage::system("You are the test system prompt"),
             ChatMessage::user("hello bridge"),
-            ChatMessage::assistant(None, Some(vec![ToolCall::new_function(
-                "call_9",
-                "bash",
-                r#"{"command":"ls"}"#,
-            )])),
+            ChatMessage::assistant(
+                None,
+                Some(vec![ToolCall::new_function(
+                    "call_9",
+                    "bash",
+                    r#"{"command":"ls"}"#,
+                )]),
+            ),
             ChatMessage::tool("call_9", "file_a\nfile_b", Some("bash".to_string())),
         ],
         tools: vec![ToolDefinition::new_function(
@@ -75,11 +77,16 @@ fn echo_request() -> ChatRequestOptions {
 
 #[tokio::test]
 async fn bridge_maps_stream_end_to_end() {
-    let Some(bridge) = launch_test_bridge().await else { return };
+    let Some(bridge) = launch_test_bridge().await else {
+        return;
+    };
 
     let client = PiAiClient::new(bridge, echo_model(), 30_000);
     let cancel = CancellationToken::new();
-    let mut rx = client.stream_chat(echo_request(), cancel).await.expect("stream should start");
+    let mut rx = client
+        .stream_chat(echo_request(), cancel)
+        .await
+        .expect("stream should start");
 
     let mut text = String::new();
     let mut reasoning = String::new();
@@ -134,14 +141,19 @@ async fn bridge_maps_stream_end_to_end() {
 
 #[tokio::test]
 async fn bridge_maps_error_events() {
-    let Some(bridge) = launch_test_bridge().await else { return };
+    let Some(bridge) = launch_test_bridge().await else {
+        return;
+    };
 
     let mut model = echo_model();
     model.id = "error-model".into();
     let client = PiAiClient::new(bridge, model, 30_000);
 
     let cancel = CancellationToken::new();
-    let mut rx = client.stream_chat(echo_request(), cancel).await.expect("stream should start");
+    let mut rx = client
+        .stream_chat(echo_request(), cancel)
+        .await
+        .expect("stream should start");
 
     let mut saw_error = false;
     while let Some(chunk) = rx.recv().await {
@@ -156,7 +168,9 @@ async fn bridge_maps_error_events() {
 
 #[tokio::test]
 async fn bridge_cancellation_aborts_stream() {
-    let Some(bridge) = launch_test_bridge().await else { return };
+    let Some(bridge) = launch_test_bridge().await else {
+        return;
+    };
 
     let mut model = echo_model();
     model.id = "slow-model".into();
@@ -213,6 +227,9 @@ async fn bridge_bootstraps_runner_files_into_bridge_dir() {
     assert!(dir.join("package.json").exists());
 
     // list_models must answer (fake has no providers/all → empty catalog, not an error)
-    let models = bridge.list_models().await.expect("list_models should respond");
+    let models = bridge
+        .list_models()
+        .await
+        .expect("list_models should respond");
     assert!(models.is_empty());
 }

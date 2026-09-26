@@ -37,28 +37,58 @@ async fn test_slash_command_enter_and_tab_autocomplete() {
     let (tx, _rx) = mpsc::unbounded_channel();
 
     // 1. Typing '/' and pressing Enter should autocomplete to the first command (e.g. /resume )
-    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.input, "/");
 
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.input, "/resume ");
 
     // 2. Typing '/sk' and pressing Tab should autocomplete to '/skills '
     app.input.clear();
-    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.input, "/sk");
 
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.input, "/skills ");
 
     // 3. Typing '/re' and pressing Down arrow then Enter should select
     app.input.clear();
-    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()), tx.clone());
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx.clone());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        tx.clone(),
+    );
     assert_eq!(app.input, "/resume ");
 }
 
@@ -75,7 +105,9 @@ async fn test_slash_commands_execution_flow() {
     assert!(handled);
     let last_msg = app.conversation.messages.last().unwrap();
     let content = match last_msg {
-        thunder_agent_loop::types::message::ChatMessage::Assistant { content, .. } => content.clone().unwrap(),
+        thunder_agent_loop::types::message::ChatMessage::Assistant { content, .. } => {
+            content.clone().unwrap()
+        }
         _ => panic!("Expected assistant message"),
     };
     assert!(content.contains("Thunder TUI Slash Commands Reference"));
@@ -99,7 +131,10 @@ async fn test_slash_commands_execution_flow() {
     }];
     app.execute_slash_command("/resume", tx.clone());
     assert!(app.picker.is_open);
-    assert_eq!(app.picker.kind, thunder_tui::picker::PickerKind::ResumeSession);
+    assert_eq!(
+        app.picker.kind,
+        thunder_tui::picker::PickerKind::ResumeSession
+    );
     app.picker.close();
 
     // 3. Test /model
@@ -121,7 +156,9 @@ async fn test_slash_commands_execution_flow() {
     app.execute_slash_command("/stats", tx.clone());
     let stats_msg = app.conversation.messages.last().unwrap();
     let stats_text = match stats_msg {
-        thunder_agent_loop::types::message::ChatMessage::Assistant { content, .. } => content.clone().unwrap(),
+        thunder_agent_loop::types::message::ChatMessage::Assistant { content, .. } => {
+            content.clone().unwrap()
+        }
         _ => panic!("Expected assistant message"),
     };
     assert!(stats_text.contains("Session Statistics"));

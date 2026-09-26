@@ -63,10 +63,7 @@ impl SecurityGuardMiddleware {
 
     /// Grant extra roots (e.g. referenced repositories) the same read/write
     /// standing as the primary workspace.
-    pub fn with_extra_roots(
-        mut self,
-        roots: impl IntoIterator<Item = impl Into<PathBuf>>,
-    ) -> Self {
+    pub fn with_extra_roots(mut self, roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
         for root in roots {
             let raw: PathBuf = root.into();
             let canonical = normalize_path(&raw.canonicalize().unwrap_or(raw));
@@ -101,7 +98,9 @@ impl SecurityGuardMiddleware {
 
     /// Whether a normalized absolute path is jailed in (contained in any root).
     fn is_allowed(&self, normalized: &Path) -> bool {
-        self.allowed_roots.iter().any(|root| normalized.starts_with(root))
+        self.allowed_roots
+            .iter()
+            .any(|root| normalized.starts_with(root))
     }
 
     /// Normalizes and validates whether a target path is within the multi-root jail.
@@ -139,7 +138,10 @@ impl SecurityGuardMiddleware {
         if target.contains('$') || target.contains('`') || target.contains('~') {
             return Ok(());
         }
-        if DEVICE_ALLOWLIST.iter().any(|dev| target == *dev || target.starts_with(&format!("{}/fd/", dev))) {
+        if DEVICE_ALLOWLIST
+            .iter()
+            .any(|dev| target == *dev || target.starts_with(&format!("{}/fd/", dev)))
+        {
             return Ok(());
         }
         let normalized = normalize_path(&resolve_for_check(Path::new(target)));
@@ -160,13 +162,14 @@ impl SecurityGuardMiddleware {
         let trimmed = command.trim();
         for forbidden in &self.forbidden_commands {
             if trimmed.contains(forbidden) {
-                return Err(format!("Forbidden high-risk command pattern detected: '{}'", forbidden));
+                return Err(format!(
+                    "Forbidden high-risk command pattern detected: '{}'",
+                    forbidden
+                ));
             }
         }
         for target in extract_write_targets(trimmed) {
-            if let Err(violation) = self.check_static_target(&target) {
-                return Err(violation);
-            }
+            self.check_static_target(&target)?;
         }
         Ok(())
     }
@@ -196,7 +199,7 @@ fn extract_write_targets(command: &str) -> Vec<String> {
 
     while i < tokens.len() {
         let raw = tokens[i];
-        let tok = raw.trim_end_matches(|c| c == ';' || c == ',');
+        let tok = raw.trim_end_matches([';', ',']);
         let bare = tok.trim_matches(|c| c == '"' || c == '\'');
 
         if SEPARATORS.contains(&bare) || bare == ";" {
@@ -390,8 +393,11 @@ impl ToolMiddleware for SecurityGuardMiddleware {
                         self.roots_display()
                     ));
 
-                    return ToolExecutionResult::error(format!("Access Denied: {}", violation), start.elapsed())
-                        .with_telemetry(notice);
+                    return ToolExecutionResult::error(
+                        format!("Access Denied: {}", violation),
+                        start.elapsed(),
+                    )
+                    .with_telemetry(notice);
                 }
             }
 
@@ -408,8 +414,11 @@ impl ToolMiddleware for SecurityGuardMiddleware {
                         self.roots_display()
                     ));
 
-                    return ToolExecutionResult::error(format!("Access Denied: {}", violation), start.elapsed())
-                        .with_telemetry(notice);
+                    return ToolExecutionResult::error(
+                        format!("Access Denied: {}", violation),
+                        start.elapsed(),
+                    )
+                    .with_telemetry(notice);
                 }
             }
 
@@ -418,8 +427,9 @@ impl ToolMiddleware for SecurityGuardMiddleware {
                 if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                     if let Err(violation) = self.check_command(cmd) {
                         let is_write_escape = violation.starts_with("Shell write target");
-                        let (action, ground_truth, guidance): (&str, &str, String) = if is_write_escape {
-                            (
+                        let (action, ground_truth, guidance): (&str, &str, String) =
+                            if is_write_escape {
+                                (
                                 "Out-of-jail shell write blocked",
                                 "No file system modifications were performed. Command was halted at security perimeter.",
                                 format!(
@@ -427,19 +437,22 @@ impl ToolMiddleware for SecurityGuardMiddleware {
                                     self.roots_display()
                                 ),
                             )
-                        } else {
-                            (
+                            } else {
+                                (
                                 "Forbidden destructive command blocked",
                                 "Command was intercepted before being dispatched to the shell subsystem.",
                                 "Dangerous destructive shell operations are disabled by safety guardrails.".to_string(),
                             )
-                        };
+                            };
 
                         let notice = SystemNotice::new("SecurityGuard", action, ground_truth)
                             .with_guidance(guidance);
 
-                        return ToolExecutionResult::error(format!("Execution Blocked: {}", violation), start.elapsed())
-                            .with_telemetry(notice);
+                        return ToolExecutionResult::error(
+                            format!("Execution Blocked: {}", violation),
+                            start.elapsed(),
+                        )
+                        .with_telemetry(notice);
                     }
                 }
             }
@@ -492,8 +505,14 @@ mod tests {
         )
     }
 
-    async fn run(guard: &SecurityGuardMiddleware, call: &ToolCall, id: &str) -> ToolExecutionResult {
-        guard.handle(call, &ctx(id), None, Arc::new(DummyNext)).await
+    async fn run(
+        guard: &SecurityGuardMiddleware,
+        call: &ToolCall,
+        id: &str,
+    ) -> ToolExecutionResult {
+        guard
+            .handle(call, &ctx(id), None, Arc::new(DummyNext))
+            .await
     }
 
     #[tokio::test]
@@ -510,7 +529,9 @@ mod tests {
         assert!(res.output.contains("[System Telemetry: SecurityGuard"));
         assert!(res.output.contains("Path traversal attack blocked"));
         // The rejection names every allowed root so the model knows legal targets.
-        assert!(res.output.contains(ws.canonicalize().unwrap().to_string_lossy().as_ref()));
+        assert!(res
+            .output
+            .contains(ws.canonicalize().unwrap().to_string_lossy().as_ref()));
 
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -521,10 +542,17 @@ mod tests {
         let _ = std::fs::create_dir_all(&ws);
         let guard = SecurityGuardMiddleware::new(&ws);
 
-        let res = run(&guard, &bash_call("call_sec_2", "sudo rm -rf /"), "call_sec_2").await;
+        let res = run(
+            &guard,
+            &bash_call("call_sec_2", "sudo rm -rf /"),
+            "call_sec_2",
+        )
+        .await;
         assert!(res.is_error);
         assert!(res.output.contains("Forbidden high-risk command pattern"));
-        assert!(res.output.contains("Dangerous destructive shell operations are disabled"));
+        assert!(res
+            .output
+            .contains("Dangerous destructive shell operations are disabled"));
 
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -535,7 +563,12 @@ mod tests {
         let _ = std::fs::create_dir_all(&ws);
         let guard = SecurityGuardMiddleware::new(&ws);
 
-        let res = run(&guard, &write_call("call_sec_3", "src/main.rs"), "call_sec_3").await;
+        let res = run(
+            &guard,
+            &write_call("call_sec_3", "src/main.rs"),
+            "call_sec_3",
+        )
+        .await;
         assert!(!res.is_error);
         assert_eq!(res.output, "allowed");
 
@@ -552,7 +585,12 @@ mod tests {
 
         // Path inside the extra root passes for both read-style and write calls.
         let target = repo.join("src/main.rs");
-        let res = run(&guard, &write_call("call_m1", target.to_str().unwrap()), "call_m1").await;
+        let res = run(
+            &guard,
+            &write_call("call_m1", target.to_str().unwrap()),
+            "call_m1",
+        )
+        .await;
         assert!(!res.is_error, "extra root path must pass");
 
         // Relative path still resolves against the primary root.
@@ -563,7 +601,9 @@ mod tests {
         let res = run(&guard, &write_call("call_m3", "/etc/shadow"), "call_m3").await;
         assert!(res.is_error);
         assert!(res.output.contains("escapes all allowed workspace roots"));
-        assert!(res.output.contains(repo.canonicalize().unwrap().to_string_lossy().as_ref()));
+        assert!(res
+            .output
+            .contains(repo.canonicalize().unwrap().to_string_lossy().as_ref()));
 
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&repo);
@@ -633,7 +673,10 @@ mod tests {
 
         // Write-command keywords are only verbs, never echo operands.
         let targets = extract_write_targets("echo cp /etc/x");
-        assert!(targets.is_empty(), "echo operands must not be targets: {targets:?}");
+        assert!(
+            targets.is_empty(),
+            "echo operands must not be targets: {targets:?}"
+        );
 
         // chmod: mode operand is skipped, targets follow.
         let targets = extract_write_targets("chmod 644 /etc/hosts /etc/passwd");

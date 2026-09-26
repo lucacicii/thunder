@@ -80,7 +80,8 @@ impl FsConversationStore {
     pub async fn load_raw_transcript(
         &self,
         session_id: &str,
-    ) -> Result<Option<Vec<thunder_agent_loop::types::message::ChatMessage>>, ConversationError> {
+    ) -> Result<Option<Vec<thunder_agent_loop::types::message::ChatMessage>>, ConversationError>
+    {
         let path = self.raw_transcript_file(session_id);
         if !path.exists() {
             return Ok(None);
@@ -117,16 +118,21 @@ impl FsConversationStore {
         let index_path = self.index_file();
         if index_path.exists() {
             match fs::read(&index_path).await {
-                Ok(bytes) => match serde_json::from_slice::<HashMap<String, ConversationSummary>>(&bytes) {
-                    Ok(loaded) => {
-                        *self.index.write().await = loaded;
-                        debug!("Loaded conversation index with {} entries", self.index.read().await.len());
-                        return Ok(());
+                Ok(bytes) => {
+                    match serde_json::from_slice::<HashMap<String, ConversationSummary>>(&bytes) {
+                        Ok(loaded) => {
+                            *self.index.write().await = loaded;
+                            debug!(
+                                "Loaded conversation index with {} entries",
+                                self.index.read().await.len()
+                            );
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            warn!("Corrupted index.json, rebuilding from directories: {err}");
+                        }
                     }
-                    Err(err) => {
-                        warn!("Corrupted index.json, rebuilding from directories: {err}");
-                    }
-                },
+                }
                 Err(err) => {
                     warn!("Failed to read index.json, rebuilding: {err}");
                 }
@@ -159,7 +165,10 @@ impl FsConversationStore {
         Ok(())
     }
 
-    async fn persist_index(&self, map: &HashMap<String, ConversationSummary>) -> Result<(), ConversationError> {
+    async fn persist_index(
+        &self,
+        map: &HashMap<String, ConversationSummary>,
+    ) -> Result<(), ConversationError> {
         let json = serde_json::to_vec_pretty(map)?;
         let index_path = self.index_file();
         let tmp_path = self.root.join(".index.json.tmp");
@@ -240,7 +249,7 @@ impl ConversationStore for FsConversationStore {
             .collect();
 
         // Sort descending by updated_at_ms
-        summaries.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        summaries.sort_by_key(|a| std::cmp::Reverse(a.updated_at_ms));
 
         if let Some(offset) = filter.offset {
             if offset < summaries.len() {

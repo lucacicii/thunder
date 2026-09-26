@@ -35,7 +35,8 @@ async fn test_active_plugin_set_tool_collection_and_prompt_assembly() {
     registry.register(ConversationPlugin::with_memory_store());
     registry.register(SkillsPlugin::default());
 
-    let active_set = registry.create_active_set(&["skills".to_string(), "conversation".to_string()]);
+    let active_set =
+        registry.create_active_set(&["skills".to_string(), "conversation".to_string()]);
     assert_eq!(active_set.plugins().len(), 2);
 
     let prompt = active_set.build_combined_system_prompt(Some("Base Assistant"));

@@ -182,7 +182,12 @@ pub fn find_cut_index(buffer: &ContextBuffer, keep_recent_tokens: usize) -> Opti
 
     // Never start the kept region on an orphan tool result: walk the cut
     // backwards past tool messages so each result stays glued to its call.
-    while cut > floor && buffer.get_entry(cut).map(|e| is_tool_message(&e.message)).unwrap_or(false) {
+    while cut > floor
+        && buffer
+            .get_entry(cut)
+            .map(|e| is_tool_message(&e.message))
+            .unwrap_or(false)
+    {
         cut -= 1;
     }
     if cut <= floor {
@@ -192,7 +197,11 @@ pub fn find_cut_index(buffer: &ContextBuffer, keep_recent_tokens: usize) -> Opti
     // Prefer cutting exactly at a user-message (turn) boundary: scan forward
     // for the next user message; cutting later only keeps more context.
     for i in cut..len {
-        if buffer.get_entry(i).map(|e| is_user_message(&e.message)).unwrap_or(false) {
+        if buffer
+            .get_entry(i)
+            .map(|e| is_user_message(&e.message))
+            .unwrap_or(false)
+        {
             return Some(i);
         }
     }
@@ -228,7 +237,11 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
             ChatMessage::User { content, .. } => {
                 out.push_str(&format!("[User]: {}\n", truncate_chars(content, 2000)));
             }
-            ChatMessage::Assistant { content, tool_calls, .. } => {
+            ChatMessage::Assistant {
+                content,
+                tool_calls,
+                ..
+            } => {
                 if let Some(c) = content {
                     if !c.is_empty() {
                         out.push_str(&format!("[Assistant]: {}\n", truncate_chars(c, 2000)));
@@ -239,16 +252,23 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
                         let rendered: Vec<String> = calls
                             .iter()
                             .map(|tc| {
-                                let args = truncate_chars(&tc.function.arguments, TOOL_ARGS_MAX_CHARS);
+                                let args =
+                                    truncate_chars(&tc.function.arguments, TOOL_ARGS_MAX_CHARS);
                                 format!("{}({})", tc.function.name, args)
                             })
                             .collect();
-                        out.push_str(&format!("[Assistant tool calls]: {}\n", rendered.join("; ")));
+                        out.push_str(&format!(
+                            "[Assistant tool calls]: {}\n",
+                            rendered.join("; ")
+                        ));
                     }
                 }
             }
             ChatMessage::Tool { content, .. } => {
-                out.push_str(&format!("[Tool result]: {}\n", truncate_chars(content, TOOL_RESULT_MAX_CHARS)));
+                out.push_str(&format!(
+                    "[Tool result]: {}\n",
+                    truncate_chars(content, TOOL_RESULT_MAX_CHARS)
+                ));
             }
         }
     }
@@ -262,7 +282,11 @@ pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>
     let mut modified = std::collections::BTreeSet::new();
 
     for msg in messages {
-        let ChatMessage::Assistant { tool_calls: Some(calls), .. } = msg else {
+        let ChatMessage::Assistant {
+            tool_calls: Some(calls),
+            ..
+        } = msg
+        else {
             continue;
         };
         for tc in calls {
@@ -292,10 +316,16 @@ pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>
 fn format_file_sections(read_files: &[String], modified_files: &[String]) -> String {
     let mut sections = Vec::new();
     if !read_files.is_empty() {
-        sections.push(format!("<read-files>\n{}\n</read-files>", read_files.join("\n")));
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
     }
     if !modified_files.is_empty() {
-        sections.push(format!("<modified-files>\n{}\n</modified-files>", modified_files.join("\n")));
+        sections.push(format!(
+            "<modified-files>\n{}\n</modified-files>",
+            modified_files.join("\n")
+        ));
     }
     if sections.is_empty() {
         String::new()
@@ -388,7 +418,11 @@ impl Summarizer {
         while let Some(chunk) = rx.recv().await {
             match chunk? {
                 LLMStreamChunk::Token(delta) => content.push_str(&delta),
-                LLMStreamChunk::Completed { content: final_content, finish_reason, .. } => {
+                LLMStreamChunk::Completed {
+                    content: final_content,
+                    finish_reason,
+                    ..
+                } => {
                     if let Some(c) = final_content {
                         if !c.is_empty() {
                             content = c;
@@ -466,7 +500,10 @@ mod tests {
             .sum();
         let cut = find_cut_index(&ctx, tail).expect("cut exists");
         let first_kept = ctx.get_entry(cut).unwrap();
-        assert!(!is_tool_message(&first_kept.message), "cut landed on a tool result");
+        assert!(
+            !is_tool_message(&first_kept.message),
+            "cut landed on a tool result"
+        );
         // Snapped forward to a user boundary when one exists.
         assert!(is_user_message(&first_kept.message));
         assert!(cut >= 1);

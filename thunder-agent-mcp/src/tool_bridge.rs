@@ -16,7 +16,11 @@ pub struct McpToolBridge {
 impl McpToolBridge {
     pub fn new(server_name: impl Into<String>, tool_info: McpTool, client: Arc<McpClient>) -> Self {
         let s_name = server_name.into();
-        let exposed_name = format!("mcp_{}_{}", s_name.replace('-', "_"), tool_info.name.replace('-', "_"));
+        let exposed_name = format!(
+            "mcp_{}_{}",
+            s_name.replace('-', "_"),
+            tool_info.name.replace('-', "_")
+        );
         Self {
             server_name: s_name,
             tool_info,
@@ -42,11 +46,12 @@ impl McpToolBridge {
 #[async_trait]
 impl AgentTool for McpToolBridge {
     fn definition(&self) -> ToolDefinition {
-        let desc = self
-            .tool_info
-            .description
-            .clone()
-            .unwrap_or_else(|| format!("MCP tool '{}' from server '{}'", self.tool_info.name, self.server_name));
+        let desc = self.tool_info.description.clone().unwrap_or_else(|| {
+            format!(
+                "MCP tool '{}' from server '{}'",
+                self.tool_info.name, self.server_name
+            )
+        });
 
         ToolDefinition::new_function(
             &self.exposed_name,
@@ -55,7 +60,11 @@ impl AgentTool for McpToolBridge {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         info!(
             tool = %self.exposed_name,
             original = %self.tool_info.name,
@@ -72,7 +81,12 @@ impl AgentTool for McpToolBridge {
             .client
             .call_tool(&self.tool_info.name, Some(args))
             .await
-            .map_err(|e| format!("MCP tool execution failed on server '{}': {e}", self.server_name))?;
+            .map_err(|e| {
+                format!(
+                    "MCP tool execution failed on server '{}': {e}",
+                    self.server_name
+                )
+            })?;
 
         let output_text = res.plain_text();
         debug!(tool = %self.exposed_name, output_len = output_text.len(), is_error = ?res.is_error, "MCP tool execution finished");

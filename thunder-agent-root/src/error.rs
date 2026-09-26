@@ -15,7 +15,9 @@ impl fmt::Display for PluginError {
             Self::InitFailed(msg) => write!(f, "Plugin initialization failed: {msg}"),
             Self::ExecutionFailed(msg) => write!(f, "Plugin execution failed: {msg}"),
             Self::NotFound(id) => write!(f, "Plugin not found: {id}"),
-            Self::RegistrationConflict(id) => write!(f, "Plugin registration conflict for id: {id}"),
+            Self::RegistrationConflict(id) => {
+                write!(f, "Plugin registration conflict for id: {id}")
+            }
             Self::Serialization(msg) => write!(f, "Plugin serialization error: {msg}"),
         }
     }

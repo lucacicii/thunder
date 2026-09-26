@@ -54,7 +54,10 @@ impl PluginRegistry {
 
     /// List all registered plugin manifests.
     pub fn list_manifests(&self) -> Vec<PluginManifest> {
-        self.plugins.values().map(|p| p.manifest().clone()).collect()
+        self.plugins
+            .values()
+            .map(|p| p.manifest().clone())
+            .collect()
     }
 
     /// Find plugins matching a specific capability.
@@ -95,7 +98,10 @@ impl ActivePluginSet {
     }
 
     pub fn plugin_ids(&self) -> Vec<String> {
-        self.plugins.iter().map(|p| p.manifest().id.clone()).collect()
+        self.plugins
+            .iter()
+            .map(|p| p.manifest().id.clone())
+            .collect()
     }
 
     /// Collect all tools contributed by active plugins.
@@ -143,7 +149,11 @@ impl ActivePluginSet {
     }
 
     /// Dispatch lifecycle `on_finish` to all active plugins.
-    pub async fn dispatch_finish(&self, result: &AgentRunResult, ctx: &PluginContext) -> Result<(), PluginError> {
+    pub async fn dispatch_finish(
+        &self,
+        result: &AgentRunResult,
+        ctx: &PluginContext,
+    ) -> Result<(), PluginError> {
         for plugin in &self.plugins {
             plugin.on_finish(result, ctx).await?;
         }

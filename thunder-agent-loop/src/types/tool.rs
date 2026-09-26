@@ -20,7 +20,11 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    pub fn new_function(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self {
+    pub fn new_function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
         Self {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
@@ -77,7 +81,10 @@ impl ToolExecutionResult {
     }
 
     /// Appends a structured telemetry notice so the LLM is informed with ground truth.
-    pub fn with_telemetry(mut self, notice: crate::tools::middleware::telemetry::SystemNotice) -> Self {
+    pub fn with_telemetry(
+        mut self,
+        notice: crate::tools::middleware::telemetry::SystemNotice,
+    ) -> Self {
         let md = notice.format_markdown();
         if self.output.trim().is_empty() {
             self.output = md;
@@ -93,5 +100,9 @@ impl ToolExecutionResult {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolExecutionContext) -> Result<String, String>;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String>;
 }

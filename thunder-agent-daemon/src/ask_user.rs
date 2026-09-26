@@ -99,7 +99,10 @@ impl AskUserQuestionTool {
 
             out.push(QuestionItem {
                 question,
-                header: item.get("header").and_then(|v| v.as_str()).map(String::from),
+                header: item
+                    .get("header")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 multi_select: item
                     .get("multiSelect")
                     .or_else(|| item.get("multi_select"))
@@ -289,10 +292,7 @@ mod tests {
     use thunder_agent_loop::types::tool::AgentTool;
     use tokio::sync::Mutex;
 
-    fn tool_with(
-        pending: PendingQuestions,
-        timeout: Duration,
-    ) -> AskUserQuestionTool {
+    fn tool_with(pending: PendingQuestions, timeout: Duration) -> AskUserQuestionTool {
         let (output_tx, _rx) = mpsc::channel(32);
         AskUserQuestionTool::new(
             "task-1".to_string(),
@@ -383,7 +383,11 @@ mod tests {
 
         assert_eq!(question_id, "task-1:q1", "id is task-scoped and sequential");
 
-        let tx = pending.lock().await.remove(&question_id).expect("pending slot");
+        let tx = pending
+            .lock()
+            .await
+            .remove(&question_id)
+            .expect("pending slot");
         tx.send(QuestionOutcome::Answered(serde_json::json!({
             "Which layer?": "renderer"
         })))
@@ -392,7 +396,10 @@ mod tests {
         let out = handle.await.unwrap().expect("tool returns the answer");
         assert!(out.contains("Which layer?"), "renders the question: {out}");
         assert!(out.contains("renderer"), "renders the answer: {out}");
-        assert!(pending.lock().await.is_empty(), "slot is released after answering");
+        assert!(
+            pending.lock().await.is_empty(),
+            "slot is released after answering"
+        );
     }
 
     #[tokio::test]
@@ -457,16 +464,16 @@ mod tests {
         let tool = tool_with(Arc::clone(&pending), Duration::from_millis(60));
         let question = args(serde_json::json!([{ "question": "q" }]));
 
-        let out = tokio::time::timeout(
-            Duration::from_secs(2),
-            tool.execute(question, &ctx()),
-        )
-        .await
-        .expect("tool must self-terminate on timeout")
-        .expect_err("timeout is reported as an error");
+        let out = tokio::time::timeout(Duration::from_secs(2), tool.execute(question, &ctx()))
+            .await
+            .expect("tool must self-terminate on timeout")
+            .expect_err("timeout is reported as an error");
 
         assert!(out.contains("No answer received"), "got: {out}");
-        assert!(pending.lock().await.is_empty(), "slot cleaned up on timeout");
+        assert!(
+            pending.lock().await.is_empty(),
+            "slot cleaned up on timeout"
+        );
     }
 
     #[tokio::test]
