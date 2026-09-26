@@ -69,6 +69,7 @@ fn echo_request() -> ChatRequestOptions {
         top_p: None,
         max_tokens: Some(512),
         thinking_level: Some("high".to_string()),
+        cache_retention: None,
     }
 }
 

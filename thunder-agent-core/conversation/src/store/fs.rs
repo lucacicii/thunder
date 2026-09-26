@@ -41,6 +41,66 @@ impl FsConversationStore {
         &self.root
     }
 
+    fn raw_transcript_file(&self, id: &str) -> PathBuf {
+        self.conv_dir(id).join("raw_transcript.jsonl")
+    }
+
+    /// Persist the raw, pre-compaction transcript as one JSON object per line.
+    ///
+    /// Pi-style lifecycle: the working context may be replaced by a checkpoint
+    /// summary (the projection), but the original history is never silently
+    /// destroyed. Atomic overwrite (tmp + rename) keeps this idempotent —
+    /// callers may pass the full snapshot on every checkpoint.
+    pub async fn save_raw_transcript(
+        &self,
+        session_id: &str,
+        messages: &[thunder_agent_loop::types::message::ChatMessage],
+    ) -> Result<PathBuf, ConversationError> {
+        let dir = self.conv_dir(session_id);
+        fs::create_dir_all(&dir).await?;
+
+        let mut body = String::new();
+        for msg in messages {
+            body.push_str(&serde_json::to_string(msg)?);
+            body.push('\n');
+        }
+
+        let file_path = self.raw_transcript_file(session_id);
+        let tmp_path = dir.join(format!(
+            ".raw_transcript.jsonl.tmp.{}.{}",
+            std::process::id(),
+            crate::types::now_ms()
+        ));
+        fs::write(&tmp_path, body).await?;
+        fs::rename(&tmp_path, &file_path).await?;
+        Ok(file_path)
+    }
+
+    /// Load a previously persisted raw transcript, if any.
+    pub async fn load_raw_transcript(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Vec<thunder_agent_loop::types::message::ChatMessage>>, ConversationError> {
+        let path = self.raw_transcript_file(session_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = match fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(ConversationError::Io(e)),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut messages = Vec::new();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            messages.push(serde_json::from_str(line)?);
+        }
+        Ok(Some(messages))
+    }
+
     fn conv_dir(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }

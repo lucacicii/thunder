@@ -279,6 +279,9 @@ async function handleStream(req, piAi) {
 	if (req.thinkingLevel) options.reasoning = req.thinkingLevel;
 	if (typeof req.temperature === "number") options.temperature = req.temperature;
 	if (typeof req.maxTokens === "number") options.maxTokens = req.maxTokens;
+	// Prompt-cache write hint: "none" disables cache writes for one-off
+	// requests (checkpoint summarization) that will never be reused.
+	if (typeof req.cacheRetention === "string") options.cacheRetention = req.cacheRetention;
 	if (tools.length > 0) context.tools = tools;
 
 	try {

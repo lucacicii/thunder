@@ -26,6 +26,10 @@ fn test_context_pruning_sliding_window_and_tool_truncation() {
     assert!(initial_tokens > 2000);
 
     let pruner = ContextPruner::new(ContextPruningConfig {
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            summarizer_model: None,
+            summarizer_max_tokens: 4096,
         max_context_tokens: 800,
         tool_eviction_threshold_tokens: 600,
         preserve_last_turns: 2,
@@ -65,6 +69,10 @@ fn test_tool_output_eviction_decoupled_from_huge_context_window() {
     // Model has a 1,000,000 token context window, so hard limit is huge (1M)
     // But tool eviction threshold is 1000 tokens!
     let pruner = ContextPruner::new(ContextPruningConfig {
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            summarizer_model: None,
+            summarizer_max_tokens: 4096,
         max_context_tokens: 1_000_000,
         tool_eviction_threshold_tokens: 1_000,
         preserve_last_turns: 2,

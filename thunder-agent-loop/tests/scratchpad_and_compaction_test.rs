@@ -143,6 +143,10 @@ impl LLMClientTrait for LongHorizonMockLLM {
 async fn test_long_horizon_rolling_compaction_with_artifacts() {
     let mut config = AgentConfig::new("test-model");
     config.pruning = ContextPruningConfig {
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            summarizer_model: None,
+            summarizer_max_tokens: 4096,
         max_context_tokens: 1500, // Balanced budget allowing turns to build before rolling compaction
         tool_eviction_threshold_tokens: 1200,
         preserve_last_turns: 3,

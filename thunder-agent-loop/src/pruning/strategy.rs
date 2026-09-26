@@ -1,8 +1,10 @@
 use crate::core::context::ContextBuffer;
 use crate::core::utf8::{safe_slice_from, safe_slice_to};
+use crate::pruning::checkpoint::{self, find_cut_index, previous_checkpoint, Summarizer};
 use crate::pruning::compactor::{CompactorConfig, RollingCompactor};
 use crate::types::config::{ContextPruningConfig, PruningStrategy};
 use crate::types::message::{ChatMessage, Role};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
 pub struct PruneResult {
@@ -12,6 +14,8 @@ pub struct PruneResult {
     pub messages_removed: usize,
     pub tool_outputs_truncated: usize,
     pub compacted: bool,
+    /// A checkpoint summary was generated and swapped in (pi-style compaction).
+    pub checkpoint: bool,
 }
 
 pub struct ContextPruner {
@@ -36,8 +40,168 @@ impl ContextPruner {
         self.config.max_context_tokens
     }
 
+    /// Checkpoint strategy: does the context cross the compaction trigger?
+    /// `estimated > max_context_tokens - reserve_tokens`.
+    pub fn should_compact(&self, estimated_tokens: usize) -> bool {
+        matches!(self.config.strategy, PruningStrategy::Checkpoint)
+            && checkpoint::checkpoint_trigger(
+                estimated_tokens,
+                self.config.max_context_tokens,
+                self.config.reserve_tokens,
+            )
+    }
+
     pub fn prune(&self, context: &mut ContextBuffer) -> PruneResult {
         self.prune_with_artifacts(context, "")
+    }
+
+    /// Full pruning pipeline. Dispatches to the pi-style checkpoint compaction
+    /// for the default `Checkpoint` strategy (async: one-off LLM summarization)
+    /// and to the legacy mechanical stages otherwise.
+    pub async fn prune_with_summarizer(
+        &self,
+        context: &mut ContextBuffer,
+        artifacts_summary: &str,
+        summarizer: Option<&Summarizer>,
+        cancel: &CancellationToken,
+    ) -> PruneResult {
+        if matches!(self.config.strategy, PruningStrategy::Checkpoint) {
+            return self.prune_checkpoint(context, summarizer, cancel).await;
+        }
+        self.prune_with_artifacts(context, artifacts_summary)
+    }
+
+    /// Pi-style compaction: one deliberate, one-time swap of older history for
+    /// an LLM-generated structured checkpoint. Between two compactions the
+    /// request prefix is byte-stable (full provider cache hits). Falls back to
+    /// the legacy mechanical compactor when summarization is unavailable/fails.
+    async fn prune_checkpoint(
+        &self,
+        context: &mut ContextBuffer,
+        summarizer: Option<&Summarizer>,
+        cancel: &CancellationToken,
+    ) -> PruneResult {
+        let tokens_before = context.estimated_tokens();
+        if !self.should_compact(tokens_before) {
+            return PruneResult {
+                tokens_before,
+                tokens_after: tokens_before,
+                ..Default::default()
+            };
+        }
+
+        let keep = self.config.keep_recent_tokens;
+        let Some(cut) = find_cut_index(context, keep) else {
+            // Nothing safe to summarize (e.g. one giant message): mechanical
+            // fallback so the hard window limit is still enforced.
+            let mut res = self.legacy_compact(context, "");
+            res.compacted = true;
+            return res;
+        };
+
+        let (previous_summary, region_start) =
+            previous_checkpoint(context).unwrap_or_else(|| (String::new(), 1));
+
+        let region: Vec<ChatMessage> = (region_start..cut)
+            .filter_map(|i| context.get_entry(i).map(|e| e.message.clone()))
+            .collect();
+
+        let summary = match summarizer {
+            Some(sum) => {
+                let serialized = checkpoint::serialize_region(&region);
+                let (read_files, modified_files) = checkpoint::extract_file_lists(&region);
+                let prev = if previous_summary.is_empty() {
+                    None
+                } else {
+                    Some(previous_summary.as_str())
+                };
+                match sum
+                    .summarize(&serialized, prev, &read_files, &modified_files, cancel)
+                    .await
+                {
+                    Ok(text) => Some(text),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "checkpoint summarization failed; degrading to mechanical compaction"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
+        let Some(summary) = summary else {
+            let mut res = self.legacy_compact(context, "");
+            res.compacted = true;
+            return res;
+        };
+
+        // Swap the summarized region for the checkpoint message (one-time,
+        // bounded rewrite — the new prefix is stable from here on).
+        for _ in (region_start..cut).rev() {
+            context.remove_at(region_start);
+        }
+        let msg = checkpoint::checkpoint_message(&summary);
+        if region_start == 2 {
+            // Replace the previous checkpoint in place.
+            context.replace_at(1, msg);
+        } else {
+            context.insert_at(1, msg);
+        }
+
+        let tokens_after = context.estimated_tokens();
+        // Paranoia: still over the hard limit → drop oldest turns mechanically.
+        if tokens_after > self.config.max_context_tokens {
+            let mut res = self.legacy_compact(context, "");
+            res.checkpoint = true;
+            res.tokens_before = tokens_before;
+            return res;
+        }
+
+        PruneResult {
+            pruned: true,
+            checkpoint: true,
+            tokens_before,
+            tokens_after,
+            messages_removed: cut - region_start,
+            tool_outputs_truncated: 0,
+            compacted: false,
+        }
+    }
+
+    /// Legacy mechanical path (RollingCompactor digest + sliding window),
+    /// used by non-checkpoint strategies and as the checkpoint fallback.
+    fn legacy_compact(&self, context: &mut ContextBuffer, artifacts_summary: &str) -> PruneResult {
+        let tokens_before = context.estimated_tokens();
+        let mut messages_removed = 0usize;
+
+        let comp_res = self
+            .compactor
+            .compact_if_needed(context, self.config.max_context_tokens, artifacts_summary);
+        if comp_res.compacted {
+            messages_removed += comp_res.messages_compacted;
+        }
+
+        let mut tool_outputs_truncated = 0usize;
+        if context.estimated_tokens() > self.config.max_context_tokens {
+            messages_removed += self.prune_sliding_window(context);
+        }
+        if context.estimated_tokens() > self.config.max_context_tokens {
+            tool_outputs_truncated += self.prune_all_large_tool_results(context);
+        }
+
+        let tokens_after = context.estimated_tokens();
+        PruneResult {
+            pruned: tokens_after < tokens_before,
+            tokens_before,
+            tokens_after,
+            messages_removed,
+            tool_outputs_truncated,
+            compacted: comp_res.compacted,
+            checkpoint: false,
+        }
     }
 
     /// Full multi-stage context pruning with Rolling Compaction and Scratchpad Artifacts integration
@@ -70,6 +234,7 @@ impl ContextPruner {
                 messages_removed: 0,
                 tool_outputs_truncated,
                 compacted: false,
+                checkpoint: false,
             };
         }
 
@@ -110,6 +275,7 @@ impl ContextPruner {
             messages_removed,
             tool_outputs_truncated,
             compacted: was_compacted,
+            checkpoint: false,
         }
     }
 

@@ -120,6 +120,13 @@ pub enum AgentEvent {
         final_content: Option<String>,
         stats: AgentStats,
     },
+    /// Pi-style checkpoint compaction rewrote the older history into a single
+    /// structured summary. One-time event per compaction.
+    ContextCompacted {
+        turn: Option<usize>,
+        tokens_before: usize,
+        tokens_after: usize,
+    },
     Error {
         turn: Option<usize>,
         message: String,

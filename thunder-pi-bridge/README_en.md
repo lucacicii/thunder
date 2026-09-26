@@ -33,7 +33,8 @@ Thunder (Rust)                             Node Sidecar (ESM)
 - **Zero-Maintenance Dialect Matrix**: DeepSeek, OpenAI o1/o3, Qwen, Moonshot, zAI, Together, OpenRouter, Anthropic, Google, and Ollama dialects are fully absorbed by `@earendil-works/pi-ai`.
 - **Thinking Level Mapping**: Translates provider-specific reasoning effort semantics (e.g. `high` → `max`, `off` → `{ type: "disabled" }`), preventing accidental deep-reasoning latency spikes.
 - **Unified Token Accounting**: Accurately maps input tokens, output tokens, reasoning tokens, and cache reads.
-- **Auto-Healing & Resilience**: Bridge process auto-restarts on crash, supports cancellation signal propagation, and enforces chunk idle timeout watchdogs.
+- **Auto-Healing & Resilience**: Bridge process auto-restarts on crash and supports cancellation signal propagation.
+- **Stream Idle Watchdog**: scans active streams every 15s and fails any stream idle beyond the threshold (300s default, tunable via `THUNDER_BRIDGE_IDLE_TIMEOUT_MS`), so a hung sidecar or provider link can never park an agent turn forever.
 
 ---
 

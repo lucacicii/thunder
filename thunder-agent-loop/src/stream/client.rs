@@ -39,6 +39,11 @@ pub struct ChatRequestOptions {
     pub top_p: Option<f32>,
     pub max_tokens: Option<usize>,
     pub thinking_level: Option<String>,
+    /// Prompt-cache write hint for transports that support it (pi-ai: `none`
+    /// disables cache writes). One-off requests (e.g. checkpoint summarization)
+    /// should pass `Some("none")` — they will never be reused, so paying the
+    /// cache-write premium and polluting the cache is pure waste.
+    pub cache_retention: Option<String>,
 }
 
 #[async_trait]

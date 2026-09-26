@@ -33,7 +33,8 @@ Thunder (Rust)                             Node Sidecar (ESM)
 - **零维护方言矩阵**：DeepSeek、OpenAI o1/o3、Qwen、Moonshot、zAI、Together、OpenRouter、Anthropic、Google、Ollama 等所有供应商差异统一在 `@earendil-works/pi-ai` 内消化。
 - **思考档位映射（Thinking Level Map）**：精准翻译各供应商思考强度语义（如 `high` → `max`，`off` → `{ type: "disabled" }`），避免模型意外进入深度推理造成的高延迟。
 - **统一 Token 计量**：准确归集输入、输出、思考（Reasoning）与缓存命中 Token 数据。
-- **自愈与韧性**：Sidecar 进程崩溃自动拉起，支持任务取消信号传播与流式块空闲超时看门狗。
+- **自愈与韧性**：Sidecar 进程崩溃自动拉起，支持任务取消信号传播。
+- **流空闲看门狗（Idle Watchdog）**：每 15s 扫描活跃流，超过空闲阈值（默认 300s，`THUNDER_BRIDGE_IDLE_TIMEOUT_MS` 可调）未收到任何增量的流会被判定为挂起并以错误终结，杜绝 sidecar/供应商链路黑洞导致 Agent 轮次永久阻塞。
 
 ---
 
@@ -42,7 +43,7 @@ Thunder (Rust)                             Node Sidecar (ESM)
 ### Rust ➔ Node
 
 - `{"cmd":"health","id":"..."}`
-- `{"cmd":"stream","id":"...","model":{...},"messages":[...],"tools":[...],"thinkingLevel":"..."}`
+- `{"cmd":"stream","id":"...","model":{...},"messages":[...],"tools":[...],"thinkingLevel":"...","cacheRetention":"none"|"short"|"long"}`（`cacheRetention: "none"` 用于一次性请求，禁止写入 Prompt Cache）
 - `{"cmd":"cancel","id":"..."}`
 - `{"cmd":"list_models","id":"..."}`
 - `{"cmd":"shutdown"}`
