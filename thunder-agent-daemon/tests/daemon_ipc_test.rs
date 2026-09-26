@@ -2,6 +2,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
@@ -110,6 +111,7 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_daemon_list_models_and_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
@@ -182,6 +184,7 @@ async fn test_daemon_list_models_and_cancel() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
@@ -287,6 +290,7 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_daemon_rejects_duplicate_task_id() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
@@ -393,6 +397,7 @@ async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
@@ -480,6 +485,7 @@ async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(),
     Ok(())
 }
 
+#[cfg(feature = "testing-mock")]
 #[tokio::test]
 async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error>> {
     // Set concurrency limit to 1 via env var
@@ -545,11 +551,17 @@ async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error
 }
 
 #[tokio::test]
-async fn test_daemon_explicit_mock_fallback_notice() -> Result<(), Box<dyn std::error::Error>> {
-    let tmp_home = std::env::temp_dir().join(format!("thunder_empty_home_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+async fn test_daemon_never_silently_falls_back_to_mock() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp_home = std::env::temp_dir().join(format!(
+        "thunder_empty_home_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
     let _ = tokio::fs::create_dir_all(&tmp_home).await;
 
-    // Run daemon with empty HOME so no provider credentials can be found
+    // Run daemon with an empty HOME so no provider credentials can be found.
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
         .env("HOME", &tmp_home)
         .stdin(Stdio::piped())
@@ -561,46 +573,47 @@ async fn test_daemon_explicit_mock_fallback_notice() -> Result<(), Box<dyn std::
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
-        stdin.write_all(format!("{msg}\n").as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
-    }
-
-    // Submit task without mock mode explicitly requested
     let req = serde_json::json!({
         "method": "run_task",
-        "id": "req-fallback-1",
-        "task_id": "task-fallback-1",
+        "id": "req-nofallback-1",
+        "task_id": "task-nofallback-1",
         "prompt": "Hello",
         "use_mock": false
     });
-    send(&mut stdin, req.to_string()).await?;
+    stdin.write_all(format!("{req}\n").as_bytes()).await?;
+    stdin.flush().await?;
 
-    let mut saw_fallback_ack = false;
-    let mut saw_fallback_event = false;
+    let mut ack_checked = false;
+    let mut terminal_seen = false;
 
     while let Ok(Some(line)) = reader.next_line().await {
         let resp: serde_json::Value = serde_json::from_str(&line)?;
-        if resp["type"] == "response" && resp["id"] == "req-fallback-1" {
+        let kind = resp["type"].as_str().unwrap_or_default();
+
+        if kind == "response" && resp["id"] == "req-nofallback-1" {
             assert_eq!(resp["success"], true);
-            assert_eq!(resp["data"]["use_mock"], true);
-            assert_eq!(resp["data"]["fallback_to_mock"], true);
-            assert!(resp["data"]["warning"].as_str().unwrap().contains("falling back to Mock mode"));
-            saw_fallback_ack = true;
-        } else if resp["type"] == "observed_event" {
-            if let Some(act) = resp["event"]["event"].get("action") {
-                if act == "fallback_to_mock" {
-                    saw_fallback_event = true;
-                }
+            // The daemon must NOT flip the request into mock mode behind the
+            // operator's back, and must not advertise any fallback.
+            assert_eq!(resp["data"]["use_mock"], false);
+            assert!(resp["data"].get("fallback_to_mock").is_none());
+            assert!(resp["data"].get("warning").is_none());
+            ack_checked = true;
+        } else if kind == "observed_event" {
+            // The old behaviour emitted a `fallback_to_mock` telemetry notice.
+            if let Some(action) = resp["event"]["event"].get("action") {
+                assert_ne!(
+                    action, "fallback_to_mock",
+                    "silent mock fallback must be gone"
+                );
             }
-        } else if resp["type"] == "task_completed" {
+        } else if kind == "task_completed" || kind == "task_failed" {
+            terminal_seen = true;
             break;
         }
     }
 
-    assert!(saw_fallback_ack, "Expected fallback_to_mock: true in response ack");
-    assert!(saw_fallback_event, "Expected observed_event with action: fallback_to_mock");
+    assert!(ack_checked, "expected the run_task acknowledgement");
+    assert!(terminal_seen, "expected a terminal task event");
 
     drop(stdin);
     let _ = child.wait().await;
