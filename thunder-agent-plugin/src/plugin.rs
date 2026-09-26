@@ -64,7 +64,6 @@ impl TsScriptPluginEngine {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runner").join("host.mjs"),
             ws.join("thunder-agent-plugin").join("runner").join("host.mjs"),
             ws.join("runner").join("host.mjs"),
-            PathBuf::from("/Users/lucas/wz/thunder/thunder-agent-plugin/runner/host.mjs"),
             PathBuf::from("./thunder-agent-plugin/runner/host.mjs"),
         ];
 
