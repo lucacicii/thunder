@@ -8,8 +8,59 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
+  lint:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  bridge-bundle:
+    name: Verify pi-bridge bundle is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (v22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install bundler
+        working-directory: thunder-pi-bridge/runner
+        run: npm ci
+
+      - name: Rebuild bundled sidecar
+        working-directory: thunder-pi-bridge/runner
+        run: npm run build
+
+      - name: Fail if committed bundle drifted from source
+        run: |
+          if ! git diff --quiet -- thunder-pi-bridge/runner/bridge.mjs; then
+            echo "::error::runner/bridge.mjs is out of sync with bridge.src.mjs."
+            echo "Run 'npm run build' in thunder-pi-bridge/runner and commit the result."
+            git diff --stat -- thunder-pi-bridge/runner/bridge.mjs
+            exit 1
+          fi
+
   test:
     name: Workspace Test Suite
     runs-on: ubuntu-latest
@@ -31,7 +82,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo Check
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
 
       - name: Run Test Suite
         run: ./test.sh
