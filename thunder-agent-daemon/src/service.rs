@@ -407,6 +407,10 @@ impl DaemonService {
             DaemonRequest::ReloadPlugins { id, path } => {
                 let p = path.map(PathBuf::from);
                 self.script_plugin.reload(p).await;
+                // The session-locked plugin selection is now stale: a session
+                // that cached its set before this reload would keep spawning the
+                // old toolset. Clear it so the next run re-selects.
+                invalidate_all_session_selections();
                 self.send_response(DaemonResponse::Response {
                     id,
                     success: true,

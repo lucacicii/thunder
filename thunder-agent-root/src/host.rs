@@ -185,6 +185,20 @@ impl ThunderRoot {
         self
     }
 
+    /// Inject an isolated session-selection cache.
+    ///
+    /// Roots otherwise share the process-wide default, which is what keeps a
+    /// session's plugin set stable across the per-request rebuilds that both the
+    /// TUI and the daemon perform. Pass a fresh [`SelectionCache`] when two
+    /// hosts are embedded in one process and must not share selection state.
+    pub fn with_selection_cache(
+        mut self,
+        cache: std::sync::Arc<crate::selector::SelectionCache>,
+    ) -> Self {
+        self.selector = self.selector.with_cache(cache);
+        self
+    }
+
     pub fn registry(&self) -> &PluginRegistry {
         &self.registry
     }
@@ -199,8 +213,20 @@ impl ThunderRoot {
 
     /// Drop the cached per-session plugin selection so the next execute()
     /// re-runs the heuristic (e.g. after plugin reloads or registry changes).
+    ///
+    /// Uses *this* root's cache, so it stays correct even when an isolated
+    /// cache was injected.
     pub fn invalidate_session_selection(&self, session_id: &str) {
-        crate::selector::invalidate_session_selection(session_id);
+        self.selector.cache().invalidate(session_id);
+    }
+
+    /// Drop the cached selection for **every** session on this root's cache.
+    ///
+    /// A registry-wide change (plugin reload, plugin set change) can invalidate
+    /// any session's cached set, so reload paths should call this rather than
+    /// guessing which session ids are live.
+    pub fn invalidate_all_session_selections(&self) {
+        self.selector.cache().invalidate_all();
     }
 
     /// Autonomously select plugins, initialize context, configure and start the root AgentLoop unit.
