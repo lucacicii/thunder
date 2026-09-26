@@ -14,29 +14,72 @@ Guidelines:
 pub enum PruningStrategy {
     TruncateToolResults,
     SlidingWindow,
-    #[default]
     Hybrid,
+    /// Pi-style checkpoint compaction: the request prefix stays byte-stable
+    /// until the model's real window limit is approached, then older history
+    /// is replaced by a single LLM-generated structured checkpoint. This is
+    /// the default; `Hybrid` is retained as the legacy fallback path.
+    #[default]
+    Checkpoint,
+}
+
+fn default_reserve_tokens() -> usize {
+    16_384
+}
+
+fn default_keep_recent_tokens() -> usize {
+    20_000
+}
+
+fn default_summarizer_max_tokens() -> usize {
+    4096
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextPruningConfig {
     pub max_context_tokens: usize,
-    /// Threshold at which older tool outputs (beyond preserve_last_turns) are trimmed (default: 20_000)
+    /// Checkpoint strategy: tokens reserved for the model's response. Compaction
+    /// triggers when `estimated > max_context_tokens - reserve_tokens`.
+    #[serde(default = "default_reserve_tokens")]
+    pub reserve_tokens: usize,
+    /// Checkpoint strategy: newest tokens kept verbatim (never summarized).
+    #[serde(default = "default_keep_recent_tokens")]
+    pub keep_recent_tokens: usize,
+    /// Optional smaller/faster model dedicated to checkpoint summarization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarizer_model: Option<String>,
+    /// Output cap for the one-off summarization call.
+    #[serde(default = "default_summarizer_max_tokens")]
+    pub summarizer_max_tokens: usize,
+    /// Legacy (Hybrid/TruncateToolResults) only: threshold at which older tool
+    /// outputs are trimmed. Ignored by the default Checkpoint strategy, which
+    /// never rewrites history incrementally (each rewrite busts the prefix
+    /// cache from the modified position onward).
+    #[serde(default)]
     pub tool_eviction_threshold_tokens: usize,
-    /// Number of recent turns to preserve with full fidelity during pruning / compaction (default: 3)
+    /// Legacy strategies only: number of recent turns to preserve.
+    #[serde(default = "default_preserve_last_turns")]
     pub preserve_last_turns: usize,
     pub pin_system_prompt: bool,
     pub strategy: PruningStrategy,
+}
+
+fn default_preserve_last_turns() -> usize {
+    3
 }
 
 impl Default for ContextPruningConfig {
     fn default() -> Self {
         Self {
             max_context_tokens: 128_000,
+            reserve_tokens: default_reserve_tokens(),
+            keep_recent_tokens: default_keep_recent_tokens(),
+            summarizer_model: None,
+            summarizer_max_tokens: default_summarizer_max_tokens(),
             tool_eviction_threshold_tokens: 20_000,
-            preserve_last_turns: 3,
+            preserve_last_turns: default_preserve_last_turns(),
             pin_system_prompt: true,
-            strategy: PruningStrategy::Hybrid,
+            strategy: PruningStrategy::Checkpoint,
         }
     }
 }

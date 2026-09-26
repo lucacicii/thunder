@@ -35,6 +35,7 @@ async fn test_sequential_pipeline_conversation() {
                 None,
             ),
         ],
+        raw_messages: None,
     };
 
     OrchestrationHelper::record_sequential_stage(
@@ -70,6 +71,7 @@ async fn test_sequential_pipeline_conversation() {
                 None,
             ),
         ],
+        raw_messages: None,
     };
 
     OrchestrationHelper::record_sequential_stage(
@@ -131,6 +133,7 @@ async fn test_parallel_branches_and_synthesis() {
             ..Default::default()
         },
         messages: vec![],
+        raw_messages: None,
     };
 
     let perf_res = AgentRunResult {
@@ -144,6 +147,7 @@ async fn test_parallel_branches_and_synthesis() {
             ..Default::default()
         },
         messages: vec![],
+        raw_messages: None,
     };
 
     let branch_results = vec![
@@ -176,6 +180,7 @@ async fn test_delegate_sub_conversation_recording() {
             ..Default::default()
         },
         messages: vec![],
+        raw_messages: None,
     };
 
     OrchestrationHelper::record_delegated_task(

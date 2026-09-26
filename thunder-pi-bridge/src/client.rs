@@ -60,6 +60,10 @@ struct StreamRequest<'a> {
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<usize>,
+    /// Prompt-cache write hint forwarded to pi-ai (`"none"` disables cache
+    /// writes — used by one-off checkpoint summarization requests).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_retention: Option<String>,
 }
 
 #[async_trait]
@@ -88,6 +92,7 @@ impl LLMClientTrait for PiAiClient {
             temperature: options.temperature,
             top_p: options.top_p,
             max_tokens: options.max_tokens,
+            cache_retention: options.cache_retention.clone(),
         };
         let payload = serde_json::to_string(&request)
             .map_err(|e| format!("failed to serialize bridge request: {e}"))?;
@@ -156,6 +161,7 @@ mod tests {
             temperature: Some(0.2),
             top_p: None,
             max_tokens: Some(128),
+            cache_retention: None,
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["cmd"], "stream");

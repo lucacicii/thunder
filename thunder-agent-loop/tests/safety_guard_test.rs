@@ -69,6 +69,10 @@ fn test_atomic_turn_group_pruning_no_orphans() {
     }
 
     let pruner = ContextPruner::new(ContextPruningConfig {
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            summarizer_model: None,
+            summarizer_max_tokens: 4096,
         max_context_tokens: 150, // Force aggressive pruning
         tool_eviction_threshold_tokens: 100,
         preserve_last_turns: 1,

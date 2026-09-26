@@ -754,7 +754,7 @@ impl DaemonService {
                 // - conversation: one-line prompt cost, keeps session semantics alive
                 // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
                 // - mcp: only when this workspace actually configures MCP servers
-                // Anything else (orchestra, ...) stays keyword-routed and lightweight.
+                // Anything else stays keyword-routed and lightweight.
                 forced_plugins: Some({
                     let mut ids = vec![
                         "conversation".to_string(),
@@ -845,6 +845,29 @@ impl DaemonService {
                                 }).unwrap_or(false);
                                 if !already_present && !text.is_empty() {
                                     conversation.add_assistant_message(Some(text.clone()), None);
+                                }
+                            }
+
+                            // Checkpoint compaction fired during this run: the run's
+                            // projection (system + checkpoint + kept tail) becomes the
+                            // session's authoritative working history so the next task
+                            // continues iteratively from the checkpoint, while the full
+                            // pre-compaction transcript is preserved alongside for audit.
+                            if let Some(raw) = res.run_result.raw_messages.as_ref() {
+                                conversation.messages = res.run_result.messages.clone();
+                                conversation.recalculate_stats();
+                                match store.save_raw_transcript(&effective_session_id, raw).await {
+                                    Ok(path) => info!(
+                                        session_id = %effective_session_id,
+                                        path = %path.display(),
+                                        messages = raw.len(),
+                                        "persisted raw pre-compaction transcript"
+                                    ),
+                                    Err(e) => warn!(
+                                        session_id = %effective_session_id,
+                                        error = %e,
+                                        "failed to persist raw transcript"
+                                    ),
                                 }
                             }
 
@@ -1198,6 +1221,8 @@ async fn generate_conversation_title_inner(
         // Generous budget: reasoning models may spend tokens thinking before the answer
         max_tokens: Some(100),
         thinking_level: Some("off".to_string()),
+        // One-off utility call: never pay the prompt-cache write premium.
+        cache_retention: Some("none".to_string()),
     };
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

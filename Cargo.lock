@@ -1382,7 +1382,6 @@ dependencies = [
  "thunder-agent-root",
  "thunder-agent-skills",
  "thunder-conversation",
- "thunder-orchestra",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1400,6 +1399,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1472,7 +1472,6 @@ dependencies = [
  "thunder-agent-providers",
  "thunder-agent-skills",
  "thunder-conversation",
- "thunder-orchestra",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1504,23 +1503,9 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "tempfile",
  "thunder-agent-loop",
  "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "thunder-orchestra"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "thunder-agent-loop",
- "thunder-agent-providers",
- "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1555,7 +1540,6 @@ dependencies = [
  "thunder-agent-root",
  "thunder-agent-skills",
  "thunder-conversation",
- "thunder-orchestra",
  "tokio",
  "tokio-util",
  "tracing",

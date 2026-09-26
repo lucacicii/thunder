@@ -69,6 +69,7 @@ async fn check_store_writable(config: &OrchestraConfig) -> HealthCheck {
         agent_id: "health".to_string(),
         final_content: Some(String::new()),
         messages: vec![],
+        raw_messages: None,
         stats: Default::default(),
         finish_reason: FinishReason::Done,
     };
@@ -180,6 +181,7 @@ async fn check_llm_reachable(config: &OrchestraConfig, use_mock: bool) -> Health
         top_p: None,
         max_tokens: Some(1),
         thinking_level: None,
+        cache_retention: Some("none".to_string()),
     };
 
     let result = match tokio::time::timeout(timeout, client.stream_chat(options, cancel)).await {

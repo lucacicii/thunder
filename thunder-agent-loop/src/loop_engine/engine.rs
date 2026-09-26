@@ -24,7 +24,14 @@ use tracing::{debug, error, info, warn};
 pub struct AgentRunResult {
     pub agent_id: String,
     pub final_content: Option<String>,
+    /// The projected context the LLM actually saw (includes any checkpoint
+    /// summary message swapped in by compaction). This is what hosts should
+    /// feed back on the next run.
     pub messages: Vec<ChatMessage>,
+    /// Raw pre-compaction transcript, present only when checkpoint compaction
+    /// fired during this run. Pi-style: the original history is never silently
+    /// destroyed — hosts may persist it for audit/export.
+    pub raw_messages: Option<Vec<ChatMessage>>,
     pub stats: AgentStats,
     pub finish_reason: FinishReason,
 }
@@ -285,6 +292,7 @@ impl AgentLoop {
         let status = self.status.clone();
         let running = self.running.clone();
         let pause_gate = Arc::clone(&self.pause_gate);
+        let summarizer = crate::pruning::checkpoint::Summarizer::new(llm_client.clone(), &config);
 
         tokio::spawn(async move {
             let _busy = RunningGuard::new(running);
@@ -307,6 +315,10 @@ impl AgentLoop {
             );
             let mut final_content = None;
             let loop_finish_reason: FinishReason;
+            // Raw (pre-compaction) transcript snapshot: activated the first time
+            // a checkpoint compaction rewrites the projection, then kept in sync
+            // with durable pushes so hosts can persist the original history.
+            let mut raw_log: Option<Vec<ChatMessage>> = None;
 
             loop {
                 if let Some(max) = config.max_turns {
@@ -355,7 +367,23 @@ impl AgentLoop {
                 }
 
                 let artifacts_summary = scratchpad.format_artifacts_summary();
-                let prune_res = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
+                // Snapshot the raw transcript right before the first checkpoint
+                // compaction rewrites history (pi-style: raw log is preserved).
+                if raw_log.is_none() && pruner.should_compact(context.estimated_tokens()) {
+                    raw_log = Some(context.get_messages());
+                }
+                let prune_res = pruner
+                    .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                    .await;
+                if prune_res.checkpoint {
+                    emitter
+                        .emit(AgentEvent::ContextCompacted {
+                            turn: Some(tracker.current_turn()),
+                            tokens_before: prune_res.tokens_before,
+                            tokens_after: prune_res.tokens_after,
+                        })
+                        .await;
+                }
                 if prune_res.pruned {
                     debug!(
                         agent_id = %agent_id,
@@ -417,6 +445,7 @@ impl AgentLoop {
                         top_p: config.top_p,
                         max_tokens: config.max_completion_tokens,
                         thinking_level: config.thinking_level.clone(),
+                        cache_retention: None, // normal turns benefit from cache writes
                     };
 
                     let stream_res = llm_client.stream_chat(request_opts, cancel_token.clone()).await;
@@ -438,7 +467,9 @@ impl AgentLoop {
                                     "Context overflow detected on chat initiation, auto-healing with compaction and retry"
                                 );
                                 pruner.update_max_tokens(detected_limit);
-                                let _ = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
+                                let _ = pruner
+                                    .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                                    .await;
                                 continue;
                             }
 
@@ -545,7 +576,9 @@ impl AgentLoop {
                                 "Context overflow detected during stream, auto-healing with compaction and retry"
                             );
                             pruner.update_max_tokens(detected_limit);
-                            let _ = pruner.prune_with_artifacts(&mut context, &artifacts_summary);
+                            let _ = pruner
+                                .prune_with_summarizer(&mut context, &artifacts_summary, Some(&summarizer), &cancel_token)
+                            .await;
                             continue;
                         }
                     }
@@ -737,7 +770,10 @@ impl AgentLoop {
                     refusal: None,
                     name: None,
                 };
-                context.push(assistant_msg);
+                context.push(assistant_msg.clone());
+                if let Some(log) = raw_log.as_mut() {
+                    log.push(assistant_msg);
+                }
 
                 info!(
                     agent_id = %agent_id,
@@ -945,7 +981,10 @@ impl AgentLoop {
                         content: final_tool_output,
                         name: Some(executed.tool_call.function.name),
                     };
-                    context.push(tool_msg);
+                    context.push(tool_msg.clone());
+                    if let Some(log) = raw_log.as_mut() {
+                        log.push(tool_msg);
+                    }
                 }
 
                 tracker.set_status(LoopStatus::Running);
@@ -989,6 +1028,9 @@ impl AgentLoop {
                 agent_id,
                 final_content,
                 messages: context.get_messages(),
+                // Present only when a checkpoint compaction occurred: the raw,
+                // pre-compaction transcript for hosts that persist history.
+                raw_messages: raw_log,
                 stats,
                 finish_reason: loop_finish_reason,
             };

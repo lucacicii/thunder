@@ -46,6 +46,7 @@ async fn test_conversation_memory_crud() {
             ChatMessage::user("Hello assistant!"),
             ChatMessage::assistant(Some("Hello! How can I help you today?".to_string()), None),
         ],
+        raw_messages: None,
     };
 
     let with_agent = manager
@@ -133,4 +134,33 @@ async fn test_bridge_context_input() {
     let buf = conv.build_context_buffer();
     assert_eq!(buf.len(), 2);
     assert!(buf.estimated_tokens() > 0);
+}
+
+#[tokio::test]
+async fn raw_transcript_sidecar_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FsConversationStore::new(dir.path()).await.unwrap();
+
+    let raw = vec![
+        ChatMessage::system("sys"),
+        ChatMessage::user("do the thing"),
+        ChatMessage::assistant_text("working"),
+        ChatMessage::tool("call_1", "output", Some("bash".to_string())),
+    ];
+
+    let path = store.save_raw_transcript("sess_raw", &raw).await.unwrap();
+    assert!(path.exists(), "sidecar file must be written");
+    assert_eq!(path.file_name().unwrap(), "raw_transcript.jsonl");
+
+    let loaded = store.load_raw_transcript("sess_raw").await.unwrap().unwrap();
+    assert_eq!(loaded.len(), raw.len());
+    assert_eq!(loaded[1].content_str(), Some("do the thing"));
+
+    // Overwrite is idempotent (atomic tmp+rename, not append-duplicating).
+    store.save_raw_transcript("sess_raw", &raw).await.unwrap();
+    let loaded_again = store.load_raw_transcript("sess_raw").await.unwrap().unwrap();
+    assert_eq!(loaded_again.len(), raw.len(), "no duplicate accumulation");
+
+    // Missing session → None, not an error.
+    assert!(store.load_raw_transcript("nope").await.unwrap().is_none());
 }

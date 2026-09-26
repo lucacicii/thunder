@@ -249,6 +249,17 @@ impl PiAiBridge {
             });
         }
 
+        // Stream idle watchdog: fails registered streams that produced no
+        // activity within the idle window, so a hung sidecar/provider link can
+        // never park an agent turn (or a daemon semaphore slot) forever.
+        {
+            let pending = Arc::clone(&pending);
+            let idle_timeout = Self::stream_idle_timeout();
+            tokio::spawn(async move {
+                Self::watchdog_loop(pending, idle_timeout, generation).await;
+            });
+        }
+
         // Send health probe
         stdin_tx
             .send(r#"{"cmd":"health","id":"health-0"}"#.to_string())
@@ -272,6 +283,43 @@ impl PiAiBridge {
             _child: child,
         });
         Ok(())
+    }
+
+    /// Idle timeout for registered streams. Default 5 minutes (reasoning
+    /// models can legitimately stay silent for a while during deep thinking);
+    /// override with `THUNDER_BRIDGE_IDLE_TIMEOUT_MS`.
+    fn stream_idle_timeout() -> Duration {
+        std::env::var("THUNDER_BRIDGE_IDLE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|ms| *ms >= 1_000)
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(300))
+    }
+
+    /// Periodic scan for stale streams. Exits after the pending map has stayed
+    /// empty for ~20 minutes of consecutive empty scans (post-restart leftovers
+    /// clean themselves up instead of leaking one task per generation).
+    async fn watchdog_loop(
+        pending: Arc<Mutex<HashMap<String, DispatchTarget>>>,
+        idle_timeout: Duration,
+        generation: u64,
+    ) {
+        let mut empty_scans: u32 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let now_ms = now_epoch_ms();
+            let failed = scan_once(&pending, now_ms, idle_timeout, generation).await;
+            if failed == 0 {
+                empty_scans += 1;
+                if empty_scans >= 80 {
+                    debug!(generation, "watchdog exiting: no pending streams");
+                    return;
+                }
+            } else {
+                empty_scans = 0;
+            }
+        }
     }
 
     async fn find_node() -> Result<String, String> {
@@ -495,6 +543,60 @@ impl PiAiBridge {
     }
 }
 
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// One watchdog scan: unregister streams whose `last_activity_ms` lags beyond
+/// `idle_timeout` and deliver a terminal error to their receivers. Returns the
+/// number of streams failed. Streams never seen activity (`last == 0`) are
+/// exempt — the reader stamps activity on registration-adjacent events.
+pub(crate) async fn scan_once(
+    pending: &Arc<Mutex<HashMap<String, DispatchTarget>>>,
+    now_ms: u64,
+    idle_timeout: Duration,
+    generation: u64,
+) -> usize {
+    let idle_ms = idle_timeout.as_millis() as u64;
+    let mut stale: Vec<(String, mpsc::Sender<Result<LLMStreamChunk, String>>)> = Vec::new();
+
+    {
+        let mut map = pending.lock().await;
+        let mut remove_ids: Vec<String> = Vec::new();
+        for (id, target) in map.iter() {
+            if let DispatchTarget::Stream(p) = target {
+                let last = p.last_activity_ms.load(Ordering::Relaxed);
+                if last > 0 && now_ms.saturating_sub(last) > idle_ms {
+                    remove_ids.push(id.clone());
+                    stale.push((id.clone(), p.tx.clone()));
+                }
+            }
+        }
+        for id in &remove_ids {
+            map.remove(id);
+        }
+    }
+
+    let failed = stale.len();
+    for (id, tx) in stale {
+        warn!(
+            generation,
+            id = %id,
+            idle_secs = idle_timeout.as_secs(),
+            "watchdog failing idle bridge stream"
+        );
+        let _ = tx.try_send(Err(format!(
+            "bridge stream idle for over {} seconds (watchdog timeout)",
+            idle_timeout.as_secs()
+        )));
+    }
+
+    failed
+}
+
 fn fail_all(map: &mut HashMap<String, DispatchTarget>, message: &str) {
     for (_, target) in map.drain() {
         match target {
@@ -604,4 +706,59 @@ pub fn default_bridge_dir() -> PathBuf {
 /// One-line helper used by tests: does this dir look like a bridge install?
 pub fn is_bridge_dir(dir: &Path) -> bool {
     dir.join("bridge.mjs").exists() && dir.join("package.json").exists()
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn scan_once_fails_only_stale_streams() {
+        let pending: Arc<Mutex<HashMap<String, DispatchTarget>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let now = 1_000_000u64;
+
+        // Fresh stream: active a second ago.
+        let (tx_fresh, mut rx_fresh) = mpsc::channel(8);
+        let fresh_activity = Arc::new(AtomicU64::new(now - 1_000));
+        pending.lock().await.insert(
+            "fresh".into(),
+            DispatchTarget::Stream(PendingStream {
+                tx: tx_fresh,
+                last_activity_ms: fresh_activity,
+            }),
+        );
+
+        // Stale stream: last activity 10 minutes ago.
+        let (tx_stale, mut rx_stale) = mpsc::channel(8);
+        let stale_activity = Arc::new(AtomicU64::new(now - 600_000));
+        pending.lock().await.insert(
+            "stale".into(),
+            DispatchTarget::Stream(PendingStream {
+                tx: tx_stale,
+                last_activity_ms: stale_activity,
+            }),
+        );
+
+        // Never-active stream (last == 0): exempt from the watchdog.
+        let (tx_zero, mut rx_zero) = mpsc::channel(8);
+        let zero_activity = Arc::new(AtomicU64::new(0));
+        pending.lock().await.insert(
+            "zero".into(),
+            DispatchTarget::Stream(PendingStream {
+                tx: tx_zero,
+                last_activity_ms: zero_activity,
+            }),
+        );
+
+        let failed = scan_once(&pending, now, Duration::from_secs(300), 7).await;
+        assert_eq!(failed, 1, "only the stale stream is failed");
+
+        let err = rx_stale.recv().await.unwrap().unwrap_err();
+        assert!(err.contains("watchdog timeout"), "unexpected error: {err}");
+
+        assert!(rx_fresh.try_recv().is_err(), "fresh stream untouched");
+        assert!(rx_zero.try_recv().is_err(), "never-active stream untouched");
+        assert_eq!(pending.lock().await.len(), 2, "stale entry unregistered");
+    }
 }
