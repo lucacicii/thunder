@@ -1,11 +1,3 @@
-//! # Thunder Root
-//!
-//! Extensible microkernel host and autonomous plugin orchestration engine for Thunder Agent.
-//!
-//! Built around `thunder-agent-loop` as the fundamental core unit, treating
-//! conversation storage, skills parsers, and MCP tool discovery
-//! as dynamically discoverable and registerable plugins.
-
 pub mod error;
 pub mod host;
 pub mod plugin;
@@ -26,6 +18,8 @@ pub mod prelude {
     pub use crate::plugins::script_plugin::*;
     #[cfg(feature = "skills")]
     pub use crate::plugins::skills::*;
+    #[cfg(feature = "conversation")]
+    pub use crate::plugins::standard::{baseline_forced_plugins, StandardHostBuilder};
     #[cfg(feature = "conversation")]
     pub use crate::plugins::ConversationPlugin;
     pub use crate::registry::{ActivePluginSet, PluginRegistry};

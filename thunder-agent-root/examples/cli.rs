@@ -25,12 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // 1. Initialize ThunderRoot with extensible plugins
-    let root = ThunderRoot::new(base_cfg.clone())
-        .with_plugin(ConversationPlugin::with_memory_store())
-        .with_plugin(SkillsPlugin::default())
-        .with_plugin(McpPlugin::default())
-        .with_provider_registry(registry.clone());
+    // 1. Initialize ThunderRoot through the shared host assembler so the CLI
+    //    exposes exactly the same baseline capability set as the TUI and daemon.
+    let root = StandardHostBuilder::new(std::sync::Arc::new(
+        thunder_conversation::prelude::MemoryConversationStore::new(),
+    ))
+    .build(ThunderRoot::new(base_cfg.clone()).with_provider_registry(registry.clone()));
 
     println!("============================================================");
     println!("⚡ Thunder-Root Microkernel Host CLI");

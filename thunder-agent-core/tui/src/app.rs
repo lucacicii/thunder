@@ -1457,12 +1457,17 @@ impl App {
             ));
         }
 
-        let root = ThunderRoot::new(base_cfg.clone())
-            .with_workspace(self.workspace_dir.clone())
-            .with_plugin(ConversationPlugin::with_memory_store())
-            .with_plugin(skills_plugin)
-            .with_plugin(McpPlugin::default())
-            .with_provider_registry(self.provider_registry.clone());
+        // Assemble through the shared host builder so the TUI cannot drift from
+        // the daemon's baseline capability set again. The terminal host keeps a
+        // memory-backed conversation store (the app owns FS persistence) and
+        // opts out of the Node-backed TypeScript plugin host.
+        let root = StandardHostBuilder::new(Arc::new(MemoryConversationStore::new()))
+            .with_skills(skills_plugin)
+            .build(
+                ThunderRoot::new(base_cfg.clone())
+                    .with_workspace(self.workspace_dir.clone())
+                    .with_provider_registry(self.provider_registry.clone()),
+            );
 
         let session_id = self.conversation.id.clone();
         let context_input = self.conversation.as_context_input();

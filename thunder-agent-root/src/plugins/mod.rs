@@ -6,6 +6,8 @@ pub mod mcp;
 pub mod script_plugin;
 #[cfg(feature = "skills")]
 pub mod skills;
+#[cfg(feature = "conversation")]
+pub mod standard;
 
 #[cfg(feature = "conversation")]
 pub use conversation::ConversationPlugin;
@@ -15,3 +17,5 @@ pub use mcp::McpPlugin;
 pub use script_plugin::ScriptPlugin;
 #[cfg(feature = "skills")]
 pub use skills::SkillsPlugin;
+#[cfg(feature = "conversation")]
+pub use standard::{baseline_forced_plugins, StandardHostBuilder};

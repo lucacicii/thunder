@@ -230,6 +230,21 @@ impl RoleRegistry {
         self.roles.values().find(|r| r.matches(token)).cloned()
     }
 
+    /// Resolve an *enabled* role for a run, returning the role together with the
+    /// permission tier it implies.
+    ///
+    /// This is the single authority for "which permission does this run get":
+    /// hosts must not re-derive [`RoleSpec::permission`] on their own, or the
+    /// tiers silently diverge between the daemon and the TUI. A missing or
+    /// disabled role yields the permissive default, matching historic behaviour.
+    pub fn resolve_for_run(&self, token: Option<&str>) -> (Option<RoleSpec>, Permission) {
+        let role = token
+            .and_then(|t| self.resolve(t))
+            .filter(|role| role.enabled);
+        let permission = role.as_ref().map(|r| r.permission).unwrap_or_default();
+        (role, permission)
+    }
+
     pub fn get(&self, id: &str) -> Option<&RoleSpec> {
         self.roles.get(id)
     }
