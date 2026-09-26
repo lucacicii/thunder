@@ -47,7 +47,11 @@ impl AgentTool for ReadFileTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -65,7 +69,10 @@ impl AgentTool for ReadFileTool {
         };
 
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
 
         if let Ok(meta) = fs::metadata(&target_path).await {
             let max_bytes = 10 * 1024 * 1024; // 10 MB ceiling
@@ -140,7 +147,11 @@ impl AgentTool for WriteFileTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -189,22 +200,24 @@ impl AgentTool for WriteFileTool {
                 .truncate(true)
                 .open(&temp_path)
                 .await
-                .map_err(|e| format!("Failed to create staging file '{}': {}", temp_path.display(), e))?;
+                .map_err(|e| {
+                    format!(
+                        "Failed to create staging file '{}': {}",
+                        temp_path.display(),
+                        e
+                    )
+                })?;
 
             use tokio::io::AsyncWriteExt;
-            file.write_all(content.as_bytes())
-                .await
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&temp_path);
-                    format!("Failed writing to staging file: {}", e)
-                })?;
+            file.write_all(content.as_bytes()).await.map_err(|e| {
+                let _ = std::fs::remove_file(&temp_path);
+                format!("Failed writing to staging file: {}", e)
+            })?;
 
-            file.sync_all()
-                .await
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&temp_path);
-                    format!("Failed syncing staging file: {}", e)
-                })?;
+            file.sync_all().await.map_err(|e| {
+                let _ = std::fs::remove_file(&temp_path);
+                format!("Failed syncing staging file: {}", e)
+            })?;
         }
 
         if let Some(perm) = original_permissions {
@@ -213,9 +226,17 @@ impl AgentTool for WriteFileTool {
 
         if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(format!("Failed to atomically rename to '{}': {}", path.display(), e));
+            return Err(format!(
+                "Failed to atomically rename to '{}': {}",
+                path.display(),
+                e
+            ));
         }
 
-        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path.display()))
+        Ok(format!(
+            "Successfully wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        ))
     }
 }

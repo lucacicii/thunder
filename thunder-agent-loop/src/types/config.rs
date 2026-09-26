@@ -260,7 +260,8 @@ impl AgentConfig {
         mut self,
         roots: impl IntoIterator<Item = impl Into<PathBuf>>,
     ) -> Self {
-        self.extra_workspace_roots.extend(roots.into_iter().map(Into::into));
+        self.extra_workspace_roots
+            .extend(roots.into_iter().map(Into::into));
         self
     }
 

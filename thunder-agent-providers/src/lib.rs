@@ -21,7 +21,10 @@ use std::sync::Arc;
 use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_pi_bridge::PiAiClient;
 
-pub fn client_for(spec: &ModelSpec, timeout_ms: u64) -> Result<Arc<dyn LLMClientTrait>, ProviderError> {
+pub fn client_for(
+    spec: &ModelSpec,
+    timeout_ms: u64,
+) -> Result<Arc<dyn LLMClientTrait>, ProviderError> {
     if !spec.available {
         return Err(ProviderError::Auth(format!(
             "model `{}` is unavailable (missing API key or base URL)",

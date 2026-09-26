@@ -22,20 +22,18 @@ pub fn resolve_thinking_levels(
         "high".to_string(),
     ];
 
-    let is_known_reasoning = reasoning
-        || supports_reasoning_effort
-        || {
-            let lower = model_id.to_lowercase();
-            lower.contains("reasoner")
-                || lower.contains("r1")
-                || lower.starts_with("o1")
-                || lower.starts_with("o3")
-                || lower.contains("/o1")
-                || lower.contains("/o3")
-                || lower.contains("thinking")
-                || lower.contains("sonnet-3-7")
-                || lower.contains("claude-3-7")
-        };
+    let is_known_reasoning = reasoning || supports_reasoning_effort || {
+        let lower = model_id.to_lowercase();
+        lower.contains("reasoner")
+            || lower.contains("r1")
+            || lower.starts_with("o1")
+            || lower.starts_with("o3")
+            || lower.contains("/o1")
+            || lower.contains("/o3")
+            || lower.contains("thinking")
+            || lower.contains("sonnet-3-7")
+            || lower.contains("claude-3-7")
+    };
 
     let levels = if let Some(explicit) = explicit_levels {
         if explicit.is_empty() {
@@ -72,9 +70,13 @@ pub fn resolve_thinking_levels(
 /// Resolves standard location for runtime learned model specifications cache.
 pub fn default_metadata_cache_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".thunder").join("models_metadata.json")
+        PathBuf::from(home)
+            .join(".thunder")
+            .join("models_metadata.json")
     } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        PathBuf::from(userprofile).join(".thunder").join("models_metadata.json")
+        PathBuf::from(userprofile)
+            .join(".thunder")
+            .join("models_metadata.json")
     } else {
         std::env::temp_dir().join("thunder_models_metadata.json")
     }
@@ -156,11 +158,8 @@ pub struct ModelSpec {
 
 impl ModelSpec {
     pub fn to_bridge_model(&self) -> thunder_pi_bridge::BridgeModel {
-        let mut m = thunder_pi_bridge::BridgeModel::new(
-            &self.provider,
-            &self.id,
-            self.api.as_pi_api_str(),
-        );
+        let mut m =
+            thunder_pi_bridge::BridgeModel::new(&self.provider, &self.id, self.api.as_pi_api_str());
         m.name = self.name.clone();
         m.base_url = self.base_url.clone();
         m.api_key = self.api_key.clone();
@@ -203,11 +202,20 @@ impl ProviderRegistry {
         for (provider_id, provider) in file.providers {
             let provider_api = provider.api();
             let provider_base = provider.base_url.clone().unwrap_or_default();
-            let provider_key = resolve_provider_key(&provider_id, provider.api_key.as_deref(), auth)?;
+            let provider_key =
+                resolve_provider_key(&provider_id, provider.api_key.as_deref(), auth)?;
             let provider_compat = provider.compat.clone().unwrap_or_default();
 
             if provider.models.is_empty() {
-                if let Some(builtin) = builtin_models(&provider_id, provider_api, &provider_base, provider_key.clone(), &provider.headers, &provider_compat, &cache) {
+                if let Some(builtin) = builtin_models(
+                    &provider_id,
+                    provider_api,
+                    &provider_base,
+                    provider_key.clone(),
+                    &provider.headers,
+                    &provider_compat,
+                    &cache,
+                ) {
                     models.extend(builtin);
                 }
                 continue;
@@ -216,17 +224,32 @@ impl ProviderRegistry {
             for model in provider.models {
                 let api = model.api_or(provider_api);
                 let compat = merge_compat(&provider_compat, model.compat.as_ref());
-                let base_url = model.base_url.clone().unwrap_or_else(|| provider_base.clone());
-                let has_key = provider_key.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
+                let base_url = model
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| provider_base.clone());
+                let has_key = provider_key
+                    .as_ref()
+                    .map(|k| !k.is_empty())
+                    .unwrap_or(false);
                 let selection_id = format!("{}/{}", provider_id, model.id);
-                let context_window = cache.resolve_context_window(&selection_id, &model.id, model.context_window);
+                let context_window =
+                    cache.resolve_context_window(&selection_id, &model.id, model.context_window);
                 let effective_levels = model
                     .effective_thinking_levels()
                     .or_else(|| provider.thinking_levels.clone())
-                    .or_else(|| provider.thinking_level_map.as_ref().map(crate::config::extract_levels_from_map));
+                    .or_else(|| {
+                        provider
+                            .thinking_level_map
+                            .as_ref()
+                            .map(crate::config::extract_levels_from_map)
+                    });
                 let (thinking_levels, default_thinking_level) = resolve_thinking_levels(
                     effective_levels.as_deref(),
-                    model.default_thinking_level.as_deref().or(provider.default_thinking_level.as_deref()),
+                    model
+                        .default_thinking_level
+                        .as_deref()
+                        .or(provider.default_thinking_level.as_deref()),
                     model.reasoning,
                     compat.supports_reasoning_effort.unwrap_or(false),
                     &model.id,
@@ -285,7 +308,9 @@ impl ProviderRegistry {
         let mut registry = Self::from_parts(file, &auth)?;
         if registry.models.is_empty() {
             let cache = ModelMetadataCache::load_default();
-            registry.models.extend(fallback_openai_catalog(&auth, &cache));
+            registry
+                .models
+                .extend(fallback_openai_catalog(&auth, &cache));
         }
 
         // Active probing for unprobed reasoning models
@@ -308,25 +333,27 @@ impl ProviderRegistry {
                 continue;
             }
 
-            let is_reasoning_candidate = m.reasoning
-                || m.supports_reasoning_effort
-                || {
-                    let lower = m.id.to_lowercase();
-                    lower.contains("reasoner")
-                        || lower.contains("r1")
-                        || lower.starts_with("o1")
-                        || lower.starts_with("o3")
-                        || lower.contains("thinking")
-                        || lower.contains("sonnet-3-7")
-                        || lower.contains("claude-3-7")
-                };
+            let is_reasoning_candidate = m.reasoning || m.supports_reasoning_effort || {
+                let lower = m.id.to_lowercase();
+                lower.contains("reasoner")
+                    || lower.contains("r1")
+                    || lower.starts_with("o1")
+                    || lower.starts_with("o3")
+                    || lower.contains("thinking")
+                    || lower.contains("sonnet-3-7")
+                    || lower.contains("claude-3-7")
+            };
 
             if !is_reasoning_candidate || !m.available {
                 continue;
             }
 
-            tracing::info!("Actively probing thinking capabilities for model: {}", m.selection_id());
-            if let Some(probe_result) = crate::probe::probe_model_thinking_levels(&client, m).await {
+            tracing::info!(
+                "Actively probing thinking capabilities for model: {}",
+                m.selection_id()
+            );
+            if let Some(probe_result) = crate::probe::probe_model_thinking_levels(&client, m).await
+            {
                 tracing::info!(
                     "Successfully probed thinking levels for {}: {:?}, default: {}",
                     m.selection_id(),
@@ -385,7 +412,7 @@ impl ProviderRegistry {
             }) {
                 return Some(spec);
             }
- }
+        }
 
         // Fallback: first available non-reasoning model, then any available model
         self.models
@@ -416,7 +443,9 @@ impl ProviderRegistry {
             .or_else(|| self.models.iter().find(|m| m.id == trimmed))
             .or_else(|| {
                 trimmed.split_once('/').and_then(|(provider, id)| {
-                    self.models.iter().find(|m| m.provider == provider && m.id == id)
+                    self.models
+                        .iter()
+                        .find(|m| m.provider == provider && m.id == id)
                 })
             })
     }
@@ -429,7 +458,10 @@ impl ProviderRegistry {
         let mut resolved_selection = trimmed.to_string();
 
         for m in &mut self.models {
-            if m.selection_id() == trimmed || m.id == trimmed || format!("{}/{}", m.provider, m.id) == trimmed {
+            if m.selection_id() == trimmed
+                || m.id == trimmed
+                || format!("{}/{}", m.provider, m.id) == trimmed
+            {
                 m.context_window = real_limit;
                 resolved_selection = m.selection_id();
                 updated = true;
@@ -532,7 +564,7 @@ fn builtin_models(
                     default_thinking_level,
                     thinking_levels_probed: false,
                     thinking_level_map: None,
-                    compat: serde_json::to_value(&compat).ok(),
+                    compat: serde_json::to_value(compat).ok(),
                 }
             })
             .collect(),
@@ -547,13 +579,8 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
         .map(|id| {
             let sel_id = format!("openai/{}", id);
             let context_window = cache.resolve_context_window(&sel_id, id, None);
-            let (thinking_levels, default_thinking_level) = resolve_thinking_levels(
-                None,
-                None,
-                false,
-                false,
-                id,
-            );
+            let (thinking_levels, default_thinking_level) =
+                resolve_thinking_levels(None, None, false, false, id);
             ModelSpec {
                 provider: "openai".to_string(),
                 id: id.to_string(),

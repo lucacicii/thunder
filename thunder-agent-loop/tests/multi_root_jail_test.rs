@@ -5,12 +5,12 @@
 use serde_json::json;
 use std::sync::Arc;
 use thunder_agent_loop::tools::builtin::{ReadFileTool, WriteFileTool};
+use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::config::{MiddlewareConfig, Permission};
 use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_loop::types::tool::ToolExecutionContext;
 use thunder_agent_loop::AgentLoop;
-use thunder_agent_loop::tools::middleware::ToolPipeline;
 use tokio_util::sync::CancellationToken;
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -38,7 +38,7 @@ async fn write_file_lands_in_extra_root_via_transaction() {
 
     let pipeline = ToolPipeline::configured(
         ws.clone(),
-        &[repo.clone()],
+        std::slice::from_ref(&repo),
         registry,
         None,
         &MiddlewareConfig::default(),
@@ -53,9 +53,16 @@ async fn write_file_lands_in_extra_root_via_transaction() {
         json!({ "path": target.to_string_lossy(), "content": "fn main() {}" }).to_string(),
     );
     let res = pipeline.execute(&call, &ctx("call_w1"), None).await;
-    assert!(!res.is_error, "write into extra root must pass: {}", res.output);
     assert!(
-        res.telemetry.as_ref().map(|t| t.layer == "Transaction").unwrap_or(false),
+        !res.is_error,
+        "write into extra root must pass: {}",
+        res.output
+    );
+    assert!(
+        res.telemetry
+            .as_ref()
+            .map(|t| t.layer == "Transaction")
+            .unwrap_or(false),
         "atomic write telemetry expected"
     );
 
@@ -70,7 +77,11 @@ async fn write_file_lands_in_extra_root_via_transaction() {
         json!({ "path": target.to_string_lossy() }).to_string(),
     );
     let res = pipeline.execute(&call, &ctx("call_r1"), None).await;
-    assert!(!res.is_error, "read from extra root must pass: {}", res.output);
+    assert!(
+        !res.is_error,
+        "read from extra root must pass: {}",
+        res.output
+    );
 
     // Writing outside every root is still blocked.
     let call = ToolCall::new_function(
@@ -113,7 +124,12 @@ async fn agent_loop_rebuilds_pipeline_with_extra_roots() {
         .tool_executor()
         .pipeline()
         .execute(&call, &ctx("call_r2"), None)
-        .await;    assert!(!res.is_error, "extra root must survive executor rebuilds: {}", res.output);
+        .await;
+    assert!(
+        !res.is_error,
+        "extra root must survive executor rebuilds: {}",
+        res.output
+    );
 
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&repo);

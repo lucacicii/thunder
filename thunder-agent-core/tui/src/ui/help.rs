@@ -9,97 +9,239 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
     let help_area = centered_rect(75, 75, area);
 
     let shortcuts = vec![
-        Line::styled("⚡ THUNDER TUI — INTERACTIVE COMMANDS & SHORTCUTS", Style::default().fg(theme.accent_primary).add_modifier(Modifier::BOLD)),
+        Line::styled(
+            "⚡ THUNDER TUI — INTERACTIVE COMMANDS & SHORTCUTS",
+            Style::default()
+                .fg(theme.accent_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
         Line::raw(""),
-        Line::styled("⌨️  KEYBOARD SHORTCUTS", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+        Line::styled(
+            "⌨️  KEYBOARD SHORTCUTS",
+            Style::default()
+                .fg(theme.highlight)
+                .add_modifier(Modifier::BOLD),
+        ),
         Line::from(vec![
-            Span::styled("Enter          ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
-            Span::styled("Send message / Execute prompt or slash command", theme.text_style()),
+            Span::styled(
+                "Enter          ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Send message / Execute prompt or slash command",
+                theme.text_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Tab            ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
-            Span::styled("Autocomplete slash command / Switch focus pane", theme.text_style()),
+            Span::styled(
+                "Tab            ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Autocomplete slash command / Switch focus pane",
+                theme.text_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl + N       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Ctrl + N       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Start new conversation session", theme.text_style()),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl + P       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Ctrl + P       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Cycle mode: Auto ➔ Single", theme.text_style()),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl + B       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Ctrl + B       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Toggle sidebar visibility", theme.text_style()),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl + H       ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Ctrl + H       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Toggle this help window", theme.text_style()),
         ]),
         Line::from(vec![
-            Span::styled("Up / Down      ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
-            Span::styled("Select command suggestion / History / Scroll chat", theme.text_style()),
+            Span::styled(
+                "Up / Down      ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Select command suggestion / History / Scroll chat",
+                theme.text_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl + C / Esc ", Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Ctrl + C / Esc ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Cancel running agent or dismiss popup", theme.text_style()),
         ]),
         Line::raw(""),
-        Line::styled("⚡ SLASH COMMANDS (type / in input box for autocompletion):", Style::default().fg(theme.accent_primary).add_modifier(Modifier::BOLD)),
+        Line::styled(
+            "⚡ SLASH COMMANDS (type / in input box for autocompletion):",
+            Style::default()
+                .fg(theme.accent_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
         Line::from(vec![
-            Span::styled("/help                     ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Show full command and shortcut reference", theme.muted_style()),
+            Span::styled(
+                "/help                     ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Show full command and shortcut reference",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/model [name]             ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("View or switch active LLM model (gpt-4o, claude-3-7, etc.)", theme.muted_style()),
+            Span::styled(
+                "/model [name]             ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "View or switch active LLM model (gpt-4o, claude-3-7, etc.)",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/mode [auto|single]       ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Switch execution mode (plugin host or direct single agent)", theme.muted_style()),
+            Span::styled(
+                "/mode [auto|single]       ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Switch execution mode (plugin host or direct single agent)",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/skills [list|load|scan]  ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Browse skills, inspect playbooks, or re-scan dirs", theme.muted_style()),
+            Span::styled(
+                "/skills [list|load|scan]  ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Browse skills, inspect playbooks, or re-scan dirs",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/mcp [list|servers|reload]", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("List connected MCP servers & discovered remote tools", theme.muted_style()),
+            Span::styled(
+                "/mcp [list|servers|reload]",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "List connected MCP servers & discovered remote tools",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/config [key] [val]       ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("View or update runtime settings (temp, turns, timeout)", theme.muted_style()),
+            Span::styled(
+                "/config [key] [val]       ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "View or update runtime settings (temp, turns, timeout)",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/compact                  ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Compact dialogue history to optimize tokens", theme.muted_style()),
+            Span::styled(
+                "/compact                  ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Compact dialogue history to optimize tokens",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/stats                    ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Show dialogue turns, tool executions & token estimation", theme.muted_style()),
+            Span::styled(
+                "/stats                    ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Show dialogue turns, tool executions & token estimation",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/workspace [path]         ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Display or switch active workspace directory", theme.muted_style()),
+            Span::styled(
+                "/workspace [path]         ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Display or switch active workspace directory",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/export [path]            ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Export current conversation to a Markdown file", theme.muted_style()),
+            Span::styled(
+                "/export [path]            ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Export current conversation to a Markdown file",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/clear                    ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Reset conversation and start fresh session", theme.muted_style()),
+            Span::styled(
+                "/clear                    ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Reset conversation and start fresh session",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/health                   ", Style::default().fg(theme.assistant_bubble)),
-            Span::styled("Run local agent and environment diagnostics", theme.muted_style()),
+            Span::styled(
+                "/health                   ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Run local agent and environment diagnostics",
+                theme.muted_style(),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("/quit                     ", Style::default().fg(theme.error_color)),
+            Span::styled(
+                "/quit                     ",
+                Style::default().fg(theme.error_color),
+            ),
             Span::styled("Exit Thunder TUI", theme.muted_style()),
         ]),
         Line::raw(""),
-        Line::styled("Press Esc or Ctrl+H to close this window", theme.muted_style()),
+        Line::styled(
+            "Press Esc or Ctrl+H to close this window",
+            theme.muted_style(),
+        ),
     ];
 
     let block = Block::default()

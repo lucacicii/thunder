@@ -42,10 +42,18 @@ struct FastBenchTool;
 #[async_trait]
 impl AgentTool for FastBenchTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new_function("noop", "no-op", json!({ "type": "object", "properties": {} }))
+        ToolDefinition::new_function(
+            "noop",
+            "no-op",
+            json!({ "type": "object", "properties": {} }),
+        )
     }
 
-    async fn execute(&self, _args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         Ok("ok".to_string())
     }
 }
@@ -73,7 +81,11 @@ async fn main() {
 
     println!("  - Iterations: {}", iters);
     println!("  - Elapsed: {:.2?}", elapsed);
-    println!("  - Speed: {:.2} MB/s ({:.2} million chars/sec)", throughput, (sample_text.len() * iters) as f64 / elapsed.as_secs_f64() / 1_000_000.0);
+    println!(
+        "  - Speed: {:.2} MB/s ({:.2} million chars/sec)",
+        throughput,
+        (sample_text.len() * iters) as f64 / elapsed.as_secs_f64() / 1_000_000.0
+    );
 
     // 2. High Concurrency Agent Loops (10,000 Concurrent Loops)
     println!("\n[2/3] Benchmarking 10,000 Concurrent Agent Loop Executions...");
@@ -108,10 +120,20 @@ async fn main() {
     let ops_per_sec = total_completed as f64 / elapsed.as_secs_f64();
     let avg_latency_us = (elapsed.as_micros() as f64) / total_completed as f64;
 
-    println!("  - Total Completed: {} / {}", total_completed, concurrent_tasks);
+    println!(
+        "  - Total Completed: {} / {}",
+        total_completed, concurrent_tasks
+    );
     println!("  - Total Wall Time: {:.2?}", elapsed);
-    println!("  - Throughput: {:.0} complete agent runs / second", ops_per_sec);
-    println!("  - Average Loop Overhead / Task: {:.2} µs ({:.4} ms)", avg_latency_us, avg_latency_us / 1000.0);
+    println!(
+        "  - Throughput: {:.0} complete agent runs / second",
+        ops_per_sec
+    );
+    println!(
+        "  - Average Loop Overhead / Task: {:.2} µs ({:.4} ms)",
+        avg_latency_us,
+        avg_latency_us / 1000.0
+    );
 
     // 3. Memory & Resource Footprint
     println!("\n[3/3] Inspecting Memory Footprint...");
@@ -124,8 +146,15 @@ async fn main() {
             .output();
 
         if let Ok(out) = output {
-            let rss_kb: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
-            println!("  - Process RSS Memory (after 10k concurrent loops): {:.2} MB ({} KB)", rss_kb as f64 / 1024.0, rss_kb);
+            let rss_kb: u64 = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            println!(
+                "  - Process RSS Memory (after 10k concurrent loops): {:.2} MB ({} KB)",
+                rss_kb as f64 / 1024.0,
+                rss_kb
+            );
         }
     }
 

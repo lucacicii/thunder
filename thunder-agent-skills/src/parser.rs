@@ -32,8 +32,12 @@ impl SkillParser {
                     let frontmatter_str = &rest[..end_idx];
                     let body = rest[end_idx + 4..].trim();
 
-                    let fm: FrontmatterData = serde_yaml::from_str(frontmatter_str)
-                        .map_err(|e| SkillError::InvalidFrontmatter(format!("YAML frontmatter parse error: {e}")))?;
+                    let fm: FrontmatterData =
+                        serde_yaml::from_str(frontmatter_str).map_err(|e| {
+                            SkillError::InvalidFrontmatter(format!(
+                                "YAML frontmatter parse error: {e}"
+                            ))
+                        })?;
 
                     let name = fm.name.unwrap_or_else(|| {
                         file_path
@@ -43,7 +47,10 @@ impl SkillParser {
                     });
 
                     let description = fm.description.unwrap_or_else(|| {
-                        body.lines().next().unwrap_or("No description provided").to_string()
+                        body.lines()
+                            .next()
+                            .unwrap_or("No description provided")
+                            .to_string()
                     });
 
                     let tags = Self::extract_string_list(&fm.tags);
@@ -169,7 +176,11 @@ impl SkillParser {
             let close = format!("</{tag}>");
             if let Some(start) = content.find(&open) {
                 if let Some(end) = content[start + open.len()..].find(&close) {
-                    return Some(content[start + open.len()..start + open.len() + end].trim().to_string());
+                    return Some(
+                        content[start + open.len()..start + open.len() + end]
+                            .trim()
+                            .to_string(),
+                    );
                 }
             }
             None
@@ -182,7 +193,8 @@ impl SkillParser {
                 .to_string()
         });
 
-        let description = extract_tag("description").unwrap_or_else(|| format!("Skill instructions for {name}"));
+        let description =
+            extract_tag("description").unwrap_or_else(|| format!("Skill instructions for {name}"));
         let instructions = extract_tag("instructions").unwrap_or_else(|| content.to_string());
 
         let mut skill = Skill::new(name, description, instructions);
@@ -203,9 +215,11 @@ impl SkillParser {
                     _ => None,
                 })
                 .collect(),
-            serde_yaml::Value::String(s) => {
-                s.lines().map(|l| l.trim().trim_start_matches("- ").to_string()).filter(|s| !s.is_empty()).collect()
-            }
+            serde_yaml::Value::String(s) => s
+                .lines()
+                .map(|l| l.trim().trim_start_matches("- ").to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             _ => Vec::new(),
         }
     }

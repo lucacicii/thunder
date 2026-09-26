@@ -17,7 +17,10 @@ pub mod prelude {
     pub use crate::config::{McpConfig, McpServerConfig};
     pub use crate::error::McpError;
     pub use crate::manager::McpManager;
-    pub use crate::protocol::{CallToolResult, ImplementationInfo, InitializeParams, InitializeResult, McpTool, ToolContent};
+    pub use crate::protocol::{
+        CallToolResult, ImplementationInfo, InitializeParams, InitializeResult, McpTool,
+        ToolContent,
+    };
     pub use crate::tool_bridge::McpToolBridge;
     pub use crate::transport::mock::MockTransport;
     pub use crate::transport::stdio::StdioTransport;

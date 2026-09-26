@@ -49,7 +49,9 @@ pub use process::{default_bridge_dir, BridgeModelInfo, PiAiBridge};
 
 pub mod prelude {
     pub use crate::client::{global_bridge, PiAiClient};
-    pub use crate::model::{BridgeModel, API_ANTHROPIC_MESSAGES, API_GOOGLE_GENERATIVE_AI,
-        API_OPENAI_COMPLETIONS, API_OPENAI_RESPONSES};
+    pub use crate::model::{
+        BridgeModel, API_ANTHROPIC_MESSAGES, API_GOOGLE_GENERATIVE_AI, API_OPENAI_COMPLETIONS,
+        API_OPENAI_RESPONSES,
+    };
     pub use crate::process::{default_bridge_dir, BridgeModelInfo, PiAiBridge};
 }

@@ -5,5 +5,5 @@ pub mod tool_bridge;
 
 pub use plugin::TsScriptPluginEngine;
 pub use process::{SidecarConfig, SidecarManager};
-pub use protocol::{HostMessage, ClientMessage, ToolMeta, PluginMeta};
+pub use protocol::{ClientMessage, HostMessage, PluginMeta, ToolMeta};
 pub use tool_bridge::TsToolBridge;

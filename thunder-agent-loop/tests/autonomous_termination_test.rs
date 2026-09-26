@@ -18,7 +18,9 @@ impl LLMClientTrait for DirectAnswerLLMClient {
         tokio::spawn(async move {
             let _ = tx
                 .send(Ok(LLMStreamChunk::Completed {
-                    content: Some("I have all the information directly: The answer is 42.".to_string()),
+                    content: Some(
+                        "I have all the information directly: The answer is 42.".to_string(),
+                    ),
                     tool_calls: vec![], // No tools requested!
                     finish_reason: "stop".to_string(),
                     prompt_tokens: Some(10),
@@ -71,7 +73,9 @@ impl LLMClientTrait for MultiTurnAutonomousLLMClient {
                 // LLM decides information is sufficient -> no tool calls, conclude task!
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
-                        content: Some("All information gathered. Task completed successfully!".to_string()),
+                        content: Some(
+                            "All information gathered. Task completed successfully!".to_string(),
+                        ),
                         tool_calls: vec![],
                         finish_reason: "stop".to_string(),
                         prompt_tokens: Some(options.messages.len() * 10),
@@ -103,7 +107,11 @@ impl AgentTool for MockInfoTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         Ok(format!("Result for query: {}", q))
     }
@@ -137,10 +145,16 @@ async fn test_llm_autonomously_decides_when_info_is_sufficient() {
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
     agent.register_tool(Arc::new(MockInfoTool));
 
-    let result = agent.run("Solve multi-step research problem", None).await.unwrap();
+    let result = agent
+        .run("Solve multi-step research problem", None)
+        .await
+        .unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::Done);
     assert_eq!(result.stats.total_turns, 4); // 3 tool turns + 1 final conclusion turn
     assert_eq!(result.stats.total_tool_executions, 3); // exactly 3 tool queries
-    assert!(result.final_content.unwrap().contains("Task completed successfully!"));
+    assert!(result
+        .final_content
+        .unwrap()
+        .contains("Task completed successfully!"));
 }

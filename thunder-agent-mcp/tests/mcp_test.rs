@@ -27,7 +27,10 @@ fn test_mcp_config_parsing_standard_format() {
     let fetch = &cfg.mcp_servers["fetch"];
     assert_eq!(fetch.command, "uvx");
     assert_eq!(fetch.args, vec!["mcp-server-fetch"]);
-    assert_eq!(fetch.env.get("HTTP_TIMEOUT").map(|s| s.as_str()), Some("30"));
+    assert_eq!(
+        fetch.env.get("HTTP_TIMEOUT").map(|s| s.as_str()),
+        Some("30")
+    );
     assert!(!fetch.disabled);
 
     let sqlite = &cfg.mcp_servers["sqlite"];
@@ -50,7 +53,10 @@ async fn test_mcp_client_with_mock_transport() {
     client.ping().await.expect("Ping should succeed");
 
     // 3. List tools
-    let tools = client.list_tools().await.expect("List tools should succeed");
+    let tools = client
+        .list_tools()
+        .await
+        .expect("List tools should succeed");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "mock_fetch_data");
 
@@ -73,7 +79,10 @@ async fn test_mcp_tool_bridge_as_agent_tool() {
         .expect("Initialize must succeed");
 
     let tools = client.list_tools().await.expect("Tools list must succeed");
-    let mcp_tool = tools.into_iter().next().expect("Should have at least one tool");
+    let mcp_tool = tools
+        .into_iter()
+        .next()
+        .expect("Should have at least one tool");
 
     let bridge = McpToolBridge::new("test_srv", mcp_tool, client);
     let def = bridge.definition();
@@ -110,5 +119,8 @@ async fn test_mcp_manager_discovery() {
 
     let discovered_tools = manager.discover_all_tools().await;
     assert_eq!(discovered_tools.len(), 1);
-    assert_eq!(discovered_tools[0].definition().function.name, "mcp_database_mock_fetch_data");
+    assert_eq!(
+        discovered_tools[0].definition().function.name,
+        "mcp_database_mock_fetch_data"
+    );
 }

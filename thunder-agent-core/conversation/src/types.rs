@@ -7,17 +7,13 @@ use thunder_agent_loop::AgentRunResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ConversationStatus {
+    #[default]
     Active,
     Archived,
     Deleted,
     Paused,
-}
-
-impl Default for ConversationStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,7 +214,8 @@ impl Conversation {
         content: Option<String>,
         tool_calls: Option<Vec<ToolCall>>,
     ) {
-        self.messages.push(ChatMessage::assistant(content, tool_calls));
+        self.messages
+            .push(ChatMessage::assistant(content, tool_calls));
         self.touch();
     }
 
@@ -390,9 +387,21 @@ impl Conversation {
 
     /// Generate statistical usage and token metrics for this conversation.
     pub fn generate_stats_report(&self) -> ConversationStatsReport {
-        let user_count = self.messages.iter().filter(|m| m.role() == Role::User).count();
-        let asst_count = self.messages.iter().filter(|m| m.role() == Role::Assistant).count();
-        let tool_count = self.messages.iter().filter(|m| m.role() == Role::Tool).count();
+        let user_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::User)
+            .count();
+        let asst_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::Assistant)
+            .count();
+        let tool_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::Tool)
+            .count();
 
         let mut char_count = 0;
         for m in &self.messages {
@@ -422,14 +431,29 @@ impl Conversation {
     /// Format the statistical report into a Markdown dashboard.
     pub fn format_stats_markdown(&self) -> String {
         let stats = self.generate_stats_report();
-        let mut out = format!("### 📊 Session Statistics (Session: `{}`)\n\n", stats.session_id);
+        let mut out = format!(
+            "### 📊 Session Statistics (Session: `{}`)\n\n",
+            stats.session_id
+        );
         out.push_str(&format!("- **Total Messages**: {}\n", stats.total_messages));
         out.push_str(&format!("- **User Prompts**: {}\n", stats.user_messages));
-        out.push_str(&format!("- **Assistant Responses**: {}\n", stats.assistant_messages));
-        out.push_str(&format!("- **Tool Call Invocations**: {}\n", stats.tool_messages));
-        out.push_str(&format!("- **Estimated Context Tokens**: ~{} tokens\n", stats.estimated_tokens));
+        out.push_str(&format!(
+            "- **Assistant Responses**: {}\n",
+            stats.assistant_messages
+        ));
+        out.push_str(&format!(
+            "- **Tool Call Invocations**: {}\n",
+            stats.tool_messages
+        ));
+        out.push_str(&format!(
+            "- **Estimated Context Tokens**: ~{} tokens\n",
+            stats.estimated_tokens
+        ));
         if stats.total_duration_ms > 0 {
-            out.push_str(&format!("- **Execution Time**: {}ms\n", stats.total_duration_ms));
+            out.push_str(&format!(
+                "- **Execution Time**: {}ms\n",
+                stats.total_duration_ms
+            ));
         }
         out
     }

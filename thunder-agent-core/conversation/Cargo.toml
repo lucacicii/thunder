@@ -1,24 +1,29 @@
 [package]
 name = "thunder-conversation"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "Conversation and session management for Thunder Agent ecosystem"
-license = "Apache-2.0"
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["agent", "conversation", "session", "llm", "orchestration"]
 categories = ["asynchronous"]
 
+[lints]
+workspace = true
+
 [dependencies]
-thunder-agent-loop = { path = "../../thunder-agent-loop" }
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "fs", "macros", "io-util"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-tracing = "0.1"
+thunder-agent-loop.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "fs", "macros", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-tempfile = "3.10"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true
+tracing-subscriber = { workspace = true, features = ["ansi"] }

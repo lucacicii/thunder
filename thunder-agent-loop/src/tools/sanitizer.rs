@@ -112,7 +112,10 @@ mod tests {
     #[test]
     fn test_sanitize_tool_output() {
         let colored = "\x1b[33mWarning:\x1b[0m check disk";
-        assert_eq!(sanitize_tool_output(colored.to_string()), "Warning: check disk");
+        assert_eq!(
+            sanitize_tool_output(colored.to_string()),
+            "Warning: check disk"
+        );
 
         let binary_str = String::from_utf8_lossy(&[0, 1, 2, 3, 0, 5]).to_string();
         let sanitized = sanitize_tool_output(binary_str);

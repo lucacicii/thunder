@@ -22,16 +22,54 @@ license = "Apache-2.0"
 repository = "https://github.com/lucacicii/thunder"
 homepage = "https://github.com/lucacicii/thunder"
 
+# ────────────────────────────────────────────────────────────
+# Shared dependency versions. Every crate references these with
+# `<dep>.workspace = true` (adding crate-specific `features` on top),
+# so a version bump happens in exactly one place.
+# ────────────────────────────────────────────────────────────
 [workspace.dependencies]
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
+# Internal crates (path dependencies)
+thunder-agent-loop = { path = "thunder-agent-loop" }
+thunder-pi-bridge = { path = "thunder-pi-bridge" }
+thunder-agent-providers = { path = "thunder-agent-providers" }
+thunder-agent-skills = { path = "thunder-agent-skills" }
+thunder-agent-mcp = { path = "thunder-agent-mcp" }
+thunder-agent-plugin = { path = "thunder-agent-plugin" }
+thunder-agent-root = { path = "thunder-agent-root" }
+thunder-conversation = { path = "thunder-agent-core/conversation" }
+
+# Third-party
+tokio = { version = "1.43" }
 tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 tempfile = "3.10"
+parking_lot = "0.12"
+regex = "1.10"
+glob = "0.3"
+bytes = "1.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+libc = "0.2"
+
+# ────────────────────────────────────────────────────────────
+# Workspace-wide lint baseline. Crates opt in via `[lints] workspace = true`.
+# ────────────────────────────────────────────────────────────
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# Style nits that are not worth churn in this codebase right now.
+too_many_arguments = "allow"
+type_complexity = "allow"
+result_large_err = "allow"
 
 [profile.release]
 opt-level = 3

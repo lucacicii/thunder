@@ -49,7 +49,11 @@ impl McpManager {
     }
 
     /// Add a stdio-based server connection.
-    pub async fn add_stdio_server(&self, name: impl Into<String>, config: &McpServerConfig) -> Result<Arc<McpClient>, McpError> {
+    pub async fn add_stdio_server(
+        &self,
+        name: impl Into<String>,
+        config: &McpServerConfig,
+    ) -> Result<Arc<McpClient>, McpError> {
         let s_name = name.into();
         let client = McpClient::connect_stdio(&s_name, config).await?;
         let client_arc = Arc::new(client);
@@ -109,14 +113,20 @@ impl McpManager {
             return "No remote MCP tools discovered from connected servers.".to_string();
         }
 
-        let mut out = format!("### 🔧 Discovered MCP Remote Tools (Total: {})\n\n", tools.len());
+        let mut out = format!(
+            "### 🔧 Discovered MCP Remote Tools (Total: {})\n\n",
+            tools.len()
+        );
         out.push_str("| Tool Name | Description |\n");
         out.push_str("|---|---|\n");
 
         for tool in tools {
             let def = tool.definition();
             let desc_brief = def.function.description.lines().next().unwrap_or("").trim();
-            out.push_str(&format!("| **`{}`** | {} |\n", def.function.name, desc_brief));
+            out.push_str(&format!(
+                "| **`{}`** | {} |\n",
+                def.function.name, desc_brief
+            ));
         }
 
         out

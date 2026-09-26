@@ -100,8 +100,13 @@ impl ToolMiddleware for OutputPostProcessorMiddleware {
 
         // 1. Lossless Scratchpad persistence if configured and oversized
         if let Some(ref sp) = self.scratchpad {
-            if original_bytes > sp.threshold_bytes() && !sanitized.contains("[Large Output Saved to Disk]") {
-                match sp.process_tool_output(&call.function.name, ctx.turn, sanitized.clone()).await {
+            if original_bytes > sp.threshold_bytes()
+                && !sanitized.contains("[Large Output Saved to Disk]")
+            {
+                match sp
+                    .process_tool_output(&call.function.name, ctx.turn, sanitized.clone())
+                    .await
+                {
                     Ok(persisted_handle) => {
                         let result = ToolExecutionResult {
                             output: persisted_handle,

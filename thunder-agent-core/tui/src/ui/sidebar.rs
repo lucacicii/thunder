@@ -50,7 +50,9 @@ pub fn render_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 Span::styled(
                     cursor_prefix,
                     if is_selected {
-                        Style::default().fg(theme.accent_primary).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.accent_primary)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         theme.muted_style()
                     },
@@ -69,8 +71,13 @@ pub fn render_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             let line2 = Line::from(vec![
                 Span::raw("    "),
                 Span::styled(
-                    format!("msgs: {} | ~{} tok", summary.message_count, summary.total_tokens),
-                    Style::default().fg(theme.text_muted).add_modifier(Modifier::DIM),
+                    format!(
+                        "msgs: {} | ~{} tok",
+                        summary.message_count, summary.total_tokens
+                    ),
+                    Style::default()
+                        .fg(theme.text_muted)
+                        .add_modifier(Modifier::DIM),
                 ),
             ]);
 

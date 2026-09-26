@@ -91,8 +91,14 @@ async fn test_thunder_root_end_to_end_execution() {
         .expect("Root execute should succeed");
 
     // Verify dynamic plugin selection triggered skills & conversation
-    assert!(handle.selection.active_plugin_ids.contains(&"skills".to_string()));
-    assert!(handle.selection.active_plugin_ids.contains(&"conversation".to_string()));
+    assert!(handle
+        .selection
+        .active_plugin_ids
+        .contains(&"skills".to_string()));
+    assert!(handle
+        .selection
+        .active_plugin_ids
+        .contains(&"conversation".to_string()));
 
     let mut event_count = 0;
     if let Some(mut rx) = handle.take_events() {
@@ -106,7 +112,10 @@ async fn test_thunder_root_end_to_end_execution() {
     assert_eq!(result.run_result.finish_reason, FinishReason::Done);
     assert_eq!(result.run_result.stats.total_turns, 2);
     assert_eq!(result.run_result.stats.total_tool_executions, 1);
-    assert!(result.final_content.unwrap().contains("Bash executed successfully"));
+    assert!(result
+        .final_content
+        .unwrap()
+        .contains("Bash executed successfully"));
 
     // Verify conversation was persisted by ConversationPlugin
     let loaded = store.load(&session_id).await.unwrap();

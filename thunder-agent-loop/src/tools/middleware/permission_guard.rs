@@ -100,7 +100,10 @@ impl ToolMiddleware for PermissionGuardMiddleware {
             ));
 
             return ToolExecutionResult::error(
-                format!("Error: tool '{}' is not available in the current role", tool),
+                format!(
+                    "Error: tool '{}' is not available in the current role",
+                    tool
+                ),
                 start.elapsed(),
             )
             .with_telemetry(notice);
@@ -189,7 +192,10 @@ mod tests {
     #[tokio::test]
     async fn bash_role_allows_everything() {
         for tool in ["read_file", "write_file", "bash"] {
-            assert!(!run(Permission::Bash, tool).await.is_error, "{tool} under Bash");
+            assert!(
+                !run(Permission::Bash, tool).await.is_error,
+                "{tool} under Bash"
+            );
         }
     }
 

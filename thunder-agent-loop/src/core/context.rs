@@ -64,11 +64,7 @@ impl ContextBuffer {
                     }
                 }
             }
-            ChatMessage::Tool {
-                content,
-                name,
-                ..
-            } => {
+            ChatMessage::Tool { content, name, .. } => {
                 if name.is_some() {
                     tokens += 1;
                 }
@@ -126,7 +122,8 @@ impl ContextBuffer {
 
         if !self.entries.is_empty() && self.entries[0].message.role() == Role::System {
             let old_tokens = self.entries[0].estimated_tokens;
-            self.total_estimated_tokens = self.total_estimated_tokens.saturating_sub(old_tokens) + tokens;
+            self.total_estimated_tokens =
+                self.total_estimated_tokens.saturating_sub(old_tokens) + tokens;
             self.entries[0] = MessageEntry {
                 message: sys_msg,
                 estimated_tokens: tokens,
@@ -146,7 +143,10 @@ impl ContextBuffer {
     pub fn replace_at(&mut self, index: usize, new_message: ChatMessage) {
         if let Some(entry) = self.entries.get_mut(index) {
             let new_tokens = Self::calculate_message_tokens(&new_message);
-            self.total_estimated_tokens = self.total_estimated_tokens.saturating_sub(entry.estimated_tokens) + new_tokens;
+            self.total_estimated_tokens = self
+                .total_estimated_tokens
+                .saturating_sub(entry.estimated_tokens)
+                + new_tokens;
             *entry = MessageEntry {
                 message: new_message,
                 estimated_tokens: new_tokens,
@@ -157,7 +157,9 @@ impl ContextBuffer {
     pub fn remove_at(&mut self, index: usize) -> Option<ChatMessage> {
         if index < self.entries.len() {
             let removed = self.entries.remove(index);
-            self.total_estimated_tokens = self.total_estimated_tokens.saturating_sub(removed.estimated_tokens);
+            self.total_estimated_tokens = self
+                .total_estimated_tokens
+                .saturating_sub(removed.estimated_tokens);
             Some(removed.message)
         } else {
             None

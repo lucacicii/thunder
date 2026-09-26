@@ -1,27 +1,28 @@
 [package]
 name = "thunder-pi-bridge"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "Node sidecar bridge to @earendil-works/pi-ai: the single LLM transport for Thunder"
-license = "Apache-2.0"
+license.workspace = true
 readme = "README.md"
-repository = "https://github.com/lucacicii/thunder"
-homepage = "https://github.com/lucacicii/thunder"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["agent", "llm", "pi-ai", "bridge", "sidecar"]
 categories = ["asynchronous", "api-bindings"]
 
+[lints]
+workspace = true
+
 [dependencies]
-thunder-agent-loop = { path = "../thunder-agent-loop" }
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
-tokio-util = "0.7"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-tracing = "0.1"
+thunder-agent-loop.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-
-
+tokio = { workspace = true, features = ["full", "test-util"] }

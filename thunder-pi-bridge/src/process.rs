@@ -72,7 +72,10 @@ impl PiAiBridge {
     /// Launch a bridge rooted at `bridge_dir`. The runner files
     /// (`bridge.mjs`, `package.json`) are copied there from the crate's
     /// `runner/` directory when missing.
-    pub async fn launch(bridge_dir: PathBuf, pi_ai_path: Option<PathBuf>) -> Result<Arc<Self>, String> {
+    pub async fn launch(
+        bridge_dir: PathBuf,
+        pi_ai_path: Option<PathBuf>,
+    ) -> Result<Arc<Self>, String> {
         Self::launch_with_timeout(bridge_dir, pi_ai_path, Duration::from_secs(240)).await
     }
 
@@ -141,7 +144,10 @@ impl PiAiBridge {
             return false;
         };
         let shipped = src.join("bridge.mjs");
-        match (tokio::fs::read(installed).await, tokio::fs::read(&shipped).await) {
+        match (
+            tokio::fs::read(installed).await,
+            tokio::fs::read(&shipped).await,
+        ) {
             (Ok(a), Ok(b)) => a != b,
             // If either side is unreadable, fall back to "not stale" so a transient
             // IO error cannot clobber a working install.
@@ -181,7 +187,10 @@ impl PiAiBridge {
                 let since = t.elapsed();
                 if since < Duration::from_secs(2) {
                     let wait = Duration::from_secs(2) - since;
-                    warn!(wait_ms = wait.as_millis() as u64, "Bridge restarted too quickly; backing off");
+                    warn!(
+                        wait_ms = wait.as_millis() as u64,
+                        "Bridge restarted too quickly; backing off"
+                    );
                     tokio::time::sleep(wait).await;
                 }
             }
@@ -212,7 +221,9 @@ impl PiAiBridge {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("failed to spawn node: {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn node: {e}"))?;
         let stdin = child.stdin.take().ok_or("no stdin on bridge child")?;
         let stdout = child.stdout.take().ok_or("no stdout on bridge child")?;
 
@@ -272,8 +283,7 @@ impl PiAiBridge {
                 "pi-ai bridge not ready within {}s (first boot may run `npm install`; check stderr logs)",
                 self.ready_timeout.as_secs()
             ))?
-            .map_err(|_| "bridge dropped before ready".to_string())?
-            .map_err(|e| e)?;
+            .map_err(|_| "bridge dropped before ready".to_string())??;
 
         info!(generation, version = %version, "pi-ai bridge ready");
 
@@ -365,7 +375,11 @@ impl PiAiBridge {
             };
 
             let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            let id = value.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let id = value
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
 
             if msg_type == "fatal" {
                 let message = value
@@ -426,7 +440,8 @@ impl PiAiBridge {
                                     .to_string();
                                 let _ = tx.send(Ok(version));
                             } else {
-                                let _ = tx.send(Err(format!("unexpected health reply: {msg_type}")));
+                                let _ =
+                                    tx.send(Err(format!("unexpected health reply: {msg_type}")));
                             }
                         }
                         DispatchTarget::Models(tx) => {
@@ -438,7 +453,8 @@ impl PiAiBridge {
                                         let _ = tx.send(Ok(models));
                                     }
                                     Err(err) => {
-                                        let _ = tx.send(Err(format!("malformed models payload: {err}")));
+                                        let _ = tx
+                                            .send(Err(format!("malformed models payload: {err}")));
                                     }
                                 }
                             } else {
@@ -488,10 +504,15 @@ impl PiAiBridge {
                 .unwrap_or(0),
         ));
         let guard = self.inner.lock().await;
-        let running = guard.as_ref().ok_or_else(|| "bridge not running".to_string())?;
+        let running = guard
+            .as_ref()
+            .ok_or_else(|| "bridge not running".to_string())?;
         running.pending.lock().await.insert(
             id,
-            DispatchTarget::Stream(PendingStream { tx, last_activity_ms: Arc::clone(&last) }),
+            DispatchTarget::Stream(PendingStream {
+                tx,
+                last_activity_ms: Arc::clone(&last),
+            }),
         );
         Ok(last)
     }
@@ -506,7 +527,9 @@ impl PiAiBridge {
         // Opportunistic restart: a dead bridge is transparently relaunched.
         self.ensure_started().await?;
         let guard = self.inner.lock().await;
-        let running = guard.as_ref().ok_or_else(|| "bridge not running".to_string())?;
+        let running = guard
+            .as_ref()
+            .ok_or_else(|| "bridge not running".to_string())?;
         running
             .stdin_tx
             .send(line)
@@ -666,7 +689,7 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
                     thunder_agent_loop::types::message::ToolCall::new_function(
                         tc.id,
                         tc.name,
-                        &tc.arguments.to_string(),
+                        tc.arguments.to_string(),
                     )
                 })
                 .collect(),
@@ -683,7 +706,9 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
         Err(err) => {
             // A malformed done payload is a hard stream error for this request.
             LLMStreamChunk::Completed {
-                content: Some(format!("bridge protocol error (malformed done payload): {err}")),
+                content: Some(format!(
+                    "bridge protocol error (malformed done payload): {err}"
+                )),
                 tool_calls: Vec::new(),
                 finish_reason: "error".to_string(),
                 prompt_tokens: None,

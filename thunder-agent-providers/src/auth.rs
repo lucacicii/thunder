@@ -45,16 +45,13 @@ impl AuthFile {
 
 pub fn resolve_env_value(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    let var_name = if let Some(name) = trimmed.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+    let var_name = if let Some(name) = trimmed.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+    {
         Some(name)
-    } else if let Some(name) = trimmed.strip_prefix('$') {
-        if !name.is_empty() && !name.starts_with('!') {
-            Some(name)
-        } else {
-            None
-        }
     } else {
-        None
+        trimmed
+            .strip_prefix('$')
+            .filter(|&name| !name.is_empty() && !name.starts_with('!'))
     };
 
     if let Some(name) = var_name {
@@ -94,16 +91,12 @@ fn read_var_from_shell_rc(var_name: &str) -> Option<String> {
                 let trimmed = line.trim();
                 let rest = if let Some(r) = trimmed.strip_prefix(&pattern) {
                     Some(r.trim())
-                } else if let Some(r) = trimmed.strip_prefix(&pattern2) {
-                    Some(r.trim())
                 } else {
-                    None
+                    trimmed.strip_prefix(&pattern2).map(|r| r.trim())
                 };
 
                 if let Some(val_str) = rest {
-                    let cleaned = val_str
-                        .trim_matches(|c: char| c == '"' || c == '\'')
-                        .trim();
+                    let cleaned = val_str.trim_matches(|c: char| c == '"' || c == '\'').trim();
                     if !cleaned.is_empty() {
                         return Some(cleaned.to_string());
                     }

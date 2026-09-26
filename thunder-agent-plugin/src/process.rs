@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::types::config::Permission;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use thunder_agent_loop::types::config::Permission;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
@@ -67,16 +67,37 @@ impl SidecarManager {
 
     /// Start or restart the Node.js sidecar process.
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
-        let node_bin = if Command::new("node").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().await.map(|s| s.success()).unwrap_or(false) {
+        let node_bin = if Command::new("node")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             "node"
-        } else if Command::new("bun").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().await.map(|s| s.success()).unwrap_or(false) {
+        } else if Command::new("bun")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             "bun"
         } else {
-            return Err("Neither 'node' nor 'bun' found in PATH. TypeScript plugins disabled.".to_string());
+            return Err(
+                "Neither 'node' nor 'bun' found in PATH. TypeScript plugins disabled.".to_string(),
+            );
         };
 
         if !self.config.runner_path.exists() {
-            return Err(format!("Plugin runner script not found at {:?}", self.config.runner_path));
+            return Err(format!(
+                "Plugin runner script not found at {:?}",
+                self.config.runner_path
+            ));
         }
 
         info!(runner = ?self.config.runner_path, "Starting TypeScript Plugin Sidecar runner");
@@ -93,9 +114,17 @@ impl SidecarManager {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Node sidecar: {e}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| "Failed to capture stdin of sidecar".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "Failed to capture stdout of sidecar".to_string())?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn Node sidecar: {e}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Failed to capture stdin of sidecar".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture stdout of sidecar".to_string())?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<HostMessage>(64);
         *self.stdin_tx.write().await = Some(stdin_tx);
@@ -142,36 +171,58 @@ impl SidecarManager {
 
                 match msg {
                     ClientMessage::ManifestSynced { plugins, tools } => {
-                        info!(plugins_count = plugins.len(), tools_count = tools.len(), "TypeScript plugin manifest synchronized");
+                        info!(
+                            plugins_count = plugins.len(),
+                            tools_count = tools.len(),
+                            "TypeScript plugin manifest synchronized"
+                        );
                         *this.active_plugins.write().await = plugins;
                         *this.active_tools.write().await = tools;
                     }
-                    ClientMessage::ToolResult { call_id, success, output, error } => {
+                    ClientMessage::ToolResult {
+                        call_id,
+                        success,
+                        output,
+                        error,
+                    } => {
                         let mut map = pending_calls.write().await;
                         if let Some(req) = map.remove(&call_id) {
                             if success {
                                 let _ = req.tx.send(Ok(output.unwrap_or_default()));
                             } else {
-                                let _ = req.tx.send(Err(error.unwrap_or_else(|| "Unknown tool error".to_string())));
+                                let _ =
+                                    req.tx
+                                        .send(Err(error
+                                            .unwrap_or_else(|| "Unknown tool error".to_string())));
                             }
                         }
                     }
-                    ClientMessage::SystemPromptsResult { request_id, prompts } => {
+                    ClientMessage::SystemPromptsResult {
+                        request_id,
+                        prompts,
+                    } => {
                         let mut map = pending_prompts.write().await;
                         if let Some(req) = map.remove(&request_id) {
                             let _ = req.tx.send(prompts);
                         }
                     }
                     ClientMessage::RpcRequest { id, method, params } => {
-                        let resp = Self::handle_client_rpc(&ws_dir, rpc_permission, &method, params).await;
+                        let resp =
+                            Self::handle_client_rpc(&ws_dir, rpc_permission, &method, params).await;
                         this.send_message(HostMessage::RpcResponse {
                             id,
                             success: resp.is_ok(),
                             data: resp.as_ref().ok().cloned(),
                             error: resp.err(),
-                        }).await;
+                        })
+                        .await;
                     }
-                    ClientMessage::ReloadAck { success, plugin_id, error, kept_active } => {
+                    ClientMessage::ReloadAck {
+                        success,
+                        plugin_id,
+                        error,
+                        kept_active,
+                    } => {
                         if success {
                             info!(plugin_id = ?plugin_id, "TypeScript plugin reloaded successfully");
                         } else {
@@ -190,7 +241,8 @@ impl SidecarManager {
         // Initialize sidecar with configured directories
         self.send_message(HostMessage::Init {
             plugin_dirs: self.config.plugin_dirs.clone(),
-        }).await;
+        })
+        .await;
 
         Ok(())
     }
@@ -212,28 +264,52 @@ impl SidecarManager {
             "fs_write_file" => {
                 if !permission.allows_write() {
                     return Err(
-                        "Permission denied: 'fs_write_file' is not granted by the active role".to_string(),
+                        "Permission denied: 'fs_write_file' is not granted by the active role"
+                            .to_string(),
                     );
                 }
-                let rel_path = params.get("path").and_then(|v| v.as_str()).ok_or("Missing path")?.to_string();
-                let content = params.get("content").and_then(|v| v.as_str()).ok_or("Missing content")?.to_string();
+                let rel_path = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing path")?
+                    .to_string();
+                let content = params
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing content")?
+                    .to_string();
                 let target = ws_dir.join(&rel_path);
 
                 // Path Jail Check
                 if !target.starts_with(ws_dir) {
-                    return Err(format!("Security Violation: Path {:?} escapes workspace root", target));
+                    return Err(format!(
+                        "Security Violation: Path {:?} escapes workspace root",
+                        target
+                    ));
                 }
 
                 // Atomic write via .arp/tmp
                 let tmp_dir = ws_dir.join(".arp").join("tmp");
-                tokio::fs::create_dir_all(&tmp_dir).await.map_err(|e| e.to_string())?;
+                tokio::fs::create_dir_all(&tmp_dir)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if let Some(parent) = target.parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| e.to_string())?;
                 }
 
-                let tmp_file = tmp_dir.join(format!("tx_{}_{}.tmp", std::process::id(), fastrand_suffix()));
-                tokio::fs::write(&tmp_file, &content).await.map_err(|e| e.to_string())?;
-                tokio::fs::rename(&tmp_file, &target).await.map_err(|e| e.to_string())?;
+                let tmp_file = tmp_dir.join(format!(
+                    "tx_{}_{}.tmp",
+                    std::process::id(),
+                    fastrand_suffix()
+                ));
+                tokio::fs::write(&tmp_file, &content)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::fs::rename(&tmp_file, &target)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
                 Ok(serde_json::json!({
                     "success": true,
@@ -242,29 +318,49 @@ impl SidecarManager {
                 }))
             }
             "fs_read_file" => {
-                let rel_path = params.get("path").and_then(|v| v.as_str()).ok_or("Missing path")?.to_string();
+                let rel_path = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing path")?
+                    .to_string();
                 let target = ws_dir.join(&rel_path);
 
                 if !target.starts_with(ws_dir) {
-                    return Err(format!("Security Violation: Path {:?} escapes workspace root", target));
+                    return Err(format!(
+                        "Security Violation: Path {:?} escapes workspace root",
+                        target
+                    ));
                 }
 
-                let meta = tokio::fs::metadata(&target).await.map_err(|e| e.to_string())?;
+                let meta = tokio::fs::metadata(&target)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if meta.len() > 10 * 1024 * 1024 {
                     return Err("File exceeds 10MB memory safety ceiling".to_string());
                 }
 
-                let content = tokio::fs::read_to_string(&target).await.map_err(|e| e.to_string())?;
+                let content = tokio::fs::read_to_string(&target)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 Ok(serde_json::Value::String(content))
             }
             "exec_bash" => {
                 if !permission.allows_exec() {
                     return Err(
-                        "Permission denied: 'exec_bash' is not granted by the active role".to_string(),
+                        "Permission denied: 'exec_bash' is not granted by the active role"
+                            .to_string(),
                     );
                 }
-                let command = params.get("command").and_then(|v| v.as_str()).ok_or("Missing command")?.to_string();
-                let cwd = params.get("cwd").and_then(|v| v.as_str()).map(PathBuf::from).unwrap_or_else(|| ws_dir.to_path_buf());
+                let command = params
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing command")?
+                    .to_string();
+                let cwd = params
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| ws_dir.to_path_buf());
 
                 let mut cmd = Command::new("bash");
                 cmd.arg("-c").arg(&command).current_dir(&cwd);
@@ -309,38 +405,59 @@ impl SidecarManager {
         args: serde_json::Value,
         context: serde_json::Value,
     ) -> Result<String, String> {
-        let call_id = format!("call_{}_{}", self.req_counter.fetch_add(1, Ordering::SeqCst), fastrand_suffix());
+        let call_id = format!(
+            "call_{}_{}",
+            self.req_counter.fetch_add(1, Ordering::SeqCst),
+            fastrand_suffix()
+        );
         let (tx, rx) = oneshot::channel();
 
-        self.pending_tool_calls.write().await.insert(call_id.clone(), PendingRequest { tx });
+        self.pending_tool_calls
+            .write()
+            .await
+            .insert(call_id.clone(), PendingRequest { tx });
 
         self.send_message(HostMessage::ExecuteTool {
             call_id: call_id.clone(),
             tool_name: tool_name.to_string(),
             args,
             context,
-        }).await;
+        })
+        .await;
 
         match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
             Ok(Ok(res)) => res,
             Ok(Err(_)) => Err("Tool response channel closed prematurely".to_string()),
             Err(_) => {
                 self.pending_tool_calls.write().await.remove(&call_id);
-                Err(format!("Execution of tool '{tool_name}' timed out after 60s"))
+                Err(format!(
+                    "Execution of tool '{tool_name}' timed out after 60s"
+                ))
             }
         }
     }
 
-    pub async fn get_system_prompts(&self, context: serde_json::Value) -> Vec<crate::protocol::PromptContribution> {
-        let request_id = format!("prompt_{}_{}", self.req_counter.fetch_add(1, Ordering::SeqCst), fastrand_suffix());
+    pub async fn get_system_prompts(
+        &self,
+        context: serde_json::Value,
+    ) -> Vec<crate::protocol::PromptContribution> {
+        let request_id = format!(
+            "prompt_{}_{}",
+            self.req_counter.fetch_add(1, Ordering::SeqCst),
+            fastrand_suffix()
+        );
         let (tx, rx) = oneshot::channel();
 
-        self.pending_prompts.write().await.insert(request_id.clone(), PendingPromptRequest { tx });
+        self.pending_prompts
+            .write()
+            .await
+            .insert(request_id.clone(), PendingPromptRequest { tx });
 
         self.send_message(HostMessage::GetSystemPrompts {
             request_id: request_id.clone(),
             context,
-        }).await;
+        })
+        .await;
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
             Ok(Ok(prompts)) => prompts,
@@ -352,14 +469,16 @@ impl SidecarManager {
     }
 
     pub async fn dispatch_event(&self, event: serde_json::Value, context: serde_json::Value) {
-        self.send_message(HostMessage::DispatchEvent { event, context }).await;
+        self.send_message(HostMessage::DispatchEvent { event, context })
+            .await;
     }
 
     pub async fn reload(&self, path: Option<PathBuf>) {
         self.send_message(HostMessage::Reload {
             path,
             plugin_dirs: Some(self.config.plugin_dirs.clone()),
-        }).await;
+        })
+        .await;
     }
 
     pub async fn list_tools(&self) -> Vec<ToolMeta> {
@@ -370,8 +489,6 @@ impl SidecarManager {
         self.active_plugins.read().await.clone()
     }
 }
-
-
 
 fn fastrand_suffix() -> u64 {
     std::time::SystemTime::now()

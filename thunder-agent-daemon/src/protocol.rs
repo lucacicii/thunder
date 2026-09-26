@@ -6,17 +6,11 @@ use thunder_agent_loop::types::event::ObservedEvent;
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum DaemonRequest {
     /// Ping / Heartbeat check
-    Ping {
-        id: Option<String>,
-    },
+    Ping { id: Option<String> },
     /// List all configured and available LLM models
-    ListModels {
-        id: Option<String>,
-    },
+    ListModels { id: Option<String> },
     /// List stored conversations
-    ListConversations {
-        id: Option<String>,
-    },
+    ListConversations { id: Option<String> },
     /// Get conversation details by session_id
     GetConversation {
         id: Option<String>,
@@ -47,15 +41,9 @@ pub enum DaemonRequest {
         workspace_dir: Option<String>,
     },
     /// Cooperatively pause a running task at the next tool boundary
-    PauseTask {
-        id: Option<String>,
-        task_id: String,
-    },
+    PauseTask { id: Option<String>, task_id: String },
     /// Resume a paused task
-    ResumeTask {
-        id: Option<String>,
-        task_id: String,
-    },
+    ResumeTask { id: Option<String>, task_id: String },
     /// Answer a pending `ask_user_question` from the agent
     AnswerQuestion {
         id: Option<String>,
@@ -66,10 +54,7 @@ pub enum DaemonRequest {
         cancelled: bool,
     },
     /// Cancel a running task by task_id
-    CancelTask {
-        id: Option<String>,
-        task_id: String,
-    },
+    CancelTask { id: Option<String>, task_id: String },
     /// Reload TypeScript / JavaScript single-file plugins
     ReloadPlugins {
         id: Option<String>,

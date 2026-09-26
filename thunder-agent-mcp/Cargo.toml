@@ -1,26 +1,31 @@
 [package]
 name = "thunder-agent-mcp"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "Model Context Protocol (MCP) Client, Configuration Parser and Dynamic Tool Bridge for Thunder Agent"
-license = "Apache-2.0"
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["agent", "mcp", "protocol", "tools", "orchestration"]
 categories = ["asynchronous", "api-bindings"]
 
+[lints]
+workspace = true
+
 [dependencies]
-thunder-agent-loop = { path = "../thunder-agent-loop" }
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-tracing = "0.1"
-futures-util = "0.3"
+thunder-agent-loop.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
+tokio-util = { workspace = true, features = ["codec", "io"] }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
-tempfile = "3.10"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { workspace = true, features = ["ansi"] }
+tempfile.workspace = true

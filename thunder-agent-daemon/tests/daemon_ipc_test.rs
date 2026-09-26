@@ -76,7 +76,9 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
         "session_id": session_id,
         "task_id": "task-test-1"
     });
-    stdin.write_all(format!("{}\n", trace_req).as_bytes()).await?;
+    stdin
+        .write_all(format!("{}\n", trace_req).as_bytes())
+        .await?;
     stdin.flush().await?;
 
     let trace_line = reader.next_line().await?.expect("Expected trace response");
@@ -93,15 +95,23 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
         "id": "req-list-traces-1",
         "session_id": session_id,
     });
-    stdin.write_all(format!("{}\n", list_traces_req).as_bytes()).await?;
+    stdin
+        .write_all(format!("{}\n", list_traces_req).as_bytes())
+        .await?;
     stdin.flush().await?;
 
-    let list_traces_line = reader.next_line().await?.expect("Expected list traces response");
+    let list_traces_line = reader
+        .next_line()
+        .await?
+        .expect("Expected list traces response");
     let list_traces_resp: serde_json::Value = serde_json::from_str(&list_traces_line)?;
     assert_eq!(list_traces_resp["type"], "response");
     assert_eq!(list_traces_resp["id"], "req-list-traces-1");
     assert_eq!(list_traces_resp["success"], true);
-    assert!(!list_traces_resp["data"]["traces"].as_array().unwrap().is_empty());
+    assert!(!list_traces_resp["data"]["traces"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     // Close stdin to trigger clean shutdown
     drop(stdin);
@@ -162,7 +172,9 @@ async fn test_daemon_list_models_and_cancel() -> Result<(), Box<dyn std::error::
         "id": "req-cancel-1",
         "task_id": "task-to-cancel"
     });
-    stdin.write_all(format!("{}\n", cancel_req).as_bytes()).await?;
+    stdin
+        .write_all(format!("{}\n", cancel_req).as_bytes())
+        .await?;
     stdin.flush().await?;
 
     // Drain until we get cancellation response or completion
@@ -202,10 +214,7 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
     std::fs::create_dir_all(&repo_a)?;
     std::fs::create_dir_all(&repo_b)?;
 
-    async fn send(
-        stdin: &mut tokio::process::ChildStdin,
-        payload: String,
-    ) -> std::io::Result<()> {
+    async fn send(stdin: &mut tokio::process::ChildStdin, payload: String) -> std::io::Result<()> {
         stdin.write_all(format!("{}\n", payload).as_bytes()).await?;
         stdin.flush().await
     }
@@ -231,13 +240,22 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
         let evt: serde_json::Value = serde_json::from_str(&line)?;
         if evt["type"] == "response" && evt["id"] == "req-merge-1" {
             assert_eq!(evt["success"], true);
-            let roots = evt["data"]["shared_roots"].as_array().expect("shared_roots echoed");
-            shared_roots = roots.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            let roots = evt["data"]["shared_roots"]
+                .as_array()
+                .expect("shared_roots echoed");
+            shared_roots = roots
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
             break;
         }
         // Ignore task events; the mock run may complete quickly.
     }
-    assert_eq!(shared_roots.len(), 1, "first run binds exactly one extra root: {shared_roots:?}");
+    assert_eq!(
+        shared_roots.len(),
+        1,
+        "first run binds exactly one extra root: {shared_roots:?}"
+    );
     assert!(shared_roots[0].ends_with("thunder_ipc_repo_a"));
 
     // Drain any events from the mock run finishing.
@@ -268,8 +286,13 @@ async fn test_run_task_extra_workspace_dirs_merge() -> Result<(), Box<dyn std::e
         let evt: serde_json::Value = serde_json::from_str(&line)?;
         if evt["type"] == "response" && evt["id"] == "req-merge-2" {
             assert_eq!(evt["success"], true);
-            let roots = evt["data"]["shared_roots"].as_array().expect("shared_roots echoed");
-            merged = roots.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            let roots = evt["data"]["shared_roots"]
+                .as_array()
+                .expect("shared_roots echoed");
+            merged = roots
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
             bound_workspace = evt["data"]["workspace"].as_str().unwrap().to_string();
             break;
         }
@@ -303,7 +326,10 @@ async fn test_daemon_rejects_duplicate_task_id() -> Result<(), Box<dyn std::erro
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send(
+        stdin: &mut tokio::process::ChildStdin,
+        msg: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         stdin.write_all(format!("{msg}\n").as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
@@ -342,12 +368,18 @@ async fn test_daemon_rejects_duplicate_task_id() -> Result<(), Box<dyn std::erro
         if resp["type"] == "response" && resp["id"] == "req-dup-2" {
             assert_eq!(resp["success"], false);
             let err = resp["error"].as_str().unwrap_or_default();
-            assert!(err.contains("already running"), "expected conflict error, got: {err}");
+            assert!(
+                err.contains("already running"),
+                "expected conflict error, got: {err}"
+            );
             conflict_rejected = true;
             break;
         }
     }
-    assert!(conflict_rejected, "Expected duplicate task submission to be rejected with conflict");
+    assert!(
+        conflict_rejected,
+        "Expected duplicate task submission to be rejected with conflict"
+    );
 
     drop(stdin);
     let _ = child.wait().await;
@@ -366,21 +398,31 @@ async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::err
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send(
+        stdin: &mut tokio::process::ChildStdin,
+        msg: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         stdin.write_all(format!("{msg}\n").as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
     }
 
     // 1. Send malformed request that has an id
-    send(&mut stdin, r#"{"method": "unknown_method", "id": "req-bad-1"}"#.to_string()).await?;
+    send(
+        &mut stdin,
+        r#"{"method": "unknown_method", "id": "req-bad-1"}"#.to_string(),
+    )
+    .await?;
 
     let line1 = reader.next_line().await?.expect("response line expected");
     let resp1: serde_json::Value = serde_json::from_str(&line1)?;
     assert_eq!(resp1["type"], "response");
     assert_eq!(resp1["id"], "req-bad-1");
     assert_eq!(resp1["success"], false);
-    assert!(resp1["error"].as_str().unwrap().contains("Invalid JSON command"));
+    assert!(resp1["error"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid JSON command"));
 
     // 2. Send broken syntax without id
     send(&mut stdin, r#"{"method": unquoted_syntax}"#.to_string()).await?;
@@ -390,7 +432,10 @@ async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::err
     assert_eq!(resp2["type"], "response");
     assert_eq!(resp2["id"], serde_json::Value::Null);
     assert_eq!(resp2["success"], false);
-    assert!(resp2["error"].as_str().unwrap().contains("Invalid JSON command"));
+    assert!(resp2["error"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid JSON command"));
 
     drop(stdin);
     let _ = child.wait().await;
@@ -399,7 +444,8 @@ async fn test_daemon_responds_to_malformed_json() -> Result<(), Box<dyn std::err
 
 #[cfg(feature = "testing-mock")]
 #[tokio::test]
-async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_daemon_preserves_conversation_history_across_turns(
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -410,13 +456,22 @@ async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(),
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send(
+        stdin: &mut tokio::process::ChildStdin,
+        msg: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         stdin.write_all(format!("{msg}\n").as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
     }
 
-    let sess_id = format!("sess-history-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let sess_id = format!(
+        "sess-history-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
 
     // 1. First task in session
     let req1 = serde_json::json!({
@@ -472,13 +527,24 @@ async fn test_daemon_preserves_conversation_history_across_turns() -> Result<(),
     }
 
     let messages = conv_data["messages"].as_array().expect("messages array");
-    let contents: Vec<String> = messages.iter().filter_map(|m| {
-        m.get("content").and_then(|c| c.as_str()).map(String::from)
-    }).collect();
+    let contents: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.get("content").and_then(|c| c.as_str()).map(String::from))
+        .collect();
 
-    assert!(contents.iter().any(|c| c == "Hello first turn"), "First user prompt must be retained");
-    assert!(contents.iter().any(|c| c == "Hello second turn"), "Second user prompt must be retained");
-    assert!(messages.len() >= 4, "Expected at least 2 user and 2 assistant messages, got: {}", messages.len());
+    assert!(
+        contents.iter().any(|c| c == "Hello first turn"),
+        "First user prompt must be retained"
+    );
+    assert!(
+        contents.iter().any(|c| c == "Hello second turn"),
+        "Second user prompt must be retained"
+    );
+    assert!(
+        messages.len() >= 4,
+        "Expected at least 2 user and 2 assistant messages, got: {}",
+        messages.len()
+    );
 
     drop(stdin);
     let _ = child.wait().await;
@@ -500,7 +566,10 @@ async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    async fn send(stdin: &mut tokio::process::ChildStdin, msg: String) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send(
+        stdin: &mut tokio::process::ChildStdin,
+        msg: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         stdin.write_all(format!("{msg}\n").as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
@@ -538,12 +607,18 @@ async fn test_daemon_concurrency_limit() -> Result<(), Box<dyn std::error::Error
         if resp["type"] == "response" && resp["id"] == "req-c2" {
             assert_eq!(resp["success"], false);
             let err = resp["error"].as_str().unwrap_or_default();
-            assert!(err.contains("Server busy"), "expected server busy error, got: {err}");
+            assert!(
+                err.contains("Server busy"),
+                "expected server busy error, got: {err}"
+            );
             server_busy = true;
             break;
         }
     }
-    assert!(server_busy, "Expected second task to be rejected due to concurrency limit");
+    assert!(
+        server_busy,
+        "Expected second task to be rejected due to concurrency limit"
+    );
 
     drop(stdin);
     let _ = child.wait().await;

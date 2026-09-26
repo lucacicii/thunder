@@ -127,7 +127,7 @@ impl SkillRegistry {
             .collect();
 
         // Sort descending by match score
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
         scored.into_iter().map(|(_, s)| s).collect()
     }
 
@@ -137,7 +137,9 @@ impl SkillRegistry {
             return None;
         }
 
-        let mut out = String::from("The following specialized skills and playbooks are active and available:\n\n");
+        let mut out = String::from(
+            "The following specialized skills and playbooks are active and available:\n\n",
+        );
         for skill in skills {
             out.push_str(&format!("## Skill: {}\n", skill.name));
             out.push_str(&format!("**Description**: {}\n", skill.description));
@@ -163,7 +165,10 @@ impl SkillRegistry {
         for skill in map.values() {
             out.push_str("  <skill>\n");
             out.push_str(&format!("    <name>{}</name>\n", skill.name));
-            out.push_str(&format!("    <description>{}</description>\n", skill.description));
+            out.push_str(&format!(
+                "    <description>{}</description>\n",
+                skill.description
+            ));
             if let Some(loc) = &skill.location {
                 out.push_str(&format!("    <location>{}</location>\n", loc.display()));
             }
@@ -186,7 +191,10 @@ impl SkillRegistry {
             return "No skills currently registered in the registry. Search paths (`~/.agents/skills`, `.agents/skills`, `.pi/skills`) appear empty.".to_string();
         }
 
-        let mut out = format!("### 📖 Registered Agent Skills Catalog (Total: {})\n\n", skills.len());
+        let mut out = format!(
+            "### 📖 Registered Agent Skills Catalog (Total: {})\n\n",
+            skills.len()
+        );
         out.push_str("| Skill Name | Description | Triggers / Tags |\n");
         out.push_str("|---|---|---|\n");
 
@@ -197,10 +205,15 @@ impl SkillRegistry {
                 s.tags.join(", ")
             };
             let desc_brief = s.description.lines().next().unwrap_or("").trim();
-            out.push_str(&format!("| **`{}`** | {} | `{}` |\n", s.name, desc_brief, tags));
+            out.push_str(&format!(
+                "| **`{}`** | {} | `{}` |\n",
+                s.name, desc_brief, tags
+            ));
         }
 
-        out.push_str("\n*Use `/skills load <name>` to view detailed playbook instructions for any skill.*");
+        out.push_str(
+            "\n*Use `/skills load <name>` to view detailed playbook instructions for any skill.*",
+        );
         out
     }
 

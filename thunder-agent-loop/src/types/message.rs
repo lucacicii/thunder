@@ -24,7 +24,11 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    pub fn new_function(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    pub fn new_function(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             call_type: "function".to_string(),
@@ -100,7 +104,11 @@ impl ChatMessage {
         }
     }
 
-    pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>, name: Option<String>) -> Self {
+    pub fn tool(
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+        name: Option<String>,
+    ) -> Self {
         Self::Tool {
             tool_call_id: tool_call_id.into(),
             content: content.into(),

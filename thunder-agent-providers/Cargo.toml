@@ -1,28 +1,33 @@
 [package]
 name = "thunder-agent-providers"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
-description = "Multi-provider LLM adapter for Thunder Agent (pi-ai compatible models.json / auth.json, no Node runtime)"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Multi-provider LLM catalog, config resolution and thinking-level probing for Thunder Agent"
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["agent", "llm", "openai", "anthropic", "gemini"]
 categories = ["asynchronous", "api-bindings"]
 
+[lints]
+workspace = true
+
 [dependencies]
-thunder-agent-loop = { path = "../thunder-agent-loop" }
-thunder-pi-bridge = { path = "../thunder-pi-bridge" }
-tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
-tokio-util = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-bytes = "1.9"
-tracing = "0.1"
+thunder-agent-loop.workspace = true
+thunder-pi-bridge.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
+tokio-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-tempfile = "3.10"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true

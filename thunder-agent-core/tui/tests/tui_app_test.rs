@@ -92,7 +92,13 @@ async fn test_app_streaming_event_ingestion() {
     });
     assert_eq!(app.active_tool_calls.len(), 1);
     assert_eq!(app.active_tool_calls[0].name, "read_file");
-    assert!(matches!(app.conversation.messages.last(), Some(thunder_agent_loop::ChatMessage::Assistant { tool_calls: Some(_), .. })));
+    assert!(matches!(
+        app.conversation.messages.last(),
+        Some(thunder_agent_loop::ChatMessage::Assistant {
+            tool_calls: Some(_),
+            ..
+        })
+    ));
 
     // The tool result is committed immediately after the tool event, not appended at finalization.
     app.handle_agent_event(ObservedEvent {
@@ -112,7 +118,10 @@ async fn test_app_streaming_event_ingestion() {
         },
     });
     assert!(app.active_tool_calls.is_empty());
-    assert!(matches!(app.conversation.messages.last(), Some(thunder_agent_loop::ChatMessage::Tool { .. })));
+    assert!(matches!(
+        app.conversation.messages.last(),
+        Some(thunder_agent_loop::ChatMessage::Tool { .. })
+    ));
 
     // 4. Finish
     app.handle_agent_finished("agent_1".to_string(), true, None, None, None);

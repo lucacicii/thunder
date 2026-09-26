@@ -48,10 +48,18 @@ pub fn extract_allowed_levels_from_error(error_text: &str) -> Option<Vec<String>
     if has_enum_hint {
         let mut found = Vec::new();
         // Also look for "off" or "none" in the error text
-        if lower.contains("'off'") || lower.contains("\"off\"") || lower.contains(" off ") || lower.contains("[off") {
+        if lower.contains("'off'")
+            || lower.contains("\"off\"")
+            || lower.contains(" off ")
+            || lower.contains("[off")
+        {
             found.push("off".to_string());
         }
-        if lower.contains("'none'") || lower.contains("\"none\"") || lower.contains(" none ") || lower.contains("[none") {
+        if lower.contains("'none'")
+            || lower.contains("\"none\"")
+            || lower.contains(" none ")
+            || lower.contains("[none")
+        {
             found.push("none".to_string());
         }
 
@@ -126,7 +134,10 @@ async fn probe_openai_reasoning(
         }
     }
     for (k, v) in &spec.headers {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             headers.insert(name, val);
         }
     }
@@ -160,7 +171,10 @@ async fn probe_openai_reasoning(
         Ok(res) => {
             let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            debug!("Probe response for {}: status={}, body={}", spec.id, status, body);
+            debug!(
+                "Probe response for {}: status={}, body={}",
+                spec.id, status, body
+            );
 
             // If 400 Bad Request, inspect body for allowed levels or non-support
             if status.is_client_error() {
@@ -251,7 +265,10 @@ async fn probe_anthropic_thinking(
         }
     }
     for (k, v) in &spec.headers {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             headers.insert(name, val);
         }
     }
@@ -288,7 +305,9 @@ async fn probe_anthropic_thinking(
                 default_thinking_level: "medium".to_string(),
             });
         }
-        if body.contains("thinking is not supported") || body.contains("unrecognized field thinking") {
+        if body.contains("thinking is not supported")
+            || body.contains("unrecognized field thinking")
+        {
             return Some(ThinkingProbeResult {
                 thinking_levels: vec!["off".to_string()],
                 default_thinking_level: "off".to_string(),

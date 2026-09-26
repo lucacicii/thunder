@@ -125,7 +125,9 @@ impl ToolMiddleware for ResourceGuardMiddleware {
                 "Tool execution interrupted by cancellation signal",
                 "Running process/operation was halted cleanly upon receiving user signal.",
             )
-            .with_guidance("The cancelled operation has been stopped without persistent corruption.");
+            .with_guidance(
+                "The cancelled operation has been stopped without persistent corruption.",
+            );
 
             return res.with_telemetry(notice);
         }
@@ -186,7 +188,9 @@ mod tests {
 
         let res = guard.handle(&call, &ctx, None, Arc::new(DummyNext)).await;
         assert!(res.is_error);
-        assert!(res.output.contains("exceeds maximum allowed single read limit"));
+        assert!(res
+            .output
+            .contains("exceeds maximum allowed single read limit"));
         assert!(res.output.contains("[System Telemetry: ResourceGuard"));
         assert!(res.output.contains("Oversized file read intercepted"));
 
@@ -195,7 +199,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_oom_guard_permits_chunked_read() {
-        let ws = std::env::temp_dir().join(format!("thunder_res_test_chunked_{}", std::process::id()));
+        let ws =
+            std::env::temp_dir().join(format!("thunder_res_test_chunked_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&ws);
         let huge_file = ws.join("huge.log");
 

@@ -11,7 +11,9 @@ pub fn default_thunder_scratchpad_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".thunder").join("scratchpad")
     } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        PathBuf::from(userprofile).join(".thunder").join("scratchpad")
+        PathBuf::from(userprofile)
+            .join(".thunder")
+            .join("scratchpad")
     } else {
         std::env::temp_dir().join(".thunder").join("scratchpad")
     }
@@ -92,7 +94,14 @@ impl ScratchpadManager {
     }
 
     pub fn with_default_session(config: ScratchpadConfig) -> Self {
-        let sid = format!("sess_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+        let sid = format!(
+            "sess_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
         Self::new(sid, config)
     }
 
@@ -221,7 +230,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_scratchpad_threshold_and_persistence() {
-        let temp_dir = std::env::temp_dir().join(format!("thunder_test_scratch_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("thunder_test_scratch_{}", std::process::id()));
         let config = ScratchpadConfig {
             base_dir: temp_dir.clone(),
             threshold_bytes: 500, // 500 bytes threshold
@@ -233,13 +243,19 @@ mod tests {
 
         // 1. Small output: untouched
         let small = "Hello small output";
-        let res_small = manager.process_tool_output("echo", 1, small.to_string()).await.unwrap();
+        let res_small = manager
+            .process_tool_output("echo", 1, small.to_string())
+            .await
+            .unwrap();
         assert_eq!(res_small, small);
         assert_eq!(manager.get_manifest().artifacts.len(), 0);
 
         // 2. Large output: saved to disk
         let large = "Line of big log output text for testing.\n".repeat(50); // ~2000 bytes
-        let res_large = manager.process_tool_output("bash", 2, large.clone()).await.unwrap();
+        let res_large = manager
+            .process_tool_output("bash", 2, large.clone())
+            .await
+            .unwrap();
 
         assert!(res_large.contains("[Large Output Saved to Disk]"));
         assert!(res_large.contains("turn_02_bash_1.log"));

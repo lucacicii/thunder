@@ -8,9 +8,19 @@ pub enum ProviderApi {
     OpenAiCompletions,
     #[serde(alias = "openai-response", alias = "responses")]
     OpenAiResponses,
-    #[serde(alias = "anthropic", alias = "claude", alias = "anthropic-messages", alias = "anthropic-chat")]
+    #[serde(
+        alias = "anthropic",
+        alias = "claude",
+        alias = "anthropic-messages",
+        alias = "anthropic-chat"
+    )]
     AnthropicMessages,
-    #[serde(alias = "google", alias = "gemini", alias = "google-generate-content", alias = "google-gemini")]
+    #[serde(
+        alias = "google",
+        alias = "gemini",
+        alias = "google-generate-content",
+        alias = "google-gemini"
+    )]
     GoogleGenerateContent,
     #[serde(alias = "ollama", alias = "ollama-chat")]
     Ollama,

@@ -219,7 +219,10 @@ impl<S: ConversationStore> ConversationManager<S> {
             return "No previous conversation sessions found in storage.".to_string();
         }
 
-        let mut out = format!("### 📁 Saved Conversation Sessions (Total: {})\n\n", summaries.len());
+        let mut out = format!(
+            "### 📁 Saved Conversation Sessions (Total: {})\n\n",
+            summaries.len()
+        );
         out.push_str("| # | Session ID | Title | Turns | Messages | Last Active |\n");
         out.push_str("|---|---|---|---|---|---|\n");
 
@@ -242,7 +245,10 @@ impl<S: ConversationStore> ConversationManager<S> {
     }
 
     /// Resume a conversation by either 1-based index (e.g. "1") or direct session ID.
-    pub async fn resume(&self, id_or_index: &str) -> Result<Option<Conversation>, ConversationError> {
+    pub async fn resume(
+        &self,
+        id_or_index: &str,
+    ) -> Result<Option<Conversation>, ConversationError> {
         let trimmed = id_or_index.trim();
 
         // 1. Try parsing as 1-based index from recent list

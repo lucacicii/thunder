@@ -91,7 +91,9 @@ impl ToolHandler for MiddlewareRunner {
         ctx: &ToolExecutionContext,
         timeout: Option<Duration>,
     ) -> ToolExecutionResult {
-        self.middleware.handle(call, ctx, timeout, self.next.clone()).await
+        self.middleware
+            .handle(call, ctx, timeout, self.next.clone())
+            .await
     }
 }
 
@@ -121,7 +123,7 @@ impl ToolPipeline {
     ///   2. ResourceGuardMiddleware (ReadFile OOM defense, cancellation telemetry)
     ///   3. TransactionMiddleware (.arp/tmp atomic shadow write, permissions, cleanup)
     ///   4. OutputPostProcessorMiddleware (Scratchpad lossless persistence, truncation)
-    ///   -> RegistryTerminalHandler (Core tool invocation)
+    ///   5. RegistryTerminalHandler (Core tool invocation)
     pub fn standard(
         workspace_root: std::path::PathBuf,
         extra_workspace_roots: &[std::path::PathBuf],
@@ -176,7 +178,10 @@ impl ToolPipeline {
             pipeline.add_middleware(Arc::new(TransactionMiddleware::new(&workspace_root)));
         }
         if cfg.enable_output_post_processor {
-            pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(max_output_bytes, scratchpad)));
+            pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(
+                max_output_bytes,
+                scratchpad,
+            )));
         }
         pipeline
     }
@@ -260,8 +265,14 @@ mod tests {
     #[tokio::test]
     async fn test_onion_execution_order() {
         let order = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let m1 = Arc::new(TestMiddleware { id: 1, order: order.clone() });
-        let m2 = Arc::new(TestMiddleware { id: 2, order: order.clone() });
+        let m1 = Arc::new(TestMiddleware {
+            id: 1,
+            order: order.clone(),
+        });
+        let m2 = Arc::new(TestMiddleware {
+            id: 2,
+            order: order.clone(),
+        });
 
         let pipeline = ToolPipeline::new(Arc::new(MockTerminal))
             .with_middleware(m1)

@@ -17,21 +17,11 @@ pub enum PluginCapability {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TriggerSpec {
     pub keywords: Vec<String>,
     pub auto_always: bool,
     pub description_for_llm: String,
-}
-
-impl Default for TriggerSpec {
-    fn default() -> Self {
-        Self {
-            keywords: Vec::new(),
-            auto_always: false,
-            description_for_llm: String::new(),
-        }
-    }
 }
 
 impl TriggerSpec {
@@ -148,7 +138,11 @@ pub trait ThunderPlugin: Send + Sync {
     async fn on_event(&self, _event: &ObservedEvent, _ctx: &PluginContext) {}
 
     /// Lifecycle hook: Called after the root execution completes.
-    async fn on_finish(&self, _result: &AgentRunResult, _ctx: &PluginContext) -> Result<(), PluginError> {
+    async fn on_finish(
+        &self,
+        _result: &AgentRunResult,
+        _ctx: &PluginContext,
+    ) -> Result<(), PluginError> {
         Ok(())
     }
 }

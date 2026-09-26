@@ -33,7 +33,11 @@ pub struct PickerItem {
 }
 
 impl PickerItem {
-    pub fn new(id: impl Into<String>, title: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             title: title.into(),
@@ -163,11 +167,15 @@ impl PickerState {
                 self.close();
                 PickerResult::Cancelled
             }
-            KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() && self.filter_text.is_empty() => {
+            KeyCode::Up | KeyCode::Char('k')
+                if key.modifiers.is_empty() && self.filter_text.is_empty() =>
+            {
                 self.move_up();
                 PickerResult::Navigating
             }
-            KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() && self.filter_text.is_empty() => {
+            KeyCode::Down | KeyCode::Char('j')
+                if key.modifiers.is_empty() && self.filter_text.is_empty() =>
+            {
                 self.move_down();
                 PickerResult::Navigating
             }

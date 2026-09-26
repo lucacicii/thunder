@@ -201,7 +201,13 @@ impl SkillHandle {
     pub fn from_skill(skill: &Skill) -> Self {
         Self {
             name: skill.name.clone(),
-            description: skill.description.lines().next().unwrap_or("").trim().to_string(),
+            description: skill
+                .description
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
             location: skill.location.clone(),
         }
     }
@@ -209,7 +215,13 @@ impl SkillHandle {
     pub fn from_summary(summary: &SkillSummary) -> Self {
         Self {
             name: summary.name.clone(),
-            description: summary.description.lines().next().unwrap_or("").trim().to_string(),
+            description: summary
+                .description
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
             location: summary.location.clone(),
         }
     }

@@ -17,10 +17,18 @@ async fn test_truncation_with_cjk_content_no_panic() {
     #[async_trait]
     impl AgentTool for LargeCJKTool {
         fn definition(&self) -> ToolDefinition {
-            ToolDefinition::new_function("large_cjk", "large cjk output", json!({ "type": "object", "properties": {} }))
+            ToolDefinition::new_function(
+                "large_cjk",
+                "large cjk output",
+                json!({ "type": "object", "properties": {} }),
+            )
         }
 
-        async fn execute(&self, _args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<String, String> {
             // ~200KB of Chinese text — byte 26214 lands mid-character
             Ok("雷神代理循环高性能测试。".repeat(10_000))
         }

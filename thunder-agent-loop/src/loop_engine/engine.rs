@@ -4,7 +4,9 @@ use crate::loop_engine::guard::LoopGuard;
 use crate::loop_engine::handle::{AgentHandle, RunningGuard};
 use crate::loop_engine::hooks::AgentEventDispatcher;
 use crate::pruning::strategy::ContextPruner;
-use crate::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient};
+use crate::stream::client::{
+    ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient,
+};
 use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::scratchpad::ScratchpadManager;
@@ -241,9 +243,7 @@ impl AgentLoop {
     ) -> Result<AgentRunResult, AgentError> {
         let mut handle = self.start(input, cancel_token)?;
         if let Some(mut ev) = handle.take_events() {
-            tokio::spawn(async move {
-                while ev.recv().await.is_some() {}
-            });
+            tokio::spawn(async move { while ev.recv().await.is_some() {} });
         }
         handle.join().await
     }
@@ -447,7 +447,9 @@ impl AgentLoop {
                         cache_retention: None, // normal turns benefit from cache writes
                     };
 
-                    let stream_res = llm_client.stream_chat(request_opts, cancel_token.clone()).await;
+                    let stream_res = llm_client
+                        .stream_chat(request_opts, cancel_token.clone())
+                        .await;
                     let mut stream_rx = match stream_res {
                         Ok(rx) => rx,
                         Err(err) => {
@@ -456,8 +458,11 @@ impl AgentLoop {
                                 && crate::pruning::is_context_overflow_error(&err)
                             {
                                 retry_count += 1;
-                                let detected_limit = crate::pruning::extract_context_overflow_limit(&err)
-                                    .unwrap_or_else(|| (pruner.max_tokens() as f32 * 0.6) as usize);
+                                let detected_limit =
+                                    crate::pruning::extract_context_overflow_limit(&err)
+                                        .unwrap_or_else(|| {
+                                            (pruner.max_tokens() as f32 * 0.6) as usize
+                                        });
                                 warn!(
                                     agent_id = %agent_id,
                                     turn = turn,
@@ -472,7 +477,9 @@ impl AgentLoop {
                                 continue;
                             }
 
-                            if !cancel_token.is_cancelled() && stream_retry_count < max_stream_retries {
+                            if !cancel_token.is_cancelled()
+                                && stream_retry_count < max_stream_retries
+                            {
                                 stream_retry_count += 1;
                                 warn!(
                                     agent_id = %agent_id,
@@ -481,7 +488,10 @@ impl AgentLoop {
                                     error = %err,
                                     "Network handshake failed, retrying stream connection"
                                 );
-                                tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << (stream_retry_count - 1)))).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    500 * (1 << (stream_retry_count - 1)),
+                                ))
+                                .await;
                                 continue;
                             }
 
@@ -508,9 +518,7 @@ impl AgentLoop {
                         match chunk_res {
                             Ok(LLMStreamChunk::Token(delta)) => {
                                 assistant_content.push_str(&delta);
-                                emitter
-                                    .emit(AgentEvent::TokenDelta { turn, delta })
-                                    .await;
+                                emitter.emit(AgentEvent::TokenDelta { turn, delta }).await;
                             }
                             Ok(LLMStreamChunk::ReasoningToken(delta)) => {
                                 reasoning_content.push_str(&delta);
@@ -550,7 +558,9 @@ impl AgentLoop {
                                 ));
                             }
                             Err(stream_err) => {
-                                if !cancel_token.is_cancelled() && crate::pruning::is_context_overflow_error(&stream_err) {
+                                if !cancel_token.is_cancelled()
+                                    && crate::pruning::is_context_overflow_error(&stream_err)
+                                {
                                     stream_failed_overflow = Some(stream_err);
                                 } else if cancel_token.is_cancelled() {
                                     info!(agent_id = %agent_id, turn = turn, "Stream cancelled by user");
@@ -565,8 +575,9 @@ impl AgentLoop {
                     if let Some(overflow_err) = stream_failed_overflow {
                         if !cancel_token.is_cancelled() && retry_count < max_overflow_retries {
                             retry_count += 1;
-                            let detected_limit = crate::pruning::extract_context_overflow_limit(&overflow_err)
-                                .unwrap_or_else(|| (pruner.max_tokens() as f32 * 0.6) as usize);
+                            let detected_limit =
+                                crate::pruning::extract_context_overflow_limit(&overflow_err)
+                                    .unwrap_or_else(|| (pruner.max_tokens() as f32 * 0.6) as usize);
                             warn!(
                                 agent_id = %agent_id,
                                 turn = turn,
@@ -577,7 +588,7 @@ impl AgentLoop {
                             pruner.update_max_tokens(detected_limit);
                             let _ = pruner
                                 .prune(&mut context, Some(&summarizer), &cancel_token)
-                            .await;
+                                .await;
                             continue;
                         }
                     }
@@ -661,19 +672,26 @@ impl AgentLoop {
                     break;
                 }
 
-                let (mut chunk_content, tool_calls, finish_reason, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens) =
-                    match completed_chunk {
-                        Some(c) => c,
-                        None => {
-                            loop_finish_reason = if cancel_token.is_cancelled() {
-                                FinishReason::Cancelled
-                            } else {
-                                error!(agent_id = %agent_id, turn = turn, "Turn terminated without completion payload");
-                                FinishReason::Error
-                            };
-                            break;
-                        }
-                    };
+                let (
+                    mut chunk_content,
+                    tool_calls,
+                    finish_reason,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                ) = match completed_chunk {
+                    Some(c) => c,
+                    None => {
+                        loop_finish_reason = if cancel_token.is_cancelled() {
+                            FinishReason::Cancelled
+                        } else {
+                            error!(agent_id = %agent_id, turn = turn, "Turn terminated without completion payload");
+                            FinishReason::Error
+                        };
+                        break;
+                    }
+                };
 
                 // Merge accumulated partial text from earlier stream attempts if continuation succeeded
                 if !accumulated_content.is_empty() {
@@ -703,7 +721,9 @@ impl AgentLoop {
                 // output total, mirroring industry billing semantics.
                 let effective_reasoning_tokens = reasoning_tokens.or_else(|| {
                     if !reasoning_content.is_empty() {
-                        Some(crate::core::token_estimator::estimate_token_count(&reasoning_content))
+                        Some(crate::core::token_estimator::estimate_token_count(
+                            &reasoning_content,
+                        ))
                     } else {
                         None
                     }
@@ -742,7 +762,8 @@ impl AgentLoop {
                 };
 
                 let tps = if turn_duration_ms > 0 && effective_completion_tokens.is_some() {
-                    effective_completion_tokens.map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
+                    effective_completion_tokens
+                        .map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
                 } else {
                     None
                 };
@@ -848,7 +869,10 @@ impl AgentLoop {
                     info!(agent_id = %agent_id, turn, "Resumed from pause");
                 }
 
-                let ws = config.workspace_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let ws = config
+                    .workspace_dir
+                    .clone()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                 let has_bash = tool_calls.iter().any(|tc| tc.function.name == "bash");
                 let before_git_status = if has_bash {
                     detect_git_status_snapshot(&ws).await
@@ -885,7 +909,8 @@ impl AgentLoop {
                         &executed.tool_call.function.arguments,
                     ) {
                         warn!(agent_id = %agent_id, tool = %executed.tool_call.function.name, "Repetitive action pattern detected");
-                        final_tool_output = format!("{}\n\n{}", final_tool_output, repetition_warning);
+                        final_tool_output =
+                            format!("{}\n\n{}", final_tool_output, repetition_warning);
                     }
 
                     if finish_reason == "length"
@@ -925,9 +950,14 @@ impl AgentLoop {
 
                     // Emit FileChange for write_file or bash
                     if executed.tool_call.function.name == "write_file" {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&executed.tool_call.function.arguments) {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(
+                            &executed.tool_call.function.arguments,
+                        ) {
                             if let Some(path_str) = parsed.get("path").and_then(|v| v.as_str()) {
-                                let bytes = parsed.get("content").and_then(|v| v.as_str()).map(|c| c.len());
+                                let bytes = parsed
+                                    .get("content")
+                                    .and_then(|v| v.as_str())
+                                    .map(|c| c.len());
                                 let action = if executed.result.is_error {
                                     "failed".to_string()
                                 } else {
@@ -1094,7 +1124,9 @@ impl From<ContextBuffer> for ContextInput {
     }
 }
 
-async fn detect_git_status_snapshot(workspace: &std::path::Path) -> std::collections::HashSet<String> {
+async fn detect_git_status_snapshot(
+    workspace: &std::path::Path,
+) -> std::collections::HashSet<String> {
     let output = tokio::process::Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(workspace)
@@ -1118,4 +1150,3 @@ async fn detect_git_status_snapshot(workspace: &std::path::Path) -> std::collect
         _ => std::collections::HashSet::new(),
     }
 }
-

@@ -1,6 +1,6 @@
 use crate::process::{SidecarConfig, SidecarManager};
 use crate::tool_bridge::TsToolBridge;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
@@ -59,10 +59,14 @@ impl TsScriptPluginEngine {
         Some(Self { sidecar })
     }
 
-    fn locate_runner_script(ws: &PathBuf) -> PathBuf {
+    fn locate_runner_script(ws: &Path) -> PathBuf {
         let candidates = [
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runner").join("host.mjs"),
-            ws.join("thunder-agent-plugin").join("runner").join("host.mjs"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runner")
+                .join("host.mjs"),
+            ws.join("thunder-agent-plugin")
+                .join("runner")
+                .join("host.mjs"),
             ws.join("runner").join("host.mjs"),
             PathBuf::from("./thunder-agent-plugin/runner/host.mjs"),
         ];
@@ -107,7 +111,12 @@ impl TsScriptPluginEngine {
         }
     }
 
-    pub async fn dispatch_event(&self, event: &ObservedEvent, session_id: &str, workspace_dir: Option<&PathBuf>) {
+    pub async fn dispatch_event(
+        &self,
+        event: &ObservedEvent,
+        session_id: &str,
+        workspace_dir: Option<&PathBuf>,
+    ) {
         if let Ok(event_json) = serde_json::to_value(event) {
             let ctx_json = serde_json::json!({
                 "sessionId": session_id,

@@ -2,9 +2,7 @@ use crate::registry::SkillRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{
-    AgentTool, ToolDefinition, ToolExecutionContext,
-};
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 
 /// Tool enabling the LLM to inspect and load the complete instruction set of a skill on demand.
 pub struct LoadSkillTool {
@@ -36,7 +34,11 @@ impl AgentTool for LoadSkillTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let name = args
             .get("skill_name")
             .and_then(|v| v.as_str())
@@ -96,7 +98,11 @@ impl AgentTool for ListSkillsTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let tag_filter = args.get("tag_filter").and_then(|v| v.as_str());
         let skills = self.registry.list().await;
 
@@ -164,11 +170,12 @@ impl AgentTool for SearchSkillsTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
         let matches = if query.trim().is_empty() {
             self.registry.list().await
@@ -177,7 +184,9 @@ impl AgentTool for SearchSkillsTool {
         };
 
         if matches.is_empty() {
-            return Ok(format!("No matching skills found in registry (query: '{query}')."));
+            return Ok(format!(
+                "No matching skills found in registry (query: '{query}')."
+            ));
         }
 
         let title = if query.trim().is_empty() {

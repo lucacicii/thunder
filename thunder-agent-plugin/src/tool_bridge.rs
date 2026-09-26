@@ -29,12 +29,19 @@ impl AgentTool for TsToolBridge {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new_function(
             &self.tool_meta.name,
-            format!("[Plugin:{}] {}", self.tool_meta.plugin_id, self.tool_meta.description),
+            format!(
+                "[Plugin:{}] {}",
+                self.tool_meta.plugin_id, self.tool_meta.description
+            ),
             self.tool_meta.parameters.clone(),
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         info!(
             tool = %self.tool_meta.name,
             plugin = %self.tool_meta.plugin_id,
@@ -51,6 +58,8 @@ impl AgentTool for TsToolBridge {
             "turn": ctx.turn,
         });
 
-        self.sidecar.execute_tool(&self.tool_meta.name, args, context_json).await
+        self.sidecar
+            .execute_tool(&self.tool_meta.name, args, context_json)
+            .await
     }
 }

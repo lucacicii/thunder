@@ -131,5 +131,8 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
     assert_eq!(result.run_result.finish_reason, FinishReason::Done);
     assert_eq!(result.run_result.stats.total_turns, 3);
     assert_eq!(result.run_result.stats.total_tool_executions, 2);
-    assert!(result.final_content.unwrap().contains("Executed skill and MCP tool successfully"));
+    assert!(result
+        .final_content
+        .unwrap()
+        .contains("Executed skill and MCP tool successfully"));
 }

@@ -1,12 +1,14 @@
 [package]
 name = "thunder-agent-daemon"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-authors = ["thunder-luc"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "STDIO Sidecar Daemon for Electron, Desktop UIs and Headless Agent Host"
-license = "Apache-2.0"
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["agent", "daemon", "sidecar", "electron", "llm"]
 categories = ["command-line-utilities", "asynchronous"]
 
@@ -21,22 +23,25 @@ path = "src/main.rs"
 default = []
 testing-mock = []
 
+[lints]
+workspace = true
+
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
-tokio-util = "0.7"
-thunder-agent-loop = { path = "../thunder-agent-loop" }
-thunder-conversation = { path = "../thunder-agent-core/conversation" }
-thunder-agent-skills = { path = "../thunder-agent-skills" }
-thunder-agent-mcp = { path = "../thunder-agent-mcp" }
-thunder-agent-root = { path = "../thunder-agent-root" }
-thunder-agent-providers = { path = "../thunder-agent-providers" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-futures-util = "0.3"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-util.workspace = true
+thunder-agent-loop.workspace = true
+thunder-conversation.workspace = true
+thunder-agent-skills.workspace = true
+thunder-agent-mcp.workspace = true
+thunder-agent-root.workspace = true
+thunder-agent-providers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.43", features = ["full", "test-util"] }
-tempfile = "3.10"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true

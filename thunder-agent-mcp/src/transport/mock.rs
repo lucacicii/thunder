@@ -82,7 +82,9 @@ impl McpTransport for MockTransport {
                     error: None,
                 },
                 "tools/call" => {
-                    let tool_name = request.params.as_ref()
+                    let tool_name = request
+                        .params
+                        .as_ref()
                         .and_then(|p| p.get("name"))
                         .and_then(|n| n.as_str())
                         .unwrap_or("unknown");

@@ -25,7 +25,9 @@ impl LLMClientTrait for DaemonMockClient {
             .unwrap_or_else(|| "hello".to_string());
 
         tokio::spawn(async move {
-            let response = if last_user.to_lowercase().contains("hello") || last_user.to_lowercase().contains("hi") {
+            let response = if last_user.to_lowercase().contains("hello")
+                || last_user.to_lowercase().contains("hi")
+            {
                 "Hello! ⚡ I am Thunder Agent Daemon running in Sidecar mode. I am ready to assist you in Electron!".to_string()
             } else {
                 format!(

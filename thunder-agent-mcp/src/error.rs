@@ -2,7 +2,11 @@
 pub enum McpError {
     IoError(String),
     ProtocolError(String),
-    JsonRpcError { code: i64, message: String, data: Option<serde_json::Value> },
+    JsonRpcError {
+        code: i64,
+        message: String,
+        data: Option<serde_json::Value>,
+    },
     TransportError(String),
     ProcessFailed(String),
     ToolNotFound(String),

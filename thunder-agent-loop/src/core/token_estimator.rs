@@ -24,7 +24,10 @@ pub fn estimate_token_count(text: &str) -> usize {
             cjk_count += 1;
         } else if ch.is_whitespace() {
             whitespace_count += 1;
-        } else if ch.is_ascii_punctuation() || (0x3000..=0x303F).contains(&u) || (0xFF00..=0xFFEF).contains(&u) {
+        } else if ch.is_ascii_punctuation()
+            || (0x3000..=0x303F).contains(&u)
+            || (0xFF00..=0xFFEF).contains(&u)
+        {
             // Include ASCII and fullwidth/CJK punctuation
             punctuation_count += 1;
         }

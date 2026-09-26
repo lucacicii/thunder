@@ -4,20 +4,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::pruning::strategy::ContextPruner;
+use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::tools::builtin::bash::BashTool;
-use thunder_agent_loop::tools::sanitizer::{is_binary_data, sanitize_tool_output, strip_ansi_escapes};
+use thunder_agent_loop::tools::sanitizer::{
+    is_binary_data, sanitize_tool_output, strip_ansi_escapes,
+};
 use thunder_agent_loop::types::config::{AgentConfig, ContextPruningConfig};
 use thunder_agent_loop::types::event::FinishReason;
 use thunder_agent_loop::types::message::{ChatMessage, Role, ToolCall};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use thunder_agent_loop::AgentLoop;
-use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use tokio_util::sync::CancellationToken;
 
 #[test]
 fn test_ansi_and_binary_sanitizer() {
     let colored_log = "\x1b[32m[INFO]\x1b[0m Starting server on \x1b[1;34mport 8080\x1b[0m...";
-    assert_eq!(strip_ansi_escapes(colored_log), "[INFO] Starting server on port 8080...");
+    assert_eq!(
+        strip_ansi_escapes(colored_log),
+        "[INFO] Starting server on port 8080..."
+    );
 
     let raw_elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert!(is_binary_data(&raw_elf));
@@ -133,7 +138,11 @@ impl LLMClientTrait for RepetitiveToolLLMClient {
                 let _ = tx
                     .send(Ok(LLMStreamChunk::Completed {
                         content: Some("Checking...".to_string()),
-                        tool_calls: vec![ToolCall::new_function("call_1", "read_file", "{\"path\":\"same.txt\"}")],
+                        tool_calls: vec![ToolCall::new_function(
+                            "call_1",
+                            "read_file",
+                            "{\"path\":\"same.txt\"}",
+                        )],
                         finish_reason: "tool_calls".to_string(),
                         prompt_tokens: Some(10),
                         completion_tokens: Some(10),
@@ -166,10 +175,18 @@ struct DummyReadFileTool;
 #[async_trait]
 impl AgentTool for DummyReadFileTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new_function("read_file", "Read file", json!({ "type": "object", "properties": {} }))
+        ToolDefinition::new_function(
+            "read_file",
+            "Read file",
+            json!({ "type": "object", "properties": {} }),
+        )
     }
 
-    async fn execute(&self, _args: serde_json::Value, _ctx: &ToolExecutionContext) -> Result<String, String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         Ok("file content constant".to_string())
     }
 }
@@ -191,7 +208,11 @@ async fn test_repetition_warning_injected() {
 
     // Verify that the 3rd tool output contains the repetition notice
     let messages = result.messages;
-    let third_tool_msg = messages.iter().filter(|m| matches!(m, ChatMessage::Tool { .. })).nth(2).unwrap();
+    let third_tool_msg = messages
+        .iter()
+        .filter(|m| matches!(m, ChatMessage::Tool { .. }))
+        .nth(2)
+        .unwrap();
     if let ChatMessage::Tool { content, .. } = third_tool_msg {
         assert!(content.contains("System Notice: You have executed the exact same tool"));
     }

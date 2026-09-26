@@ -54,11 +54,26 @@ fn model_ref_parses_provider_and_id() {
 #[test]
 fn normalize_openai_base_examples() {
     use thunder_agent_providers::openai::normalize_openai_base;
-    assert_eq!(normalize_openai_base("https://opencode.ai/zen/go/v1"), "https://opencode.ai/zen/go/v1");
-    assert_eq!(normalize_openai_base("https://opencode.ai/zen/go/v1/"), "https://opencode.ai/zen/go/v1");
-    assert_eq!(normalize_openai_base("https://opencode.ai/zen/go/v1/chat/completions"), "https://opencode.ai/zen/go/v1");
-    assert_eq!(normalize_openai_base("https://api.openai.com/v1"), "https://api.openai.com/v1");
-    assert_eq!(normalize_openai_base("https://api.openai.com"), "https://api.openai.com/v1");
+    assert_eq!(
+        normalize_openai_base("https://opencode.ai/zen/go/v1"),
+        "https://opencode.ai/zen/go/v1"
+    );
+    assert_eq!(
+        normalize_openai_base("https://opencode.ai/zen/go/v1/"),
+        "https://opencode.ai/zen/go/v1"
+    );
+    assert_eq!(
+        normalize_openai_base("https://opencode.ai/zen/go/v1/chat/completions"),
+        "https://opencode.ai/zen/go/v1"
+    );
+    assert_eq!(
+        normalize_openai_base("https://api.openai.com/v1"),
+        "https://api.openai.com/v1"
+    );
+    assert_eq!(
+        normalize_openai_base("https://api.openai.com"),
+        "https://api.openai.com/v1"
+    );
 }
 
 #[test]
@@ -112,7 +127,8 @@ async fn test_thinking_levels_resolution_and_defaults() {
     assert_eq!(r_levels, vec!["off", "low", "medium", "high"]);
     assert_eq!(r_def, "medium");
 
-    let (r1_levels, r1_def) = resolve_thinking_levels(None, None, false, false, "deepseek-reasoner");
+    let (r1_levels, r1_def) =
+        resolve_thinking_levels(None, None, false, false, "deepseek-reasoner");
     assert_eq!(r1_levels, vec!["off", "low", "medium", "high"]);
     assert_eq!(r1_def, "high");
 
@@ -147,7 +163,8 @@ async fn test_thinking_levels_resolution_and_defaults() {
 
     let models_file = thunder_agent_providers::config::ModelsFile::parse_json(json).unwrap();
     let auth = thunder_agent_providers::auth::AuthFile::default();
-    let registry = thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
+    let registry =
+        thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
 
     let m1 = registry.resolve("test-prov/model-inherited").unwrap();
     assert_eq!(m1.thinking_levels, vec!["low", "medium"]);
@@ -222,7 +239,8 @@ async fn test_resolve_utility_model_and_probed_flag() {
 
     let models_file = thunder_agent_providers::config::ModelsFile::parse_json(json).unwrap();
     let auth = thunder_agent_providers::auth::AuthFile::default();
-    let mut registry = thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
+    let mut registry =
+        thunder_agent_providers::catalog::ProviderRegistry::from_parts(models_file, &auth).unwrap();
 
     let utility = registry.resolve_utility_model().unwrap();
     assert_eq!(utility.id, "flash-model");
