@@ -5,9 +5,12 @@
 	"type": "module",
 	"description": "Thunder LLM transport sidecar backed by @earendil-works/pi-ai",
 	"scripts": {
-		"build": "npx esbuild bridge.src.mjs --bundle --platform=node --format=esm --outfile=bridge.mjs"
+		"build": "esbuild bridge.src.mjs --bundle --platform=node --format=esm --outfile=bridge.mjs"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "0.87.1"
+	},
+	"devDependencies": {
+		"esbuild": "0.25.0"
 	}
 }

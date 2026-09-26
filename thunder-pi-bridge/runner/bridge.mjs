@@ -11,20 +11,11 @@ var __require = /* @__PURE__ */ ((x2) => typeof require !== "undefined" ? requir
   if (typeof require !== "undefined") return require.apply(this, arguments);
   throw Error('Dynamic require of "' + x2 + '" is not supported');
 });
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e2) {
-    throw err = [e2], e2;
-  }
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
 var __commonJS = (cb, mod) => function __require2() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e2) {
-    throw mod = 0, e2;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -3072,8 +3063,8 @@ var brand_privateNullableHeaders, clearSentinel, APPEND_HEADERS, appendHeaderVal
 var init_headers = __esm({
   "node_modules/@anthropic-ai/sdk/internal/headers.mjs"() {
     init_values();
-    brand_privateNullableHeaders = /* @__PURE__ */ Symbol.for("brand.privateNullableHeaders");
-    clearSentinel = /* @__PURE__ */ Symbol("clear");
+    brand_privateNullableHeaders = Symbol.for("brand.privateNullableHeaders");
+    clearSentinel = Symbol("clear");
     APPEND_HEADERS = /* @__PURE__ */ new Set(["x-stainless-helper"]);
     appendHeaderValue = (existing, addition) => {
       const tokens = existing ? existing.split(",").map((t2) => t2.trim()).filter(Boolean) : [];
@@ -3648,7 +3639,7 @@ var init_stainless_helper_header = __esm({
   "node_modules/@anthropic-ai/sdk/internal/stainless-helper-header.mjs"() {
     STAINLESS_HELPER_HEADER = "x-stainless-helper";
     STAINLESS_HELPER_METHOD_HEADER = "x-stainless-helper-method";
-    SDK_HELPER_SYMBOL = /* @__PURE__ */ Symbol("anthropic.sdk.stainlessHelper");
+    SDK_HELPER_SYMBOL = Symbol("anthropic.sdk.stainlessHelper");
   }
 });
 
@@ -3980,7 +3971,7 @@ var init_user_profiles = __esm({
 var require_base64 = __commonJS({
   "node_modules/@stablelib/base64/lib/base64.js"(exports) {
     "use strict";
-    var __extends = exports && exports.__extends || /* @__PURE__ */ (function() {
+    var __extends = exports && exports.__extends || /* @__PURE__ */ function() {
       var extendStatics = function(d, b) {
         extendStatics = Object.setPrototypeOf || { __proto__: [] } instanceof Array && function(d2, b2) {
           d2.__proto__ = b2;
@@ -3996,12 +3987,12 @@ var require_base64 = __commonJS({
         }
         d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
       };
-    })();
+    }();
     Object.defineProperty(exports, "__esModule", { value: true });
     var INVALID_BYTE = 256;
     var Coder = (
       /** @class */
-      (function() {
+      function() {
         function Coder2(_paddingCharacter) {
           if (_paddingCharacter === void 0) {
             _paddingCharacter = "=";
@@ -4127,7 +4118,7 @@ var require_base64 = __commonJS({
           return paddingLength;
         };
         return Coder2;
-      })()
+      }()
     );
     exports.Coder = Coder;
     var stdCoder = new Coder();
@@ -4141,7 +4132,7 @@ var require_base64 = __commonJS({
     exports.decode = decode;
     var URLSafeCoder = (
       /** @class */
-      (function(_super) {
+      function(_super) {
         __extends(URLSafeCoder2, _super);
         function URLSafeCoder2() {
           return _super !== null && _super.apply(this, arguments) || this;
@@ -4165,7 +4156,7 @@ var require_base64 = __commonJS({
           return result;
         };
         return URLSafeCoder2;
-      })(Coder)
+      }(Coder)
     );
     exports.URLSafeCoder = URLSafeCoder;
     var urlSafeCoder = new URLSafeCoder();
@@ -4328,7 +4319,7 @@ var require_sha256 = __commonJS({
       }
       var Hash3 = (
         /** @class */
-        (function() {
+        function() {
           function Hash4() {
             this.digestLength = exports2.digestLength;
             this.blockSize = exports2.blockSize;
@@ -4441,12 +4432,12 @@ var require_sha256 = __commonJS({
             this.bufferLength = 0;
           };
           return Hash4;
-        })()
+        }()
       );
       exports2.Hash = Hash3;
       var HMAC = (
         /** @class */
-        (function() {
+        function() {
           function HMAC2(key) {
             this.inner = new Hash3();
             this.outer = new Hash3();
@@ -4507,7 +4498,7 @@ var require_sha256 = __commonJS({
             return out;
           };
           return HMAC2;
-        })()
+        }()
       );
       exports2.HMAC = HMAC;
       function hash(data) {
@@ -16614,7 +16605,7 @@ var init_client = __esm({
             clearTimeout(timeout);
           }
         };
-        const innerFetch = requestOptions === void 0 ? timedFetch : (async (innerUrl, innerInit = {}) => {
+        const innerFetch = requestOptions === void 0 ? timedFetch : async (innerUrl, innerInit = {}) => {
           const innerUrlStr = typeof innerUrl === "string" ? innerUrl : innerUrl instanceof URL ? innerUrl.href : innerUrl.url;
           innerInit.headers = innerInit.headers instanceof Headers ? innerInit.headers : new Headers(innerInit.headers);
           await this.prepareRequest(innerInit, { url: innerUrlStr, options: requestOptions });
@@ -16628,7 +16619,7 @@ var init_client = __esm({
             }));
           }
           return timedFetch(innerUrl, innerInit);
-        });
+        };
         const requestMiddleware = requestOptions?.middleware;
         const backendMiddleware = this.backendMiddleware();
         const allMiddleware = requestMiddleware?.length || backendMiddleware.length ? [...this.middleware, ...requestMiddleware ?? [], ...backendMiddleware] : this.middleware;
@@ -17963,7 +17954,7 @@ var require_options = __commonJS({
 var require_dist2 = __commonJS({
   "node_modules/partial-json/dist/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -17972,10 +17963,10 @@ var require_dist2 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
+    });
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -32598,7 +32589,7 @@ var require_common = __commonJS({
     var extend_1 = __importDefault(require_extend());
     var util_cjs_1 = __importDefault(require_util());
     var pkg = util_cjs_1.default.pkg;
-    exports.GAXIOS_ERROR_SYMBOL = /* @__PURE__ */ Symbol.for(`${pkg.name}-gaxios-error`);
+    exports.GAXIOS_ERROR_SYMBOL = Symbol.for(`${pkg.name}-gaxios-error`);
     var GaxiosError = class _GaxiosError extends Error {
       config;
       response;
@@ -33596,7 +33587,7 @@ var require_src = __commonJS({
 var require_helpers = __commonJS({
   "node_modules/gaxios/node_modules/agent-base/dist/helpers.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -33605,13 +33596,13 @@ var require_helpers = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
-    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+    });
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    }) : function(o, v) {
+    } : function(o, v) {
       o["default"] = v;
     });
     var __importStar = exports && exports.__importStar || function(mod) {
@@ -33666,7 +33657,7 @@ var require_helpers = __commonJS({
 var require_dist3 = __commonJS({
   "node_modules/gaxios/node_modules/agent-base/dist/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -33675,13 +33666,13 @@ var require_dist3 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
-    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+    });
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    }) : function(o, v) {
+    } : function(o, v) {
       o["default"] = v;
     });
     var __importStar = exports && exports.__importStar || function(mod) {
@@ -33702,7 +33693,7 @@ var require_dist3 = __commonJS({
     var http3 = __importStar(__require("http"));
     var https_1 = __require("https");
     __exportStar(require_helpers(), exports);
-    var INTERNAL = /* @__PURE__ */ Symbol("AgentBaseInternalState");
+    var INTERNAL = Symbol("AgentBaseInternalState");
     var Agent = class extends http3.Agent {
       constructor(opts) {
         super(opts);
@@ -33918,7 +33909,7 @@ var require_parse_proxy_response = __commonJS({
 var require_dist4 = __commonJS({
   "node_modules/gaxios/node_modules/https-proxy-agent/dist/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -33927,13 +33918,13 @@ var require_dist4 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
-    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+    });
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    }) : function(o, v) {
+    } : function(o, v) {
       o["default"] = v;
     });
     var __importStar = exports && exports.__importStar || function(mod) {
@@ -34113,7 +34104,7 @@ var require_ponyfill_es2018 = __commonJS({
   "node_modules/web-streams-polyfill/dist/ponyfill.es2018.js"(exports, module) {
     (function(global2, factory) {
       typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global2 = typeof globalThis !== "undefined" ? globalThis : global2 || self, factory(global2.WebStreamsPolyfill = {}));
-    })(exports, (function(exports2) {
+    })(exports, function(exports2) {
       "use strict";
       function noop4() {
         return void 0;
@@ -34273,11 +34264,11 @@ var require_ponyfill_es2018 = __commonJS({
           return front._elements[cursor];
         }
       }
-      const AbortSteps = /* @__PURE__ */ Symbol("[[AbortSteps]]");
-      const ErrorSteps = /* @__PURE__ */ Symbol("[[ErrorSteps]]");
-      const CancelSteps = /* @__PURE__ */ Symbol("[[CancelSteps]]");
-      const PullSteps = /* @__PURE__ */ Symbol("[[PullSteps]]");
-      const ReleaseSteps = /* @__PURE__ */ Symbol("[[ReleaseSteps]]");
+      const AbortSteps = Symbol("[[AbortSteps]]");
+      const ErrorSteps = Symbol("[[ErrorSteps]]");
+      const CancelSteps = Symbol("[[CancelSteps]]");
+      const PullSteps = Symbol("[[PullSteps]]");
+      const ReleaseSteps = Symbol("[[ReleaseSteps]]");
       function ReadableStreamReaderGenericInitialize(reader, stream12) {
         reader._ownerReadableStream = stream12;
         stream12._reader = reader;
@@ -34718,9 +34709,9 @@ var require_ponyfill_es2018 = __commonJS({
         const syncIterable = {
           [Symbol.iterator]: () => syncIteratorRecord.iterator
         };
-        const asyncIterator = (async function* () {
+        const asyncIterator = async function* () {
           return yield* syncIterable;
-        })();
+        }();
         const nextMethod = asyncIterator.next;
         return { iterator: asyncIterator, nextMethod, done: false };
       }
@@ -38379,7 +38370,7 @@ var require_ponyfill_es2018 = __commonJS({
       exports2.WritableStream = WritableStream;
       exports2.WritableStreamDefaultController = WritableStreamDefaultController;
       exports2.WritableStreamDefaultWriter = WritableStreamDefaultWriter;
-    }));
+    });
   }
 });
 
@@ -39341,7 +39332,7 @@ var init_body = __esm({
     init_base();
     init_is();
     pipeline = promisify(Stream3.pipeline);
-    INTERNALS = /* @__PURE__ */ Symbol("Body internals");
+    INTERNALS = Symbol("Body internals");
     Body = class {
       constructor(body, {
         size = 0
@@ -39711,7 +39702,7 @@ var init_headers4 = __esm({
       /**
        * For better console.log(headers) and also to convert Headers into Node.js Request compatible format
        */
-      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
+      [Symbol.for("nodejs.util.inspect.custom")]() {
         return [...this.keys()].reduce((result, key) => {
           const values = this.getAll(key);
           if (key === "host") {
@@ -39751,7 +39742,7 @@ var init_response = __esm({
     init_headers4();
     init_body();
     init_is_redirect();
-    INTERNALS2 = /* @__PURE__ */ Symbol("Response internals");
+    INTERNALS2 = Symbol("Response internals");
     Response2 = class _Response extends Body {
       constructor(body = null, options = {}) {
         super(body, options);
@@ -40041,7 +40032,7 @@ var init_request = __esm({
     init_is();
     init_get_search();
     init_referrer();
-    INTERNALS3 = /* @__PURE__ */ Symbol("Request internals");
+    INTERNALS3 = Symbol("Request internals");
     isRequest = (object) => {
       return typeof object === "object" && typeof object[INTERNALS3] === "object";
     };
@@ -40222,7 +40213,7 @@ var init_request = __esm({
         path: parsedURL.pathname + search,
         // The following options are not expressed in the URL
         method: request.method,
-        headers: headers[/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](),
+        headers: headers[Symbol.for("nodejs.util.inspect.custom")](),
         insecureHTTPParser: request.insecureHTTPParser,
         agent
       };
@@ -41029,7 +41020,7 @@ Content-Type: ${partContentType}\r
 var require_src2 = __commonJS({
   "node_modules/gaxios/build/cjs/src/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -41038,10 +41029,10 @@ var require_src2 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
+    });
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -41337,7 +41328,7 @@ var require_bignumber = __commonJS({
         BigNumber2.minimum = BigNumber2.min = function() {
           return maxOrMin(arguments, 1);
         };
-        BigNumber2.random = (function() {
+        BigNumber2.random = function() {
           var pow2_53 = 9007199254740992;
           var random53bitInt = Math.random() * pow2_53 & 2097151 ? function() {
             return mathfloor(Math.random() * pow2_53);
@@ -41405,13 +41396,13 @@ var require_bignumber = __commonJS({
             rand.c = c;
             return rand;
           };
-        })();
+        }();
         BigNumber2.sum = function() {
           var i2 = 1, args = arguments, sum = new BigNumber2(args[0]);
           for (; i2 < args.length; ) sum = sum.plus(args[i2++]);
           return sum;
         };
-        convertBase = /* @__PURE__ */ (function() {
+        convertBase = /* @__PURE__ */ function() {
           var decimal = "0123456789";
           function toBaseOut(str2, baseIn, baseOut, alphabet) {
             var j, arr = [0], arrL, i2 = 0, len = str2.length;
@@ -41484,8 +41475,8 @@ var require_bignumber = __commonJS({
             }
             return str2;
           };
-        })();
-        div = /* @__PURE__ */ (function() {
+        }();
+        div = /* @__PURE__ */ function() {
           function multiply(x2, k, base) {
             var m2, temp, xlo, xhi, carry = 0, i2 = x2.length, klo = k % SQRT_BASE, khi = k / SQRT_BASE | 0;
             for (x2 = x2.slice(); i2--; ) {
@@ -41626,7 +41617,7 @@ var require_bignumber = __commonJS({
             }
             return q;
           };
-        })();
+        }();
         function format(n, i2, rm, id) {
           var c0, e2, ne, len, str2;
           if (rm == null) rm = ROUNDING_MODE;
@@ -41685,7 +41676,7 @@ var require_bignumber = __commonJS({
           }
           return n;
         }
-        parseNumeric = /* @__PURE__ */ (function() {
+        parseNumeric = /* @__PURE__ */ function() {
           var basePrefix = /^(-?)0([xbo])(?=\w[\w.]*$)/i, dotAfter = /^([^.]+)\.$/, dotBefore = /^\.([^.]+)$/, isInfinityOrNaN = /^-?(Infinity|NaN)$/, whitespaceOrPlus = /^\s*\+(?=[\w.])|^\s+|\s+$/g;
           return function(x2, str2, isNum, b) {
             var base, s2 = isNum ? str2 : str2.replace(whitespaceOrPlus, "");
@@ -41710,7 +41701,7 @@ var require_bignumber = __commonJS({
             }
             x2.c = x2.e = null;
           };
-        })();
+        }();
         function round(x2, sd, rm, r2) {
           var d, i2, j, k, n, ni, rd, xc = x2.c, pows10 = POWS_TEN;
           if (xc) {
@@ -42788,7 +42779,7 @@ var require_parse = __commonJS({
         if (ch) {
           error("Syntax error");
         }
-        return typeof reviver === "function" ? (function walk3(holder, key) {
+        return typeof reviver === "function" ? function walk3(holder, key) {
           var k, v, value2 = holder[key];
           if (value2 && typeof value2 === "object") {
             Object.keys(value2).forEach(function(k2) {
@@ -42801,7 +42792,7 @@ var require_parse = __commonJS({
             });
           }
           return reviver.call(holder, key, value2);
-        })({ "": result }, "") : result;
+        }({ "": result }, "") : result;
       };
     };
     module.exports = json_parse;
@@ -42944,7 +42935,7 @@ var require_colours = __commonJS({
 var require_logging_utils = __commonJS({
   "node_modules/google-logging-utils/build/src/logging-utils.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -42953,16 +42944,16 @@ var require_logging_utils = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
-    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+    });
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    }) : function(o, v) {
+    } : function(o, v) {
       o["default"] = v;
     });
-    var __importStar = exports && exports.__importStar || /* @__PURE__ */ (function() {
+    var __importStar = exports && exports.__importStar || /* @__PURE__ */ function() {
       var ownKeys = function(o) {
         ownKeys = Object.getOwnPropertyNames || function(o2) {
           var ar = [];
@@ -42980,7 +42971,7 @@ var require_logging_utils = __commonJS({
         __setModuleDefault(result, mod);
         return result;
       };
-    })();
+    }();
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.env = exports.DebugLogBackendBase = exports.placeholder = exports.AdhocDebugLogger = exports.LogSeverity = void 0;
     exports.getNodeBackend = getNodeBackend;
@@ -43233,7 +43224,7 @@ var require_logging_utils = __commonJS({
 var require_src3 = __commonJS({
   "node_modules/google-logging-utils/build/src/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -43242,10 +43233,10 @@ var require_src3 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
+    });
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -43258,7 +43249,7 @@ var require_src3 = __commonJS({
 var require_src4 = __commonJS({
   "node_modules/gcp-metadata/build/src/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -43267,16 +43258,16 @@ var require_src4 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
-    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+    });
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    }) : function(o, v) {
+    } : function(o, v) {
       o["default"] = v;
     });
-    var __importStar = exports && exports.__importStar || /* @__PURE__ */ (function() {
+    var __importStar = exports && exports.__importStar || /* @__PURE__ */ function() {
       var ownKeys = function(o) {
         ownKeys = Object.getOwnPropertyNames || function(o2) {
           var ar = [];
@@ -43294,7 +43285,7 @@ var require_src4 = __commonJS({
         __setModuleDefault(result, mod);
         return result;
       };
-    })();
+    }();
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -43795,7 +43786,7 @@ var require_crypto2 = __commonJS({
 var require_crypto3 = __commonJS({
   "node_modules/google-auth-library/build/src/crypto/crypto.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -43804,10 +43795,10 @@ var require_crypto3 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
+    });
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -44311,8 +44302,8 @@ var require_authclient = __commonJS({
        * making an RPC call, for logging purposes, as well as a string ID that can be
        * used to correlate calls and responses.
        */
-      static RequestMethodNameSymbol = /* @__PURE__ */ Symbol("request method name");
-      static RequestLogIdSymbol = /* @__PURE__ */ Symbol("request log id");
+      static RequestMethodNameSymbol = Symbol("request method name");
+      static RequestLogIdSymbol = Symbol("request log id");
       constructor(opts = {}) {
         super();
         const options = (0, util_1.originalOrCamelOptions)(opts);
@@ -49522,7 +49513,7 @@ var require_gdchclient = __commonJS({
           }
         };
       }
-      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")]() {
+      [Symbol.for("nodejs.util.inspect.custom")]() {
         return this.toJSON();
       }
       base64UrlEncode(str2) {
@@ -50612,7 +50603,7 @@ var require_passthrough = __commonJS({
 var require_src5 = __commonJS({
   "node_modules/google-auth-library/build/src/index.js"(exports) {
     "use strict";
-    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m2, k, k2) {
+    var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m2, k);
       if (!desc || ("get" in desc ? !m2.__esModule : desc.writable || desc.configurable)) {
@@ -50621,10 +50612,10 @@ var require_src5 = __commonJS({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    }) : (function(o, m2, k, k2) {
+    } : function(o, m2, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m2[k];
-    }));
+    });
     var __exportStar = exports && exports.__exportStar || function(m2, exports2) {
       for (var p in m2) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m2, p);
     };
@@ -50757,10 +50748,10 @@ var require_constants = __commonJS({
       EMPTY_BUFFER: Buffer.alloc(0),
       GUID: "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
       hasBlob,
-      kForOnEventAttribute: /* @__PURE__ */ Symbol("kIsForOnEventAttribute"),
-      kListener: /* @__PURE__ */ Symbol("kListener"),
-      kStatusCode: /* @__PURE__ */ Symbol("status-code"),
-      kWebSocket: /* @__PURE__ */ Symbol("websocket"),
+      kForOnEventAttribute: Symbol("kIsForOnEventAttribute"),
+      kListener: Symbol("kListener"),
+      kStatusCode: Symbol("status-code"),
+      kWebSocket: Symbol("websocket"),
       NOOP: () => {
       }
     };
@@ -50846,8 +50837,8 @@ var require_buffer_util = __commonJS({
 var require_limiter = __commonJS({
   "node_modules/ws/lib/limiter.js"(exports, module) {
     "use strict";
-    var kDone = /* @__PURE__ */ Symbol("kDone");
-    var kRun = /* @__PURE__ */ Symbol("kRun");
+    var kDone = Symbol("kDone");
+    var kRun = Symbol("kRun");
     var Limiter = class {
       /**
        * Creates a new `Limiter`.
@@ -50902,11 +50893,11 @@ var require_permessage_deflate = __commonJS({
     var { kStatusCode } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
     var TRAILER = Buffer.from([0, 0, 255, 255]);
-    var kPerMessageDeflate = /* @__PURE__ */ Symbol("permessage-deflate");
-    var kTotalLength = /* @__PURE__ */ Symbol("total-length");
-    var kCallback = /* @__PURE__ */ Symbol("callback");
-    var kBuffers = /* @__PURE__ */ Symbol("buffers");
-    var kError = /* @__PURE__ */ Symbol("error");
+    var kPerMessageDeflate = Symbol("permessage-deflate");
+    var kTotalLength = Symbol("total-length");
+    var kCallback = Symbol("callback");
+    var kBuffers = Symbol("buffers");
+    var kError = Symbol("error");
     var zlibLimiter;
     var PerMessageDeflate2 = class {
       /**
@@ -52112,7 +52103,7 @@ var require_sender = __commonJS({
     var { EMPTY_BUFFER, kWebSocket, NOOP } = require_constants();
     var { isBlob: isBlob2, isValidStatusCode } = require_validation();
     var { mask: applyMask, toBuffer } = require_buffer_util();
-    var kByteLength = /* @__PURE__ */ Symbol("kByteLength");
+    var kByteLength = Symbol("kByteLength");
     var maskBuffer = Buffer.alloc(4);
     var RANDOM_POOL_SIZE = 8 * 1024;
     var randomPool;
@@ -52597,14 +52588,14 @@ var require_event_target = __commonJS({
   "node_modules/ws/lib/event-target.js"(exports, module) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
-    var kCode = /* @__PURE__ */ Symbol("kCode");
-    var kData = /* @__PURE__ */ Symbol("kData");
-    var kError = /* @__PURE__ */ Symbol("kError");
-    var kMessage = /* @__PURE__ */ Symbol("kMessage");
-    var kReason = /* @__PURE__ */ Symbol("kReason");
-    var kTarget = /* @__PURE__ */ Symbol("kTarget");
-    var kType = /* @__PURE__ */ Symbol("kType");
-    var kWasClean = /* @__PURE__ */ Symbol("kWasClean");
+    var kCode = Symbol("kCode");
+    var kData = Symbol("kData");
+    var kError = Symbol("kError");
+    var kMessage = Symbol("kMessage");
+    var kReason = Symbol("kReason");
+    var kTarget = Symbol("kTarget");
+    var kType = Symbol("kType");
+    var kWasClean = Symbol("kWasClean");
     var Event = class {
       /**
        * Create a new `Event`.
@@ -53006,7 +52997,7 @@ var require_websocket = __commonJS({
     } = require_event_target();
     var { format, parse } = require_extension();
     var { toBuffer } = require_buffer_util();
-    var kAborted = /* @__PURE__ */ Symbol("kAborted");
+    var kAborted = Symbol("kAborted");
     var protocolVersions = [8, 13];
     var readyStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
     var subprotocolRegex = /^[!#$%&'*+\-.0-9A-Z^_`|a-z~]+$/;
@@ -63127,7 +63118,7 @@ function uploadToFileSearchStoreResumableResponseFromMldev(fromObject) {
   return toObject;
 }
 function raiseUndiciTimeouts(timeout) {
-  const dispatcherSymbol = /* @__PURE__ */ Symbol.for("undici.globalDispatcher.1");
+  const dispatcherSymbol = Symbol.for("undici.globalDispatcher.1");
   const globalDispatcher = globalThis[dispatcherSymbol];
   if (!globalDispatcher) {
     return;
@@ -72832,7 +72823,7 @@ var init_node3 = __esm({
         let wereFunctionsCalled = false;
         let remoteCallCount = 0;
         const afcToolsMap = await this.initAfcToolsMap(params);
-        return (function(models, afcTools, params2) {
+        return function(models, afcTools, params2) {
           return __asyncGenerator(this, arguments, function* () {
             var _a6, e_1, _b2, _c2;
             var _d, _e;
@@ -72902,7 +72893,7 @@ var init_node3 = __esm({
               }
             }
           });
-        })(this, afcToolsMap, params);
+        }(this, afcToolsMap, params);
       }
       async generateContentInternal(params) {
         var _a5, _b, _c, _d;
@@ -78370,7 +78361,7 @@ var init_mistral_conversations = __esm({
         this.body = body;
       }
     };
-    MISTRAL_STREAM_DONE = /* @__PURE__ */ Symbol("mistral-stream-done");
+    MISTRAL_STREAM_DONE = Symbol("mistral-stream-done");
   }
 });
 
@@ -93222,7 +93213,7 @@ function FromString8(_context, type) {
 
 // node_modules/typebox/build/value/create/from_symbol.mjs
 function FromSymbol2(_context, _type) {
-  return /* @__PURE__ */ Symbol();
+  return Symbol();
 }
 
 // node_modules/typebox/build/value/create/from_template_literal.mjs
@@ -93791,7 +93782,7 @@ function Compile(...args) {
 
 // node_modules/@earendil-works/pi-ai/dist/utils/validation.js
 var validatorCache = /* @__PURE__ */ new WeakMap();
-var TYPEBOX_KIND = /* @__PURE__ */ Symbol.for("TypeBox.Kind");
+var TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 function getSchemaTypes(schema) {
   if (typeof schema.type === "string") {
     return [schema.type];
