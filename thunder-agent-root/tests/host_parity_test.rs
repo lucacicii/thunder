@@ -73,12 +73,45 @@ fn script_plugin_is_opt_in() {
 
 #[test]
 fn baseline_forced_plugins_track_registration() {
-    // Without MCP config the forced set is conversation + skills.
-    let ids = baseline_forced_plugins(false);
+    // Nothing configured: conversation + skills only, and no Node sidecar.
+    let ids = baseline_forced_plugins(false, false);
     assert!(ids.contains(&"conversation".to_string()));
     assert!(!ids.contains(&"mcp".to_string()));
+    assert!(
+        !ids.contains(&"script_plugin".to_string()),
+        "a workspace with no plugin files must not boot the sidecar"
+    );
 
     // With MCP config, mcp joins the forced set.
-    let ids = baseline_forced_plugins(true);
+    let ids = baseline_forced_plugins(true, false);
     assert!(ids.contains(&"mcp".to_string()));
+    assert!(!ids.contains(&"script_plugin".to_string()));
+
+    // With plugin files present, the script host must actually be reachable —
+    // the failure this guards against is a user writing a plugin and silently
+    // not getting it.
+    let ids = baseline_forced_plugins(false, true);
+    assert!(ids.contains(&"script_plugin".to_string()));
+}
+
+#[test]
+fn ts_plugin_detection_looks_in_both_scopes() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path();
+    let plugins = ws.join(".arp").join("plugins");
+    assert!(!has_ts_plugins(Some(ws)), "no directory yet");
+
+    std::fs::create_dir_all(&plugins).unwrap();
+    assert!(!has_ts_plugins(Some(ws)), "empty directory");
+
+    std::fs::write(plugins.join("notes.md"), "not a plugin").unwrap();
+    assert!(
+        !has_ts_plugins(Some(ws)),
+        "only .ts/.js files count as plugins"
+    );
+
+    std::fs::write(plugins.join("demo.ts"), "export default definePlugin({});").unwrap();
+    assert!(has_ts_plugins(Some(ws)), "a .ts file is a plugin");
+
+    assert!(!has_ts_plugins(None), "no workspace scope is not an error");
 }

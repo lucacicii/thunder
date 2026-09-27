@@ -75,3 +75,22 @@ Schema 版本 `1`。字段语义见 agent-resume-panel 的
 | `bash` | ✅ | ✅ | ✅ |
 
 被禁的工具**根本不会注册**，所以模型连工具名都看不到。
+
+## `roles.jsonl` 里的 `mode` 字段
+
+角色除了声明能力档位 `permission`，还可以声明审批模式 `mode`：
+
+```json
+{"id":"plan","persona":"先出方案，不要动手","permission":"bash","mode":"plan"}
+{"id":"careful","permission":"bash","mode":"ask"}
+{"id":"fast","permission":"bash","mode":"accept_edits"}
+```
+
+- `permission` 是**天花板**（`read` / `write` / `bash`），决定什么根本不可能。
+- `mode` 决定**什么时候必须问人**（`plan` / `ask` / `accept_edits` / `manual` / `yolo`）。
+
+`mode` 只能把档位往下压（`plan` 压到 `read`），**永远不能往上抬**：
+`{"permission":"read","mode":"yolo"}` 仍然是只读。
+
+省略 `mode` 等同于 `yolo`（不询问），也就是引入审批门之前的行为 —— 审批是
+opt-in 的，避免升级后无面板宿主的所有调用被静默拒绝。

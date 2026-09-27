@@ -107,11 +107,17 @@ export default definePlugin({
         custom_client: Some(client),
         cancellation_token: None,
         forced_plugins: Some(vec!["script_plugin".to_string()]),
+        // The plugin's `ctx.fs.writeFile` is authorised against the run named by
+        // the tool call's route, so the run must declare one.
+        route: Some("test-ts-sess".to_string()),
         register_builtins: true,
         thinking_level: None,
         role: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
+        ui: None,
+        mode: None,
+        policy: None,
     };
 
     let result = root

@@ -315,7 +315,6 @@ fn cache_compat_flags_flow_to_bridge_model() {
 #[test]
 fn prompt_cache_warm_settings_derivation() {
     use thunder_agent_providers::catalog::ModelSpec;
-    use thunder_agent_providers::config::{CostConfig, PromptCacheConfig};
     use thunder_pi_bridge::{BridgeCost, BridgePromptCache};
 
     let base = |api, compat, prompt_cache, cost| ModelSpec {
@@ -358,12 +357,7 @@ fn prompt_cache_warm_settings_derivation() {
     };
 
     // 1. Anthropic + reasoning on + no adaptive thinking → replay unsafe.
-    let spec = base(
-        ProviderApi::AnthropicMessages,
-        None,
-        pc(),
-        cost(),
-    );
+    let spec = base(ProviderApi::AnthropicMessages, None, pc(), cost());
     let s = spec.prompt_cache_warm_settings(Some("high")).unwrap();
     assert_eq!(s.ttl_secs, 300);
     assert!(!s.replay_safe);
@@ -375,15 +369,27 @@ fn prompt_cache_warm_settings_derivation() {
         pc(),
         cost(),
     );
-    assert!(spec.prompt_cache_warm_settings(Some("high")).unwrap().replay_safe);
+    assert!(
+        spec.prompt_cache_warm_settings(Some("high"))
+            .unwrap()
+            .replay_safe
+    );
 
     // 3. Anthropic with reasoning off → replay safe even without adaptive.
-    assert!(spec.prompt_cache_warm_settings(Some("off")).unwrap().replay_safe);
+    assert!(
+        spec.prompt_cache_warm_settings(Some("off"))
+            .unwrap()
+            .replay_safe
+    );
     assert!(spec.prompt_cache_warm_settings(None).unwrap().replay_safe);
 
     // 4. OpenAI-completions reasoning model → replay safe (budget not derived).
     let spec = base(ProviderApi::OpenAiCompletions, None, pc(), cost());
-    assert!(spec.prompt_cache_warm_settings(Some("high")).unwrap().replay_safe);
+    assert!(
+        spec.prompt_cache_warm_settings(Some("high"))
+            .unwrap()
+            .replay_safe
+    );
 
     // 5. No declared promptCache → warming unavailable.
     let spec = base(ProviderApi::AnthropicMessages, None, None, cost());
@@ -393,7 +399,10 @@ fn prompt_cache_warm_settings_derivation() {
     let spec = base(
         ProviderApi::AnthropicMessages,
         None,
-        Some(BridgePromptCache { short: None, long: Some(3600) }),
+        Some(BridgePromptCache {
+            short: None,
+            long: Some(3600),
+        }),
         cost(),
     );
     assert!(spec.prompt_cache_warm_settings(Some("high")).is_none());
@@ -406,8 +415,7 @@ fn prompt_cache_warm_settings_derivation() {
         Some(BridgeCost::default()),
     );
     let s = spec.prompt_cache_warm_settings(Some("high")).unwrap();
-    let (decision, _) =
-        thunder_agent_loop::cache::warmer::decide_warming(50_000, false, &s);
+    let (decision, _) = thunder_agent_loop::cache::warmer::decide_warming(50_000, false, &s);
     assert_eq!(
         decision,
         thunder_agent_loop::cache::warmer::CacheWarmDecision::Stop("cache economics unavailable")

@@ -124,6 +124,10 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
         role: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
+        ui: None,
+        mode: None,
+        policy: None,
+        route: None,
     };
 
     let result = root

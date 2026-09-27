@@ -73,6 +73,10 @@ async fn tools_for(permission: Permission) -> Vec<String> {
         role: None,
         permission,
         pause_gate: None,
+        ui: None,
+        mode: None,
+        policy: None,
+        route: None,
     };
 
     let handle = root

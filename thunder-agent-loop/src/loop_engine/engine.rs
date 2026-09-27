@@ -55,6 +55,8 @@ pub struct AgentLoop {
     status: Arc<AtomicU8>,
     /// Cooperative pause gate; shared with any handle that wants to pause this unit.
     pause_gate: Arc<crate::core::pause::PauseGate>,
+    /// Optional human-approval layer, spliced in behind the permission guard.
+    approval: Option<Arc<dyn crate::tools::middleware::ToolMiddleware>>,
 }
 
 impl AgentLoop {
@@ -78,6 +80,7 @@ impl AgentLoop {
             Some(scratchpad.clone()),
             &config.middleware,
             config.permission,
+            None,
         );
 
         Self {
@@ -91,7 +94,39 @@ impl AgentLoop {
             running: Arc::new(AtomicBool::new(false)),
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
+            approval: None,
         }
+    }
+
+    /// Install the human-approval layer.
+    ///
+    /// Spliced in directly after `PermissionGuardMiddleware`, so the capability
+    /// tier is still the ceiling and a refused call stages no files. Must be set
+    /// before the unit starts: the pipeline is rebuilt whenever a tool is
+    /// registered, and the gate travels with it.
+    pub fn with_approval_gate(
+        mut self,
+        gate: Arc<dyn crate::tools::middleware::ToolMiddleware>,
+    ) -> Self {
+        self.approval = Some(gate);
+        self.tool_executor = self.rebuild_executor();
+        self
+    }
+
+    /// Reassemble the pipeline from the current config and registrations.
+    fn rebuild_executor(&self) -> ToolExecutor {
+        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        ToolExecutor::with_configured_pipeline(
+            self.tool_registry.clone(),
+            ws,
+            self.config.extra_workspace_roots.clone(),
+            Some(self.scratchpad.clone()),
+            &self.config.middleware,
+            self.config.permission,
+            self.approval.clone(),
+        )
     }
 
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).
@@ -110,6 +145,7 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
+            self.approval.clone(),
         );
         self
     }
@@ -159,6 +195,7 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
+            self.approval.clone(),
         );
         self
     }
@@ -176,6 +213,7 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
+            self.approval.clone(),
         );
         self
     }
@@ -928,6 +966,7 @@ impl AgentLoop {
                         &tool_calls,
                         turn,
                         cancel_token.clone(),
+                        config.route.clone(),
                         Some(std::time::Duration::from_millis(config.request_timeout_ms)),
                     )
                     .await;

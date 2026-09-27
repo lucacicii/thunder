@@ -212,6 +212,13 @@ pub struct AgentConfig {
     pub loop_guard: LoopGuardConfig,
     /// Tool capability tier for this unit (defaults to `Bash`).
     pub permission: Permission,
+    /// Identifies this run for services shared across runs (see
+    /// [`crate::types::tool::ToolExecutionContext::route`]).
+    ///
+    /// Defaults to `None`, which means "no route": shared services then fall back
+    /// to their most restrictive behaviour rather than guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -237,6 +244,7 @@ impl Default for AgentConfig {
             scratchpad: ScratchpadConfig::default(),
             loop_guard: LoopGuardConfig::default(),
             permission: Permission::default(),
+            route: None,
         }
     }
 }

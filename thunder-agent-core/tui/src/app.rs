@@ -2336,8 +2336,8 @@ impl App {
         }
         if let Some(spec) = self.provider_registry.resolve(&model) {
             base_cfg.pruning.max_context_tokens = spec.context_window;
-            base_cfg.prompt_cache_warm = spec
-                .prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
+            base_cfg.prompt_cache_warm =
+                spec.prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }
 
         let mut skills_plugin = SkillsPlugin::default();
@@ -2381,6 +2381,9 @@ impl App {
         let workspace_dir = self.workspace_dir.clone();
         let active_role = self.active_role.clone();
         let permission = self.permission;
+        // Captured before the move: a plugin call must be attributable to this
+        // run, and the sidecar refuses calls that carry no route.
+        let run_route = format!("tui_{}", session_id);
 
         tokio::spawn(async move {
             // Smart baseline set instead of blanket forcing (mirrors the daemon):
@@ -2394,12 +2397,27 @@ impl App {
                 session_id: Some(session_id),
                 custom_client: factory_client,
                 cancellation_token: Some(cancel),
-                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
+                // The TUI does not register the script host, so TS plugins are never forced
+                // here even when files exist; the daemon is the interactive path.
+                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config, false)),
                 register_builtins: true,
                 thinking_level: None,
                 role: None,
                 permission,
                 pause_gate: Some(pause_gate),
+                // The TUI drives the loop directly, so it renders dialogs itself
+                // and has no separate panel channel to route them over. Leaving
+                // this `None` falls back to the root's `NullHostUi`: plugins get
+                // a working-but-silent surface where every dialog is declined.
+                ui: None,
+                // Until the TUI grows a real approval panel, a gate would only
+                // ever be able to refuse — which is safe but useless. Keep the
+                // run unprompted and let the daemon own the interactive path.
+                mode: Some(PermissionMode::Yolo),
+                // The TUI is single-run, but a route is still required: the
+                // plugin sidecar refuses calls that cannot be attributed.
+                route: Some(run_route),
+                policy: None,
             };
             if let Some(role) = active_role {
                 options = options.with_role(role);
@@ -2492,8 +2510,8 @@ impl App {
         // Prompt-cache warming: enabled only when the model declares both a
         // promptCache lifetime and cost pricing in models.json.
         if let Some(spec) = self.provider_registry.resolve(&model) {
-            config.prompt_cache_warm = spec
-                .prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
+            config.prompt_cache_warm =
+                spec.prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }
         // Capability tier + multi-root jail mirror the host path.
         config.permission = self.permission;

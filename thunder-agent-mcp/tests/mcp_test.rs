@@ -94,6 +94,7 @@ async fn test_mcp_tool_bridge_as_agent_tool() {
         tool_call_id: "call_mcp_1".to_string(),
         turn: 1,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     };
 
     let result = bridge

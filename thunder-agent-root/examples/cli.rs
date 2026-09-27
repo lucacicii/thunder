@@ -66,6 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         role: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
+        ui: None,
+        mode: None,
+        policy: None,
+        route: None,
     };
 
     let mut handle = root.execute(prompt, options).await?;

@@ -1,9 +1,11 @@
-use crate::process::{SidecarConfig, SidecarManager};
+use crate::process::{permission_slot, RunRegistry, SidecarConfig, SidecarManager};
 use crate::tool_bridge::TsToolBridge;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
+use tokio::sync::RwLock;
 use tracing::warn;
 
 pub struct TsScriptPluginEngine {
@@ -11,7 +13,12 @@ pub struct TsScriptPluginEngine {
 }
 
 impl TsScriptPluginEngine {
-    pub async fn create(workspace_dir: PathBuf) -> Option<Self> {
+    /// Boot the sidecar.
+    ///
+    /// `runs` is the shared per-run services registry. The engine holds no
+    /// capability of its own: whatever a plugin can reach is decided, per call,
+    /// by the run that call belongs to.
+    pub async fn create(workspace_dir: PathBuf, runs: RunRegistry) -> Option<Self> {
         if !SidecarManager::is_node_available().await {
             warn!("Node.js runtime not found. TypeScript plugins will be disabled.");
             return None;
@@ -39,7 +46,11 @@ impl TsScriptPluginEngine {
             runner_path,
             plugin_dirs,
             workspace_dir: workspace_dir.clone(),
-            permission: thunder_agent_loop::types::config::Permission::default(),
+            runs,
+            // Test-seam defaults; real RPCs resolve their own run instead.
+            permission: permission_slot(Permission::Bash),
+            host_ui: Arc::new(RwLock::new(None)),
+            tool_invoker: Arc::new(RwLock::new(None)),
         };
 
         let sidecar = SidecarManager::new(config);
@@ -84,6 +95,11 @@ impl TsScriptPluginEngine {
         Arc::clone(&self.sidecar)
     }
 
+    /// The per-run services registry this engine dispatches against.
+    pub fn runs(&self) -> RunRegistry {
+        self.sidecar.runs()
+    }
+
     pub async fn reload(&self, path: Option<PathBuf>) {
         self.sidecar.reload(path).await;
     }
@@ -111,15 +127,22 @@ impl TsScriptPluginEngine {
         }
     }
 
+    /// Broadcast a lifecycle event.
+    ///
+    /// `route` is forwarded because `onEvent` receives a full plugin context:
+    /// a plugin that calls `ctx.exec()` from an event handler must be authorised
+    /// against its own run, not refused for want of an identifier.
     pub async fn dispatch_event(
         &self,
         event: &ObservedEvent,
         session_id: &str,
+        route: Option<&str>,
         workspace_dir: Option<&PathBuf>,
     ) {
         if let Ok(event_json) = serde_json::to_value(event) {
             let ctx_json = serde_json::json!({
                 "sessionId": session_id,
+                "route": route,
                 "workspaceDir": workspace_dir.map(|p| p.to_string_lossy().to_string()),
             });
             self.sidecar.dispatch_event(event_json, ctx_json).await;

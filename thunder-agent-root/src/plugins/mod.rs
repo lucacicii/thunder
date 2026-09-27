@@ -18,4 +18,4 @@ pub use script_plugin::ScriptPlugin;
 #[cfg(feature = "skills")]
 pub use skills::SkillsPlugin;
 #[cfg(feature = "conversation")]
-pub use standard::{baseline_forced_plugins, StandardHostBuilder};
+pub use standard::{baseline_forced_plugins, has_ts_plugins, StandardHostBuilder};

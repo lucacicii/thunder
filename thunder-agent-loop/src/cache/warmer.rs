@@ -62,7 +62,10 @@ pub struct PromptCacheWarmSettings {
     /// `false` when replaying with `max_tokens = 1` would change the cached
     /// prefix key (Anthropic budget-derived thinking derives `budget_tokens`
     /// from `max_tokens`, and the budget is part of the cache key).
-    #[serde(default = "replay_safe_default", skip_serializing_if = "is_replay_safe")]
+    #[serde(
+        default = "replay_safe_default",
+        skip_serializing_if = "is_replay_safe"
+    )]
     pub replay_safe: bool,
 }
 
@@ -81,7 +84,9 @@ pub fn warming_delay(ttl: Duration) -> Option<Duration> {
     if ttl_ms <= 10_000 {
         return None;
     }
-    Some(Duration::from_millis((ttl_ms * 9 / 10).min(ttl_ms - 10_000).max(1)))
+    Some(Duration::from_millis(
+        (ttl_ms * 9 / 10).min(ttl_ms - 10_000).max(1),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,7 +115,11 @@ pub fn decide_warming(
     let warm_cost = prompt_tokens as f64 * read / 1_000_000.0;
     let miss_rate = if write > 0.0 { write } else { input };
     let miss_cost = prompt_tokens as f64 * (miss_rate - read).max(0.0) / 1_000_000.0;
-    let probability = if idle { IDLE_CONTINUATION_PROBABILITY } else { 1.0 };
+    let probability = if idle {
+        IDLE_CONTINUATION_PROBABILITY
+    } else {
+        1.0
+    };
     let expected = probability * miss_cost - warm_cost;
     let decision = if expected >= MIN_EXPECTED_SAVINGS_USD {
         CacheWarmDecision::Warm
@@ -273,7 +282,9 @@ async fn warm_loop(
         match client.stream_chat(options, token.clone()).await {
             Ok(rx) => drain_replay(rx, &token).await,
             // Cache warming is best-effort and must not affect anything else.
-            Err(err) => tracing::warn!(session_id = %snapshot.session_id, error = %err, "cache warm: replay request failed"),
+            Err(err) => {
+                tracing::warn!(session_id = %snapshot.session_id, error = %err, "cache warm: replay request failed")
+            }
         }
         if token.is_cancelled() {
             return;
@@ -365,7 +376,10 @@ mod tests {
         assert_eq!(d, CacheWarmDecision::Warm);
         // Same prompt while idle: 0.15 × $0.1725 − $0.015 < $0.05 → stop.
         let (d, expected) = decide_warming(50_000, true, &s);
-        assert_eq!(d, CacheWarmDecision::Stop("expected savings below threshold"));
+        assert_eq!(
+            d,
+            CacheWarmDecision::Stop("expected savings below threshold")
+        );
         assert!(expected < MIN_EXPECTED_SAVINGS_USD);
         // A huge prompt stays worth warming even idle.
         let (d, _) = decide_warming(500_000, true, &s);

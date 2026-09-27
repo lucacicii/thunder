@@ -16,6 +16,7 @@
 - **角色权限对齐（Permission Enforcement）**：插件上下文（`PluginContext`）提供的能力与当前任务的角色权限档位严格绑定：
   - 在只读角色（`Permission::Read`）下，插件调用 `ctx.fs.writeFile()` 或 `ctx.exec()` 会被直接拦截拒绝，杜绝插件成为越权旁路。
 - **无缝 AgentTool 桥接**：TypeScript 插件中导出的函数自动转换为 Rust 端的 `AgentTool`，无缝供 `thunder-agent-loop` 调度调用。
+- **宿主能力直通**：`ctx.ui`（select / confirm / input / editor / notify / setStatus）向宿主请求弹窗；`ctx.callTool` 调用宿主已注册的工具。二者都**经过宿主代理**，不绕过任何策略层（详见下方「安全边界」）。
 
 ---
 
@@ -58,6 +59,42 @@ Rust 宿主通过异步 Stdio 与 `runner/host.mjs` 维持长连接，通信采�
 - `reload`：文件修改后触发自动重新加载与清单增量同步。
 
 ---
+
+## 🔐 安全边界
+
+插件层是体系里护栏最少的一层，因此所有特权都必须由宿主代理，插件不得绕过。
+
+| 能力 | 走哪条路 | 约束 |
+|------|---------|------|
+| `ctx.exec()` / `ctx.fs.*` | 侧车 → Rust RPC | 继承**当前 run** 的能力档位（`SidecarConfig::permission` 是共享 slot，每次 `on_init` 覆写），路径受 workspace jail 限制 |
+| `ctx.ui.*` | 侧车 → Rust → 客户端 | 线上恒为 `source: "plugin"`，客户端**不得**把插件弹窗的答复当作授权决定 |
+| `ctx.callTool()` | 侧车 → Rust → **完整 onion** | 派发走与模型调用**同一条** pipeline：档位、路径 jail、事务、审批门全部生效；被询问时弹窗会显示请求方插件名 |
+| 审批 | `ApprovalGate`（`PermissionGuard` 之内） | 一律 fail-closed：无面板 / 超时 / 用户拒绝 → 拒绝，并以「什么都没发生」的 ground truth 回灌模型 |
+
+`pluginId` 由 Node 侧随请求带上：侧车是多插件共用一条通道，只有它知道是谁在问。
+**没有归属信息的插件调用与模型调用无法区分**，那等于给了一个可以伪装成助手的提权通道。
+
+### 并发隔离
+
+侧车是**一个** Node 进程，服务所有并发 run。因此它自身不持有任何能力：能力按
+「本次调用属于哪个 run」查表获得（`RunRegistry`，键是 tool call 上的 `route`）。
+
+| 服务 | 为什么必须按 run 隔离 |
+|------|---------------------|
+| 能力档位 | 否则先启动的 run 会被后启动的 run 改写权限 |
+| workspace root | invoker 就是**整条 pipeline**，带着该 run 的 workspace 与路径 jail —— 串线就是跨 workspace 写入 |
+| 宿主 UI | 否则弹窗会被路由到另一个任务 |
+| tool invoker | 否则 A 的插件调用会派发进 B 的 pipeline |
+
+因此每个反向 RPC 都必须带 `route`。**没有 `route`、或 `route` 指向已结束的 run，一律拒绝**，
+绝不回退到「某个 run 的权限」。
+
+两阶段握手：宿主先派发 `on_init`（此时 agent 尚未存在，只能给出身份与策略），
+待所有工具注册完成、pipeline 定型后再派发 `on_run_ready`（此时才能交出 invoker）。
+注册表有容量上限，宿主崩溃导致 `on_finish` 未执行时按先进先出淘汰 —— 淘汰的后果是**拒绝**，绝不是放宽。
+
+`route` 由宿主在每次 `execute()` 时生成（daemon 传 `task_id`，便于面板日志对照）；
+同一 session 的多个 run 也不会重号。
 
 ## 📄 开源协议
 

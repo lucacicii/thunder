@@ -108,10 +108,20 @@ impl StandardHostBuilder {
 /// Convenience: the plugin IDs a host should force-active for a normal run.
 ///
 /// Mirrors the assembly above so the *forced* set and the *registered* set
-/// cannot drift apart. `mcp` is included only when the workspace actually
-/// configures servers — forcing it otherwise is pure overhead.
+/// cannot drift apart. Two plugins are conditional:
+///
+/// * `mcp` — only when the workspace actually configures servers;
+/// * `script_plugin` — only when a loadable plugin file exists.
+///
+/// Both are opt-in by design rather than an oversight. Selecting a plugin
+/// dispatches `on_init`, and the script host spawns a Node process on first use,
+/// so forcing it unconditionally would tax every user who has no plugins. The
+/// flip side is worse: a user who *has* plugins must not silently not get them.
 #[cfg(feature = "conversation")]
-pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
+pub fn baseline_forced_plugins(
+    workspace_has_mcp_config: bool,
+    workspace_has_ts_plugins: bool,
+) -> Vec<String> {
     let mut ids = vec!["conversation".to_string()];
     #[cfg(feature = "skills")]
     {
@@ -120,5 +130,34 @@ pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
     if workspace_has_mcp_config {
         ids.push("mcp".to_string());
     }
+    if workspace_has_ts_plugins {
+        ids.push("script_plugin".to_string());
+    }
     ids
+}
+
+/// Whether any single-file plugin exists to load.
+///
+/// Global scope (`~/.thunder/plugins`) plus the workspace scope, mirroring the
+/// sidecar's own discovery order. Two directory reads, cheap enough per run.
+pub fn has_ts_plugins(workspace_dir: Option<&std::path::Path>) -> bool {
+    fn any_plugin(dir: std::path::PathBuf) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|e| {
+            e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && matches!(
+                    e.path().extension().and_then(|x| x.to_str()),
+                    Some("ts") | Some("js")
+                )
+        })
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        if any_plugin(home.join(".thunder").join("plugins")) {
+            return true;
+        }
+    }
+    workspace_dir.is_some_and(|ws| any_plugin(ws.join(".arp").join("plugins")))
 }

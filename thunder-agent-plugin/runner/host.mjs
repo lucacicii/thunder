@@ -9,6 +9,7 @@
  *   - Capability B: Context injection (systemPrompt)
  *   - Capability C: Dynamic tools (tools)
  *   - SDK Context: ctx.fs, ctx.exec, ctx.callTool (with cycle guard & max depth 3)
+ *   - SDK UI: ctx.ui.select/confirm/input/editor/notify/setStatus (host-mediated)
  *   - Blue-Green Hot-Reload: shadow compilation, syntax error immunity, atomic swap
  */
 
@@ -181,6 +182,14 @@ function shadowEvaluatePlugin(filePath) {
 // ---------------------------------------------------------------------------
 
 function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
+  // Every reverse RPC carries the call's `route`. The sidecar is one process
+  // shared by all concurrent runs, and it authorises a call against *that run's*
+  // tier, workspace, UI and tool pipeline. A call with no route is refused, so
+  // this is load-bearing rather than bookkeeping: it is what stops one run's
+  // plugin from spending another run's authority.
+  const route = turnCtx.route ?? null;
+  const rpc = (method, params) => callRust(method, { ...(params || {}), route });
+
   return {
     pluginId,
     workspaceDir: turnCtx.workspaceDir || process.cwd(),
@@ -194,15 +203,48 @@ function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
     // Safe FS delegated to Rust's Onion Middleware (.arp/tmp atomic write + Path Jail)
     fs: {
       writeFile: async (relPath, content) => {
-        return callRust("fs_write_file", { path: relPath, content });
+        return rpc("fs_write_file", { path: relPath, content });
       },
       readFile: async (relPath) => {
-        return callRust("fs_read_file", { path: relPath });
+        return rpc("fs_read_file", { path: relPath });
       }
     },
     // Safe Shell command delegated to Rust's PGID tree-killing executor
     exec: async (command, options = {}) => {
-      return callRust("exec_bash", { command, cwd: options.cwd });
+      return rpc("exec_bash", { command, cwd: options.cwd });
+    },
+    // User interaction, mediated by the host (never rendered here).
+    //
+    // Every call is labelled `source: "plugin"` on the wire, so a host panel can
+    // render plugin prompts distinctly from its own permission prompts and never
+    // mistake an answer here for an authorisation decision. Dialogs are
+    // fail-closed: an absent panel, a dismissal, or the 60s deadline all resolve
+    // to null / false, which callers must read as "no".
+    ui: {
+      select: async (title, options) => {
+        const res = await rpc("ui_select", { title, options });
+        return res?.value ?? null;
+      },
+      confirm: async (title, message) => {
+        const res = await rpc("ui_confirm", { title, message });
+        return res?.confirmed === true;
+      },
+      input: async (title, placeholder) => {
+        const res = await rpc("ui_input", { title, placeholder });
+        return res?.value ?? null;
+      },
+      editor: async (title, prefill) => {
+        const res = await rpc("ui_editor", { title, prefill });
+        return res?.value ?? null;
+      },
+      notify: (message, level = "info") => {
+        // Fire-and-forget: the reply is discarded, and a closed channel must not
+        // take the tool down with it.
+        rpc("ui_notify", { message, level }).catch(() => {});
+      },
+      setStatus: (key, text) => {
+        rpc("ui_set_status", { key, text }).catch(() => {});
+      },
     },
     // Inter-plugin tool calling with Cycle Guard & Max Depth 3
     callTool: async (toolName, toolArgs) => {
@@ -228,8 +270,17 @@ function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
         }
       }
 
-      // If not a local TS tool, delegate to Rust to invoke built-in or MCP tools
-      return callRust("call_tool", { tool: toolName, args: toolArgs });
+      // If not a local TS tool, delegate to the host, which dispatches it
+      // through the same pipeline (and therefore the same guards and approval
+      // gate) a model-initiated call goes through. `pluginId` rides along so the
+      // host can attribute the call: an unattributed plugin call would be
+      // indistinguishable from one the assistant made.
+      return rpc("call_tool", {
+        tool: toolName,
+        args: toolArgs,
+        pluginId: pluginId,
+        sessionId: turnCtx.sessionId || null
+      });
     }
   };
 }
@@ -402,6 +453,8 @@ rl.on("line", async (line) => {
       for (const plugin of activePlugins.values()) {
         if (typeof plugin.systemPrompt === "function") {
           try {
+            // `context` may carry a `route`, so a `systemPrompt` that calls
+            // `ctx.exec()` is authorised like any other plugin call.
             const ctx = createPluginContext(plugin.id, msg.context || {});
             const text = await plugin.systemPrompt(ctx);
             if (typeof text === "string" && text.trim()) {

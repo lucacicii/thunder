@@ -162,6 +162,7 @@ async fn test_skill_tools_execution() {
         tool_call_id: "call_1".to_string(),
         turn: 0,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     };
 
     // 1. List skills

@@ -47,11 +47,16 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"ping","id":"req-1"}
 {"method":"list_models","id":"req-2"}
 {"method":"list_roles","id":"req-3","workspace_dir":"/path/to/repo"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan"}
+{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan","mode":"ask"}
 {"method":"cancel_task","id":"req-5","task_id":"task-1"}
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}
 {"method":"answer_question","id":"req-8","question_id":"task-1:q1","answers":{"要重构哪一层？":"渲染层"}}
+{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
+{"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":false}
+{"method":"answer_ui","id":"req-11","request_id":"ui_1234_3_101","cancelled":true}
+{"method":"set_permission_mode","id":"req-12","session_id":"sess-001","mode":"accept_edits"}
+{"method":"get_permission_state","id":"req-13","session_id":"sess-001"}
 ```
 
 ### 2. 守护进程输出（STDOUT）
@@ -63,9 +68,136 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 - **任务成功完成**：`{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
 - **任务失败**：`{"type":"task_failed","task_id":"task-1","error":"..."}`
 
+### 3. 通用弹窗子协议（ui_request / answer_ui）
+
+与 `ask_user_question` 并列的第二类人机交互，语义对齐 pi 的 `extension_ui_request`。
+**只传数据，不传组件** —— 同一套协议可被 TUI、Electron 面板或无头宿主复用。
+
+守护进程 → 宿主（阻塞，直到 `answer_ui` 抵达或 `timeout_ms` 超时）：
+
+```json
+{"type":"ui_request","request_id":"ui_1234_1_99","task_id":"task-1","session_id":"sess-001",
+ "source":"host","ui":"select","title":"允许执行 rm -rf build/？","options":["允许一次","总是允许","拒绝"],"timeout_ms":60000}
+{"type":"ui_request","request_id":"ui_1234_2_100","source":"host","ui":"confirm","title":"Proceed?","message":"将写入 3 个文件"}
+{"type":"ui_request","request_id":"...","source":"host","ui":"input","title":"输入值","placeholder":"..."}
+{"type":"ui_request","request_id":"...","source":"host","ui":"editor","title":"编辑","prefill":"..."}
+```
+
+宿主 → 守护进程（`request_id` 必须原样回传）：
+
+```json
+{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
+{"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":true}
+{"method":"answer_ui","id":"req-11","request_id":"ui_...","cancelled":true}
+```
+
+响应体固定回 `{"request_id":"...","delivered":true|false}`；`delivered:false` 表示该
+`request_id` 未知或已过期（已超时），此时**不应**报错，迟到的答复会被静默丢弃，
+以免落到后续的同名弹窗上。
+
+**`source` 字段是安全相关的**：
+
+| `source` | 含义 | 宿主必须做到 |
+|----------|------|--------------|
+| `host` | 宿主自身发起（如权限审批） | 使用**插件无法伪造的专用样式**渲染；用户的选择才算授权决定 |
+| `plugin` | 插件发起 | 明确标注插件名；**不得**将其视为授权依据 |
+
+请求 id 由守护进程签发（进程号 + 计数器 + 随机后缀），插件无法自选，因此无法
+伪造或重放一次审批。`request_id` 未出现在 `timeout_ms` 字段时表示无自定义超时，
+守护进程按 60s 兜底。
+
+**超时一律 fail-closed**：超时、面板断开、无人应答，全部解析为“已取消”，
+调用方必须把“已取消”读作“拒绝”。`confirm` 永远不会因为超时而返回 `true`。
+
+其他两类 fire-and-forget 消息（宿主无 UI 时可直接丢弃）：
+
+```json
+{"type":"ui_notice","source":"plugin","message":"Command blocked by user","level":"warning"}
+{"type":"ui_status","key":"my-ext","text":"Turn 3 running..."}
+{"type":"ui_status","key":"my-ext"}
+```
+
+---
+
+## 🔒 审批模式（Approval Mode）
+
+`permission`（能力档位）与 `mode`（审批模式）是**两层正交**的东西，刻意分开：
+
+- **档位 = 能力天花板**。`read` / `write` / `bash`，决定"什么根本不可能"。
+  由宿主注册哪些工具 + `PermissionGuardMiddleware` 强制执行。
+- **模式 = 什么时候必须问人**。见下表。
+
+### 五种模式
+
+| `mode` | 读 | 写 | 执行 shell | 说明 |
+|--------|----|----|-----------|------|
+| `plan` | 允许 | **拒绝** | **拒绝** | 只读，档位被压到 `read`；产出方案后需显式批准才能继续 |
+| `ask` | 允许 | 询问 | 询问 | 经典默认体验 |
+| `accept_edits` | 允许 | 允许 | 询问 | 自动接受编辑，shell 仍需批准 |
+| `manual` | **询问** | 询问 | 询问 | 每个工具调用都要确认 |
+| `yolo` | 允许 | 允许 | 允许 | 不问。**但档位仍然生效** |
+
+### 三条硬规则
+
+1. **任何模式都不能越权。** `mode` 只能把档位往下压，永远不能往上抬。
+   `{"permission":"read","mode":"yolo"}` 依然是只读 —— 这是设计，不是 bug。
+2. **`yolo` 只是"不问"，不是"给权限"。** 要完整权限请用 `permission: bash` 的角色。
+3. **询问是 fail-closed 的。** 无面板 / 超时 / 用户关闭 → 一律按**拒绝**处理。
+   拒绝会作为**工具结果**回灌给模型（附带"什么都没发生"的 ground truth），
+   而不是抛异常，避免模型以为成功而反复重试。
+
+### 默认值是 `yolo`（即"不询问"）
+
+审批门是 **opt-in** 的。原因很实际：门的语义是 fail-closed，
+无面板宿主上每个弹窗都会被判为"取消"＝"拒绝"。若默认 `ask`，
+升级后所有无面板用户的**每一次写文件、每一条 shell、每一个插件工具**都会被静默拒绝。
+所以默认值保持升级前的行为，审批通过 `role.mode` 或 `run_task.mode` 显式开启。
+
+### 交互弹窗长这样
+
+```json
+{"type":"ui_request","request_id":"ui_...","source":"host","ui":"select",
+ "title":"执行 bash","options":["允许一次","总是允许","拒绝","拒绝并说明原因"],
+ "detail":"rm -rf build/"}
+```
+
+- 弹窗**串行**投递：同一批并行工具调用不会叠出多个框，避免批准错对象。
+- `允许一次` 只对**当前这一次调用**生效；批准结果绑定 `(tool_call_id, 参数哈希)`，
+  参数变了就失效，无法重放。
+- `总是允许` 只在能推导出**窄规则**时出现（如 `git status`、`src/lib.rs`），
+  且规则对 shell 命令做**链接符过滤**：`git status` 永远不会授权
+  `git status && rm -rf /`。插件类工具（参数无可用作用域）**不提供**该选项。
+- `拒绝并说明原因` 会追问一句，原因原文回灌给模型。
+
+### 在哪里生效
+
+审批门插在 onion 中 `PermissionGuardMiddleware` **之内**、`TransactionMiddleware` **之外**：
+
+```text
+PermissionGuardMiddleware   档位天花板 —— 硬拒绝，不弹窗
+  └─ ApprovalGate           审批询问   ← 新增
+       └─ SecurityGuard / ResourceGuard / Transaction / …
+```
+
+档位被拒的调用**根本走不到弹窗**，所以用户无法"批准"绕过档位；
+被拒的调用也**不会创建任何临时文件**。
+
+### 中途切换
+
+```json
+{"method":"set_permission_mode","session_id":"sess-001","mode":"yolo"}
+```
+
+对**下一个工具调用**立即生效，包括已在运行的任务中的调用 —— 模式是每次调用现读的，
+不是在建管线时烤进去的。会话内的"总是允许"规则同样跨轮保留，随会话结束丢弃。
+
+`get_permission_state` 可查看当前模式与已记住的规则。
+
 ---
 
 ## 🔒 角色权限档位
+
+档位与 `mode` 的组合效果见上面的「审批模式」。下面是档位本身：
 
 | 档位 | `read_file` | `write_file` | `bash` | 说明 |
 | :---: | :---: | :---: | :---: | :--- |

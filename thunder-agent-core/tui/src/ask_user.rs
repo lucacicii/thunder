@@ -380,6 +380,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             turn: 1,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
+            ..Default::default()
         }
     }
 
@@ -535,6 +536,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             turn: 1,
             cancellation_token: cancel.clone(),
+            ..Default::default()
         };
 
         let handle = tokio::spawn(async move {

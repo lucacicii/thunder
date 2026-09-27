@@ -162,6 +162,7 @@ mod tests {
             tool_call_id: "call_out_1".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
 
         let res = middleware.handle(&call, &ctx, None, handler).await;
