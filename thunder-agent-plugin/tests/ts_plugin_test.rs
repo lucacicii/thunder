@@ -487,7 +487,6 @@ export default definePlugin({
 async fn plugin_call_tool_reaches_a_registered_tool() {
     use thunder_agent_loop::prelude::*;
     use thunder_agent_loop::tools::executor::ToolExecutor;
-    use thunder_agent_loop::tools::middleware::ApprovalGate;
     use thunder_agent_loop::tools::middleware::ToolPipeline;
     use thunder_agent_loop::tools::registry::ToolRegistry;
 
@@ -524,11 +523,6 @@ export default definePlugin({
     registry.register(Arc::new(
         thunder_agent_loop::tools::builtin::WriteFileTool::default(),
     ));
-    let gate = ApprovalGate::new(
-        SessionPolicy::new(PermissionMode::Yolo),
-        Arc::new(NullHostUi),
-        Permission::Bash,
-    );
     let pipeline = ToolPipeline::configured(
         ws_dir.clone(),
         &[],
@@ -536,7 +530,8 @@ export default definePlugin({
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(gate),
+        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Yolo)),
+        Some(Arc::new(NullHostUi)),
     );
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
     let invoker: Arc<dyn ToolInvoker> = Arc::new(PipelineToolInvoker::new(executor).with_turn(1));

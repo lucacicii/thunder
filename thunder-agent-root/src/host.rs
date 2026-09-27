@@ -10,7 +10,6 @@ use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_agent_loop::tools::builtin::{
     BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
 };
-use thunder_agent_loop::tools::middleware::ApprovalGate;
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::invoke::{
     empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
@@ -361,10 +360,16 @@ impl ThunderRoot {
             .or_else(|| options.role.as_ref().and_then(|r| r.mode))
             .unwrap_or_default();
         let effective_permission = mode.effective(options.permission);
+        // A host-supplied policy is reused across the session (so remembered
+        // rules and a mid-session mode switch survive); a fresh one is created
+        // when the host has none. Either way the policy is authoritative for the
+        // tier: it re-applies the mode's ceiling, so the host cannot forget to
+        // clip it.
         let policy = options
             .policy
             .clone()
-            .unwrap_or_else(|| SessionPolicy::new(mode));
+            .unwrap_or_else(|| SessionPolicy::new(options.permission, mode));
+        policy.set_tier(options.permission).await;
         policy.set_mode(mode).await;
         let ui = options
             .ui
@@ -483,14 +488,10 @@ impl ThunderRoot {
 
         let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
 
-        // The human-approval layer. Installed for every run that has a mode
-        // other than the no-prompt default, so a headless embedder pays nothing
-        // for a gate that can only ever say "yes".
-        if mode != PermissionMode::Yolo {
-            let gate =
-                ApprovalGate::new(Arc::clone(&policy), Arc::clone(&ui), effective_permission);
-            agent = agent.with_approval_gate(gate);
-        }
+        // The judge. Always installed, including in `yolo`: the mode stops the
+        // *prompting*, not the tier check, and one code path for every mode means
+        // there is no configuration in which the ceiling is skipped.
+        agent = agent.with_policy(Arc::clone(&policy), ui.clone());
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);

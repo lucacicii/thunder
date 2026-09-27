@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::middleware::{ApprovalGate, ToolPipeline};
+use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
 
 fn pipeline(tier: Permission, mode: PermissionMode, ws: &std::path::Path) -> ToolPipeline {
@@ -18,7 +18,6 @@ fn pipeline(tier: Permission, mode: PermissionMode, ws: &std::path::Path) -> Too
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(BashTool::default()));
 
-    let gate = ApprovalGate::new(SessionPolicy::new(mode), Arc::new(NullHostUi), tier);
     ToolPipeline::configured(
         ws.to_path_buf(),
         &[],
@@ -26,7 +25,8 @@ fn pipeline(tier: Permission, mode: PermissionMode, ws: &std::path::Path) -> Too
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         tier,
-        Some(gate),
+        Some(SessionPolicy::new(tier, mode)),
+        Some(Arc::new(NullHostUi)),
     )
 }
 
@@ -80,7 +80,9 @@ async fn a_plugin_can_use_the_runs_own_authority() {
 async fn a_plugin_cannot_escalate_past_the_tier() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    // Read-only role. No mode can change that.
+    // Read-only role. No mode can change that, and no mode may reach a dialog
+    // either — the ceiling is checked first, so a user is never offered a choice
+    // the role already decided.
     for mode in PermissionMode::ALL {
         let p = pipeline(Permission::Read, mode, ws);
         let inv = invoker(p, 1);
@@ -94,9 +96,18 @@ async fn a_plugin_cannot_escalate_past_the_tier() {
             .await
             .expect_err("a read-only run must not be writable by a plugin");
         assert!(
-            err.contains("not available in the current role"),
+            err.contains("was not approved"),
             "{} produced: {err}",
             mode.as_str()
+        );
+        assert!(
+            err.contains("read-only"),
+            "{} should say the ceiling was the cause: {err}",
+            mode.as_str()
+        );
+        assert!(
+            err.contains("hostile"),
+            "the plugin must be told who asked: {err}"
         );
         assert!(
             !ws.join("escalated.txt").exists(),
@@ -165,13 +176,6 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let gate = ApprovalGate::new(
-        SessionPolicy::new(PermissionMode::Ask),
-        Arc::new(Recorder {
-            titles: Arc::clone(&titles),
-        }),
-        Permission::Bash,
-    );
     let pipeline = ToolPipeline::configured(
         ws.to_path_buf(),
         &[],
@@ -179,7 +183,10 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(gate),
+        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Ask)),
+        Some(Arc::new(Recorder {
+            titles: Arc::clone(&titles),
+        })),
     );
     let inv = invoker(pipeline, 1);
 
@@ -239,13 +246,6 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let gate = ApprovalGate::new(
-        SessionPolicy::new(PermissionMode::Ask),
-        Arc::new(Recorder {
-            titles: Arc::clone(&titles),
-        }),
-        Permission::Bash,
-    );
     let pipeline = ToolPipeline::configured(
         ws.to_path_buf(),
         &[],
@@ -253,7 +253,10 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(gate),
+        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Ask)),
+        Some(Arc::new(Recorder {
+            titles: Arc::clone(&titles),
+        })),
     );
 
     let call = ToolCall::new_function("m1", "bash", r#"{"command":"echo hi"}"#);

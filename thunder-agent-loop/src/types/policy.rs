@@ -1,16 +1,28 @@
-//! Permission *policy*: the prompting layer that sits on top of the capability
-//! *tier*.
+//! Permission *policy*: the single place a tool call is judged.
 //!
-//! # The two-layer model
+//! # One decision, many enforcers
 //!
-//! [`Permission`] (in [`crate::types::config`]) answers **"what is possible at
-//! all"**. It is a hard ceiling, enforced by which tools the host registers and
-//! by `PermissionGuardMiddleware`. Nothing in this module may widen it.
+//! [`SessionPolicy::decide`] is the only function in the system that answers
+//! "may this call run?". Everything else — the host choosing which tools to
+//! register, the onion layer that refuses, the TypeScript sidecar's RPC gate —
+//! asks it and acts on the verdict.
 //!
-//! [`PermissionMode`] answers **"what still needs a human"**. It can only
-//! *narrow* what the tier allows: `Plan` lowers the ceiling to read-only, and
-//! `Yolo` merely stops asking. A read-only role stays read-only in every mode —
-//! there is deliberately no mode that escalates privilege.
+//! It used to be otherwise. Permission lived in four places across three
+//! crates, with two independent tool-name-to-capability tables that could
+//! disagree, and the plugin RPC path consulted only the static tier. A verdict
+//! that disagreed with the layer enforcing it was a security bug waiting for a
+//! new tool name.
+//!
+//! # What the policy holds
+//!
+//! * [`Permission`] — the capability *ceiling*: what is possible at all. A hard
+//!   limit; nothing in this module may widen it.
+//! * [`PermissionMode`] — what still needs a human. It can only *narrow*:
+//!   `Plan` clips the ceiling to read-only, and `Yolo` merely stops asking.
+//! * [`AllowRule`]s — what the user has already said yes to this session.
+//!
+//! A read-only role stays read-only in every mode. There is deliberately no
+//! mode that escalates privilege.
 //!
 //! ```
 //! use thunder_agent_loop::prelude::*;
@@ -28,8 +40,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[cfg(test)]
 use crate::types::config::Permission;
+use crate::types::message::ToolCall;
 
 /// How intrusive the agent may be before it stops asking.
 ///
@@ -162,6 +174,19 @@ impl ToolEffect {
     pub fn is_prompt_worthy(self) -> bool {
         !matches!(self, ToolEffect::Read)
     }
+
+    /// The ceiling this effect requires.
+    ///
+    /// [`ToolEffect::Other`] demands [`Permission::Write`], not `Bash`: a tool
+    /// nobody has classified should not be able to shell out merely by being
+    /// unknown. `Exec` is the only effect that needs the top tier.
+    pub fn required_tier(self) -> Permission {
+        match self {
+            ToolEffect::Read => Permission::Read,
+            ToolEffect::Write | ToolEffect::Other => Permission::Write,
+            ToolEffect::Exec => Permission::Bash,
+        }
+    }
 }
 
 /// Options offered by the approval dialog, in display order.
@@ -182,14 +207,21 @@ pub struct ApprovalRequest {
     /// Binds an answer to this exact call.
     ///
     /// A dialog is answered out-of-band, so an approval must not be replayable
-    /// onto different arguments. The gate verifies the hash before honouring an
-    /// "allow always" rule and before executing.
+    /// onto different arguments. The caller verifies the hash before honouring
+    /// an "allow always" rule and before executing.
     pub call_hash: String,
+    /// Who is asking. A plugin-initiated request must never be presentable as
+    /// something the assistant asked for.
+    pub caller: Caller,
 }
 
-/// The gate's verdict.
+/// The verdict on a call.
+///
+/// Returned by [`SessionPolicy::decide`] and acted on by whichever layer is
+/// enforcing. Three states because "refuse now" and "ask a human" are
+/// genuinely different: the first needs no UI, the second does.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub enum Verdict {
     /// Run it.
     Allow,
     /// Refuse without asking. `reason` is surfaced to the model verbatim.
@@ -293,27 +325,88 @@ impl AllowRule {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SessionInner {
+    /// The run's effective capability ceiling: the role's tier, clipped by the
+    /// mode. Per-run, not per-session: a later run may carry a different role.
+    /// Held here rather than passed alongside, so a verdict can never be
+    /// computed against a tier from a different subsystem.
+    tier: Permission,
+    /// The role's own tier, before the mode clipped it.
+    ///
+    /// Kept so switching out of `plan` can restore it; without this, a
+    /// `plan` → `ask` switch would leave the run stuck at read-only.
+    role_tier: Permission,
     mode: PermissionMode,
     rules: Vec<AllowRule>,
 }
 
-/// Session-scoped approval state: the live mode plus what the user has already
-/// said yes to.
+/// Who is asking for a call to run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "caller", rename_all = "snake_case")]
+pub enum Caller {
+    /// The model asked, in a turn the user is watching.
+    Model,
+    /// A plugin asked, on its own initiative. Surfaces to the user in approval
+    /// dialogs so an approval of the assistant's request is never mistaken for
+    /// an approval of a plugin's.
+    Plugin(String),
+}
+
+impl Caller {
+    /// The plugin id, when the caller is one.
+    pub fn plugin_id(&self) -> Option<&str> {
+        match self {
+            Caller::Plugin(id) => Some(id.as_str()),
+            Caller::Model => None,
+        }
+    }
+}
+
+/// Session-scoped policy: the live tier, mode, and what the user has already
+/// agreed to.
 ///
 /// Shared by reference across every run of a session so that "always allow"
 /// survives a turn, and so that flipping the mode mid-session takes effect on
-/// the very next tool call.
-#[derive(Debug, Default)]
+/// the very next tool call. The tier is refreshed per run.
+#[derive(Debug)]
 pub struct SessionPolicy {
     inner: Mutex<SessionInner>,
 }
 
+impl Default for SessionPolicy {
+    /// The historical, unconstrained behaviour: full tier, no prompting.
+    ///
+    /// Hosts construct with [`SessionPolicy::new`] so the role tier is explicit;
+    /// this exists for the pipeline's own fallback. A `Default` that quietly
+    /// under-constrains would be the wrong implicit behaviour for a security
+    /// type, so it errs toward the *wider* of the two rather than inventing a
+    /// middle ground.
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(SessionInner {
+                tier: Permission::Bash,
+                role_tier: Permission::Bash,
+                mode: PermissionMode::Yolo,
+                rules: Vec::new(),
+            }),
+        }
+    }
+}
+
 impl SessionPolicy {
-    pub fn new(mode: PermissionMode) -> Arc<Self> {
+    /// Build a policy for a role's tier and a mode.
+    ///
+    /// The mode's ceiling is applied *here* rather than left to the caller. It
+    /// used to be the host's job, which meant any caller that forgot to clip got
+    /// a `plan` mode that restricted nothing — the most dangerous possible
+    /// reading of "plan". Clipping at the one place that stores the tier makes
+    /// that unrepresentable.
+    pub fn new(tier: Permission, mode: PermissionMode) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(SessionInner {
+                tier: mode.effective(tier),
+                role_tier: tier,
                 mode,
                 rules: Vec::new(),
             }),
@@ -325,11 +418,28 @@ impl SessionPolicy {
         self.inner.lock().await.mode
     }
 
-    /// Flip the mode. Takes effect on the next tool call — the approval gate
-    /// reads it per call rather than baking it in, which is what makes a
-    /// mid-session switch possible.
+    /// Flip the mode, re-applying its ceiling to the stored tier.
+    ///
+    /// Takes effect on the next tool call — the guard reads it per call rather
+    /// than baking it in, which is what makes a mid-session switch possible.
+    /// Switching *into* `plan` must lower the ceiling, and switching out of it
+    /// must restore the role's own tier, so the role tier is kept alongside
+    /// rather than overwritten.
     pub async fn set_mode(&self, mode: PermissionMode) {
-        self.inner.lock().await.mode = mode;
+        let mut guard = self.inner.lock().await;
+        guard.mode = mode;
+        guard.tier = mode.effective(guard.role_tier);
+    }
+
+    /// Set the run's capability ceiling, clipped by the current mode.
+    ///
+    /// Written on every run, since the role may differ between runs of one
+    /// session. Narrowing takes effect immediately: [`SessionPolicy::decide`]
+    /// checks the tier before the remembered rules, so tightening the ceiling
+    /// cannot be undone by a rule recorded when it was wider.
+    pub async fn set_tier(&self, tier: Permission) {
+        let mut guard = self.inner.lock().await;
+        guard.tier = guard.mode.effective(tier);
     }
 
     /// Remember an "always allow" rule. Duplicate rules are collapsed.
@@ -350,24 +460,51 @@ impl SessionPolicy {
         self.inner.lock().await.rules.clone()
     }
 
-    /// Decide what to do with a call. Pure with respect to the filesystem: it
-    /// never prompts, it only says whether a prompt is required.
-    pub async fn decide(&self, tool: &str, args: &serde_json::Value) -> Decision {
+    /// Decide what to do with a call. The single judgement point.
+    ///
+    /// Pure with respect to the filesystem: it decides, it never prompts and
+    /// never executes. Asking the human is the caller's job, so that a host
+    /// without a UI can still enforce the verdict.
+    ///
+    /// Order matters, and it is the whole security property:
+    ///
+    /// 1. the **tier** is checked first and returns a hard `Deny` — a mode can
+    ///    only narrow, so no remembered rule and no prompt can reach a call the
+    ///    role forbids;
+    /// 2. remembered rules are consulted next, but only for a call the tier
+    ///    already permits, so a rule recorded under a wider role cannot
+    ///    resurrect a capability a later, tighter run no longer has;
+    /// 3. only then does the mode decide whether a human is needed.
+    ///
+    /// The tier is the only check that runs before the rules, and the order is
+    /// load-bearing: a remembered rule is a record of what the user *did* agree
+    /// to, and agreement cannot survive a narrowing of the ceiling. Checking
+    /// rules first would let "always allow bash(git status)" keep working in a
+    /// read-only run.
+    pub async fn decide(&self, call: &ToolCall, caller: &Caller) -> Verdict {
+        let tool = call.function.name.as_str();
+        // A provider hands arguments over as a JSON *string*. An unparseable one
+        // must not become an empty object that quietly matches a narrow rule.
+        let args: serde_json::Value =
+            serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
+
         let guard = self.inner.lock().await;
         let mode = guard.mode;
         let effect = ToolEffect::of(tool);
 
-        // Remembered rules win over prompting — but only for the tier that is
-        // already in force, so a rule recorded under a wider role cannot
-        // resurrect a capability a later, tighter run no longer has.
-        if guard.rules.iter().any(|r| r.matches(tool, args)) {
-            return Decision::Allow;
+        // 1. The ceiling. Checked before anything else can say yes.
+        if !tier_allows(guard.tier, effect) {
+            return Verdict::Deny {
+                reason: deny_reason(effect, guard.tier),
+            };
         }
 
-        if mode == PermissionMode::Yolo {
-            return Decision::Allow;
+        // 2. What the user already agreed to, this session.
+        if guard.rules.iter().any(|r| r.matches(tool, &args)) {
+            return Verdict::Allow;
         }
 
+        // 3. Does this mode want a human for it?
         let needs_ask = match mode {
             PermissionMode::Manual => true,
             PermissionMode::Ask | PermissionMode::Plan => effect.is_prompt_worthy(),
@@ -376,11 +513,10 @@ impl SessionPolicy {
         };
 
         if !needs_ask {
-            return Decision::Allow;
+            return Verdict::Allow;
         }
 
-        let detail = describe_call(tool, args);
-        Decision::Ask(ApprovalRequest {
+        Verdict::Ask(ApprovalRequest {
             tool: tool.to_string(),
             title: match effect {
                 ToolEffect::Exec => format!("执行 {tool}"),
@@ -388,20 +524,57 @@ impl SessionPolicy {
                 ToolEffect::Read => format!("读取 {tool}"),
                 ToolEffect::Other => format!("运行 {tool}"),
             },
-            detail,
+            detail: describe_call(&args),
             options: vec![
                 ALLOW_ONCE.to_string(),
                 ALLOW_ALWAYS.to_string(),
                 DENY.to_string(),
                 DENY_WITH_REASON.to_string(),
             ],
-            call_hash: call_hash(tool, args),
+            call_hash: call_hash(tool, &args),
+            caller: caller.clone(),
         })
+    }
+
+    /// The tier currently in force, for hosts that register tools from it.
+    pub async fn tier(&self) -> Permission {
+        self.inner.lock().await.tier
+    }
+}
+
+/// Whether this tier permits an effect.
+///
+/// The replacement for a second tool-name match that used to live on
+/// [`Permission`]. Going through [`ToolEffect`] means a tool nobody classified
+/// needs [`Permission::Write`], where the old table let it through.
+pub fn tier_allows(tier: Permission, effect: ToolEffect) -> bool {
+    tier >= effect.required_tier()
+}
+
+/// Why a call was refused, phrased for the model.
+///
+/// One place so the wording cannot drift between the layer that enforces the
+/// verdict and the layer that asked for it.
+pub fn deny_reason(effect: ToolEffect, tier: Permission) -> String {
+    match effect {
+        ToolEffect::Read => format!("this run is read-only (ceiling: {})", tier.describe()),
+        ToolEffect::Write => format!(
+            "this run may not modify the workspace (ceiling: {})",
+            tier.describe()
+        ),
+        ToolEffect::Exec => format!(
+            "this run may not run shell commands (ceiling: {})",
+            tier.describe()
+        ),
+        ToolEffect::Other => format!(
+            "an unclassified tool needs write access, which this run does not have (ceiling: {})",
+            tier.describe()
+        ),
     }
 }
 
 /// A short, human-readable summary of what is being authorised.
-pub fn describe_call(_tool: &str, args: &serde_json::Value) -> String {
+pub fn describe_call(args: &serde_json::Value) -> String {
     if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
         return command.chars().take(200).collect();
     }
@@ -435,9 +608,28 @@ pub fn call_hash(tool: &str, args: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::message::ToolCall;
 
     fn args(v: serde_json::Value) -> serde_json::Value {
         v
+    }
+
+    fn call(tool: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall::new_function("c1", tool, args.to_string())
+    }
+
+    const MODEL: Caller = Caller::Model;
+
+    /// Runs `f` on a fresh single-threaded runtime.
+    ///
+    /// The policy is async, and a runtime-inside-a-runtime test panics, so each
+    /// case gets its own.
+    fn rt<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
     }
 
     #[test]
@@ -504,117 +696,150 @@ mod tests {
         assert_eq!(ToolEffect::of("bash"), ToolEffect::Exec);
     }
 
+    /// The gap that made the two old tables a liability: `apply_patch` mutates
+    /// the workspace but was absent from `Permission::allows_builtin`, which
+    /// returned `true` for unknown names. A read-only run could patch files.
+    #[test]
+    fn an_unclassified_mutating_tool_needs_write_access() {
+        assert_eq!(ToolEffect::of("apply_patch"), ToolEffect::Write);
+        assert!(!tier_allows(
+            Permission::Read,
+            ToolEffect::of("apply_patch")
+        ));
+        assert!(tier_allows(
+            Permission::Write,
+            ToolEffect::of("apply_patch")
+        ));
+    }
+
+    /// An unknown tool is treated as write-worthy, never as shell-worthy: being
+    /// unclassified must not be a way to reach the top tier.
+    #[test]
+    fn an_unclassified_tool_does_not_earn_the_shell_tier() {
+        let other = ToolEffect::of("mystery_tool");
+        assert_eq!(other, ToolEffect::Other);
+        assert_eq!(other.required_tier(), Permission::Write);
+        assert!(!tier_allows(Permission::Read, other));
+        assert!(tier_allows(Permission::Write, other));
+    }
+
     #[test]
     fn ask_mode_prompts_for_writes_and_shell_only() {
-        let policy = SessionPolicy::new(PermissionMode::Ask);
-        let read = args(serde_json::json!({"path": "a.txt"}));
-        let write = args(serde_json::json!({"path": "a.txt", "content": "x"}));
-        let shell = args(serde_json::json!({"command": "ls"}));
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let read = call("read_file", args(serde_json::json!({"path": "a.txt"})));
+            let write = call(
+                "write_file",
+                args(serde_json::json!({"path": "a.txt", "content": "x"})),
+            );
+            let shell = call("bash", args(serde_json::json!({"command": "ls"})));
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
+            assert_eq!(policy.decide(&read, &MODEL).await, Verdict::Allow);
             assert!(matches!(
-                policy.decide("read_file", &read).await,
-                Decision::Allow
+                policy.decide(&write, &MODEL).await,
+                Verdict::Ask(_)
             ));
             assert!(matches!(
-                policy.decide("write_file", &write).await,
-                Decision::Ask(_)
-            ));
-            assert!(matches!(
-                policy.decide("bash", &shell).await,
-                Decision::Ask(_)
+                policy.decide(&shell, &MODEL).await,
+                Verdict::Ask(_)
             ));
         });
     }
 
     #[test]
     fn accept_edits_silences_writes_but_not_shell() {
-        let policy = SessionPolicy::new(PermissionMode::AcceptEdits);
-        let write = args(serde_json::json!({"path": "a.txt", "content": "x"}));
-        let shell = args(serde_json::json!({"command": "ls"}));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::AcceptEdits);
+            let write = call(
+                "write_file",
+                args(serde_json::json!({"path": "a.txt", "content": "x"})),
+            );
+            let shell = call("bash", args(serde_json::json!({"command": "ls"})));
+            assert_eq!(policy.decide(&write, &MODEL).await, Verdict::Allow);
             assert!(matches!(
-                policy.decide("write_file", &write).await,
-                Decision::Allow
-            ));
-            assert!(matches!(
-                policy.decide("bash", &shell).await,
-                Decision::Ask(_)
+                policy.decide(&shell, &MODEL).await,
+                Verdict::Ask(_)
             ));
         });
     }
 
     #[test]
     fn manual_mode_asks_even_for_reads() {
-        let policy = SessionPolicy::new(PermissionMode::Manual);
-        let read = args(serde_json::json!({"path": "a.txt"}));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Manual);
+            let read = call("read_file", args(serde_json::json!({"path": "a.txt"})));
             assert!(matches!(
-                policy.decide("read_file", &read).await,
-                Decision::Ask(_)
+                policy.decide(&read, &MODEL).await,
+                Verdict::Ask(_)
             ));
         });
     }
 
     #[test]
     fn yolo_asks_nothing() {
-        let policy = SessionPolicy::new(PermissionMode::Yolo);
-        let shell = args(serde_json::json!({"command": "rm -rf /"}));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            assert!(matches!(
-                policy.decide("bash", &shell).await,
-                Decision::Allow
-            ));
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Yolo);
+            let shell = call("bash", args(serde_json::json!({"command": "rm -rf /"})));
+            assert_eq!(policy.decide(&shell, &MODEL).await, Verdict::Allow);
+        });
+    }
+
+    /// The order of tier and rules is the security property: agreement cannot
+    /// survive a narrowing of the ceiling.
+    #[test]
+    fn a_remembered_rule_does_not_outlive_a_narrowed_tier() {
+        rt(async {
+            let rule =
+                AllowRule::for_call("bash", &args(serde_json::json!({"command": "git status"})))
+                    .unwrap();
+
+            let wide = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            wide.remember(rule.clone()).await;
+            assert_eq!(
+                wide.decide(
+                    &call(
+                        "bash",
+                        args(serde_json::json!({"command": "git status --short"}))
+                    ),
+                    &MODEL
+                )
+                .await,
+                Verdict::Allow
+            );
+
+            // Same session, later run, tighter role. The rule is still on file
+            // and must be ignored, because the tier is checked first.
+            wide.set_tier(Permission::Read).await;
+            match wide
+                .decide(
+                    &call("bash", args(serde_json::json!({"command": "git status"}))),
+                    &MODEL,
+                )
+                .await
+            {
+                Verdict::Deny { reason } => assert!(reason.contains("read-only"), "got: {reason}"),
+                other => panic!("a remembered rule must not survive a narrowed tier: {other:?}"),
+            }
         });
     }
 
     #[test]
-    fn a_rule_does_not_survive_a_mode_that_stops_asking_anyway_but_does_survive_turns() {
-        let policy = SessionPolicy::new(PermissionMode::Ask);
-        let rule = AllowRule::for_call("bash", &args(serde_json::json!({"command": "git status"})))
-            .unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
+    fn a_rule_survives_an_ordinary_turn() {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let rule =
+                AllowRule::for_call("bash", &args(serde_json::json!({"command": "git status"})))
+                    .unwrap();
+            let probe = call(
+                "bash",
+                args(serde_json::json!({"command": "git status --short"})),
+            );
             assert!(matches!(
-                policy
-                    .decide(
-                        "bash",
-                        &args(serde_json::json!({"command": "git status --short"}))
-                    )
-                    .await,
-                Decision::Ask(_)
+                policy.decide(&probe, &MODEL).await,
+                Verdict::Ask(_)
             ));
             policy.remember(rule).await;
-            // Same intent, extra flags: the rule covers it.
-            assert!(matches!(
-                policy
-                    .decide(
-                        "bash",
-                        &args(serde_json::json!({"command": "git status --short"}))
-                    )
-                    .await,
-                Decision::Allow
-            ));
+            assert_eq!(policy.decide(&probe, &MODEL).await, Verdict::Allow);
             assert_eq!(policy.rules().await.len(), 1);
         });
     }
@@ -716,13 +941,60 @@ mod tests {
 
     #[test]
     fn mode_next_cycles_through_every_mode() {
-        let mut mode = PermissionMode::Ask;
-        let mut seen = vec![mode];
-        for _ in 0..PermissionMode::ALL.len() - 1 {
+        let mut mode = PermissionMode::default();
+        for _ in 0..PermissionMode::ALL.len() {
             mode = mode.next();
-            seen.push(mode);
         }
-        assert_eq!(seen.len(), PermissionMode::ALL.len());
-        assert_eq!(mode.next(), PermissionMode::Ask, "cycle wraps around");
+        assert_eq!(mode, PermissionMode::default(), "cycle wraps around");
+    }
+
+    /// Unparseable arguments must not become an empty object, which would match
+    /// a narrow rule by accident.
+    #[test]
+    fn malformed_arguments_do_not_match_a_rule() {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let rule =
+                AllowRule::for_call("write_file", &args(serde_json::json!({"path": "a"}))).unwrap();
+            policy.remember(rule).await;
+            let broken = ToolCall::new_function("c1", "write_file", "{not json");
+            assert!(
+                !matches!(policy.decide(&broken, &MODEL).await, Verdict::Allow),
+                "unparseable arguments must not inherit a remembered rule"
+            );
+        });
+    }
+
+    /// A plugin's call is judged by the same ceiling as the model's.
+    #[test]
+    fn a_plugin_call_is_judged_by_the_same_tier() {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Read, PermissionMode::Yolo);
+            let write = call(
+                "write_file",
+                args(serde_json::json!({"path": "a", "content": "b"})),
+            );
+            let plugin = Caller::Plugin("evil".into());
+            match policy.decide(&write, &plugin).await {
+                Verdict::Deny { reason } => assert!(reason.contains("read-only")),
+                other => panic!("yolo must not lift the tier for a plugin: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn an_ask_carries_the_caller_so_a_dialog_can_name_it() {
+        rt(async {
+            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let shell = call("bash", args(serde_json::json!({"command": "ls"})));
+            match policy.decide(&shell, &Caller::Plugin("evil".into())).await {
+                Verdict::Ask(req) => {
+                    assert_eq!(req.caller.plugin_id(), Some("evil"));
+                    assert_eq!(req.tool, "bash");
+                    assert!(!req.call_hash.is_empty());
+                }
+                other => panic!("expected a prompt: {other:?}"),
+            }
+        });
     }
 }
