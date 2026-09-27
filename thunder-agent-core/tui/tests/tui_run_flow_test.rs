@@ -66,6 +66,8 @@ async fn drive_one_prompt(app: &mut App, prompt: &str) -> Option<String> {
                     final_text,
                     authoritative_messages,
                     raw_messages,
+                    run_stats,
+                    finish_reason,
                 } => {
                     app.handle_agent_finished(
                         agent_id,
@@ -73,6 +75,8 @@ async fn drive_one_prompt(app: &mut App, prompt: &str) -> Option<String> {
                         final_text.clone(),
                         authoritative_messages,
                         raw_messages,
+                        run_stats,
+                        finish_reason,
                     );
                     return (success, final_text);
                 }

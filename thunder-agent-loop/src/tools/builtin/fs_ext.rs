@@ -110,8 +110,8 @@ impl AgentTool for FindTool {
             return Ok(root.display().to_string());
         }
 
-        let glob_set = build_glob_set(pattern)?
-            .ok_or_else(|| "Pattern must not be empty".to_string())?;
+        let glob_set =
+            build_glob_set(pattern)?.ok_or_else(|| "Pattern must not be empty".to_string())?;
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -139,7 +139,9 @@ impl AgentTool for FindTool {
                         shared.truncated.store(true, Ordering::Relaxed);
                         return WalkState::Quit;
                     }
-                    let Ok(entry) = entry else { return WalkState::Continue };
+                    let Ok(entry) = entry else {
+                        return WalkState::Continue;
+                    };
                     let is_file = entry.file_type().is_some_and(|t| t.is_file());
                     if !is_file {
                         return WalkState::Continue;
@@ -170,7 +172,8 @@ impl AgentTool for FindTool {
             return Ok(format!("No files found matching '{}'", pattern));
         }
         if truncated {
-            output.push_str("\n\n[Output truncated — narrow the pattern or pass a smaller 'limit']");
+            output
+                .push_str("\n\n[Output truncated — narrow the pattern or pass a smaller 'limit']");
         }
         Ok(output)
     }
@@ -233,9 +236,11 @@ impl AgentTool for ListDirTool {
             .map_err(|e| format!("Failed to read directory '{}': {}", root.display(), e))?;
 
         let mut truncated = false;
-        while let Some(entry) = entries.next().transpose().map_err(|e| {
-            format!("Failed to read directory '{}': {}", root.display(), e)
-        })? {
+        while let Some(entry) = entries
+            .next()
+            .transpose()
+            .map_err(|e| format!("Failed to read directory '{}': {}", root.display(), e))?
+        {
             if dirs.len() + files.len() >= DEFAULT_LS_LIMIT {
                 truncated = true;
                 break;

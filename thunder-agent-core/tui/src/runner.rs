@@ -103,6 +103,8 @@ impl TuiRunner {
                 final_text,
                 authoritative_messages,
                 raw_messages,
+                run_stats,
+                finish_reason,
             } => {
                 app.handle_agent_finished(
                     agent_id,
@@ -110,8 +112,53 @@ impl TuiRunner {
                     final_text,
                     authoritative_messages,
                     raw_messages,
+                    run_stats,
+                    finish_reason,
                 );
                 app.save_current_conversation().await;
+
+                // Auto-title the conversation on its first exchange (or while
+                // still carrying a placeholder), mirroring the daemon.
+                if success && app.should_autogenerate_title() {
+                    app.spawn_title_generation(sender.clone(), false);
+                }
+            }
+            AppEvent::UserQuestion(incoming) => {
+                if let Some(existing) = app.pending_question.take() {
+                    // Only one question can be pending at a time; the agent loop
+                    // is single-threaded per run, so this is defensive only.
+                    existing.resolve(serde_json::Value::Null);
+                }
+                app.pending_question = crate::ask_user::PendingQuestion::from_incoming(incoming);
+            }
+            AppEvent::RoleResolved { role, permission } => match role {
+                Some(role) => app.attach_resolved_role(role, permission),
+                None => {
+                    app.conversation.add_assistant_message(
+                        Some(
+                            "❌ Role not found or disabled. Use `/role` to browse available roles."
+                                .to_string(),
+                        ),
+                        None,
+                    );
+                    app.save_current_conversation().await;
+                }
+            },
+            AppEvent::TitleGenerated { session_id, result } => {
+                match result {
+                    Ok(title) if session_id == app.conversation.id => {
+                        app.conversation.title = Some(title.clone());
+                        app.conversation.title_source = Some("auto".to_string());
+                        app.set_status_message(format!("Title: {title}"));
+                        app.save_current_conversation().await;
+                    }
+                    Ok(_) => {
+                        // A different session got titled (stale task); ignore.
+                    }
+                    Err(err) => {
+                        app.set_status_message(format!("Title generation failed: {err}"));
+                    }
+                }
             }
             AppEvent::LoadSession(id) => {
                 app.load_conversation(&id).await;

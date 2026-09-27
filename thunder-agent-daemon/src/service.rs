@@ -1197,51 +1197,10 @@ async fn list_session_traces(
 }
 
 /// Structured error for conversation title generation, surfaced to the host for diagnosis.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TitleGenError {
-    /// Machine-readable kind: no_utility_model | client_error | api_error |
-    /// empty_title | store_error | manual_locked | not_found
-    pub kind: String,
-    /// Human-readable detail (include model id / source error where available)
-    pub detail: String,
-}
-
-impl TitleGenError {
-    fn new(kind: &str, detail: impl Into<String>) -> Self {
-        Self {
-            kind: kind.to_string(),
-            detail: detail.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for TitleGenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.kind, self.detail)
-    }
-}
-
-/// Strip quotes/prefixes from a raw model-generated title.
-fn clean_generated_title(raw: &str) -> String {
-    raw.trim()
-        .trim_matches(|c: char| {
-            c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`'
-        })
-        .trim_start_matches("Title:")
-        .trim_start_matches("标题:")
-        .trim_start_matches("标题：")
-        .trim()
-        .to_string()
-}
-
-/// Truncate to a display-safe length (char-boundary safe).
-fn clamp_title(cleaned: String) -> String {
-    if cleaned.chars().count() > 40 {
-        cleaned.chars().take(40).collect()
-    } else {
-        cleaned
-    }
-}
+///
+/// The LLM-side generation now lives in `thunder-agent-providers::naming`
+/// (shared with the TUI); this alias keeps the daemon's public surface stable.
+pub use thunder_agent_providers::naming::TitleGenError;
 
 fn first_message_text(conv: &Conversation, want_user: bool) -> Option<String> {
     for msg in &conv.messages {
@@ -1260,34 +1219,6 @@ fn first_message_text(conv: &Conversation, want_user: bool) -> Option<String> {
 /// Synchronous: awaits the utility-model call so the caller receives the outcome.
 /// Errors are returned structured and also logged at warn level.
 pub async fn generate_conversation_title(
-    store: &FsConversationStore,
-    registry: &ProviderRegistry,
-    session_id: &str,
-    force: bool,
-    prompt_override: Option<String>,
-    assistant_override: Option<String>,
-) -> Result<String, TitleGenError> {
-    let result = generate_conversation_title_inner(
-        store,
-        registry,
-        session_id,
-        force,
-        prompt_override,
-        assistant_override,
-    )
-    .await;
-    match &result {
-        Ok(title) => {
-            info!(session_id = %session_id, title = %title, "Conversation title generated")
-        }
-        Err(e) => {
-            warn!(session_id = %session_id, error = %e, "Conversation title generation failed")
-        }
-    }
-    result
-}
-
-async fn generate_conversation_title_inner(
     store: &FsConversationStore,
     registry: &ProviderRegistry,
     session_id: &str,
@@ -1330,113 +1261,12 @@ async fn generate_conversation_title_inner(
         })?;
     let assistant_text = assistant_override.or_else(|| first_message_text(&conv, false));
 
-    // Resolve the utility model used for background naming
-    let utility_spec = match registry.resolve_utility_model() {
-        Some(s) if s.available => s.clone(),
-        Some(s) => {
-            return Err(TitleGenError::new(
-                "no_utility_model",
-                format!(
-                    "utility model `{}` is not available (missing API key or base URL)",
-                    s.selection_id()
-                ),
-            ));
-        }
-        None => {
-            return Err(TitleGenError::new(
-                "no_utility_model",
-                "no utility model configured or heuristically resolvable; set `utilityModel` in models.json",
-            ));
-        }
-    };
-
-    let client = thunder_agent_providers::client_for(&utility_spec, 60_000).map_err(|e| {
-        TitleGenError::new(
-            "client_error",
-            format!(
-                "failed to create client for `{}`: {e}",
-                utility_spec.selection_id()
-            ),
-        )
-    })?;
-
-    let user_excerpt = truncate_chars(&prompt, 300);
-    let assistant_excerpt = assistant_text
-        .as_deref()
-        .map(|t| truncate_chars(t, 300))
-        .unwrap_or_default();
-
-    let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (between 4 and 10 Chinese characters or 2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
-        + &user_excerpt
-        + "\nAssistant: "
-        + &assistant_excerpt;
-
-    let options = thunder_agent_loop::stream::client::ChatRequestOptions {
-        messages: vec![ChatMessage::user(naming_instruction)],
-        tools: vec![],
-        model: Some(utility_spec.id.clone()),
-        temperature: Some(0.3),
-        top_p: Some(0.9),
-        // Generous budget: reasoning models may spend tokens thinking before the answer
-        max_tokens: Some(100),
-        thinking_level: Some("off".to_string()),
-        // One-off utility call: never pay the prompt-cache write premium.
-        cache_retention: Some("none".to_string()),
-    };
-
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    let mut rx = client
-        .stream_chat(options, cancel_token)
-        .await
-        .map_err(|e| {
-            TitleGenError::new(
-                "api_error",
-                format!(
-                    "utility model `{}` request failed: {e}",
-                    utility_spec.selection_id()
-                ),
-            )
-        })?;
-
-    let mut generated_title = String::new();
-    while let Some(chunk) = rx.recv().await {
-        match chunk {
-            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Token(token)) => {
-                generated_title.push_str(&token);
-            }
-            Ok(thunder_agent_loop::stream::client::LLMStreamChunk::Completed {
-                content, ..
-            }) => {
-                if let Some(c) = content {
-                    if generated_title.trim().is_empty() {
-                        generated_title = c;
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(TitleGenError::new(
-                    "api_error",
-                    format!(
-                        "utility model `{}` stream error: {e}",
-                        utility_spec.selection_id()
-                    ),
-                ));
-            }
-        }
-    }
-
-    let cleaned = clean_generated_title(&generated_title);
-    if cleaned.is_empty() {
-        return Err(TitleGenError::new(
-            "empty_title",
-            format!(
-                "utility model `{}` returned no usable content (raw output empty after cleaning)",
-                utility_spec.selection_id()
-            ),
-        ));
-    }
-    let final_title = clamp_title(cleaned);
+    let final_title = thunder_agent_providers::naming::generate_title(
+        registry,
+        &prompt,
+        assistant_text.as_deref(),
+    )
+    .await?;
 
     // Re-load to avoid clobbering concurrent writes, then persist
     let mut conv = match store.load(session_id).await {
@@ -1459,39 +1289,13 @@ async fn generate_conversation_title_inner(
         .await
         .map_err(|e| TitleGenError::new("store_error", format!("failed to persist title: {e}")))?;
 
+    info!(session_id = %session_id, title = %final_title, "Conversation title generated");
     Ok(final_title)
-}
-
-fn truncate_chars(s: &str, max: usize) -> String {
-    if s.chars().count() > max {
-        s.chars().take(max).collect()
-    } else {
-        s.to_string()
-    }
 }
 
 #[cfg(test)]
 mod title_tests {
     use super::*;
-
-    #[test]
-    fn cleans_quotes_and_prefixes() {
-        assert_eq!(clean_generated_title("  \"多平台总结\" "), "多平台总结");
-        assert_eq!(clean_generated_title("《标题》"), "标题");
-        assert_eq!(clean_generated_title("Title: News summary"), "News summary");
-        assert_eq!(clean_generated_title("标题：新闻总结"), "新闻总结");
-        assert_eq!(clean_generated_title("`git help`"), "git help");
-    }
-
-    #[test]
-    fn clamps_long_titles_by_chars_not_bytes() {
-        assert_eq!(clamp_title("短标题".to_string()), "短标题");
-        let long = "a".repeat(50);
-        assert_eq!(clamp_title(long).chars().count(), 40);
-        // 40 CJK chars are 120 bytes — must not panic on char boundaries
-        let cjk = "标".repeat(50);
-        assert_eq!(clamp_title(cjk).chars().count(), 40);
-    }
 
     #[test]
     fn detects_placeholder_titles() {

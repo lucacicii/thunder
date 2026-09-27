@@ -124,7 +124,7 @@ async fn test_app_streaming_event_ingestion() {
     ));
 
     // 4. Finish
-    app.handle_agent_finished("agent_1".to_string(), true, None, None, None);
+    app.handle_agent_finished("agent_1".to_string(), true, None, None, None, None, None);
     assert_eq!(app.agent_status, AgentStatus::Idle);
     assert_eq!(app.conversation.messages.len(), 4); // System + Assistant text + Tool Call + Tool Result
 }

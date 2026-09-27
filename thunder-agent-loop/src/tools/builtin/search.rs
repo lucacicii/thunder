@@ -6,7 +6,9 @@
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
+use grep_searcher::{
+    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
+};
 use ignore::{WalkBuilder, WalkState};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -74,7 +76,12 @@ struct FileSink<'a> {
 }
 
 impl FileSink<'_> {
-    fn render(&mut self, line_number: u64, text: &[u8], is_match: bool) -> Result<bool, std::io::Error> {
+    fn render(
+        &mut self,
+        line_number: u64,
+        text: &[u8],
+        is_match: bool,
+    ) -> Result<bool, std::io::Error> {
         // Insert a group separator after any gap (like grep's `--`).
         if self.use_separators {
             if let Some(prev) = self.last_line {
@@ -98,8 +105,10 @@ impl FileSink<'_> {
         };
 
         let sep = if is_match { ":" } else { "-" };
-        self.shared
-            .push(format!("{}{}{}:{}", self.display_path, sep, line_number, text));
+        self.shared.push(format!(
+            "{}{}{}:{}",
+            self.display_path, sep, line_number, text
+        ));
         Ok(!self.shared.at_capacity())
     }
 }
@@ -107,11 +116,7 @@ impl FileSink<'_> {
 impl Sink for FileSink<'_> {
     type Error = std::io::Error;
 
-    fn matched(
-        &mut self,
-        _searcher: &Searcher,
-        mat: &SinkMatch<'_>,
-    ) -> Result<bool, Self::Error> {
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         let count = self.shared.match_count.fetch_add(1, Ordering::Relaxed) + 1;
         if count > self.shared.match_limit {
             self.shared.truncated.store(true, Ordering::Relaxed);
@@ -180,8 +185,8 @@ pub(crate) fn build_glob_set(glob: &str) -> Result<Option<globset::GlobSet>, Str
     } else {
         format!("**/{}", pattern)
     };
-    let glob = globset::Glob::new(&effective)
-        .map_err(|e| format!("Invalid glob '{}': {}", pattern, e))?;
+    let glob =
+        globset::Glob::new(&effective).map_err(|e| format!("Invalid glob '{}': {}", pattern, e))?;
     let mut builder = globset::GlobSetBuilder::new();
     builder.add(glob);
     builder
@@ -246,10 +251,7 @@ impl AgentTool for GrepTool {
             return Err("Pattern must not be empty".to_string());
         }
 
-        let root_raw = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let root_raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let root = self
             .default_cwd
             .as_ref()
@@ -264,8 +266,14 @@ impl AgentTool for GrepTool {
             Some(g) => build_glob_set(g)?,
             None => None,
         };
-        let ignore_case = args.get("ignoreCase").and_then(|v| v.as_bool()).unwrap_or(false);
-        let literal = args.get("literal").and_then(|v| v.as_bool()).unwrap_or(false);
+        let ignore_case = args
+            .get("ignoreCase")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let literal = args
+            .get("literal")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let match_limit = args
             .get("limit")
@@ -324,7 +332,9 @@ impl AgentTool for GrepTool {
                             shared.truncated.store(true, Ordering::Relaxed);
                             return WalkState::Quit;
                         }
-                        let Ok(entry) = entry else { return WalkState::Continue };
+                        let Ok(entry) = entry else {
+                            return WalkState::Continue;
+                        };
                         let is_file = entry.file_type().is_some_and(|t| t.is_file());
                         if !is_file {
                             return WalkState::Continue;
@@ -360,7 +370,9 @@ impl AgentTool for GrepTool {
             return Ok(format!("No matches found for pattern '{}'", pattern));
         }
         if truncated {
-            output.push_str("\n\n[Output truncated — narrow the pattern/path or pass a smaller 'limit']");
+            output.push_str(
+                "\n\n[Output truncated — narrow the pattern/path or pass a smaller 'limit']",
+            );
         }
         Ok(output)
     }

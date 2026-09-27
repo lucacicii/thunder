@@ -353,7 +353,10 @@ async fn find_matches_glob_respecting_gitignore() {
 
     assert!(out.contains("src/a.ts"), "got: {out}");
     assert!(out.contains("src/b.ts"));
-    assert!(!out.contains("vendor/ignored.ts"), "gitignore violated: {out}");
+    assert!(
+        !out.contains("vendor/ignored.ts"),
+        "gitignore violated: {out}"
+    );
     assert!(!out.contains("note.md"), "glob leaked .md: {out}");
 }
 
@@ -381,16 +384,16 @@ async fn ls_lists_dirs_first_sorted_with_sizes() {
     let dir = grep_fixture();
     let tool = ListDirTool::default();
     let out = tool
-        .execute(
-            json!({ "path": dir.path().to_str().unwrap() }),
-            &test_ctx(),
-        )
+        .execute(json!({ "path": dir.path().to_str().unwrap() }), &test_ctx())
         .await
         .expect("ls ok");
 
     let lines: Vec<&str> = out.lines().collect();
     let first_dir_idx = lines.iter().position(|l| l.starts_with("docs/")).unwrap();
-    assert!(lines.iter().take(first_dir_idx).all(|l| l.ends_with('/')), "dirs first: {out}");
+    assert!(
+        lines.iter().take(first_dir_idx).all(|l| l.ends_with('/')),
+        "dirs first: {out}"
+    );
     assert!(out.contains("src/"));
     assert!(out.contains("vendor/"));
     assert!(out.contains(".gitignore"));

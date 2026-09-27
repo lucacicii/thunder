@@ -1,6 +1,7 @@
+use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_providers::prelude::*;
@@ -82,6 +83,15 @@ pub struct ActiveToolCall {
     pub duration_ms: u64,
 }
 
+/// Metadata snapshot for the run whose trace is being recorded.
+#[derive(Debug, Clone)]
+pub struct TraceRunMeta {
+    pub task_id: String,
+    pub started_at_ms: u64,
+    pub prompt: String,
+    pub model: String,
+}
+
 pub struct App {
     pub mode: ViewMode,
     pub focus: FocusPane,
@@ -118,6 +128,32 @@ pub struct App {
     pub active_skill: Option<thunder_agent_skills::SkillHandle>,
     /// Raw pre-compaction transcript pending a sidecar write (checkpoint mode).
     pub pending_raw_transcript: Option<Vec<ChatMessage>>,
+    /// Thinking-level override for the next run ("off" | "low" | "medium" | "high").
+    /// Resolution order mirrors the daemon: manual override → conversation
+    /// binding → the model's default level.
+    pub thinking_level: Option<String>,
+    /// Active declarative role (persona + permission tier), if any.
+    pub active_role: Option<RoleSpec>,
+    /// Tool capability tier. Mirrors the role when one is active; otherwise the
+    /// manual `/permission` tier (default: full Bash).
+    pub permission: Permission,
+    /// Extra workspace roots granted the same read/write standing as the
+    /// primary workspace (mirrored into `conversation.shared_roots` on submit).
+    pub extra_roots: Vec<PathBuf>,
+    /// Whether the ask_user_question tool is mounted for runs that no role
+    /// pins. Default off, matching the daemon's opt-in policy.
+    pub ask_user_enabled: bool,
+    /// Cooperative pause gate for the running task, if any.
+    pub pause_gate: Option<Arc<PauseGate>>,
+    /// Interactive question modal state; the agent is blocked while set.
+    pub pending_question: Option<PendingQuestion>,
+    /// Filtered event trace being recorded for the current run.
+    pub trace_events: Option<Vec<ObservedEvent>>,
+    /// Metadata of the run currently being traced.
+    pub trace_meta: Option<TraceRunMeta>,
+    /// Whether the current run is this conversation's first exchange
+    /// (triggers background auto-titling once it finishes).
+    pub run_is_first_exchange: bool,
 }
 
 impl App {
@@ -161,6 +197,16 @@ impl App {
             last_max_scroll: 0,
             active_skill: None,
             pending_raw_transcript: None,
+            thinking_level: None,
+            active_role: None,
+            permission: Permission::default(),
+            extra_roots: Vec::new(),
+            ask_user_enabled: false,
+            pause_gate: None,
+            pending_question: None,
+            trace_events: None,
+            trace_meta: None,
+            run_is_first_exchange: false,
         }
     }
 
@@ -243,11 +289,493 @@ impl App {
         self.status_message = Some((msg.into(), std::time::Instant::now()));
     }
 
+    // ── Run control: pause / resume ───────────────────────────────────────
+
+    /// Whether a run is currently executing (i.e. pause is meaningful).
+    pub fn is_running(&self) -> bool {
+        matches!(
+            self.agent_status,
+            AgentStatus::Thinking | AgentStatus::Streaming | AgentStatus::ExecutingTool { .. }
+        )
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause_gate.as_ref().is_some_and(|g| g.is_paused())
+    }
+
+    /// Cooperatively pause the running agent; takes effect at the next tool
+    /// boundary, never mid-tool.
+    pub fn pause_run(&mut self) {
+        match &self.pause_gate {
+            Some(gate) if self.is_running() => {
+                gate.pause();
+                self.set_status_message(
+                    "⏸ Paused — holds at the next tool boundary (/unpause to resume)",
+                );
+            }
+            Some(_) => self.set_status_message("Nothing to pause: no run is executing."),
+            None => self.set_status_message("Nothing to pause: no run is executing."),
+        }
+    }
+
+    pub fn resume_run(&mut self) {
+        match &self.pause_gate {
+            Some(gate) if gate.is_paused() => {
+                gate.resume();
+                self.set_status_message("▶ Resumed.");
+            }
+            Some(_) => self.set_status_message("The run is not paused."),
+            None => self.set_status_message("No paused run to resume."),
+        }
+    }
+
+    // ── Question modal (ask_user_question) ──────────────────────────────
+
+    fn handle_question_key(&mut self, key: KeyEvent) {
+        let Some(pending) = self.pending_question.as_mut() else {
+            return;
+        };
+        let has_options = pending.current().is_some_and(|q| !q.options.is_empty());
+
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(pending) = self.pending_question.take() {
+                    pending.resolve(serde_json::Value::Null);
+                }
+                self.set_status_message(
+                    "Question dismissed — the agent proceeds with assumptions.",
+                );
+            }
+            KeyCode::Up if has_options => {
+                if let Some(q) = pending.current() {
+                    if !q.options.is_empty() {
+                        pending.selected = pending.selected.saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Down if has_options => {
+                if let Some(q) = pending.current() {
+                    let count = q.options.len();
+                    if count > 0 {
+                        pending.selected = (pending.selected + 1).min(count - 1);
+                    }
+                }
+            }
+            KeyCode::Char(' ') if has_options => {
+                let multi = pending.current().is_some_and(|q| q.multi_select);
+                if multi {
+                    let idx = pending.selected;
+                    if pending.toggled.contains(&idx) {
+                        pending.toggled.retain(|&i| i != idx);
+                    } else {
+                        pending.toggled.push(idx);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                self.submit_current_question();
+            }
+            KeyCode::Backspace if !has_options => {
+                pending.input.pop();
+            }
+            KeyCode::Char(c) if !has_options => {
+                pending.input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// Answer the current question from the modal state and resolve the set
+    /// when the last one is answered.
+    fn submit_current_question(&mut self) {
+        let Some(pending) = self.pending_question.as_mut() else {
+            return;
+        };
+        let Some(q) = pending.current().cloned() else {
+            return;
+        };
+
+        let answer = if q.options.is_empty() {
+            if pending.input.trim().is_empty() {
+                return; // Enter on empty free-form input is a no-op
+            }
+            pending.input.trim().to_string()
+        } else if q.multi_select {
+            let picks: Vec<usize> = if pending.toggled.is_empty() {
+                vec![pending.selected]
+            } else {
+                let mut t = pending.toggled.clone();
+                t.sort_unstable();
+                t
+            };
+            picks
+                .into_iter()
+                .filter_map(|i| q.options.get(i).map(|o| o.label.clone()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            q.options
+                .get(pending.selected)
+                .map(|o| o.label.clone())
+                .unwrap_or_default()
+        };
+
+        if let Some(payload) = pending.answer_current(answer) {
+            if let Some(pending) = self.pending_question.take() {
+                pending.resolve(payload);
+            }
+            self.set_status_message("✔ Answer sent to the agent.");
+        }
+    }
+
+    // ── Thinking level / roles / permission ─────────────────────────────
+
+    /// Effective thinking level: manual override → conversation binding →
+    /// the resolved model's default.
+    pub fn effective_thinking_level(&self) -> Option<String> {
+        self.thinking_level
+            .clone()
+            .or_else(|| self.conversation.thinking_level.clone())
+            .or_else(|| {
+                self.provider_registry
+                    .resolve(&self.model.selection_id())
+                    .map(|s| s.default_thinking_level.clone())
+            })
+    }
+
+    fn set_thinking_level(&mut self, level: Option<String>) {
+        self.thinking_level = level.clone();
+        self.conversation.thinking_level = level;
+        self.save_and_refresh();
+    }
+
+    fn spawn_role_picker(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+        self.set_status_message("Scanning role registries...");
+        let ws = self.workspace_dir.clone();
+        tokio::spawn(async move {
+            let registry = RoleRegistry::load_default(Some(&ws)).await;
+            let items: Vec<PickerItem> = registry
+                .list_enabled()
+                .into_iter()
+                .map(|r| {
+                    PickerItem::new(
+                        &r.id,
+                        r.display_name().to_string(),
+                        r.description.clone().unwrap_or_else(|| r.persona.as_text()),
+                    )
+                    .with_badge(r.permission.describe())
+                })
+                .collect();
+            let _ = event_tx.send(crate::event::AppEvent::OpenPicker {
+                kind: PickerKind::SelectRole,
+                title: "🎭 Select Agent Role (↑/↓ to move, Enter to activate)".to_string(),
+                items,
+                empty_message: Some(
+                    "No roles found. Add ~/.thunder/roles.jsonl or <workspace>/.arp/roles.jsonl."
+                        .to_string(),
+                ),
+            });
+        });
+    }
+
+    /// Resolve `/role <id>` (or a picker selection) asynchronously and deliver
+    /// the result through [`crate::event::AppEvent::RoleResolved`].
+    fn spawn_role_resolution(
+        &mut self,
+        id: &str,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
+        self.set_status_message(format!("Resolving role `{id}`..."));
+        let ws = self.workspace_dir.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let registry = RoleRegistry::load_default(Some(&ws)).await;
+            let (role, permission) = registry.resolve_for_run(Some(&id));
+            let _ = event_tx.send(crate::event::AppEvent::RoleResolved { role, permission });
+        });
+    }
+
+    pub fn attach_resolved_role(&mut self, role: RoleSpec, permission: Permission) {
+        let out = format!(
+            "✔ Role **{}** active — permission: {}{}",
+            role.display_name(),
+            permission.describe(),
+            if role.ask_user { ", ask_user: on" } else { "" }
+        );
+        if let Some(model) = &role.model {
+            self.model = ModelRef::parse(model);
+        }
+        self.active_role = Some(role.clone());
+        self.permission = permission;
+        self.set_status_message(format!("Role: {}", role.display_name()));
+        self.conversation.add_assistant_message(Some(out), None);
+        self.save_and_refresh();
+    }
+
+    fn detach_role(&mut self) {
+        let msg = match self.active_role.take() {
+            Some(prev) => {
+                self.permission = Permission::default();
+                format!(
+                    "Detached role **{}**; permission reset to full.",
+                    prev.display_name()
+                )
+            }
+            None => "No role is currently active.".to_string(),
+        };
+        self.conversation.add_assistant_message(Some(msg), None);
+        self.set_status_message("Role cleared");
+        self.save_and_refresh();
+    }
+
+    // ── Traces ─────────────────────────────────────────────────────────────
+
+    /// Start recording a filtered trace for a new run.
+    fn begin_trace(&mut self, prompt: &str) {
+        self.trace_events = Some(Vec::new());
+        self.trace_meta = Some(TraceRunMeta {
+            task_id: format!("run_{}", now_ms()),
+            started_at_ms: now_ms(),
+            prompt: prompt.to_string(),
+            model: self.model.selection_id(),
+        });
+    }
+
+    /// Tiered retention, mirroring the daemon: streaming micro-deltas never
+    /// reach the in-memory trace (they would blow up long tasks); everything
+    /// else is kept.
+    fn record_trace_event(&mut self, event: ObservedEvent) {
+        let is_micro_delta = matches!(
+            event.event,
+            AgentEvent::TokenDelta { .. }
+                | AgentEvent::ReasoningDelta { .. }
+                | AgentEvent::ToolCallChunk { .. }
+        );
+        if !is_micro_delta {
+            if let Some(events) = self.trace_events.as_mut() {
+                if events.len() < 5000 {
+                    events.push(event);
+                }
+            }
+        }
+    }
+
+    /// Persist the completed run's trace next to the session (same layout as
+    /// the daemon: `<store>/<session>/traces/<task_id>.json`).
+    fn finalize_trace(
+        &self,
+        success: bool,
+        final_text: Option<&str>,
+        run_stats: Option<&AgentStats>,
+    ) {
+        let (Some(events), Some(meta)) = (self.trace_events.as_ref(), self.trace_meta.as_ref())
+        else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+
+        let finished_at_ms = now_ms();
+        let trace_data = serde_json::json!({
+            "task_id": meta.task_id,
+            "session_id": self.conversation.id,
+            "model": meta.model,
+            "workspace_dir": self.workspace_dir.display().to_string(),
+            "prompt": meta.prompt,
+            "started_at_ms": meta.started_at_ms,
+            "finished_at_ms": finished_at_ms,
+            "duration_ms": run_stats.map(|s| s.total_duration_ms).unwrap_or(0),
+            "wall_duration_ms": finished_at_ms.saturating_sub(meta.started_at_ms),
+            "finish_reason": if success { "Done" } else { "Error" },
+            "stats": run_stats,
+            "final_content": final_text,
+            "events": events,
+        });
+
+        let root = store.root().to_path_buf();
+        let session_id = self.conversation.id.clone();
+        let task_id = meta.task_id.clone();
+        tokio::spawn(async move {
+            save_task_trace(&root, &session_id, &task_id, &trace_data).await;
+        });
+    }
+
+    /// Open an interactive picker over the current session's saved traces.
+    fn spawn_trace_picker(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+        self.set_status_message("Scanning session traces...");
+        let Some(store) = self.store.clone() else {
+            self.set_status_message("No conversation store configured.");
+            return;
+        };
+        let session_id = self.conversation.id.clone();
+        tokio::spawn(async move {
+            let traces = list_session_traces(store.root(), &session_id).await;
+            let items: Vec<PickerItem> = traces
+                .iter()
+                .map(|t| {
+                    let task_id = t.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let prompt = t
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .map(|p| thunder_agent_providers::naming::truncate_chars(p, 60))
+                        .unwrap_or_default();
+                    let dur = t.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                    PickerItem::new(
+                        task_id,
+                        task_id.to_string(),
+                        format!("{prompt} · {}ms", dur),
+                    )
+                    .with_badge(
+                        t.get("finish_reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?"),
+                    )
+                })
+                .collect();
+            let _ = event_tx.send(crate::event::AppEvent::OpenPicker {
+                kind: PickerKind::SelectTrace,
+                title: "🧾 Session Task Traces (↑/↓ to move, Enter to inspect)".to_string(),
+                items,
+                empty_message: Some(
+                    "No traces recorded for this session yet. Traces are saved automatically after each run.".to_string(),
+                ),
+            });
+        });
+    }
+
+    /// Render a saved trace as markdown, delivered into the conversation.
+    fn spawn_trace_view(
+        &mut self,
+        task_id: Option<&str>,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
+        let Some(store) = self.store.clone() else {
+            self.set_status_message("No conversation store configured.");
+            return;
+        };
+        let session_id = self.conversation.id.clone();
+        let task_id = task_id.map(str::to_string);
+        tokio::spawn(async move {
+            let out = match load_task_trace(store.root(), &session_id, task_id.as_deref()).await {
+                Some(val) => render_trace_markdown(&val),
+                None => "❌ No trace found for this session. Run a task first — traces are saved automatically after each run.".to_string(),
+            };
+            let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                agent_id: "trace_viewer".to_string(),
+                success: true,
+                final_text: Some(out),
+                authoritative_messages: None,
+                raw_messages: None,
+                run_stats: None,
+                finish_reason: None,
+            });
+        });
+    }
+
+    /// Render the trace index for the current session as markdown.
+    fn spawn_trace_list(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
+        let Some(store) = self.store.clone() else {
+            self.set_status_message("No conversation store configured.");
+            return;
+        };
+        let session_id = self.conversation.id.clone();
+        tokio::spawn(async move {
+            let traces = list_session_traces(store.root(), &session_id).await;
+            let out = if traces.is_empty() {
+                "### 🧾 Task Traces\n\nNo traces recorded for this session yet.".to_string()
+            } else {
+                let mut out = String::from("### 🧾 Task Traces\n\n| Task | Finish | Duration | Prompt |\n|---|---|---|---|\n");
+                for t in &traces {
+                    let task_id = t.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let reason = t
+                        .get("finish_reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let dur = t.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let prompt = t
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .map(|p| thunder_agent_providers::naming::truncate_chars(p, 40))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "| `{task_id}` | {reason} | {dur}ms | {prompt} |\n"
+                    ));
+                }
+                out.push_str("\n*Inspect one with `/trace <task_id>`.*");
+                out
+            };
+            let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                agent_id: "trace_viewer".to_string(),
+                success: true,
+                final_text: Some(out),
+                authoritative_messages: None,
+                raw_messages: None,
+                run_stats: None,
+                finish_reason: None,
+            });
+        });
+    }
+
+    // ── Titles ─────────────────────────────────────────────────────────────
+
+    /// Manually set (and lock) the conversation title.
+    fn set_manual_title(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            self.set_status_message("Title text must not be empty.");
+            return;
+        }
+        self.conversation.title = Some(thunder_agent_providers::naming::clamp_title(
+            trimmed.to_string(),
+        ));
+        self.conversation.title_source = Some("manual".to_string());
+        self.conversation.updated_at_ms = now_ms();
+        self.set_status_message(format!(
+            "Title set: {}",
+            self.conversation.title.clone().unwrap_or_default()
+        ));
+        self.save_and_refresh();
+    }
+
+    /// Whether a finished run should trigger background auto-titling: the
+    /// conversation is still untitled, or this was its first exchange.
+    pub fn should_autogenerate_title(&self) -> bool {
+        self.conversation.is_title_placeholder() || self.run_is_first_exchange
+    }
+
+    /// Kick off background title generation (never blocks the UI loop).
+    pub fn spawn_title_generation(
+        &mut self,
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+        force: bool,
+    ) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let registry = self.provider_registry.clone();
+        let session_id = self.conversation.id.clone();
+        self.set_status_message("Generating title...");
+        tokio::spawn(async move {
+            let result =
+                crate::title::generate_conversation_title(&store, &registry, &session_id, force)
+                    .await
+                    .map_err(|e| e.to_string());
+            let _ = event_tx.send(crate::event::AppEvent::TitleGenerated { session_id, result });
+        });
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
+        // 0. The question modal outranks everything: the agent is blocked on it.
+        if self.pending_question.is_some() {
+            self.handle_question_key(key);
+            return;
+        }
+
         // 1. If interactive picker dropdown is active, route all keys to the picker
         if self.picker.is_open {
             match self.picker.handle_key(key) {
@@ -813,6 +1341,16 @@ impl App {
                 );
                 self.save_and_refresh();
             }
+            PickerKind::SelectRole => {
+                self.conversation
+                    .add_user_message(format!("/role {}", item.id));
+                self.spawn_role_resolution(&item.id, event_tx);
+            }
+            PickerKind::SelectTrace => {
+                self.conversation
+                    .add_user_message(format!("/trace {}", item.id));
+                self.spawn_trace_view(Some(&item.id), event_tx);
+            }
             PickerKind::SlashCommand => {
                 self.input = format!("/{} ", item.id);
             }
@@ -871,6 +1409,8 @@ impl App {
                                     final_text: Some(format!("❌ Could not find session `{target_name}` to resume. Use `/resume` to view all saved sessions.")),
                                     authoritative_messages: None,
                                 raw_messages: None,
+                                run_stats: None,
+                                finish_reason: None,
                                 });
                             }
                         }
@@ -932,7 +1472,10 @@ impl App {
                 }
                 out.push_str("\n**Keyboard Shortcuts:**\n");
                 out.push_str("- `Ctrl+N`: New Session | `Ctrl+P`: Cycle Mode | `Tab`: Autocomplete / Cycle Focus\n");
-                out.push_str("- `Ctrl+B`: Toggle Sidebar | `Ctrl+M`: Toggle Monitor | `Ctrl+C / Esc`: Cancel\n");
+                out.push_str(
+                    "- `Ctrl+B`: Toggle Sidebar | `Ctrl+H`: Toggle Help | `Ctrl+C / Esc`: Cancel\n",
+                );
+                out.push_str("- `/pause` / `/unpause`: Hold & release a run at tool boundaries | `Esc`: Dismiss a question modal\n");
 
                 self.conversation.add_user_message(raw_cmd);
                 self.conversation.add_assistant_message(Some(out), None);
@@ -1064,6 +1607,8 @@ impl App {
                                             final_text: Some(content),
                                             authoritative_messages: None,
                                             raw_messages: None,
+                                            run_stats: None,
+                                            finish_reason: None,
                                         },
                                     );
                                 }
@@ -1108,6 +1653,8 @@ impl App {
                                         final_text: Some(content),
                                         authoritative_messages: None,
                                         raw_messages: None,
+                                        run_stats: None,
+                                        finish_reason: None,
                                     });
                             }
                         });
@@ -1134,6 +1681,8 @@ impl App {
                                         final_text: Some(content),
                                         authoritative_messages: None,
                                         raw_messages: None,
+                                        run_stats: None,
+                                        finish_reason: None,
                                     });
                             }
                         });
@@ -1175,6 +1724,8 @@ impl App {
                                 final_text: Some(content),
                                 authoritative_messages: None,
                                 raw_messages: None,
+                                run_stats: None,
+                                finish_reason: None,
                             });
                         }
                     });
@@ -1258,6 +1809,31 @@ impl App {
                     out.push_str(&format!(
                         "| `workspace` | `{}` | Working directory |\n",
                         self.workspace_dir.display()
+                    ));
+                    out.push_str(&format!(
+                        "| `role` | `{}` | Active declarative role |\n",
+                        self.active_role
+                            .as_ref()
+                            .map(|r| r.display_name())
+                            .unwrap_or("—")
+                    ));
+                    out.push_str(&format!(
+                        "| `permission` | `{}` | Tool capability tier |\n",
+                        self.permission.describe()
+                    ));
+                    out.push_str(&format!(
+                        "| `thinking` | `{}` | Reasoning effort |\n",
+                        self.effective_thinking_level()
+                            .as_deref()
+                            .unwrap_or("model default")
+                    ));
+                    out.push_str(&format!(
+                        "| `roots` | `{}` | Extra workspace roots |\n",
+                        self.extra_roots.len()
+                    ));
+                    out.push_str(&format!(
+                        "| `ask_user` | `{}` | ask_user_question mounted |\n",
+                        if self.ask_user_enabled { "on" } else { "off" }
                     ));
                     out.push_str(&format!(
                         "| `temperature` | `{}` | Sampling temperature |\n",
@@ -1385,6 +1961,288 @@ impl App {
                 true
             }
 
+            // /pause — cooperatively hold the running agent at the next tool boundary
+            "pause" | "hold" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.pause_run();
+                true
+            }
+
+            // /unpause — release a paused run
+            "unpause" | "go" | "continue" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.resume_run();
+                true
+            }
+
+            // /think [off|low|medium|high] — reasoning effort for the next run
+            "think" | "thinking" => {
+                self.conversation.add_user_message(raw_cmd);
+                match args.first().map(|a| a.to_lowercase()).as_deref() {
+                    Some("off") | Some("none") => {
+                        self.set_thinking_level(Some("off".to_string()));
+                        self.conversation.add_assistant_message(
+                            Some(
+                                "✔ Thinking level: **off** (bound to this conversation)"
+                                    .to_string(),
+                            ),
+                            None,
+                        );
+                    }
+                    Some("low") | Some("medium") | Some("high") => {
+                        let lvl = args.first().unwrap().to_lowercase();
+                        self.set_thinking_level(Some(lvl.clone()));
+                        self.conversation.add_assistant_message(
+                            Some(format!(
+                                "✔ Thinking level: **{lvl}** (bound to this conversation)"
+                            )),
+                            None,
+                        );
+                    }
+                    Some(other) => {
+                        self.conversation.add_assistant_message(
+                            Some(format!(
+                                "❌ Unknown thinking level `{other}`. Available: `off`, `low`, `medium`, `high`"
+                            )),
+                            None,
+                        );
+                    }
+                    None => {
+                        let effective = self.effective_thinking_level();
+                        let out = format!(
+                            "### 🧠 Thinking Level\n\n- Explicit override: `{}`\n- Conversation binding: `{}`\n- Effective for the next run: **`{}`**\n\n*Set with `/think <off|low|medium|high>`*",
+                            self.thinking_level.as_deref().unwrap_or("—"),
+                            self.conversation.thinking_level.as_deref().unwrap_or("—"),
+                            effective.as_deref().unwrap_or("model default"),
+                        );
+                        self.conversation.add_assistant_message(Some(out), None);
+                    }
+                }
+                true
+            }
+
+            // /role [id|off] — declarative persona + permission tier
+            "role" | "roles" => {
+                match args.first().copied() {
+                    Some("off") | Some("none") | Some("clear") => {
+                        self.conversation.add_user_message(raw_cmd);
+                        self.detach_role();
+                    }
+                    Some("list") => {
+                        self.spawn_role_picker(event_tx.clone());
+                    }
+                    Some(id) => {
+                        self.conversation.add_user_message(raw_cmd);
+                        self.spawn_role_resolution(id, event_tx.clone());
+                    }
+                    None => {
+                        self.spawn_role_picker(event_tx.clone());
+                    }
+                }
+                true
+            }
+
+            // /permission [read|write|bash] — manual capability tier (clears any role)
+            "permission" | "perm" => {
+                self.conversation.add_user_message(raw_cmd);
+                let tier = match args.first().map(|a| a.to_lowercase()).as_deref() {
+                    Some("read" | "readonly" | "ro") => Some(Permission::Read),
+                    Some("write" | "readwrite" | "rw") => Some(Permission::Write),
+                    Some("bash" | "full") => Some(Permission::Bash),
+                    Some(other) => {
+                        self.conversation.add_assistant_message(
+                            Some(format!(
+                                "❌ Unknown permission tier `{other}`. Available: `read`, `write`, `bash`"
+                            )),
+                            None,
+                        );
+                        None
+                    }
+                    None => {
+                        let out = format!(
+                            "### 🔐 Permission Tier\n\n- Current: **{}**\n- Source: {}\n\n*Set with `/permission <read|write|bash>` (clears any active role)*",
+                            self.permission.describe(),
+                            if let Some(role) = self.active_role.as_ref() {
+                                format!("role `{}`", role.display_name())
+                            } else {
+                                "manual".to_string()
+                            }
+                        );
+                        self.conversation.add_assistant_message(Some(out), None);
+                        None
+                    }
+                };
+                if let Some(tier) = tier {
+                    if self.active_role.take().is_some() {
+                        self.permission = tier;
+                        self.conversation.add_assistant_message(
+                            Some(format!(
+                                "✔ Permission tier set to **{}** (role detached — a role pins its own tier).",
+                                tier.describe()
+                            )),
+                            None,
+                        );
+                    } else {
+                        self.permission = tier;
+                        self.conversation.add_assistant_message(
+                            Some(format!("✔ Permission tier set to **{}**", tier.describe())),
+                            None,
+                        );
+                    }
+                    self.set_status_message(format!("Permission: {}", tier.describe()));
+                }
+                self.save_and_refresh();
+                true
+            }
+
+            // /roots [add <path> | remove <path|#> | clear] — extra workspace roots
+            "roots" | "root" | "shared" => {
+                self.conversation.add_user_message(raw_cmd);
+                match args.first().copied() {
+                    Some("add" | "grant") => {
+                        let rest = args[1..].join(" ");
+                        let pb = PathBuf::from(&rest);
+                        if pb.is_dir() {
+                            if !self.extra_roots.contains(&pb) {
+                                self.extra_roots.push(pb.clone());
+                            }
+                            self.conversation.add_assistant_message(
+                                Some(format!(
+                                    "✔ Extra root granted: `{}` ({} total)\n\nRead/write standing is shared with the primary workspace on the next run.",
+                                    pb.display(),
+                                    self.extra_roots.len()
+                                )),
+                                None,
+                            );
+                        } else {
+                            self.conversation.add_assistant_message(
+                                Some(format!("❌ Directory `{}` does not exist.", pb.display())),
+                                None,
+                            );
+                        }
+                    }
+                    Some("remove" | "revoke") => {
+                        let target = args[1..].join(" ");
+                        let before = self.extra_roots.len();
+                        if let Ok(idx) = target.parse::<usize>() {
+                            if idx < self.extra_roots.len() {
+                                self.extra_roots.remove(idx);
+                            }
+                        } else {
+                            self.extra_roots
+                                .retain(|r| r.display().to_string() != target);
+                        }
+                        let out = if self.extra_roots.len() < before {
+                            format!("✔ Root removed ({} remaining).", self.extra_roots.len())
+                        } else {
+                            "No matching extra root found.".to_string()
+                        };
+                        self.conversation.add_assistant_message(Some(out), None);
+                    }
+                    Some("clear" | "reset") => {
+                        let count = self.extra_roots.len();
+                        self.extra_roots.clear();
+                        self.conversation.add_assistant_message(
+                            Some(format!("✔ Cleared {count} extra root(s).")),
+                            None,
+                        );
+                    }
+                    _ => {
+                        let mut out = String::from("### 📂 Extra Workspace Roots\n\n");
+                        if self.extra_roots.is_empty() {
+                            out.push_str("None. Only the primary workspace is writable.\n\n");
+                        } else {
+                            for (idx, root) in self.extra_roots.iter().enumerate() {
+                                out.push_str(&format!("{idx}. `{}`\n", root.display()));
+                            }
+                            out.push('\n');
+                        }
+                        out.push_str("*Manage with `/roots add <path>`, `/roots remove <path|#>`, `/roots clear`.*");
+                        self.conversation.add_assistant_message(Some(out), None);
+                    }
+                }
+                self.save_and_refresh();
+                true
+            }
+
+            // /trace [list | <task_id>] — execution traces
+            "trace" | "traces" => {
+                self.conversation.add_user_message(raw_cmd);
+                match args.first().copied() {
+                    Some("list") => {
+                        self.spawn_trace_list(event_tx.clone());
+                    }
+                    Some(task_id) => {
+                        self.spawn_trace_view(Some(task_id), event_tx.clone());
+                    }
+                    None => {
+                        self.spawn_trace_picker(event_tx.clone());
+                    }
+                }
+                true
+            }
+
+            // /title [text | force] — set manually or (re)generate via utility model
+            "title" | "rename" => {
+                match args.first().copied() {
+                    Some("force") | Some("regen") | Some("auto") => {
+                        self.conversation.add_user_message(raw_cmd);
+                        self.spawn_title_generation(event_tx.clone(), true);
+                    }
+                    _ if !args.is_empty() => {
+                        let text = args.join(" ");
+                        self.conversation.add_user_message(raw_cmd);
+                        self.set_manual_title(&text);
+                    }
+                    _ => {
+                        self.conversation.add_user_message(raw_cmd);
+                        if self.conversation.is_title_manual() {
+                            self.conversation.add_assistant_message(
+                                Some(
+                                    "This conversation's title was set manually; use `/title force` to regenerate it."
+                                        .to_string(),
+                                ),
+                                None,
+                            );
+                            self.save_and_refresh();
+                        } else {
+                            self.spawn_title_generation(event_tx.clone(), false);
+                        }
+                    }
+                }
+                true
+            }
+
+            // /ask [on|off] — mount the ask_user_question tool without a role
+            "ask" | "ask_user" => {
+                self.conversation.add_user_message(raw_cmd);
+                match args.first().map(|a| a.to_lowercase()).as_deref() {
+                    Some("on" | "true" | "yes") => {
+                        self.ask_user_enabled = true;
+                        self.conversation.add_assistant_message(
+                            Some("✔ `ask_user_question` mounted: the agent can ask clarifying questions (answered in a terminal modal).".to_string()),
+                            None,
+                        );
+                    }
+                    Some("off" | "false" | "no") => {
+                        self.ask_user_enabled = false;
+                        self.conversation.add_assistant_message(
+                            Some("✔ `ask_user_question` unmounted (roles with `askUser: true` still mount it).".to_string()),
+                            None,
+                        );
+                    }
+                    _ => {
+                        let out = format!(
+                            "ask_user_question: **{}**\n\n*Toggle with `/ask on` / `/ask off`. Roles declaring `askUser: true` mount it regardless.*",
+                            if self.ask_user_enabled { "on" } else { "off" }
+                        );
+                        self.conversation.add_assistant_message(Some(out), None);
+                    }
+                }
+                self.save_and_refresh();
+                true
+            }
+
             // 13. /quit or /exit
             "quit" | "exit" | "q" => {
                 self.should_quit = true;
@@ -1418,17 +2276,43 @@ impl App {
         self.last_error = None;
         self.auto_scroll = true;
 
+        // Bind run-wide settings to the conversation (mirrors the daemon):
+        // model / workspace / thinking level / shared roots persist across runs.
+        self.conversation.model = Some(self.model.selection_id());
+        self.conversation.workspace = Some(self.workspace_dir.display().to_string());
+        if let Some(tl) = self.effective_thinking_level() {
+            self.conversation.thinking_level = Some(tl);
+        }
+        self.conversation.shared_roots = self
+            .extra_roots
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+
+        // Auto-title trigger: this run is the conversation's first exchange.
+        self.run_is_first_exchange = self
+            .conversation
+            .messages
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::User { .. }))
+            .count()
+            <= 1;
+
+        self.begin_trace(&prompt);
+
         self.save_and_refresh();
 
         let cancel = CancellationToken::new();
         self.cancel_token = Some(cancel.clone());
+        let pause_gate = PauseGate::new_shared();
+        self.pause_gate = Some(pause_gate.clone());
 
         match mode {
             ExecutionMode::SingleAgent => {
-                self.run_single_agent(prompt, cancel, event_tx);
+                self.run_single_agent(prompt, cancel, pause_gate, event_tx);
             }
             ExecutionMode::AutoRouter => {
-                self.run_root_agent(prompt, cancel, event_tx);
+                self.run_root_agent(prompt, cancel, pause_gate, event_tx);
             }
         }
     }
@@ -1437,6 +2321,7 @@ impl App {
         &self,
         _prompt: String,
         cancel: CancellationToken,
+        pause_gate: Arc<PauseGate>,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         let model = self.model.selection_id();
@@ -1444,6 +2329,9 @@ impl App {
         let mut base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
         base_cfg.temperature = Some(self.temperature);
         base_cfg.request_timeout_ms = timeout_ms;
+        if let Some(tl) = self.effective_thinking_level() {
+            base_cfg.thinking_level = Some(tl);
+        }
         if let Some(spec) = self.provider_registry.resolve(&model) {
             base_cfg.pruning.max_context_tokens = spec.context_window;
         }
@@ -1466,25 +2354,52 @@ impl App {
             .build(
                 ThunderRoot::new(base_cfg.clone())
                     .with_workspace(self.workspace_dir.clone())
+                    .with_extra_roots(self.extra_roots.clone())
                     .with_provider_registry(self.provider_registry.clone()),
             );
+
+        // The ask-user capability is opt-in: a role with `askUser: true` mounts
+        // it, or the user toggles it explicitly with `/ask on`.
+        let ask_enabled = self
+            .active_role
+            .as_ref()
+            .map(|r| r.ask_user)
+            .unwrap_or(self.ask_user_enabled);
+        let root = if ask_enabled {
+            root.with_plugin(AskUserPlugin::new(TuiAskUserTool::new(event_tx.clone())))
+        } else {
+            root
+        };
 
         let session_id = self.conversation.id.clone();
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&base_cfg));
+        let workspace_dir = self.workspace_dir.clone();
+        let active_role = self.active_role.clone();
+        let permission = self.permission;
 
         tokio::spawn(async move {
-            let options = RootRunOptions {
+            // Smart baseline set instead of blanket forcing (mirrors the daemon):
+            // - conversation: one-line prompt cost, keeps session semantics alive
+            // - skills: catalog is compact one-liners; keeps `load_skill` reachable
+            // - mcp: only when this workspace actually configures MCP servers
+            let workspace_has_mcp_config = workspace_dir.join("mcp_servers.json").exists()
+                || workspace_dir.join(".mcp.json").exists();
+
+            let mut options = RootRunOptions {
                 session_id: Some(session_id),
                 custom_client: factory_client,
                 cancellation_token: Some(cancel),
-                forced_plugins: None,
+                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: None,
                 role: None,
-                permission: thunder_agent_loop::types::config::Permission::default(),
-                pause_gate: None,
+                permission,
+                pause_gate: Some(pause_gate),
             };
+            if let Some(role) = active_role {
+                options = options.with_role(role);
+            }
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
@@ -1502,6 +2417,8 @@ impl App {
 
                     match handle.join().await {
                         Ok(res) => {
+                            let finish_reason_dbg = format!("{:?}", res.run_result.finish_reason);
+                            let run_stats = res.run_result.stats.clone();
                             let mut summary = String::new();
                             if !selection.active_plugin_ids.is_empty() {
                                 summary.push_str(&format!(
@@ -1519,6 +2436,8 @@ impl App {
                                 final_text: Some(summary),
                                 authoritative_messages: Some(res.run_result.messages),
                                 raw_messages: res.run_result.raw_messages,
+                                run_stats: Some(run_stats),
+                                finish_reason: Some(finish_reason_dbg),
                             });
                         }
                         Err(err) => {
@@ -1528,6 +2447,8 @@ impl App {
                                 final_text: Some(err.to_string()),
                                 authoritative_messages: None,
                                 raw_messages: None,
+                                run_stats: None,
+                                finish_reason: None,
                             });
                         }
                     }
@@ -1539,6 +2460,8 @@ impl App {
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
                         raw_messages: None,
+                        run_stats: None,
+                        finish_reason: None,
                     });
                 }
             }
@@ -1549,6 +2472,7 @@ impl App {
         &self,
         _prompt: String,
         cancel: CancellationToken,
+        pause_gate: Arc<PauseGate>,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         let model = self.model.selection_id();
@@ -1556,6 +2480,12 @@ impl App {
         let mut config = AgentConfig::new(model.clone()).with_unlimited_turns();
         config.temperature = Some(self.temperature);
         config.request_timeout_ms = timeout_ms;
+        if let Some(tl) = self.effective_thinking_level() {
+            config.thinking_level = Some(tl);
+        }
+        // Capability tier + multi-root jail mirror the host path.
+        config.permission = self.permission;
+        config.extra_workspace_roots = self.extra_roots.clone();
         if let Some(handle) = &self.active_skill {
             let fragment = handle.system_prompt_fragment();
             config.system_prompt = Some(match config.system_prompt.take() {
@@ -1566,6 +2496,8 @@ impl App {
 
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
+        let perm = self.permission;
+        let ws = self.workspace_dir.clone();
 
         tokio::spawn(async move {
             let mut agent = AgentLoop::new(config.clone()).with_id("tui_agent");
@@ -1590,6 +2522,8 @@ impl App {
                             )),
                             authoritative_messages: None,
                             raw_messages: None,
+                            run_stats: None,
+                            finish_reason: None,
                         });
                         return;
                     }
@@ -1598,12 +2532,27 @@ impl App {
             if let Some(client) = client {
                 agent = agent.with_custom_client(client);
             }
-            agent.register_tool(Arc::new(BashTool::default()));
-            agent.register_tool(Arc::new(ReadFileTool::default()));
-            agent.register_tool(Arc::new(WriteFileTool::default()));
-            agent.register_tool(Arc::new(GrepTool::default()));
-            agent.register_tool(Arc::new(FindTool::default()));
-            agent.register_tool(Arc::new(ListDirTool::default()));
+            // Gate by capability tier, exactly like the host path: a denied
+            // tool is never registered, so it never reaches the model.
+            if perm.allows_read() {
+                agent.register_tool(Arc::new(
+                    ReadFileTool::default().with_default_cwd(ws.clone()),
+                ));
+                agent.register_tool(Arc::new(GrepTool::default().with_default_cwd(ws.clone())));
+                agent.register_tool(Arc::new(FindTool::default().with_default_cwd(ws.clone())));
+                agent.register_tool(Arc::new(
+                    ListDirTool::default().with_default_cwd(ws.clone()),
+                ));
+            }
+            if perm.allows_write() {
+                agent.register_tool(Arc::new(
+                    WriteFileTool::default().with_default_cwd(ws.clone()),
+                ));
+            }
+            if perm.allows_exec() {
+                agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
+            }
+            agent = agent.with_pause_gate(pause_gate);
 
             match agent.start(context_input, Some(cancel)) {
                 Ok(mut handle) => {
@@ -1621,12 +2570,16 @@ impl App {
                     match handle.join().await {
                         Ok(result) => {
                             let is_ok = result.finish_reason == FinishReason::Done;
+                            let finish_reason_dbg = format!("{:?}", result.finish_reason);
+                            let run_stats = result.stats.clone();
                             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
                                 agent_id: result.agent_id,
                                 success: is_ok,
                                 final_text: result.final_content,
                                 authoritative_messages: Some(result.messages),
                                 raw_messages: result.raw_messages,
+                                run_stats: Some(run_stats),
+                                finish_reason: Some(finish_reason_dbg),
                             });
                         }
                         Err(err) => {
@@ -1636,6 +2589,8 @@ impl App {
                                 final_text: Some(err.to_string()),
                                 authoritative_messages: None,
                                 raw_messages: None,
+                                run_stats: None,
+                                finish_reason: None,
                             });
                         }
                     }
@@ -1647,6 +2602,8 @@ impl App {
                         final_text: Some(err.to_string()),
                         authoritative_messages: None,
                         raw_messages: None,
+                        run_stats: None,
+                        finish_reason: None,
                     });
                 }
             }
@@ -1654,6 +2611,7 @@ impl App {
     }
 
     pub fn handle_agent_event(&mut self, event: ObservedEvent) {
+        self.record_trace_event(event.clone());
         match event.event {
             AgentEvent::TurnStart { turn, .. } => {
                 self.agent_status = AgentStatus::Thinking;
@@ -1758,6 +2716,8 @@ impl App {
         final_text: Option<String>,
         authoritative_messages: Option<Vec<ChatMessage>>,
         raw_messages: Option<Vec<ChatMessage>>,
+        run_stats: Option<AgentStats>,
+        finish_reason: Option<String>,
     ) {
         // Preserve the raw pre-compaction transcript (if a checkpoint compaction
         // fired) so the working history can be a checkpoint projection while the
@@ -1792,7 +2752,7 @@ impl App {
                             .add_tool_message(&tc.id, res, Some(tc.name.clone()));
                     }
                 }
-            } else if let Some(final_content) = final_text {
+            } else if let Some(final_content) = final_text.clone() {
                 let already_present = self
                     .conversation
                     .messages
@@ -1816,7 +2776,7 @@ impl App {
                 if !self.streaming_delta.is_empty() {
                     Some(std::mem::take(&mut self.streaming_delta))
                 } else {
-                    final_text
+                    final_text.clone()
                 }
             }).unwrap_or_else(|| "Agent execution failed. No available LLM provider or the request was interrupted.".to_string());
 
@@ -1830,7 +2790,225 @@ impl App {
         self.reasoning_delta.clear();
         self.active_tool_calls.clear();
         self.cancel_token = None;
+        self.pause_gate = None;
+
+        // Lifetime usage bookkeeping (additive, mirroring the daemon):
+        // `recalculate_stats` recomputes the working-context estimate, so the
+        // running totals must be accumulated separately or every save resets them.
+        if let Some(stats) = run_stats.as_ref() {
+            let task_tokens = stats.total_prompt_tokens + stats.total_completion_tokens;
+            self.conversation.stats.total_used_tokens = self
+                .conversation
+                .stats
+                .total_used_tokens
+                .saturating_add(task_tokens);
+            self.conversation.stats.turn_count += stats.total_turns;
+            self.conversation.stats.tool_calls_count += stats.total_tool_executions;
+            self.conversation.stats.duration_ms += stats.total_duration_ms;
+        }
+
+        // Persist the run's execution trace (skipped for local UI commands,
+        // which carry no stats).
+        if self.trace_meta.is_some() {
+            let trace_ok = success
+                && finish_reason
+                    .as_deref()
+                    .map(|r| r != "Error" && r != "Cancelled")
+                    .unwrap_or(true);
+            let trace_text = final_text.clone();
+            self.finalize_trace(trace_ok, trace_text.as_deref(), run_stats.as_ref());
+            self.run_is_first_exchange = false;
+        }
+        self.trace_events = None;
+        self.trace_meta = None;
     }
+}
+
+/// Persist one task trace: `<store>/<session>/traces/<task_id>.json`
+/// (same layout as the daemon, so both hosts can read each other's traces).
+async fn save_task_trace(
+    store_root: &Path,
+    session_id: &str,
+    task_id: &str,
+    trace_data: &serde_json::Value,
+) {
+    let trace_dir = store_root.join(session_id).join("traces");
+    let _ = tokio::fs::create_dir_all(&trace_dir).await;
+    let trace_path = trace_dir.join(format!("{task_id}.json"));
+    if let Ok(bytes) = serde_json::to_vec_pretty(trace_data) {
+        let _ = tokio::fs::write(&trace_path, bytes).await;
+    }
+}
+
+/// Load a trace by task id, or the most recent one when `task_id` is `None`.
+async fn load_task_trace(
+    store_root: &Path,
+    session_id: &str,
+    task_id: Option<&str>,
+) -> Option<serde_json::Value> {
+    let trace_dir = store_root.join(session_id).join("traces");
+    if !trace_dir.exists() {
+        return None;
+    }
+
+    let target_path = if let Some(tid) = task_id {
+        trace_dir.join(format!("{tid}.json"))
+    } else {
+        let mut entries = tokio::fs::read_dir(&trace_dir).await.ok()?;
+        let mut latest_path = None;
+        let mut latest_time = std::time::SystemTime::UNIX_EPOCH;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            if p.extension().map(|ext| ext == "json").unwrap_or(false) {
+                if let Ok(meta) = entry.metadata().await {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > latest_time {
+                            latest_time = modified;
+                            latest_path = Some(p);
+                        }
+                    }
+                }
+            }
+        }
+        latest_path?
+    };
+
+    let content = tokio::fs::read(&target_path).await.ok()?;
+    serde_json::from_slice(&content).ok()
+}
+
+/// Index the session's traces (newest first), mirroring the daemon.
+async fn list_session_traces(store_root: &Path, session_id: &str) -> Vec<serde_json::Value> {
+    let trace_dir = store_root.join(session_id).join("traces");
+    let mut results = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&trace_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            if p.extension().map(|ext| ext == "json").unwrap_or(false) {
+                if let Ok(content) = tokio::fs::read(&p).await {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&content) {
+                        results.push(serde_json::json!({
+                            "task_id": val.get("task_id"),
+                            "started_at_ms": val.get("started_at_ms"),
+                            "duration_ms": val.get("duration_ms"),
+                            "finish_reason": val.get("finish_reason"),
+                            "model": val.get("model"),
+                            "prompt": val.get("prompt"),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    results.sort_by(|a, b| {
+        let ta = a.get("started_at_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let tb = b.get("started_at_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        tb.cmp(&ta)
+    });
+    results
+}
+
+/// One timeline line per retained event, best-effort formatted.
+fn format_trace_event(event: &ObservedEvent) -> Option<String> {
+    match &event.event {
+        AgentEvent::TurnStart { turn, .. } => Some(format!("─ turn {turn} started")),
+        AgentEvent::TurnEnd { turn, stats, .. } => Some(format!(
+            "─ turn {turn} ended ({} tool calls, {}ms)",
+            stats.tool_calls_count, stats.duration_ms
+        )),
+        AgentEvent::ToolExecStart { name, .. } => Some(format!("  ⚙ {name} …")),
+        AgentEvent::ToolExecResult { name, result, .. } => Some(format!(
+            "  {} {name} — {}ms{}",
+            if result.is_error { "✖" } else { "✔" },
+            result.duration_ms,
+            if result.truncated { " (truncated)" } else { "" }
+        )),
+        AgentEvent::FileChange {
+            path,
+            action,
+            bytes,
+            ..
+        } => Some(format!(
+            "  📝 {action} {path}{}",
+            bytes.map(|b| format!(" ({b}B)")).unwrap_or_default()
+        )),
+        AgentEvent::TelemetryNotice { layer, action, .. } => {
+            Some(format!("  📡 telemetry {layer}/{action}"))
+        }
+        AgentEvent::ContextCompacted {
+            tokens_before,
+            tokens_after,
+            ..
+        } => Some(format!(
+            "  🗃 context compacted: ~{} → ~{} tokens",
+            tokens_before, tokens_after
+        )),
+        AgentEvent::Error { message, .. } => Some(format!("  ✖ error: {message}")),
+        AgentEvent::LoopComplete { .. }
+        | AgentEvent::TokenDelta { .. }
+        | AgentEvent::ReasoningDelta { .. }
+        | AgentEvent::ToolCallChunk { .. }
+        | AgentEvent::ToolCallReady { .. } => None,
+    }
+}
+
+/// Render a saved trace document as readable markdown.
+pub fn render_trace_markdown(val: &serde_json::Value) -> String {
+    let as_str = |key: &str| {
+        val.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string()
+    };
+    let as_u64 = |key: &str| val.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let mut out = String::from("### 🧾 Task Trace\n\n");
+    out.push_str(&format!(
+        "- **Task**: `{}` · **Session**: `{}`\n",
+        as_str("task_id"),
+        as_str("session_id")
+    ));
+    out.push_str(&format!(
+        "- **Model**: `{}` · **Finish**: {}\n",
+        as_str("model"),
+        as_str("finish_reason")
+    ));
+    out.push_str(&format!(
+        "- **Duration**: {}ms loop / {}ms wall\n",
+        as_u64("duration_ms"),
+        as_u64("wall_duration_ms")
+    ));
+    if let Some(stats) = val.get("stats") {
+        let s = |k: &str| stats.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        out.push_str(&format!(
+            "- **Stats**: {} turns · {} tool calls · ~{}+{} tokens\n",
+            s("total_turns"),
+            s("total_tool_executions"),
+            s("total_prompt_tokens"),
+            s("total_completion_tokens")
+        ));
+    }
+    let prompt = as_str("prompt");
+    if !prompt.is_empty() && prompt != "?" {
+        out.push_str(&format!(
+            "\n**Prompt**: {}\n",
+            thunder_agent_providers::naming::truncate_chars(&prompt, 200)
+        ));
+    }
+
+    out.push_str("\n**Timeline**:\n```\n");
+    if let Some(events) = val.get("events").and_then(|v| v.as_array()) {
+        for ev in events {
+            if let Ok(observed) = serde_json::from_value::<ObservedEvent>(ev.clone()) {
+                if let Some(line) = format_trace_event(&observed) {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out.push_str("```\n");
+    out
 }
 
 fn fallback_model_items() -> Vec<PickerItem> {
