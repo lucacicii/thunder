@@ -106,8 +106,21 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             theme.muted_style(),
         ),
         Span::styled(" | ", theme.muted_style()),
-        Span::styled("Ctrl+C / Esc", Style::default().fg(theme.text_muted)),
-        Span::styled(" Cancel", theme.muted_style()),
+        if app.is_paused() {
+            Span::styled("/unpause resume", Style::default().fg(theme.highlight))
+        } else if app.is_running() {
+            Span::styled(
+                "/pause hold · Esc cancel",
+                Style::default().fg(theme.text_muted),
+            )
+        } else {
+            Span::styled("Ctrl+C / Esc", Style::default().fg(theme.text_muted))
+        },
+        if app.is_paused() {
+            Span::styled(" ⏸", Style::default().fg(theme.error_color))
+        } else {
+            Span::raw("")
+        },
     ];
 
     if let Some((msg, instant)) = &app.status_message {

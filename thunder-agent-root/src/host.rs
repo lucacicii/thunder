@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::tools::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
+use thunder_agent_loop::tools::builtin::{
+    BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
+};
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,

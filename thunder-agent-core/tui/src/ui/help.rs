@@ -103,6 +103,18 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
             ),
             Span::styled("Cancel running agent or dismiss popup", theme.text_style()),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "/pause /unpause",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Hold the running agent at the next tool boundary, then release it",
+                theme.text_style(),
+            ),
+        ]),
         Line::raw(""),
         Line::styled(
             "⚡ SLASH COMMANDS (type / in input box for autocompletion):",
@@ -137,6 +149,76 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
             ),
             Span::styled(
                 "Switch execution mode (plugin host or direct single agent)",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/think [off|low|med|high] ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Set the reasoning effort for this conversation",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/role [id|off]            ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Activate a declarative role (persona + permission tier)",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/permission [read|write|…]",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Set the tool capability tier (read / write / bash)",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/roots [add|remove|clear] ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Grant extra workspace roots for multi-repo tasks",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/ask [on|off]             ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Let the agent ask clarifying questions (terminal modal)",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/trace [list|<task_id>]   ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Inspect execution traces recorded for this session",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/title [text|force]       ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Set the conversation title manually or (re)generate it",
                 theme.muted_style(),
             ),
         ]),

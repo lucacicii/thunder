@@ -24,6 +24,22 @@ pub enum AppEvent {
         /// Raw pre-compaction transcript, present only when checkpoint
         /// compaction fired during the run. Persisted as a sidecar file.
         raw_messages: Option<Vec<thunder_agent_loop::types::message::ChatMessage>>,
+        /// Loop-level lifetime stats for additive bookkeeping and the trace.
+        run_stats: Option<thunder_agent_loop::types::event::AgentStats>,
+        /// Machine-readable finish reason ("Done" / "Error" / …), for the trace.
+        finish_reason: Option<String>,
+    },
+    /// The agent is asking the user a question and is blocked until answered.
+    UserQuestion(crate::ask_user::IncomingQuestion),
+    /// A `/role <id>` lookup finished (role absent/disabled when `None`).
+    RoleResolved {
+        role: Option<thunder_agent_root::roles::RoleSpec>,
+        permission: thunder_agent_loop::types::config::Permission,
+    },
+    /// Background title generation finished.
+    TitleGenerated {
+        session_id: String,
+        result: Result<String, String>,
     },
     /// Request to load a specific session by ID
     LoadSession(String),

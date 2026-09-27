@@ -8,6 +8,7 @@ pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod error;
+pub mod naming;
 pub mod probe;
 pub mod source;
 
@@ -66,5 +67,6 @@ pub mod prelude {
     pub use crate::config::ModelsFile;
     pub use crate::error::ProviderError;
     pub use crate::has_available_model;
+    pub use crate::naming::{clamp_title, clean_generated_title, generate_title, TitleGenError};
     pub use crate::source::ConfigSource;
 }

@@ -3,6 +3,7 @@ pub mod command_popup;
 pub mod header;
 pub mod help;
 pub mod picker_modal;
+pub mod question_modal;
 pub mod sidebar;
 pub mod status_bar;
 pub mod theme;
@@ -13,6 +14,7 @@ use crate::ui::command_popup::render_command_popup;
 use crate::ui::header::render_header;
 use crate::ui::help::render_help_modal;
 use crate::ui::picker_modal::render_picker_modal;
+use crate::ui::question_modal::render_question_modal;
 use crate::ui::status_bar::{render_input, render_status_bar};
 use crate::ui::theme::Theme;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -46,12 +48,17 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     // 5. Render Minimal Status Footer
     render_status_bar(f, app, main_chunks[3], theme);
 
-    // 6. Render Interactive Picker Dropdown Modal if active (top layer)
+    // 6. Render Interactive Picker Dropdown Modal if active
     if app.picker.is_open {
         render_picker_modal(f, app, theme);
     }
 
-    // 7. Render Help Modal Overlay if active
+    // 7. Render the ask_user_question modal (topmost: the agent is blocked on it)
+    if app.pending_question.is_some() {
+        render_question_modal(f, app, theme);
+    }
+
+    // 8. Render Help Modal Overlay if active
     if app.mode == ViewMode::Help {
         render_help_modal(f, f.area(), theme);
     }
