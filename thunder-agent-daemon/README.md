@@ -171,16 +171,42 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ### 在哪里生效
 
-审批门插在 onion 中 `PermissionGuardMiddleware` **之内**、`TransactionMiddleware` **之外**：
+判定只有**一个**入口：`SessionPolicy::decide`。它外面套的每一层都只负责照做。
 
 ```text
-PermissionGuardMiddleware   档位天花板 —— 硬拒绝，不弹窗
-  └─ ApprovalGate           审批询问   ← 新增
-       └─ SecurityGuard / ResourceGuard / Transaction / …
+PermissionGuardMiddleware   唯一判定 + 执行 —— 决定 Allow/Deny/Ask，然后照做
+  └─ SecurityGuard / ResourceGuard / Transaction / …
 ```
 
-档位被拒的调用**根本走不到弹窗**，所以用户无法"批准"绕过档位；
-被拒的调用也**不会创建任何临时文件**。
+这一层的位置是承重的，两条都有测试钉住：
+
+- **档位被拒的调用根本走不到弹窗** —— 用户无法"批准"绕过档位；
+- **被拒的调用不会创建任何临时文件** —— 拒绝发生在事务层之外。
+
+判定顺序本身就是安全属性，同样有测试：**先查档位，再查已记住的规则，最后才看模式**。
+"总是允许"是一次同意的记录，而同意不能扛过天花板被收紧 —— 否则在一个只读 run 里
+`bash(git status)` 的旧规则会继续生效。
+
+### 插件也是同一条路径
+
+TypeScript 插件的 `ctx.exec()` / `ctx.fs.*` 不再自己实现 shell 与写入，而是合成为
+`bash` / `write_file` / `read_file` 工具调用后走**同一条 pipeline**。因此：
+
+- 插件的调用受**模式**与**已记住的规则**约束，和模型调用一致；
+- 受禁用命令表、路径 jail、事务层约束；
+- 需要审批时，弹窗显示请求方插件名。
+
+代价：插件的写入现在会走事务层（产生 `.arp/tmp` 影子文件、保留原文件权限），
+比之前的手写版本更严格 —— 与模型的 `write_file` 一直以来的行为一致。
+
+副作用：`mode: ask` 现在真的管住插件了。这正是这次修复的目的。
+
+### 权限判定只有一张表
+
+工具名 → 能力只有一张表（`ToolEffect::of`）。此前有两张，且不一致：
+`Permission::allows_builtin` 对不认识的名字返回 `true`，于是 `apply_patch`
+（会改文件、不在该表里）在一个只读 run 下被放行。现在未分类的工具按
+"需要写权限"处理，不会仅因为"没人认识"就拿到 shell 权限。
 
 ### 中途切换
 
