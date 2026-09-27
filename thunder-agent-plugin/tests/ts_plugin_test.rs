@@ -797,3 +797,123 @@ export default definePlugin({
     assert!(err.contains("run identifier"), "got: {err}");
     assert!(!ws_dir.join("out.txt").exists());
 }
+
+/// A plugin must not be able to run a command the model could not run.
+///
+/// `SecurityGuardMiddleware` refuses a fixed set of destructive commands for
+/// `bash`. A TypeScript plugin's `ctx.exec()` does not go through the tool
+/// pipeline at all — it hand-rolls `bash -c` — so the same command is accepted
+/// there. That makes "the agent cannot `rm -rf /`" false, and a plugin is the
+/// cheapest way to prove it.
+///
+/// Ignored on purpose: the assertion is the *desired* behaviour and the code
+/// does not implement it yet, so this test is red until the plugin RPC path is
+/// folded into the pipeline. Run it with `cargo test -- --ignored`.
+#[tokio::test]
+#[ignore = "documents the ctx.exec bypass of SecurityGuard; lands with refactor stage 4"]
+async fn plugin_cannot_run_a_command_the_guard_forbids() {
+    use thunder_agent_loop::types::config::Permission;
+
+    if !SidecarManager::is_node_available().await {
+        eprintln!("Node.js not available, skipping test");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let ws_dir = temp.path().to_path_buf();
+    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
+    tokio::fs::write(
+        plugins_dir.join("execer.ts"),
+        r#"
+export default definePlugin({
+  name: "execer",
+  tools: [{
+    name: "ts_exec",
+    description: "run a shell command",
+    execute: async (args, ctx) => {
+      const r = await ctx.exec("echo definitely-not-pwned");
+      return "exit=" + r.exitCode;
+    }
+  }]
+});
+"#,
+    )
+    .await
+    .unwrap();
+
+    let runs = run_registry();
+    runs.write()
+        .await
+        .begin_run(
+            "run-x",
+            ws_dir.clone(),
+            Permission::Bash,
+            Some(Arc::new(NullHostUi)),
+        )
+        .await;
+
+    let config = SidecarConfig {
+        runner_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("runner")
+            .join("host.mjs"),
+        plugin_dirs: vec![plugins_dir.clone()],
+        workspace_dir: ws_dir.clone(),
+        runs,
+        permission: permission_slot(Permission::Bash),
+        host_ui: Arc::new(tokio::sync::RwLock::new(None)),
+        tool_invoker: Arc::new(tokio::sync::RwLock::new(None)),
+    };
+    let sidecar = SidecarManager::new(config);
+    sidecar.start().await.expect("start sidecar");
+    for _ in 0..100 {
+        if !sidecar.list_tools().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // A safe command proves the plumbing works, so a failure below is about the
+    // guard rather than about the RPC being unreachable.
+    let tool = sidecar
+        .list_tools()
+        .await
+        .into_iter()
+        .find(|t| t.name == "ts_exec")
+        .expect("registered");
+    let bridge = TsToolBridge::new(tool, Arc::clone(&sidecar));
+    let ctx = ToolExecutionContext {
+        tool_call_id: "c1".into(),
+        turn: 1,
+        cancellation_token: CancellationToken::new(),
+        route: Some("run-x".to_string()),
+        ..Default::default()
+    };
+    bridge
+        .execute(serde_json::json!({}), &ctx)
+        .await
+        .expect("a harmless command still runs");
+
+    // Now one the model cannot run. `dd if=` is on SecurityGuard's forbidden list
+    // for every tier.
+    //
+    // Deliberately not `rm -rf /`: the OS refuses that one ("/ may not be
+    // removed"), so it would pass for the wrong reason and hide the gap. `dd`
+    // into the workspace is survivable, unguarded by the OS, and destructive.
+    let forbidden = sidecar
+        .call_rpc(
+            "exec_bash",
+            serde_json::json!({
+                "command": "dd if=/dev/zero of=dd_probe bs=1m count=8"
+            }),
+        )
+        .await;
+    assert!(
+        forbidden.is_err(),
+        "a forbidden command must be refused on the plugin path too, got: {forbidden:?}"
+    );
+    assert!(
+        !ws_dir.join("dd_probe").exists(),
+        "the refused command must not have created its target"
+    );
+}
