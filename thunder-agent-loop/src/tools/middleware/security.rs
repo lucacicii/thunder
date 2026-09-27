@@ -486,6 +486,7 @@ mod tests {
             tool_call_id: id.to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         }
     }
 

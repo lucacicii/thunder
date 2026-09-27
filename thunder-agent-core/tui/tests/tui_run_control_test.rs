@@ -184,6 +184,7 @@ async fn resolved_roles_derive_the_permission_tier() {
         description: None,
         persona: thunder_agent_root::roles::Persona::Text("Plan first.".to_string()),
         permission: Permission::Read,
+        mode: Some(thunder_agent_loop::types::policy::PermissionMode::Plan),
         model: None,
         thinking_level: Some("high".to_string()),
         ask_user: true,

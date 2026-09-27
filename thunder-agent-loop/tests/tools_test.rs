@@ -57,7 +57,7 @@ async fn test_tool_registry_and_executor() {
     ];
 
     let results = executor
-        .execute_all(&calls, 1, CancellationToken::new(), None)
+        .execute_all(&calls, 1, CancellationToken::new(), None, None)
         .await;
 
     assert_eq!(results.len(), 2);
@@ -74,6 +74,7 @@ async fn test_bash_tool_execution() {
         tool_call_id: "test_1".to_string(),
         turn: 1,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     };
 
     let res = bash
@@ -147,6 +148,7 @@ fn test_ctx() -> ToolExecutionContext {
         tool_call_id: "grep_test".to_string(),
         turn: 1,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     }
 }
 

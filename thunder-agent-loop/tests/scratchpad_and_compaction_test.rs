@@ -57,8 +57,12 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
     let exec_res = registry
         .execute_tool_call(
             &ToolCall::new_function("call_1", "big_output", "{}"),
-            1,
-            CancellationToken::new(),
+            ToolExecutionContext {
+                tool_call_id: "call_1".to_string(),
+                turn: 1,
+                cancellation_token: CancellationToken::new(),
+                ..Default::default()
+            },
             None,
         )
         .await;
@@ -78,6 +82,7 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
         tool_call_id: "read_1".to_string(),
         turn: 2,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     };
 
     let retrieved = read_tool

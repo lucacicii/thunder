@@ -38,6 +38,7 @@ async fn test_bash_non_interactive_environment() {
         tool_call_id: "test_env".to_string(),
         turn: 1,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     };
 
     let res = bash

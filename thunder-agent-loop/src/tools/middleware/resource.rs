@@ -184,6 +184,7 @@ mod tests {
             tool_call_id: "call_oom_1".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
 
         let res = guard.handle(&call, &ctx, None, Arc::new(DummyNext)).await;
@@ -229,6 +230,7 @@ mod tests {
             tool_call_id: "call_oom_2".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
 
         let res = guard.handle(&call, &ctx, None, Arc::new(DummyNext)).await;

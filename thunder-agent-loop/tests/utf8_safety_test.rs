@@ -39,8 +39,12 @@ async fn test_truncation_with_cjk_content_no_panic() {
     registry
         .execute_tool_call(
             &ToolCall::new_function("call_1", "large_cjk", "{}"),
-            1,
-            CancellationToken::new(),
+            ToolExecutionContext {
+                tool_call_id: "call_1".to_string(),
+                turn: 1,
+                cancellation_token: CancellationToken::new(),
+                ..Default::default()
+            },
             None,
         )
         .await;

@@ -38,6 +38,18 @@ pub struct DaemonService {
     /// Dual key on purpose: the daemon multiplexes concurrent tasks, so a bare
     /// question id could cross-wire two tasks' answers.
     pending_questions: Arc<Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>>,
+    /// Pending `ui_request` dialogs awaiting an `answer_ui`, keyed by the
+    /// server-issued request id.
+    pending_ui: crate::ui::PendingUiRequests,
+    /// The host's user-interaction surface, shared with plugins and with the
+    /// permission approval gate.
+    host_ui: Arc<crate::ui::DaemonHostUi>,
+    /// Per-session approval state: the live mode plus remembered rules.
+    ///
+    /// Session-scoped on purpose. A fresh session must not inherit a previous
+    /// conversation's "always allow", and a mode switch has to outlive the turn
+    /// that issued it.
+    session_policies: Arc<tokio::sync::RwLock<HashMap<String, Arc<SessionPolicy>>>>,
 }
 
 /// Resolution of a pending question.
@@ -118,6 +130,9 @@ impl DaemonService {
             }
         });
 
+        let pending_ui: crate::ui::PendingUiRequests = Arc::new(Mutex::new(HashMap::new()));
+        let host_ui = crate::ui::DaemonHostUi::new(output_tx.clone(), Arc::clone(&pending_ui));
+
         Ok(Self {
             provider_registry: Arc::new(tokio::sync::RwLock::new(registry)),
             store: Arc::new(store),
@@ -129,7 +144,34 @@ impl DaemonService {
             script_plugin,
             client_factory: None,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
+            pending_ui,
+            host_ui,
+            session_policies: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         })
+    }
+
+    /// The approval policy for a session, created on first use.
+    async fn session_policy(
+        &self,
+        session_id: &str,
+        initial: PermissionMode,
+    ) -> Arc<SessionPolicy> {
+        if let Some(existing) = self.session_policies.read().await.get(session_id) {
+            return Arc::clone(existing);
+        }
+        let mut guard = self.session_policies.write().await;
+        Arc::clone(
+            guard
+                .entry(session_id.to_string())
+                .or_insert_with(|| SessionPolicy::new(initial)),
+        )
+    }
+
+    /// The host UI surface, for handing to plugins and to the (future)
+    /// permission approval gate. Scoped per run by the task runner.
+    #[allow(dead_code)]
+    pub fn host_ui(&self) -> Arc<crate::ui::DaemonHostUi> {
+        Arc::clone(&self.host_ui)
     }
 
     /// Safely send a newline-delimited JSON response to stdout
@@ -255,6 +297,7 @@ impl DaemonService {
                 extra_workspace_dirs,
                 thinking_level,
                 role,
+                mode,
             } => {
                 self.handle_run_task(
                     id,
@@ -267,6 +310,7 @@ impl DaemonService {
                     extra_workspace_dirs,
                     thinking_level,
                     role,
+                    mode,
                 )
                 .await;
             }
@@ -284,6 +328,7 @@ impl DaemonService {
                             "aliases": r.aliases,
                             "description": r.description,
                             "permission": r.permission.as_str(),
+                            "mode": r.mode.map(|m| m.as_str()),
                             "persona": r.persona.as_text(),
                             "model": r.model,
                             "thinking_level": r.thinking_level,
@@ -377,6 +422,96 @@ impl DaemonService {
                     data: Some(serde_json::json!({
                         "question_id": question_id,
                         "delivered": delivered
+                    })),
+                    error: None,
+                })
+                .await;
+            }
+
+            DaemonRequest::AnswerUi {
+                id,
+                request_id,
+                value,
+                confirmed,
+                cancelled,
+            } => {
+                // An explicit answer wins over cancellation only when the panel
+                // actually sent one; `confirm` returning false and "dismissed"
+                // stay distinguishable so a caller can log the difference.
+                let response = if cancelled {
+                    UiResponse::Cancelled
+                } else if let Some(confirmed) = confirmed {
+                    UiResponse::Confirmed { confirmed }
+                } else {
+                    UiResponse::Value { value }
+                };
+                let delivered =
+                    crate::ui::deliver_ui_response(&self.pending_ui, &request_id, response).await;
+
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "request_id": request_id,
+                        "delivered": delivered
+                    })),
+                    error: None,
+                })
+                .await;
+            }
+
+            DaemonRequest::SetPermissionMode {
+                id,
+                session_id,
+                mode,
+            } => {
+                match PermissionMode::parse(&mode) {
+                    Some(parsed) => {
+                        // Reuse the session's policy when one exists so a switch
+                        // applies to a task that is already running; otherwise
+                        // create it so the next run inherits the choice.
+                        let policy = self
+                            .session_policy(&session_id, PermissionMode::default())
+                            .await;
+                        policy.set_mode(parsed).await;
+                        info!(session_id = %session_id, mode = parsed.as_str(), "Approval mode switched");
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: true,
+                            data: Some(serde_json::json!({
+                                "session_id": session_id,
+                                "mode": parsed.as_str(),
+                            })),
+                            error: None,
+                        })
+                        .await;
+                    }
+                    None => {
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: false,
+                            data: Some(serde_json::json!({ "valid_modes":
+                                PermissionMode::ALL.map(|m| m.as_str())
+                            })),
+                            error: Some(format!("unknown mode: {mode}")),
+                        })
+                        .await;
+                    }
+                }
+            }
+
+            DaemonRequest::GetPermissionState { id, session_id } => {
+                let policy = self
+                    .session_policy(&session_id, PermissionMode::default())
+                    .await;
+                let mode = policy.mode().await;
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "session_id": session_id,
+                        "mode": mode.as_str(),
+                        "rules": policy.rules().await,
                     })),
                     error: None,
                 })
@@ -590,6 +725,7 @@ impl DaemonService {
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         role_id: Option<String>,
+        mode: Option<String>,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -747,6 +883,35 @@ impl DaemonService {
             );
         }
 
+        // Approval mode precedence: explicit request → the session's current mode
+        // (so a mid-session `set_permission_mode` survives the next turn) → the
+        // role's own mode → `ask`.
+        let requested_mode = match mode.as_deref() {
+            Some(raw) => match PermissionMode::parse(raw) {
+                Some(m) => Some(m),
+                None => {
+                    warn!(mode = %raw, "Unrecognised mode requested; keeping the session's current mode");
+                    None
+                }
+            },
+            None => None,
+        };
+        let policy = self
+            .session_policy(&effective_session_id, PermissionMode::default())
+            .await;
+        let effective_mode = match requested_mode {
+            Some(m) => m,
+            // No explicit request: keep whatever the session is already in, so a
+            // mid-session `set_permission_mode` is not silently reverted here.
+            None => policy.mode().await,
+        };
+        policy.set_mode(effective_mode).await;
+        info!(
+            session_id = %effective_session_id,
+            mode = effective_mode.as_str(),
+            "Approval mode for task"
+        );
+
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
         conversation.workspace = Some(chosen_workspace.clone());
@@ -786,9 +951,17 @@ impl DaemonService {
         // configures servers — otherwise forcing the plugin is pure overhead.
         let workspace_has_mcp_config =
             ws_dir.join("mcp_servers.json").exists() || ws_dir.join(".mcp.json").exists();
+        // A workspace with no plugin files must not pay for a Node sidecar, and
+        // one with plugin files must actually get them.
+        let workspace_has_ts_plugins = has_ts_plugins(Some(&ws_dir));
         let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
+        let host_ui = Arc::clone(&self.host_ui);
+        let run_task_id = task_id.clone();
+        let run_session_id = effective_session_id.clone();
+        let run_policy = Arc::clone(&policy);
+        let run_mode = effective_mode;
 
         // Spawn async task runner
         tokio::spawn(async move {
@@ -806,8 +979,8 @@ impl DaemonService {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
                 // Prompt-cache warming: enabled only when the model declares
                 // both a promptCache lifetime and cost pricing in models.json.
-                base_cfg.prompt_cache_warm = spec
-                    .prompt_cache_warm_settings(chosen_thinking.as_deref());
+                base_cfg.prompt_cache_warm =
+                    spec.prompt_cache_warm_settings(chosen_thinking.as_deref());
             }
 
             // Transport resolution order: injected factory (in-process tests /
@@ -857,12 +1030,25 @@ impl DaemonService {
                 // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
                 // - mcp: only when this workspace actually configures MCP servers
                 // Anything else stays keyword-routed and lightweight.
-                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
+                forced_plugins: Some(baseline_forced_plugins(
+                    workspace_has_mcp_config,
+                    workspace_has_ts_plugins,
+                )),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
                 role: chosen_role.clone(),
                 permission: chosen_permission,
                 pause_gate: Some(pause_gate_for_run),
+                // Tag every dialog this run raises with its task/session, so a
+                // multi-task panel can route the prompt to the right stream.
+                ui: Some(Arc::new(
+                    host_ui.scoped(run_task_id.clone(), Some(run_session_id)),
+                )),
+                mode: Some(run_mode),
+                // `task_id` is unique per run and readable in panel logs, and it
+                // is the key a plugin's reverse RPC is authorised against.
+                route: Some(run_task_id),
+                policy: Some(run_policy),
             };
 
             let initial_messages_count = conversation.messages.len();
@@ -1338,5 +1524,134 @@ mod title_tests {
             first_message_text(&conv, false).as_deref(),
             Some("好的,总结如下")
         );
+    }
+}
+
+#[cfg(test)]
+mod ui_protocol_tests {
+    //! The `ui_request` / `answer_ui` round trip through the real dispatcher.
+    //!
+    //! The unit tests in [`crate::ui`] cover the emitter and the timeout; these
+    //! cover the half that only exists here: a JSON frame off the wire becoming a
+    //! parsed [`DaemonRequest`], and that request actually releasing the caller
+    //! that is parked on a dialog.
+
+    use super::*;
+    use crate::protocol::DaemonRequest;
+
+    async fn service() -> Arc<DaemonService> {
+        Arc::new(
+            DaemonService::new(Some(std::env::current_dir().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    /// Parse a frame the way `main.rs` does, so a serde regression in the
+    /// protocol enum fails here rather than in a panel.
+    fn parse(raw: serde_json::Value) -> DaemonRequest {
+        serde_json::from_str(&raw.to_string()).expect("frame must deserialize")
+    }
+
+    /// Wait for the dialog to register itself, then hand back its id.
+    async fn await_request_id(svc: &DaemonService) -> String {
+        for _ in 0..200 {
+            if let Some(id) = svc.pending_ui.lock().await.keys().next().cloned() {
+                return id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no ui_request was registered");
+    }
+
+    #[tokio::test]
+    async fn answer_ui_releases_a_waiting_dialog() {
+        let svc = service().await;
+
+        let asker = {
+            let ui = Arc::clone(&svc.host_ui);
+            tokio::spawn(async move {
+                ui.select_owned(
+                    "允许执行 rm -rf build/？",
+                    vec!["允许一次".into(), "拒绝".into()],
+                )
+                .await
+            })
+        };
+
+        let request_id = await_request_id(&svc).await;
+        // The daemon mints the id; a client can only echo it.
+        assert!(request_id.starts_with("ui_"), "got {request_id}");
+
+        svc.handle_request(parse(serde_json::json!({
+            "method": "answer_ui",
+            "id": "req-ui-1",
+            "request_id": request_id,
+            "value": "拒绝",
+        })))
+        .await;
+
+        assert_eq!(asker.await.unwrap().as_deref(), Some("拒绝"));
+        assert!(
+            svc.pending_ui.lock().await.is_empty(),
+            "the slot must be released, not leaked"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_no_is_routed_as_a_refusal_not_a_cancellation() {
+        let svc = service().await;
+        let asker = {
+            let ui = Arc::clone(&svc.host_ui);
+            tokio::spawn(async move { ui.confirm("Proceed?", "writes 3 files").await })
+        };
+        let request_id = await_request_id(&svc).await;
+
+        svc.handle_request(parse(serde_json::json!({
+            "method": "answer_ui",
+            "id": "req-ui-2",
+            "request_id": request_id,
+            "confirmed": false,
+        })))
+        .await;
+
+        assert!(!asker.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_answer_for_an_unknown_id_is_inert() {
+        let svc = service().await;
+        // No dialog is pending, so this must be reported and forgotten rather
+        // than parking or panicking.
+        svc.handle_request(parse(serde_json::json!({
+            "method": "answer_ui",
+            "id": "req-ui-3",
+            "request_id": "ui_does_not_exist",
+            "value": "允许",
+        })))
+        .await;
+        assert!(svc.pending_ui.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dismissal_frame_parses_to_the_cancelled_shape() {
+        let req = parse(serde_json::json!({
+            "method": "answer_ui",
+            "request_id": "ui_x",
+            "cancelled": true,
+        }));
+        match req {
+            DaemonRequest::AnswerUi {
+                cancelled,
+                value,
+                confirmed,
+                ..
+            } => {
+                assert!(cancelled);
+                assert!(value.is_none());
+                assert!(confirmed.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }

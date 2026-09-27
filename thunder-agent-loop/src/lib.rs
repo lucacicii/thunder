@@ -38,9 +38,20 @@ pub mod prelude {
     };
     pub use crate::types::error::AgentError;
     pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
+    pub use crate::types::invoke::{
+        empty_tool_invoker_slot, NullToolInvoker, PipelineToolInvoker, ToolInvocationContext,
+        ToolInvoker, ToolInvokerSlot,
+    };
     pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};
+    pub use crate::types::policy::{
+        call_hash, describe_call, AllowRule, ApprovalRequest, Decision, PermissionMode,
+        SessionPolicy, ToolEffect, ALLOW_ALWAYS, ALLOW_ONCE, DENY, DENY_WITH_REASON,
+    };
     pub use crate::types::tool::{
         AgentTool, FunctionDefinition, ToolDefinition, ToolExecutionContext, ToolExecutionResult,
+    };
+    pub use crate::types::ui::{
+        HostUi, NotifyLevel, NullHostUi, UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT,
     };
 }
 

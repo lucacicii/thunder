@@ -53,9 +53,15 @@ impl AgentTool for TsToolBridge {
             return Err("Execution cancelled before TS tool invocation".to_string());
         }
 
+        // `route` is the authorisation key for every RPC this plugin makes: the
+        // sidecar uses it to look up *this run's* tier, workspace, UI and tool
+        // pipeline. `sessionId` rides along so a plugin sees its real session
+        // rather than the "default" placeholder it used to get.
         let context_json = serde_json::json!({
             "callId": ctx.tool_call_id,
             "turn": ctx.turn,
+            "sessionId": ctx.route,
+            "route": ctx.route,
         });
 
         self.sidecar

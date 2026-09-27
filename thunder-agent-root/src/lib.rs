@@ -19,7 +19,9 @@ pub mod prelude {
     #[cfg(feature = "skills")]
     pub use crate::plugins::skills::*;
     #[cfg(feature = "conversation")]
-    pub use crate::plugins::standard::{baseline_forced_plugins, StandardHostBuilder};
+    pub use crate::plugins::standard::{
+        baseline_forced_plugins, has_ts_plugins, StandardHostBuilder,
+    };
     #[cfg(feature = "conversation")]
     pub use crate::plugins::ConversationPlugin;
     pub use crate::registry::{ActivePluginSet, PluginRegistry};

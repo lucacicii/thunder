@@ -40,6 +40,7 @@ impl ToolExecutor {
         Self { registry, pipeline }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_configured_pipeline(
         registry: ToolRegistry,
         workspace_root: std::path::PathBuf,
@@ -47,6 +48,7 @@ impl ToolExecutor {
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
         permission: crate::types::config::Permission,
+        approval: Option<Arc<dyn ToolMiddleware>>,
     ) -> Self {
         let pipeline = ToolPipeline::configured(
             workspace_root,
@@ -55,6 +57,7 @@ impl ToolExecutor {
             scratchpad,
             cfg,
             permission,
+            approval,
         );
         Self { registry, pipeline }
     }
@@ -80,18 +83,60 @@ impl ToolExecutor {
         &self.pipeline
     }
 
+    /// Execute a single call through the full pipeline with a caller-supplied
+    /// context.
+    ///
+    /// Preferred over [`ToolExecutor::execute_one`] whenever the context carries
+    /// something the pipeline must not lose — notably `caller`, which is how an
+    /// approval dialog knows a plugin asked rather than the model. Silently
+    /// rebuilding the context would strip that attribution.
+    pub async fn execute_with_context(
+        &self,
+        call: &ToolCall,
+        ctx: ToolExecutionContext,
+        custom_timeout: Option<Duration>,
+    ) -> ToolExecutionResult {
+        self.pipeline.execute(call, &ctx, custom_timeout).await
+    }
+
+    /// Execute a single call through the full pipeline.
+    ///
+    /// Same layers, same guards as [`ToolExecutor::execute_all`] — which is
+    /// exactly why a plugin can use this without becoming a way around them.
+    pub async fn execute_one(
+        &self,
+        call: &ToolCall,
+        turn: usize,
+        cancellation_token: CancellationToken,
+        custom_timeout: Option<Duration>,
+    ) -> ToolExecutionResult {
+        let ctx = ToolExecutionContext {
+            tool_call_id: call.id.clone(),
+            turn,
+            cancellation_token,
+            ..Default::default()
+        };
+        self.execute_with_context(call, ctx, custom_timeout).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_all(
         &self,
         tool_calls: &[ToolCall],
         turn: usize,
         cancellation_token: CancellationToken,
+        route: Option<String>,
         custom_timeout: Option<Duration>,
     ) -> Vec<ExecutedToolResult> {
         if tool_calls.is_empty() {
             return Vec::new();
         }
 
+        // Shared across the parallel futures, so each one clones the string
+        // rather than moving it out of the closure.
+        let route = route.map(Arc::new);
         let futures = tool_calls.iter().map(|tc| {
+            let route = route.clone();
             let pipeline = self.pipeline.clone();
             let tc_clone = tc.clone();
             let token = cancellation_token.clone();
@@ -101,6 +146,8 @@ impl ToolExecutor {
                     tool_call_id: tc_clone.id.clone(),
                     turn,
                     cancellation_token: token,
+                    route: route.as_ref().map(|r| r.as_str().to_string()),
+                    ..Default::default()
                 };
                 let res = pipeline.execute(&tc_clone, &ctx, custom_timeout).await;
                 ExecutedToolResult {

@@ -118,12 +118,18 @@ async fn warms_while_streaming_then_stops_when_idle_economics_fail() {
     // First refresh fires (streaming phase, probability 1): 50k tokens at
     // sonnet-like pricing clears the $0.05 expected-savings gate.
     let seen = Arc::clone(&replays);
-    wait_until("first warm replay", move || seen.load(Ordering::SeqCst) >= 1).await;
+    wait_until("first warm replay", move || {
+        seen.load(Ordering::SeqCst) >= 1
+    })
+    .await;
 
     // The run settles: idle economics (15% continuation) drop the same prompt
     // below the gate, so the next scheduled refresh stops the warmer.
     warmer::mark_idle("warm-sess");
-    wait_until("warmer stops on idle economics", || !warmer::is_active("warm-sess")).await;
+    wait_until("warmer stops on idle economics", || {
+        !warmer::is_active("warm-sess")
+    })
+    .await;
     assert_eq!(
         replays.load(Ordering::SeqCst),
         1,

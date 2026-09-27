@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thunder_agent_loop::types::config::Permission;
+use thunder_agent_loop::types::policy::PermissionMode;
 use tracing::{debug, warn};
 
 /// Role persona body.
@@ -75,9 +76,23 @@ pub struct RoleSpec {
     /// System-prompt body injected ahead of the base prompt.
     #[serde(default)]
     pub persona: Persona,
-    /// Tool capability tier. This is what the host enforces.
+    /// Tool capability tier — the *ceiling*. This is what the host enforces.
     #[serde(default)]
     pub permission: Permission,
+    /// Approval mode, i.e. how often this role stops to ask.
+    ///
+    /// Separate from `permission` on purpose: the tier decides what is possible,
+    /// the mode decides what needs a human. A mode can only narrow the tier
+    /// (`plan` clips it to read-only), so `{"permission":"read","mode":"yolo"}`
+    /// is still read-only — by design, not by accident.
+    #[serde(
+        default,
+        rename = "mode",
+        alias = "permissionMode",
+        alias = "permission_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mode: Option<PermissionMode>,
     /// Optional per-role model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

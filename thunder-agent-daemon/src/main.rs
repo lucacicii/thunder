@@ -8,6 +8,7 @@ mod ask_user;
 mod mock;
 mod protocol;
 mod service;
+mod ui;
 
 use protocol::{DaemonRequest, DaemonResponse};
 use service::DaemonService;

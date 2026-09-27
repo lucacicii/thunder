@@ -42,6 +42,60 @@ pub struct ToolExecutionContext {
     pub tool_call_id: String,
     pub turn: usize,
     pub cancellation_token: CancellationToken,
+    /// Who initiated this call, when it did not come from the model.
+    ///
+    /// `None` means the model asked for it — the normal case. A plugin invoking
+    /// a tool on its own initiative sets this to its own id, so anything that
+    /// surfaces the call to a human (notably the approval gate) can say *who* is
+    /// asking. Without it a plugin's request is indistinguishable from the
+    /// model's, and a user approving "执行 bash" has no way to know a plugin
+    /// asked rather than the assistant.
+    pub caller: Option<String>,
+    /// Which run this call belongs to, for services that are shared across runs.
+    ///
+    /// The TypeScript sidecar is a single Node process serving every concurrent
+    /// run, so a reverse RPC from a plugin has no way to tell whose authority it
+    /// is spending. Carrying the route on the call lets the host look up *that
+    /// run's* permission tier, host UI and tool pipeline — instead of whichever
+    /// run happened to initialise last.
+    ///
+    /// This is a correctness field, not a label: the pipeline it selects holds
+    /// the workspace root and the path jail, so misrouting it would let one run's
+    /// plugin write inside another run's workspace.
+    pub route: Option<String>,
+}
+
+impl Default for ToolExecutionContext {
+    fn default() -> Self {
+        Self {
+            tool_call_id: String::new(),
+            turn: 0,
+            // A fresh, never-cancelled token: an unowned context has no owner to
+            // cancel it. Callers that have a real signal set it explicitly.
+            cancellation_token: CancellationToken::new(),
+            caller: None,
+            route: None,
+        }
+    }
+}
+
+impl ToolExecutionContext {
+    /// Tag this call as plugin-initiated, for human-facing surfaces.
+    pub fn with_caller(mut self, caller: impl Into<String>) -> Self {
+        self.caller = Some(caller.into());
+        self
+    }
+
+    /// Tag this call as belonging to a run.
+    pub fn with_route(mut self, route: impl Into<String>) -> Self {
+        self.route = Some(route.into());
+        self
+    }
+
+    /// A short "who is asking" label, empty when the model is the caller.
+    pub fn caller_label(&self) -> &str {
+        self.caller.as_deref().unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

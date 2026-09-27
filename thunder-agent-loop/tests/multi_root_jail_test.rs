@@ -24,6 +24,7 @@ fn ctx(id: &str) -> ToolExecutionContext {
         tool_call_id: id.to_string(),
         turn: 1,
         cancellation_token: CancellationToken::new(),
+        ..Default::default()
     }
 }
 
@@ -43,6 +44,7 @@ async fn write_file_lands_in_extra_root_via_transaction() {
         None,
         &MiddlewareConfig::default(),
         Permission::Bash,
+        None,
     );
 
     // Absolute write into the referenced repository.

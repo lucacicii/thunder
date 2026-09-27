@@ -26,6 +26,9 @@ pub struct PermissionGuardMiddleware {
 }
 
 impl PermissionGuardMiddleware {
+    /// Layer name, also the anchor the approval gate is spliced behind.
+    pub const NAME: &'static str = "PermissionGuardMiddleware";
+
     pub fn new(permission: Permission) -> Self {
         Self {
             permission,
@@ -55,7 +58,7 @@ impl PermissionGuardMiddleware {
 #[async_trait]
 impl ToolMiddleware for PermissionGuardMiddleware {
     fn name(&self) -> &str {
-        "PermissionGuardMiddleware"
+        Self::NAME
     }
 
     async fn handle(
@@ -155,6 +158,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         }
     }
 

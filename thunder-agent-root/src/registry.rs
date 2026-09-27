@@ -141,6 +141,14 @@ impl ActivePluginSet {
         Ok(())
     }
 
+    /// Dispatch `on_run_ready` to all active plugins.
+    pub async fn dispatch_ready(&self, ctx: &PluginContext) -> Result<(), PluginError> {
+        for plugin in &self.plugins {
+            plugin.on_run_ready(ctx).await?;
+        }
+        Ok(())
+    }
+
     /// Dispatch lifecycle `on_event` to all active plugins.
     pub async fn dispatch_event(&self, event: &ObservedEvent, ctx: &PluginContext) {
         for plugin in &self.plugins {

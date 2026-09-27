@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::ObservedEvent;
+use thunder_agent_loop::types::invoke::ToolInvokerSlot;
 use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::AgentRunResult;
 use tokio_util::sync::CancellationToken;
 
@@ -80,12 +83,73 @@ impl PluginManifest {
     }
 }
 
+/// The host's user-interaction surface for this run.
+///
+/// Defaults to [`thunder_agent_loop::types::ui::NullHostUi`], so an embedded
+/// host without a panel still behaves correctly: every dialog resolves as
+/// cancelled, which callers must read as "denied".
+///
+/// Handed over as a trait object, so it is excluded from the derived `Debug`
+/// (implementations are transports, not data).
+pub struct HostUiHandle(pub Arc<dyn HostUi>);
+
+impl std::fmt::Debug for HostUiHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostUiHandle(..)")
+    }
+}
+
+impl Clone for HostUiHandle {
+    fn clone(&self) -> Self {
+        HostUiHandle(Arc::clone(&self.0))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginContext {
     pub session_id: String,
     pub workspace_dir: Option<PathBuf>,
     pub scratch_dir: Option<PathBuf>,
     pub cancellation_token: CancellationToken,
+    /// Capability tier of the run this context belongs to.
+    ///
+    /// The host is the authority on permissions; plugins inherit. Anything a
+    /// plugin does outside the loop's tool pipeline (a TypeScript plugin's
+    /// `ctx.exec()` / `ctx.fs.writeFile()`) is gated by this value, so it must
+    /// reflect the *current* run rather than a process-wide default.
+    pub permission: Permission,
+    /// The host's user-interaction surface for this run.
+    ///
+    /// Defaults to [`thunder_agent_loop::types::ui::NullHostUi`], so an embedded
+    /// host without a panel still behaves correctly: every dialog resolves as
+    /// cancelled, which callers must read as "denied".
+    pub ui: HostUiHandle,
+    /// Identifies this run among concurrent runs.
+    ///
+    /// Services shared across runs — the TypeScript sidecar above all — are
+    /// keyed by this, so a plugin call is authorised against the run that made
+    /// it rather than whichever run registered last.
+    pub route: Option<String>,
+    /// The run's tool invoker, for `ctx.callTool`.
+    ///
+    /// Empty at construction because the plugin host is initialised *before* the
+    /// agent exists: the invoker can only be built once every tool is
+    /// registered. The host fills it, then dispatches
+    /// [`ThunderPlugin::on_run_ready`].
+    ///
+    /// Wrapped so the derived `Debug` keeps working — a trait object is not
+    /// `Debug`.
+    pub tools: ToolInvokerHandle,
+}
+
+/// Newtype over [`ToolInvokerSlot`], excluded from `Debug` like [`HostUiHandle`].
+#[derive(Clone)]
+pub struct ToolInvokerHandle(pub ToolInvokerSlot);
+
+impl std::fmt::Debug for ToolInvokerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolInvokerHandle(..)")
+    }
 }
 
 impl PluginContext {
@@ -95,6 +159,10 @@ impl PluginContext {
             workspace_dir: None,
             scratch_dir: None,
             cancellation_token: CancellationToken::new(),
+            permission: Permission::default(),
+            ui: HostUiHandle(Arc::new(thunder_agent_loop::types::ui::NullHostUi)),
+            route: None,
+            tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
         }
     }
 
@@ -111,6 +179,40 @@ impl PluginContext {
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation_token = token;
         self
+    }
+
+    /// Set the capability tier inherited by this run's plugins.
+    pub fn with_permission(mut self, permission: Permission) -> Self {
+        self.permission = permission;
+        self
+    }
+
+    /// Attach the host UI this run's plugins raise dialogs through.
+    pub fn with_ui(mut self, ui: Arc<dyn HostUi>) -> Self {
+        self.ui = HostUiHandle(ui);
+        self
+    }
+
+    /// Attach the tool-invoker slot this run's plugins dispatch through.
+    pub fn with_tool_slot(mut self, tools: ToolInvokerSlot) -> Self {
+        self.tools = ToolInvokerHandle(tools);
+        self
+    }
+
+    /// Identify this run, for services shared across concurrent runs.
+    pub fn with_route(mut self, route: impl Into<String>) -> Self {
+        self.route = Some(route.into());
+        self
+    }
+
+    /// The tool-invoker slot, for handing to a plugin host.
+    pub fn tool_slot(&self) -> ToolInvokerSlot {
+        Arc::clone(&self.tools.0)
+    }
+
+    /// The host UI, as a shareable trait object.
+    pub fn ui(&self) -> Arc<dyn HostUi> {
+        Arc::clone(&self.ui.0)
     }
 }
 
@@ -131,6 +233,17 @@ pub trait ThunderPlugin: Send + Sync {
 
     /// Lifecycle hook: Called before the root execution starts.
     async fn on_init(&self, _ctx: &PluginContext) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    /// Lifecycle hook: Called once every tool is registered and the agent's
+    /// pipeline is final.
+    ///
+    /// Split from [`ThunderPlugin::on_init`] because a plugin host needs two
+    /// different things at two different times: the run's *identity and policy*
+    /// before the agent exists, and its *tool pipeline* after. A plugin that
+    /// exposes other tools needs both, keyed by [`PluginContext::route`].
+    async fn on_run_ready(&self, _ctx: &PluginContext) -> Result<(), PluginError> {
         Ok(())
     }
 

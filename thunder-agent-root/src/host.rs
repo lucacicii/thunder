@@ -10,7 +10,13 @@ use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_agent_loop::tools::builtin::{
     BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
 };
+use thunder_agent_loop::tools::middleware::ApprovalGate;
 use thunder_agent_loop::types::config::Permission;
+use thunder_agent_loop::types::invoke::{
+    empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
+};
+use thunder_agent_loop::types::policy::{PermissionMode, SessionPolicy};
+use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
@@ -34,6 +40,25 @@ pub struct RootRunOptions {
     /// Optional cooperative pause gate forwarded to the agent unit, letting the
     /// host freeze the run at a tool boundary and resume it later.
     pub pause_gate: Option<Arc<thunder_agent_loop::core::pause::PauseGate>>,
+    /// Per-run override of the host UI. Hosts pass a task-scoped handle so the
+    /// panel can attribute a dialog to the run that raised it; `None` falls back
+    /// to the root's [`ThunderRoot::with_host_ui`] surface.
+    pub ui: Option<Arc<dyn HostUi>>,
+    /// How intrusive this run may be before it stops asking.
+    ///
+    /// Narrowing only: the mode can clip `permission` (plan mode) and decide what
+    /// needs a prompt, but it can never raise the tier.
+    pub mode: Option<PermissionMode>,
+    /// Explicit run identifier. Defaults to a generated one.
+    ///
+    /// Hosts pass their own (the daemon uses `task_id`) so the id is meaningful
+    /// in logs and panel routing. It must be unique among *concurrent* runs: it
+    /// is the key that decides which run's authority a plugin call spends.
+    pub route: Option<String>,
+    /// Session-scoped approval state. Hosts pass the *same* policy across every
+    /// run of a session so "always allow" rules and mid-session mode switches
+    /// survive a turn; `None` creates a fresh one for this run only.
+    pub policy: Option<Arc<SessionPolicy>>,
 }
 
 impl Default for RootRunOptions {
@@ -48,6 +73,10 @@ impl Default for RootRunOptions {
             role: None,
             permission: Permission::default(),
             pause_gate: None,
+            ui: None,
+            mode: None,
+            route: None,
+            policy: None,
         }
     }
 }
@@ -101,6 +130,9 @@ impl RootRunHandle {
     }
 }
 
+/// Source of per-run route ids, so two runs of one session never collide.
+static RUN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct ThunderRoot {
     config: AgentConfig,
     registry: PluginRegistry,
@@ -112,6 +144,11 @@ pub struct ThunderRoot {
     scratch_root: PathBuf,
     provider_registry: ProviderRegistry,
     active_model: ModelRef,
+    /// Default host UI handed to runs that do not override it per-run.
+    ///
+    /// Defaults to `NullHostUi`: no panel, every dialog cancelled, every caller
+    /// degrades to its safe branch.
+    host_ui: Arc<dyn HostUi>,
 }
 
 impl ThunderRoot {
@@ -128,7 +165,17 @@ impl ThunderRoot {
             scratch_root,
             provider_registry: ProviderRegistry::default(),
             active_model,
+            host_ui: Arc::new(thunder_agent_loop::types::ui::NullHostUi),
         }
+    }
+
+    /// Provide the host's user-interaction surface (dialogs, notifications).
+    ///
+    /// A run may override it with [`RootRunOptions::ui`] — typically to attach a
+    /// task id so a panel can route the dialog to the right run.
+    pub fn with_host_ui(mut self, ui: Arc<dyn HostUi>) -> Self {
+        self.host_ui = ui;
+        self
     }
 
     pub async fn with_providers(mut self) -> Self {
@@ -268,6 +315,14 @@ impl ThunderRoot {
 
         let cancel = options.cancellation_token.unwrap_or_default();
 
+        // A stable, unique id for this *run* (not this session — several tasks
+        // can share one). Everything a plugin can reach is authorised against
+        // the run it belongs to, and the sidecar is shared by all of them.
+        let route = options.route.clone().unwrap_or_else(|| {
+            let seq = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("run_{}_{}", session_id, seq)
+        });
+
         // 1. Select active plugins — session-locked: the first message decides
         // for the whole session so the combined prompt + toolset stay stable.
         let selection = if let Some(forced) = options.forced_plugins {
@@ -293,8 +348,50 @@ impl ThunderRoot {
             .registry
             .create_active_set(&selection.active_plugin_ids);
 
+        // 1b. Resolve the approval policy for this run.
+        //
+        // Two rules, in this order:
+        //   * the role's tier is the ceiling; the mode may only clip it
+        //     (`PermissionMode::effective`), so no mode can grant a right the
+        //     role did not already have;
+        //   * an explicit `RunTask.mode` beats the role's own mode, so a panel
+        //     can switch modes without editing `roles.jsonl`.
+        let mode = options
+            .mode
+            .or_else(|| options.role.as_ref().and_then(|r| r.mode))
+            .unwrap_or_default();
+        let effective_permission = mode.effective(options.permission);
+        let policy = options
+            .policy
+            .clone()
+            .unwrap_or_else(|| SessionPolicy::new(mode));
+        policy.set_mode(mode).await;
+        let ui = options
+            .ui
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.host_ui));
+
+        info!(
+            session_id = %session_id,
+            role_tier = ?options.permission,
+            mode = mode.as_str(),
+            effective_tier = ?effective_permission,
+            "Resolved permission policy"
+        );
+
         // 2. Prepare Plugin Context
-        let mut ctx = PluginContext::new(&session_id).with_cancellation(cancel.clone());
+        // The permission tier is carried here so every plugin — including the
+        // TypeScript sidecar, whose `ctx.exec()` / `ctx.fs.writeFile()` bypass
+        // the loop's tool pipeline — inherits the *run's* ceiling instead of a
+        // process-wide default.
+        // Filled in after the agent exists — see the note at the fill site.
+        let tool_slot: ToolInvokerSlot = empty_tool_invoker_slot();
+        let mut ctx = PluginContext::new(&session_id)
+            .with_cancellation(cancel.clone())
+            .with_permission(effective_permission)
+            .with_ui(Arc::clone(&ui))
+            .with_route(route.clone())
+            .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
             ctx = ctx.with_workspace(ws.clone());
         }
@@ -337,9 +434,12 @@ impl ThunderRoot {
             agent_cfg.workspace_dir = Some(ws.clone());
         }
         agent_cfg.extra_workspace_roots = self.extra_roots.clone();
-        // A role narrows the capability tier. The host is the authority here,
-        // never the plugin layer.
-        agent_cfg.permission = options.permission;
+        // Tags every tool call, which is how a plugin's reverse RPC finds this
+        // run's services instead of another run's.
+        agent_cfg.route = Some(route.clone());
+        // A role narrows the capability tier, and the mode may narrow it further
+        // (plan mode). The host is the authority here, never the plugin layer.
+        agent_cfg.permission = effective_permission;
         let mut combined_system_prompt = combined_system_prompt;
         if let Some(role) = &options.role {
             if !role.persona.is_empty() {
@@ -382,6 +482,15 @@ impl ThunderRoot {
         }
 
         let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
+
+        // The human-approval layer. Installed for every run that has a mode
+        // other than the no-prompt default, so a headless embedder pays nothing
+        // for a gate that can only ever say "yes".
+        if mode != PermissionMode::Yolo {
+            let gate =
+                ApprovalGate::new(Arc::clone(&policy), Arc::clone(&ui), effective_permission);
+            agent = agent.with_approval_gate(gate);
+        }
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);
@@ -449,6 +558,27 @@ impl ThunderRoot {
         for tool in active_set.collect_tools() {
             agent.register_tool(tool);
         }
+
+        // Now that every tool is registered, hand the plugin host an invoker
+        // that dispatches through *this* pipeline.
+        //
+        // Ordering matters twice over:
+        //   * the snapshot is taken here because `register_tool` rebuilds the
+        //     pipeline, so an earlier snapshot would miss later registrations;
+        //   * dispatching through the pipeline — not the bare registry — is what
+        //     makes a plugin-initiated call subject to the same tier, jail,
+        //     transaction and approval gate as a model-initiated one.
+        {
+            let mut slot = tool_slot.write().await;
+            *slot = Some(Arc::new(
+                PipelineToolInvoker::new(agent.tool_executor().clone())
+                    .with_turn(1)
+                    .with_ui(Arc::clone(&ui)),
+            ));
+        }
+        // Phase two of the plugin handshake: the pipeline now exists, so plugins
+        // that expose tools can be given an invoker for *this* run.
+        active_set.dispatch_ready(&ctx).await?;
 
         // Forward the host's pause gate so the unit can park at tool boundaries.
         if let Some(gate) = &options.pause_gate {

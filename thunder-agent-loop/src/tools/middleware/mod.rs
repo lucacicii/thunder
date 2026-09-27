@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod output;
 pub mod permission_guard;
 pub mod resource;
@@ -5,6 +6,7 @@ pub mod security;
 pub mod telemetry;
 pub mod transaction;
 
+pub use approval::ApprovalGate;
 pub use output::OutputPostProcessorMiddleware;
 pub use permission_guard::PermissionGuardMiddleware;
 pub use resource::ResourceGuardMiddleware;
@@ -73,7 +75,8 @@ impl ToolHandler for RegistryTerminalHandler {
         timeout: Option<Duration>,
     ) -> ToolExecutionResult {
         self.registry
-            .execute_tool_call(call, ctx.turn, ctx.cancellation_token.clone(), timeout)
+            // The caller's own context, so `caller` and `route` survive the hop.
+            .execute_tool_call(call, ctx.clone(), timeout)
             .await
     }
 }
@@ -137,10 +140,16 @@ impl ToolPipeline {
             scratchpad,
             &crate::types::config::MiddlewareConfig::default(),
             crate::types::config::Permission::default(),
+            None,
         )
     }
 
     /// Assembles an Onion Middleware Pipeline adhering to caller's `MiddlewareConfig`.
+    ///
+    /// `approval` is spliced in directly after the permission guard — see
+    /// [`ToolPipeline::insert_middleware_after`] for why that position is load
+    /// bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn configured(
         workspace_root: std::path::PathBuf,
         extra_workspace_roots: &[std::path::PathBuf],
@@ -148,6 +157,7 @@ impl ToolPipeline {
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
         permission: crate::types::config::Permission,
+        approval: Option<Arc<dyn ToolMiddleware>>,
     ) -> Self {
         let max_output_bytes = 64 * 1024;
         let terminal: Arc<dyn ToolHandler> = if cfg.enable_output_post_processor {
@@ -183,6 +193,18 @@ impl ToolPipeline {
                 scratchpad,
             )));
         }
+        if let Some(gate) = approval {
+            // If the guard were ever removed there would be no tier check and
+            // the gate would silently become the only thing between the model and
+            // the shell. Refuse to install instead of degrading quietly.
+            if !pipeline
+                .insert_middleware_after(permission_guard::PermissionGuardMiddleware::NAME, gate)
+            {
+                tracing::error!(
+                    "Approval gate NOT installed: permission guard absent from the pipeline"
+                );
+            }
+        }
         pipeline
     }
 
@@ -193,6 +215,27 @@ impl ToolPipeline {
 
     pub fn add_middleware(&mut self, mw: Arc<dyn ToolMiddleware>) {
         self.middlewares.push(mw);
+    }
+
+    /// Insert `mw` immediately after the middleware named `anchor`.
+    ///
+    /// Position is security-relevant, which is why appending is not enough: the
+    /// approval gate must sit *inside* `PermissionGuardMiddleware` (so a tier
+    /// denial still short-circuits) but *outside* `TransactionMiddleware` (so a
+    /// refused call never stages a temp file it will not use).
+    ///
+    /// Returns `false` when the anchor is absent, leaving the stack untouched.
+    pub fn insert_middleware_after(&mut self, anchor: &str, mw: Arc<dyn ToolMiddleware>) -> bool {
+        let Some(idx) = self.middlewares.iter().position(|m| m.name() == anchor) else {
+            return false;
+        };
+        self.middlewares.insert(idx + 1, mw);
+        true
+    }
+
+    /// Whether a middleware with this name is in the stack.
+    pub fn has_middleware(&self, name: &str) -> bool {
+        self.middlewares.iter().any(|m| m.name() == name)
     }
 
     pub fn middlewares(&self) -> &[Arc<dyn ToolMiddleware>] {
@@ -283,6 +326,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
 
         let res = pipeline.execute(&call, &ctx, None).await;

@@ -493,6 +493,7 @@ mod tests {
             tool_call_id: "call_write_1".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
 
         let result = middleware
@@ -543,6 +544,7 @@ mod tests {
             tool_call_id: "call_write_2".to_string(),
             turn: 1,
             cancellation_token: cancel_token,
+            ..Default::default()
         };
 
         let result = middleware
@@ -587,6 +589,7 @@ mod tests {
                     tool_call_id: format!("call_concurrent_{i}"),
                     turn: 1,
                     cancellation_token: CancellationToken::new(),
+                    ..Default::default()
                 };
                 mw.handle(&call, &ctx, None, Arc::new(DummyTerminal)).await
             });
@@ -640,6 +643,7 @@ mod tests {
             tool_call_id: "call_hygiene".to_string(),
             turn: 1,
             cancellation_token: CancellationToken::new(),
+            ..Default::default()
         };
         let result = middleware
             .handle(&call, &ctx, None, Arc::new(DummyTerminal))

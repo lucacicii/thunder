@@ -85,6 +85,10 @@ async fn test_thunder_root_end_to_end_execution() {
         role: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
+        ui: None,
+        mode: None,
+        policy: None,
+        route: None,
     };
 
     let mut handle = root

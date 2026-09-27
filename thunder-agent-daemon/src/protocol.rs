@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use thunder_agent_loop::types::event::ObservedEvent;
+use thunder_agent_loop::types::ui::{NotifyLevel, UiRequest, UiSource};
 
 /// Incoming command from host (Electron / CLI) via stdin
 #[derive(Debug, Deserialize)]
@@ -34,6 +35,16 @@ pub enum DaemonRequest {
         /// Role id to activate for this run (e.g. "plan"). Resolved against
         /// `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`.
         role: Option<String>,
+        /// Approval mode override for this run: `plan` | `ask` |
+        /// `accept_edits` | `manual` | `yolo`.
+        ///
+        /// Omit to keep the session's current mode (so a `set_permission_mode`
+        /// issued mid-session sticks), falling back to the role's own `mode`.
+        ///
+        /// Narrows only: it can clip the role's capability tier (plan mode) and
+        /// decide what prompts, but it can never grant a right the role lacks.
+        #[serde(default)]
+        mode: Option<String>,
     },
     /// List all roles visible from global + workspace scopes
     ListRoles {
@@ -52,6 +63,36 @@ pub enum DaemonRequest {
         answers: serde_json::Value,
         #[serde(default)]
         cancelled: bool,
+    },
+    /// Answer a pending `ui_request` dialog (select / confirm / input / editor).
+    ///
+    /// The `request_id` is issued by the daemon in `ui_request`; a client can only
+    /// echo it back. An unknown or expired id is reported as `delivered: false`
+    /// and otherwise ignored, so a late answer can never land on a later dialog.
+    AnswerUi {
+        id: Option<String>,
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmed: Option<bool>,
+        #[serde(default)]
+        cancelled: bool,
+    },
+    /// Switch a session's approval mode without starting a task.
+    ///
+    /// Takes effect on the very next tool call, including one already in flight
+    /// in a running task: the gate reads the mode per call rather than baking it
+    /// in at pipeline build time.
+    SetPermissionMode {
+        id: Option<String>,
+        session_id: String,
+        mode: String,
+    },
+    /// Report a session's current mode and its remembered "always allow" rules.
+    GetPermissionState {
+        id: Option<String>,
+        session_id: String,
     },
     /// Cancel a running task by task_id
     CancelTask { id: Option<String>, task_id: String },
@@ -132,6 +173,34 @@ pub enum DaemonResponse {
         task_id: String,
         session_id: Option<String>,
         reason: String,
+    },
+    /// A dialog the agent (or a plugin) wants answered. Blocks that caller until
+    /// `answer_ui` arrives or `timeout_ms` elapses — on expiry the daemon
+    /// resolves as cancelled, so a silent panel degrades to "denied", never to
+    /// "allowed".
+    ///
+    /// `source` is security-relevant: `host` marks a host-initiated interaction
+    /// (e.g. a permission approval) and must be rendered with reserved chrome
+    /// that a `plugin`-sourced request cannot imitate.
+    UiRequest {
+        request_id: String,
+        task_id: Option<String>,
+        session_id: Option<String>,
+        source: UiSource,
+        #[serde(flatten)]
+        request: UiRequest,
+    },
+    /// Fire-and-forget notification. A client with no UI simply drops it.
+    UiNotice {
+        source: UiSource,
+        message: String,
+        level: NotifyLevel,
+    },
+    /// Set or clear a status entry in the panel's status bar.
+    UiStatus {
+        key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
 }
 

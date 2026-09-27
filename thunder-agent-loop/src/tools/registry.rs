@@ -6,7 +6,6 @@ use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolEx
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ToolRegistry {
@@ -71,13 +70,22 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.definition()).collect()
     }
 
+    /// Execute one call.
+    ///
+    /// Takes the full [`ToolExecutionContext`] rather than a `turn` plus a token,
+    /// because the context carries fields the pipeline must not lose: `caller`
+    /// (who is asking — a plugin or the model) and `route` (which run this
+    /// belongs to, which is what a plugin's privileged call is authorised
+    /// against). Rebuilding it here would silently strip both, which is exactly
+    /// the bug this signature exists to prevent.
     pub async fn execute_tool_call(
         &self,
         call: &ToolCall,
-        turn: usize,
-        cancellation_token: CancellationToken,
+        ctx: ToolExecutionContext,
         custom_timeout: Option<Duration>,
     ) -> ToolExecutionResult {
+        let turn = ctx.turn;
+        let cancellation_token = ctx.cancellation_token.clone();
         let start = Instant::now();
         let tool_name = &call.function.name;
 
@@ -113,11 +121,6 @@ impl ToolRegistry {
         };
 
         let timeout = custom_timeout.unwrap_or(self.default_timeout);
-        let ctx = ToolExecutionContext {
-            tool_call_id: call.id.clone(),
-            turn,
-            cancellation_token: cancellation_token.clone(),
-        };
 
         let result = tokio::select! {
             _ = cancellation_token.cancelled() => {
