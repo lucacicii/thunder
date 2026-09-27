@@ -131,10 +131,13 @@ impl ThunderPlugin for ScriptPlugin {
         // *every* init, not just the boot above, so a later run with a tighter
         // role actually narrows what its own plugins may do.
         if lock.is_some() {
+            // The policy, not a bare tier: a plugin's `ctx.exec` is judged by the
+            // same rules as the model's calls, modes and remembered rules
+            // included.
             self.runs
                 .write()
                 .await
-                .begin_run(&route, ws, ctx.permission, Some(ctx.ui()))
+                .begin_run(&route, ws, ctx.policy(), Some(ctx.ui()))
                 .await;
         }
         Ok(())

@@ -396,6 +396,7 @@ impl ThunderRoot {
             .with_permission(effective_permission)
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
+            .with_policy(Arc::clone(&policy))
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
             ctx = ctx.with_workspace(ws.clone());

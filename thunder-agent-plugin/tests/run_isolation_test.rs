@@ -20,7 +20,7 @@ fn register(runs: &RunRegistry, route: &str, ws: &std::path::Path, permission: P
             .begin_run(
                 route,
                 ws.to_path_buf(),
-                permission,
+                SessionPolicy::new(permission, PermissionMode::Yolo),
                 Some(Arc::new(NullHostUi)),
             )
             .await;
@@ -37,13 +37,24 @@ fn register_with_ui(
     futures_lite::block_on(async {
         runs.write()
             .await
-            .begin_run(route, ws.to_path_buf(), permission, Some(ui))
+            .begin_run(
+                route,
+                ws.to_path_buf(),
+                SessionPolicy::new(permission, PermissionMode::Yolo),
+                Some(ui),
+            )
             .await;
     });
 }
 
 fn services(runs: &RunRegistry, route: &str) -> Option<RunServices> {
     futures_lite::block_on(async { runs.read().await.get(route).await })
+}
+
+/// The tier a run's policy currently enforces.
+fn tier_of(runs: &RunRegistry, route: &str) -> Option<Permission> {
+    let policy = services(runs, route)?.policy?;
+    Some(futures_lite::block_on(async { policy.tier().await }))
 }
 
 /// A read-only run must keep its own tier even when a bash run registers after it.
@@ -57,14 +68,11 @@ fn a_tight_run_keeps_its_tier_when_a_wider_run_starts() {
     register(&runs, "bash-run", b.path(), Permission::Bash);
 
     assert_eq!(
-        services(&runs, "read-run").unwrap().permission,
+        tier_of(&runs, "read-run").unwrap(),
         Permission::Read,
         "the read-only run must not inherit the later bash tier"
     );
-    assert_eq!(
-        services(&runs, "bash-run").unwrap().permission,
-        Permission::Bash
-    );
+    assert_eq!(tier_of(&runs, "bash-run").unwrap(), Permission::Bash);
 }
 
 /// The same, in the other order: the *later* run is the tight one, and the earlier
@@ -79,14 +87,8 @@ fn a_wide_run_keeps_its_tier_when_a_tight_run_starts() {
     register(&runs, "bash-run", a.path(), Permission::Bash);
     register(&runs, "read-run", b.path(), Permission::Read);
 
-    assert_eq!(
-        services(&runs, "bash-run").unwrap().permission,
-        Permission::Bash
-    );
-    assert_eq!(
-        services(&runs, "read-run").unwrap().permission,
-        Permission::Read
-    );
+    assert_eq!(tier_of(&runs, "bash-run").unwrap(), Permission::Bash);
+    assert_eq!(tier_of(&runs, "read-run").unwrap(), Permission::Read);
 }
 
 /// Two runs in different workspaces must not share one jail.
@@ -202,14 +204,8 @@ fn re_registration_refreshes_in_place() {
     // Same run, tighter role on a later turn.
     register(&runs, "run-a", a.path(), Permission::Read);
 
-    assert_eq!(
-        services(&runs, "run-a").unwrap().permission,
-        Permission::Read
-    );
-    assert_eq!(
-        services(&runs, "run-b").unwrap().permission,
-        Permission::Bash
-    );
+    assert_eq!(tier_of(&runs, "run-a").unwrap(), Permission::Read);
+    assert_eq!(tier_of(&runs, "run-b").unwrap(), Permission::Bash);
 }
 
 /// Ending a run drops its services, so a later run reusing the id inherits

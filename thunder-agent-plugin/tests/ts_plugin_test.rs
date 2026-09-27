@@ -3,9 +3,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
-use thunder_agent_plugin::{
-    permission_slot, run_registry, SidecarConfig, SidecarManager, TsToolBridge,
-};
+use thunder_agent_plugin::{run_registry, SidecarConfig, SidecarManager, TsToolBridge};
 use tokio_util::sync::CancellationToken;
 
 /// Build a `SidecarConfig` for a test: one registered run, plus the sidecar-level
@@ -22,12 +20,24 @@ async fn config_for_test(
     tools: Option<Arc<dyn ToolInvoker>>,
 ) -> SidecarConfig {
     let runs = run_registry();
+    let policy = Arc::new(SessionPolicy::new(permission, PermissionMode::Yolo));
     runs.write()
         .await
-        .begin_run(route(), ws_dir.to_path_buf(), permission, host_ui.clone())
+        .begin_run(
+            route(),
+            ws_dir.to_path_buf(),
+            Arc::clone(&policy),
+            host_ui.clone(),
+        )
         .await;
-    if let Some(tools) = tools.clone() {
-        runs.write().await.set_tools(route(), tools).await;
+    // A working pipeline by default: the RPC layer delegates execution to it,
+    // so a test that calls `ctx.exec` needs one.
+    let tools = match tools {
+        Some(tools) => Some(tools),
+        None => Some(run_invoker_with(ws_dir, Arc::clone(&policy)).await),
+    };
+    if let Some(tools) = &tools {
+        runs.write().await.set_tools(route(), tools.clone()).await;
     }
     SidecarConfig {
         runner_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,10 +46,70 @@ async fn config_for_test(
         plugin_dirs: vec![plugins_dir.to_path_buf()],
         workspace_dir: ws_dir.to_path_buf(),
         runs,
-        permission: permission_slot(permission),
+        policy: Arc::new(tokio::sync::RwLock::new(Some(Arc::clone(&policy)))),
         host_ui: Arc::new(tokio::sync::RwLock::new(host_ui)),
         tool_invoker: Arc::new(tokio::sync::RwLock::new(tools)),
     }
+}
+
+/// A real tool pipeline for a run: the same one the host would build.
+///
+/// Plugin RPCs are now delegated to it rather than re-implemented, so a test
+/// that exercises `ctx.exec` / `ctx.fs.*` has to supply one — which is also the
+/// point. A sidecar with no invoker is a sidecar that cannot execute anything,
+/// and saying so is the correct answer rather than a silent fallback.
+async fn run_invoker_with(
+    ws: &std::path::Path,
+    policy: Arc<SessionPolicy>,
+) -> Arc<dyn ToolInvoker> {
+    use thunder_agent_loop::prelude::*;
+    use thunder_agent_loop::tools::executor::ToolExecutor;
+    use thunder_agent_loop::tools::middleware::ToolPipeline;
+    use thunder_agent_loop::tools::registry::ToolRegistry;
+
+    let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
+    registry.register(Arc::new(
+        thunder_agent_loop::tools::builtin::WriteFileTool::default(),
+    ));
+    registry.register(Arc::new(
+        thunder_agent_loop::tools::builtin::ReadFileTool::default(),
+    ));
+    registry.register(Arc::new(
+        thunder_agent_loop::tools::builtin::BashTool::default(),
+    ));
+    let tier = policy.tier().await;
+    let pipeline = ToolPipeline::configured(
+        ws.to_path_buf(),
+        &[],
+        registry,
+        None,
+        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
+        tier,
+        Some(policy),
+        Some(Arc::new(NullHostUi)),
+    );
+    let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
+    Arc::new(PipelineToolInvoker::new(executor).with_turn(1))
+}
+
+/// One policy, shared by the run registry and the pipeline.
+///
+/// This is what the host does — `ThunderRoot::execute` hands the same
+/// `Arc<SessionPolicy>` to both — and it matters: if they were separate objects,
+/// narrowing the run's policy would leave the pipeline judging on the old one.
+async fn register_run(
+    runs: &thunder_agent_plugin::RunRegistry,
+    route: &str,
+    ws: &std::path::Path,
+    tier: Permission,
+) {
+    let policy = SessionPolicy::new(tier, PermissionMode::Yolo);
+    let invoker = run_invoker_with(ws, Arc::clone(&policy)).await;
+    runs.write()
+        .await
+        .begin_run(route, ws.to_path_buf(), policy, Some(Arc::new(NullHostUi)))
+        .await;
+    runs.write().await.set_tools(route, invoker).await;
 }
 
 /// The route the tests' plugins are attributed to.
@@ -238,8 +308,12 @@ async fn read_only_permission_blocks_plugin_write_and_exec_rpc() {
         .await
         .expect_err("fs_write_file must be denied under Read");
     assert!(
-        write_err.contains("Permission denied"),
-        "unexpected error: {write_err}"
+        write_err.contains("was not approved"),
+        "the judge speaks now, not the old hand-rolled gate: {write_err}"
+    );
+    assert!(
+        write_err.contains("read-only"),
+        "and it should say why: {write_err}"
     );
     assert!(
         !ws_dir.join("should_not_exist.txt").exists(),
@@ -251,7 +325,7 @@ async fn read_only_permission_blocks_plugin_write_and_exec_rpc() {
         .await
         .expect_err("exec_bash must be denied under Read");
     assert!(
-        exec_err.contains("Permission denied"),
+        exec_err.contains("was not approved") && exec_err.contains("read-only"),
         "unexpected error: {exec_err}"
     );
 }
@@ -291,7 +365,21 @@ async fn permission_slot_narrows_a_running_sidecar() {
         .expect("write allowed while the run is unrestricted");
     assert!(probe.exists());
 
-    sidecar.set_permission(Permission::Read).await;
+    // Narrow the *run's* policy, which is the one the judge consults. Before
+    // execution was delegated, the sidecar held a single tier and this was the
+    // only lever; now there is a policy per run and this is it.
+    let run = sidecar
+        .runs()
+        .read()
+        .await
+        .get("test-run")
+        .await
+        .expect("the run is registered");
+    run.policy
+        .as_ref()
+        .expect("a run carries a policy")
+        .set_tier(Permission::Read)
+        .await;
 
     let err = sidecar
         .call_rpc(
@@ -300,7 +388,10 @@ async fn permission_slot_narrows_a_running_sidecar() {
         )
         .await
         .expect_err("write must be denied once the run is read-only");
-    assert!(err.contains("Permission denied"), "got: {err}");
+    assert!(
+        err.contains("was not approved") && err.contains("read-only"),
+        "got: {err}"
+    );
     assert_eq!(
         tokio::fs::read_to_string(&probe).await.unwrap(),
         "before",
@@ -624,24 +715,8 @@ export default definePlugin({
 
     // One registry, two runs — exactly the sharing the daemon creates.
     let runs = run_registry();
-    runs.write()
-        .await
-        .begin_run(
-            "run-a",
-            ws_a.clone(),
-            Permission::Read,
-            Some(Arc::new(NullHostUi)),
-        )
-        .await;
-    runs.write()
-        .await
-        .begin_run(
-            "run-b",
-            ws_b.clone(),
-            Permission::Bash,
-            Some(Arc::new(NullHostUi)),
-        )
-        .await;
+    register_run(&runs, "run-a", &ws_a, Permission::Read).await;
+    register_run(&runs, "run-b", &ws_b, Permission::Bash).await;
 
     let config = SidecarConfig {
         runner_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -650,7 +725,7 @@ export default definePlugin({
         plugin_dirs: vec![plugins_dir.clone()],
         workspace_dir: temp.path().to_path_buf(),
         runs,
-        permission: permission_slot(Permission::Bash),
+        policy: Arc::new(tokio::sync::RwLock::new(None)),
         host_ui: Arc::new(tokio::sync::RwLock::new(None)),
         tool_invoker: Arc::new(tokio::sync::RwLock::new(None)),
     };
@@ -700,7 +775,10 @@ export default definePlugin({
         "run-a is read-only; sharing a sidecar must not grant it bash"
     );
     let err = denied.unwrap_err();
-    assert!(err.contains("Permission denied"), "got: {err}");
+    assert!(
+        err.contains("was not approved") && err.contains("read-only"),
+        "got: {err}"
+    );
     assert!(
         !ws_a.join("out.txt").exists(),
         "the refused write must not land anywhere"
@@ -739,15 +817,7 @@ export default definePlugin({
     .unwrap();
 
     let runs = run_registry();
-    runs.write()
-        .await
-        .begin_run(
-            "run-a",
-            ws_dir.clone(),
-            Permission::Bash,
-            Some(Arc::new(NullHostUi)),
-        )
-        .await;
+    register_run(&runs, "run-a", &ws_dir, Permission::Bash).await;
 
     let config = SidecarConfig {
         runner_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -756,7 +826,7 @@ export default definePlugin({
         plugin_dirs: vec![plugins_dir.clone()],
         workspace_dir: ws_dir.clone(),
         runs,
-        permission: permission_slot(Permission::Bash),
+        policy: Arc::new(tokio::sync::RwLock::new(None)),
         host_ui: Arc::new(tokio::sync::RwLock::new(None)),
         tool_invoker: Arc::new(tokio::sync::RwLock::new(None)),
     };
@@ -801,11 +871,10 @@ export default definePlugin({
 /// there. That makes "the agent cannot `rm -rf /`" false, and a plugin is the
 /// cheapest way to prove it.
 ///
-/// Ignored on purpose: the assertion is the *desired* behaviour and the code
-/// does not implement it yet, so this test is red until the plugin RPC path is
-/// folded into the pipeline. Run it with `cargo test -- --ignored`.
+/// This was red (`#[ignore]`d) while the plugin RPC path re-implemented `bash`
+/// by hand. It is the acceptance criterion for folding that path into the
+/// pipeline: the plugin now gets the same guard the model does.
 #[tokio::test]
-#[ignore = "documents the ctx.exec bypass of SecurityGuard; lands with refactor stage 4"]
 async fn plugin_cannot_run_a_command_the_guard_forbids() {
     use thunder_agent_loop::types::config::Permission;
 
@@ -838,15 +907,7 @@ export default definePlugin({
     .unwrap();
 
     let runs = run_registry();
-    runs.write()
-        .await
-        .begin_run(
-            "run-x",
-            ws_dir.clone(),
-            Permission::Bash,
-            Some(Arc::new(NullHostUi)),
-        )
-        .await;
+    register_run(&runs, "run-x", &ws_dir, Permission::Bash).await;
 
     let config = SidecarConfig {
         runner_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -855,7 +916,7 @@ export default definePlugin({
         plugin_dirs: vec![plugins_dir.clone()],
         workspace_dir: ws_dir.clone(),
         runs,
-        permission: permission_slot(Permission::Bash),
+        policy: Arc::new(tokio::sync::RwLock::new(None)),
         host_ui: Arc::new(tokio::sync::RwLock::new(None)),
         tool_invoker: Arc::new(tokio::sync::RwLock::new(None)),
     };

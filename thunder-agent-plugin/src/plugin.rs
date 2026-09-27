@@ -1,8 +1,7 @@
-use crate::process::{permission_slot, RunRegistry, SidecarConfig, SidecarManager};
+use crate::process::{RunRegistry, SidecarConfig, SidecarManager};
 use crate::tool_bridge::TsToolBridge;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
 use tokio::sync::RwLock;
@@ -48,7 +47,7 @@ impl TsScriptPluginEngine {
             workspace_dir: workspace_dir.clone(),
             runs,
             // Test-seam defaults; real RPCs resolve their own run instead.
-            permission: permission_slot(Permission::Bash),
+            policy: Arc::new(RwLock::new(None)),
             host_ui: Arc::new(RwLock::new(None)),
             tool_invoker: Arc::new(RwLock::new(None)),
         };

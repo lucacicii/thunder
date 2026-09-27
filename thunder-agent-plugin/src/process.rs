@@ -25,10 +25,10 @@ pub struct SidecarConfig {
     /// do — including dispatching one run's plugin call into another run's
     /// pipeline, which carries that run's workspace root and path jail.
     pub runs: RunRegistry,
-    /// Fallback tier for [`SidecarManager::call_rpc`], the direct test seam that
-    /// has no run lifecycle. Real RPCs never read this: they resolve their run's
-    /// own tier, or fail closed.
-    pub permission: Arc<RwLock<Permission>>,
+    /// Fallback policy for [`SidecarManager::call_rpc`], the direct test seam
+    /// that has no run lifecycle. Real RPCs never read this: they resolve their
+    /// own run, or fail closed.
+    pub policy: Arc<RwLock<Option<Arc<thunder_agent_loop::types::policy::SessionPolicy>>>>,
     /// Fallback UI for the same test seam.
     pub host_ui: Arc<RwLock<Option<Arc<dyn HostUi>>>>,
     /// Fallback invoker for the same test seam.
@@ -85,128 +85,48 @@ async fn dispatch_with_run(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    // `workspace` and the tier are read by the pipeline now, not here: this
+    // function no longer decides what a plugin may do, it only routes the
+    // request to whoever does.
     let RunServices {
-        workspace: ws_dir,
-        permission,
         ui: host_ui,
         tools: tool_invoker,
+        ..
     } = run;
 
     match method {
-        "fs_write_file" => {
-            if !permission.allows_write() {
-                return Err(
-                    "Permission denied: 'fs_write_file' is not granted by the active role"
-                        .to_string(),
-                );
-            }
-            let rel_path = params
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing path")?
-                .to_string();
-            let content = params
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing content")?
-                .to_string();
-            let target = ws_dir.join(&rel_path);
-
-            // Path Jail Check
-            if !target.starts_with(&ws_dir) {
-                return Err(format!(
-                    "Security Violation: Path {:?} escapes workspace root",
-                    target
-                ));
-            }
-
-            // Atomic write via .arp/tmp
-            let tmp_dir = ws_dir.join(".arp").join("tmp");
-            tokio::fs::create_dir_all(&tmp_dir)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(parent) = target.parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-
-            let tmp_file = tmp_dir.join(format!(
-                "tx_{}_{}.tmp",
-                std::process::id(),
-                fastrand_suffix()
-            ));
-            tokio::fs::write(&tmp_file, &content)
-                .await
-                .map_err(|e| e.to_string())?;
-            tokio::fs::rename(&tmp_file, &target)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            Ok(serde_json::json!({
-                "success": true,
-                "path": target.to_string_lossy(),
-                "bytesWritten": content.len()
-            }))
-        }
-        "fs_read_file" => {
-            let rel_path = params
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing path")?
-                .to_string();
-            let target = ws_dir.join(&rel_path);
-
-            if !target.starts_with(&ws_dir) {
-                return Err(format!(
-                    "Security Violation: Path {:?} escapes workspace root",
-                    target
-                ));
-            }
-
-            let meta = tokio::fs::metadata(&target)
-                .await
-                .map_err(|e| e.to_string())?;
-            if meta.len() > 10 * 1024 * 1024 {
-                return Err("File exceeds 10MB memory safety ceiling".to_string());
-            }
-
-            let content = tokio::fs::read_to_string(&target)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(serde_json::Value::String(content))
-        }
-        "exec_bash" => {
-            if !permission.allows_exec() {
-                return Err(
-                    "Permission denied: 'exec_bash' is not granted by the active role".to_string(),
-                );
-            }
-            let command = params
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing command")?
-                .to_string();
-            let cwd = params
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ws_dir.clone());
-
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c").arg(&command).current_dir(&cwd);
-
-            #[cfg(unix)]
-            {
-                cmd.process_group(0);
-            }
-
-            let output = cmd.output().await.map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({
-                "exitCode": output.status.code().unwrap_or(-1),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr)
-            }))
+        // ---- Execution, delegated to the tool pipeline ----
+        //
+        // These three used to hand-roll what `write_file` / `read_file` / `bash`
+        // already do. That was not a shortcut, it was a second implementation of
+        // the tool semantics: it bypassed SecurityGuard's forbidden-command
+        // list, duplicated the atomic write, and re-derived the path jail and the
+        // read cap by hand — four copies that had to stay in agreement forever,
+        // and did not.
+        //
+        // Now each is expressed as the tool call it was always pretending to be
+        // and handed to the run's invoker, so the same onion judges and runs it
+        // as if the model had asked. The parameter names match the tool schemas
+        // exactly, so the mapping is the identity.
+        "fs_write_file" | "fs_read_file" | "exec_bash" => {
+            let (tool, args) = as_tool_call(method, &params);
+            let invoker = tool_invoker.as_ref().ok_or_else(|| {
+                format!(
+                    "'{tool}' is not available yet: this run has no agent tool pipeline. \
+                     (Plugin tools become callable once the run's tools are registered.)"
+                )
+            })?;
+            let ctx = ToolInvocationContext {
+                plugin_id: params
+                    .get("pluginId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                session_id: Some(route_of(&params)),
+                turn: None,
+            };
+            let out = invoker.invoke(tool, args, &ctx).await?;
+            Ok(serde_json::Value::String(out))
         }
 
         // ---- User interaction, always labelled `plugin` on the wire ----
@@ -323,6 +243,33 @@ async fn dispatch_with_run(
             Ok(serde_json::Value::String(out))
         }
         _ => Err(format!("Unsupported RPC method: {method}")),
+    }
+}
+
+/// Express a plugin RPC as the tool call it stands for.
+///
+/// Written out per method rather than derived, so that a change to a tool's
+/// schema surfaces here instead of turning into a silently wrong argument at
+/// runtime. The parameter names already match: `bash` takes `{command, cwd}`
+/// and `ctx.exec` takes `(command, {cwd})`; `write_file` takes `{path, content}`
+/// and `ctx.fs.writeFile` takes `(relPath, content)`.
+fn as_tool_call(method: &str, params: &serde_json::Value) -> (&'static str, serde_json::Value) {
+    let field = |k: &str| params.get(k).cloned();
+    match method {
+        "fs_write_file" => (
+            "write_file",
+            serde_json::json!({ "path": field("path"), "content": field("content") }),
+        ),
+        "fs_read_file" => ("read_file", serde_json::json!({ "path": field("path") })),
+        // `cwd` is forwarded because `bash` honours it and the model already
+        // can set it — dropping it would break `ctx.exec(cmd, {cwd})` without
+        // removing anything, since the path jail governs what the command
+        // touches, not where the process starts.
+        "exec_bash" => (
+            "bash",
+            serde_json::json!({ "command": field("command"), "cwd": field("cwd") }),
+        ),
+        other => unreachable!("as_tool_call called with {other}"),
     }
 }
 
@@ -571,17 +518,17 @@ impl SidecarManager {
         // this path — they resolve their own run, or fail closed.
         let run = RunServices {
             workspace: self.config.workspace_dir.clone(),
-            permission: *self.config.permission.read().await,
+            policy: self.config.policy.read().await.clone(),
             ui: self.config.host_ui.read().await.clone(),
             tools: self.config.tool_invoker.read().await.clone(),
         };
         dispatch_with_run(run, method, params).await
     }
 
-    /// Replace the capability tier used by [`SidecarManager::call_rpc`], the
-    /// test seam that has no run lifecycle. Real RPCs resolve their own run.
-    pub async fn set_permission(&self, permission: Permission) {
-        *self.config.permission.write().await = permission;
+    /// Replace the policy used by [`SidecarManager::call_rpc`], the test seam
+    /// that has no run lifecycle. Real RPCs resolve their own run.
+    pub async fn set_policy(&self, policy: Arc<thunder_agent_loop::types::policy::SessionPolicy>) {
+        *self.config.policy.write().await = Some(policy);
     }
 
     /// The per-run services registry.
@@ -708,8 +655,14 @@ pub struct RunServices {
     /// default workspace, and a task may target another directory. Without this,
     /// a plugin's writes would be jailed to the wrong tree.
     pub workspace: PathBuf,
-    /// Capability tier this run's plugins inherit.
-    pub permission: Permission,
+    /// The run's policy.
+    ///
+    /// Not a bare tier: a plugin's `ctx.exec` now goes through the tool
+    /// pipeline, so its policy check happens there, against the same
+    /// `SessionPolicy` the model's calls are judged by. This field is what the
+    /// RPC layer consults for the two things it still owns — refusing before a
+    /// pipeline exists, and reporting the run's mode to the plugin host.
+    pub policy: Option<Arc<thunder_agent_loop::types::policy::SessionPolicy>>,
     /// Panel for `ctx.ui`. `None` = this run has no panel, so every dialog is
     /// cancelled.
     pub ui: Option<Arc<dyn HostUi>>,
@@ -776,7 +729,7 @@ impl RunRegistryInner {
         &mut self,
         route: &str,
         workspace: PathBuf,
-        permission: Permission,
+        policy: Arc<thunder_agent_loop::types::policy::SessionPolicy>,
         ui: Option<Arc<dyn HostUi>>,
     ) {
         self.evict_if_needed(route);
@@ -784,12 +737,12 @@ impl RunRegistryInner {
             .entry(route.to_string())
             .and_modify(|e| {
                 e.workspace = workspace.clone();
-                e.permission = permission;
+                e.policy = Some(policy.clone());
                 e.ui = ui.clone();
             })
             .or_insert_with(|| RunServices {
                 workspace,
-                permission,
+                policy: Some(policy),
                 ui,
                 tools: None,
             });
