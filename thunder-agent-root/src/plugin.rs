@@ -6,6 +6,7 @@ use std::sync::Arc;
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::invoke::ToolInvokerSlot;
+use thunder_agent_loop::types::policy::{PermissionMode, SessionPolicy};
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::AgentRunResult;
@@ -130,6 +131,13 @@ pub struct PluginContext {
     /// keyed by this, so a plugin call is authorised against the run that made
     /// it rather than whichever run registered last.
     pub route: Option<String>,
+    /// The run's permission policy.
+    ///
+    /// Plugins that can reach execution need the whole policy, not a tier: the
+    /// tier alone would leave `ctx.exec` outside the mode and the remembered
+    /// rules, which is the split this refactor exists to close.
+    pub policy: Option<Arc<SessionPolicy>>,
+
     /// The run's tool invoker, for `ctx.callTool`.
     ///
     /// Empty at construction because the plugin host is initialised *before* the
@@ -162,6 +170,7 @@ impl PluginContext {
             permission: Permission::default(),
             ui: HostUiHandle(Arc::new(thunder_agent_loop::types::ui::NullHostUi)),
             route: None,
+            policy: None,
             tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
         }
     }
@@ -191,6 +200,21 @@ impl PluginContext {
     pub fn with_ui(mut self, ui: Arc<dyn HostUi>) -> Self {
         self.ui = HostUiHandle(ui);
         self
+    }
+
+    /// Attach the run's permission policy.
+    pub fn with_policy(mut self, policy: Arc<SessionPolicy>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// The run's policy, defaulting to a permissive one for embedders that have
+    /// not adopted it. Constructed fresh per call so the tier and mode are never
+    /// shared between two plugins of the same run by accident.
+    pub fn policy(&self) -> Arc<SessionPolicy> {
+        self.policy
+            .clone()
+            .unwrap_or_else(|| SessionPolicy::new(Permission::Bash, PermissionMode::default()))
     }
 
     /// Attach the tool-invoker slot this run's plugins dispatch through.
