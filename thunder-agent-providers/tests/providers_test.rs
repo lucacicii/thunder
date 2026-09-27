@@ -101,6 +101,8 @@ fn wire_model_is_bare_id_not_selection_id() {
         thinking_levels_probed: false,
         thinking_level_map: None,
         compat: None,
+        cost: None,
+        prompt_cache: None,
     };
     assert_eq!(spec.selection_id(), "cc-switch-open-code-go/ox-alpha-free");
     assert_eq!(spec.id, "ox-alpha-free");
@@ -253,4 +255,161 @@ async fn test_resolve_utility_model_and_probed_flag() {
     registry.probe_unprobed_models().await;
     let reasoner_after = registry.resolve("cmd/heavy-reasoner").unwrap();
     assert_eq!(reasoner_after.thinking_levels, vec!["low", "high"]);
+}
+
+#[test]
+fn cache_compat_flags_flow_to_bridge_model() {
+    // Regression: CompatConfig used to silently drop every prompt-cache flag,
+    // so pi-ai fell back to defaults (no cache_control injection on
+    // anthropic-style openai endpoints, wrong long-retention TTLs, no
+    // session-affinity headers, no promptCache lifetime for warming).
+    let raw = r#"{
+      "providers": {
+        "vllm-proxy": {
+          "baseUrl": "https://example.invalid/v1",
+          "api": "openai-completions",
+          "apiKey": "sk-test",
+          "compat": { "sendSessionAffinityHeaders": true },
+          "models": [{
+            "id": "claude-sonnet-5",
+            "compat": {
+              "cacheControlFormat": "anthropic",
+              "supportsLongCacheRetention": true,
+              "supportsCacheControlOnTools": false
+            },
+            "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 },
+            "promptCache": { "short": 300, "long": 3600 }
+          }]
+        }
+      }
+    }"#;
+    let file = ModelsFile::parse_json(raw).unwrap();
+    let registry = ProviderRegistry::from_parts(file, &AuthFile::default()).unwrap();
+    let spec = registry.resolve("vllm-proxy/claude-sonnet-5").unwrap();
+
+    let bridge = spec.to_bridge_model();
+    let compat = bridge.compat.as_ref().expect("compat must passthrough");
+    // model-level compat merges over provider-level
+    assert_eq!(compat["cacheControlFormat"], "anthropic");
+    assert_eq!(compat["supportsLongCacheRetention"], true);
+    assert_eq!(compat["supportsCacheControlOnTools"], false);
+    assert_eq!(compat["sendSessionAffinityHeaders"], true);
+
+    let cost = bridge.cost.as_ref().expect("cost must passthrough");
+    assert_eq!(cost.cache_write, 3.75);
+    assert_eq!(cost.cache_read, 0.3);
+
+    let prompt_cache = bridge
+        .prompt_cache
+        .as_ref()
+        .expect("promptCache must passthrough");
+    assert_eq!(prompt_cache.short, Some(300));
+    assert_eq!(prompt_cache.long, Some(3600));
+
+    // the serialized BridgeModel keeps pi-ai's camelCase wire names
+    let json = serde_json::to_value(&bridge).unwrap();
+    assert_eq!(json["promptCache"]["short"], 300);
+    assert_eq!(json["cost"]["cacheWrite"], 3.75);
+}
+
+#[test]
+fn prompt_cache_warm_settings_derivation() {
+    use thunder_agent_providers::catalog::ModelSpec;
+    use thunder_agent_providers::config::{CostConfig, PromptCacheConfig};
+    use thunder_pi_bridge::{BridgeCost, BridgePromptCache};
+
+    let base = |api, compat, prompt_cache, cost| ModelSpec {
+        provider: "p".to_string(),
+        id: "m".to_string(),
+        name: "m".to_string(),
+        api,
+        base_url: "https://example.invalid".to_string(),
+        api_key: Some("k".to_string()),
+        headers: Default::default(),
+        reasoning: true,
+        context_window: 128_000,
+        max_tokens: 16_384,
+        available: true,
+        supports_developer_role: false,
+        supports_reasoning_effort: false,
+        max_tokens_field: "max_tokens".to_string(),
+        thinking_levels: vec!["off".to_string()],
+        default_thinking_level: "off".to_string(),
+        thinking_levels_probed: false,
+        thinking_level_map: None,
+        compat,
+        prompt_cache,
+        cost,
+    };
+    let pc = || {
+        Some(BridgePromptCache {
+            short: Some(300),
+            long: Some(3600),
+        })
+    };
+    let cost = || {
+        Some(BridgeCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+            tiers: Vec::new(),
+        })
+    };
+
+    // 1. Anthropic + reasoning on + no adaptive thinking → replay unsafe.
+    let spec = base(
+        ProviderApi::AnthropicMessages,
+        None,
+        pc(),
+        cost(),
+    );
+    let s = spec.prompt_cache_warm_settings(Some("high")).unwrap();
+    assert_eq!(s.ttl_secs, 300);
+    assert!(!s.replay_safe);
+
+    // 2. Same model with forceAdaptiveThinking → replay safe.
+    let spec = base(
+        ProviderApi::AnthropicMessages,
+        Some(serde_json::json!({"forceAdaptiveThinking": true})),
+        pc(),
+        cost(),
+    );
+    assert!(spec.prompt_cache_warm_settings(Some("high")).unwrap().replay_safe);
+
+    // 3. Anthropic with reasoning off → replay safe even without adaptive.
+    assert!(spec.prompt_cache_warm_settings(Some("off")).unwrap().replay_safe);
+    assert!(spec.prompt_cache_warm_settings(None).unwrap().replay_safe);
+
+    // 4. OpenAI-completions reasoning model → replay safe (budget not derived).
+    let spec = base(ProviderApi::OpenAiCompletions, None, pc(), cost());
+    assert!(spec.prompt_cache_warm_settings(Some("high")).unwrap().replay_safe);
+
+    // 5. No declared promptCache → warming unavailable.
+    let spec = base(ProviderApi::AnthropicMessages, None, None, cost());
+    assert!(spec.prompt_cache_warm_settings(Some("high")).is_none());
+
+    // 6. promptCache without the short tier → unavailable (thunder uses short).
+    let spec = base(
+        ProviderApi::AnthropicMessages,
+        None,
+        Some(BridgePromptCache { short: None, long: Some(3600) }),
+        cost(),
+    );
+    assert!(spec.prompt_cache_warm_settings(Some("high")).is_none());
+
+    // 7. Cost present but zero rates → economics unavailable at decision time.
+    let spec = base(
+        ProviderApi::AnthropicMessages,
+        None,
+        pc(),
+        Some(BridgeCost::default()),
+    );
+    let s = spec.prompt_cache_warm_settings(Some("high")).unwrap();
+    let (decision, _) =
+        thunder_agent_loop::cache::warmer::decide_warming(50_000, false, &s);
+    assert_eq!(
+        decision,
+        thunder_agent_loop::cache::warmer::CacheWarmDecision::Stop("cache economics unavailable")
+    );
 }

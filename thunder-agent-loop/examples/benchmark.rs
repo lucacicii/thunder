@@ -29,6 +29,7 @@ impl LLMClientTrait for BenchmarkMockLLM {
                     prompt_tokens: Some(15),
                     completion_tokens: Some(10),
                     cached_tokens: None,
+                    cache_write_tokens: None,
                     reasoning_tokens: None,
                 }))
                 .await;

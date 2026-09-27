@@ -47,6 +47,7 @@ impl LLMClientTrait for DaemonMockClient {
                             prompt_tokens: None,
                             completion_tokens: None,
                             cached_tokens: None,
+                            cache_write_tokens: None,
                             reasoning_tokens: None,
                         })).await;
                         return;
@@ -67,6 +68,7 @@ impl LLMClientTrait for DaemonMockClient {
                     prompt_tokens: None,
                     completion_tokens: None,
                     cached_tokens: None,
+                    cache_write_tokens: None,
                     reasoning_tokens: None,
                 }))
                 .await;

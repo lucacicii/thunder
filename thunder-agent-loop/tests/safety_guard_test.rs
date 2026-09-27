@@ -147,6 +147,7 @@ impl LLMClientTrait for RepetitiveToolLLMClient {
                         prompt_tokens: Some(10),
                         completion_tokens: Some(10),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -160,6 +161,7 @@ impl LLMClientTrait for RepetitiveToolLLMClient {
                         prompt_tokens: Some(20),
                         completion_tokens: Some(15),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;

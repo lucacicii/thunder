@@ -310,6 +310,12 @@ impl AgentLoop {
             tracker.set_status(LoopStatus::Running);
             status.store(LoopStatus::Running.as_u8(), Ordering::Release);
 
+            // A new run moves the conversation's prefix forward: cancel any
+            // warmer still refreshing the stale pre-run prefix.
+            if let Some(session_id) = config.session_id.as_deref() {
+                crate::cache::warmer::invalidate(session_id);
+            }
+
             let guard_cfg = &config.loop_guard;
             let mut guard = LoopGuard::new(
                 guard_cfg.max_history,
@@ -449,6 +455,9 @@ impl AgentLoop {
                         max_tokens: config.max_completion_tokens,
                         thinking_level: config.thinking_level.clone(),
                         cache_retention: None, // normal turns benefit from cache writes
+                        // Prompt-cache routing affinity: bind every request of
+                        // this run to the conversation's cache shard.
+                        session_id: config.session_id.clone(),
                     };
 
                     let stream_res = llm_client
@@ -549,6 +558,7 @@ impl AgentLoop {
                                 prompt_tokens,
                                 completion_tokens,
                                 cached_tokens,
+                                cache_write_tokens,
                                 reasoning_tokens,
                             }) => {
                                 completed_chunk = Some((
@@ -558,6 +568,7 @@ impl AgentLoop {
                                     prompt_tokens,
                                     completion_tokens,
                                     cached_tokens,
+                                    cache_write_tokens,
                                     reasoning_tokens,
                                 ));
                             }
@@ -683,6 +694,7 @@ impl AgentLoop {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens,
+                    cache_write_tokens,
                     reasoning_tokens,
                 ) = match completed_chunk {
                     Some(c) => c,
@@ -772,11 +784,38 @@ impl AgentLoop {
                     None
                 };
 
+                // Prompt-cache warming: refresh the cache entry this turn wrote
+                // before its TTL expires. Re-scheduled every turn (replacing the
+                // previous snapshot, like pi's per-request cacheWarmer.start).
+                if let (Some(session_id), Some(warm)) =
+                    (config.session_id.clone(), config.prompt_cache_warm.clone())
+                {
+                    let cache_engaged =
+                        cached_tokens.unwrap_or(0) + cache_write_tokens.unwrap_or(0) > 0;
+                    if cache_engaged {
+                        crate::cache::warmer::schedule(
+                            Arc::clone(&llm_client),
+                            crate::cache::warmer::WarmSnapshot {
+                                model: config.model.clone(),
+                                messages: context.get_messages(),
+                                tools: tool_registry.get_definitions(),
+                                temperature: config.temperature,
+                                top_p: config.top_p,
+                                thinking_level: config.thinking_level.clone(),
+                                session_id,
+                                prompt_tokens: effective_prompt_tokens.unwrap_or(0),
+                            },
+                            warm,
+                        );
+                    }
+                }
+
                 let turn_stats = TurnStats {
                     turn,
                     prompt_tokens: effective_prompt_tokens,
                     completion_tokens: effective_completion_tokens,
                     cached_tokens,
+                    cache_write_tokens,
                     reasoning_tokens: effective_reasoning_tokens,
                     duration_ms: turn_duration_ms,
                     tool_calls_count: tool_calls.len(),
@@ -1031,6 +1070,12 @@ impl AgentLoop {
             };
             tracker.set_status(terminal);
             status.store(terminal.as_u8(), Ordering::Release);
+
+            // The run settled: switch any warmer it scheduled to idle economics
+            // (15% continuation estimate, 30-minute age cap).
+            if let Some(session_id) = config.session_id.as_deref() {
+                crate::cache::warmer::mark_idle(session_id);
+            }
 
             let stats = tracker.get_stats();
 

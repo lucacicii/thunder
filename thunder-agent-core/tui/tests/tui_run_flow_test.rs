@@ -38,6 +38,7 @@ impl LLMClientTrait for FakeClient {
                     prompt_tokens: Some(5),
                     completion_tokens: Some(6),
                     cached_tokens: None,
+                    cache_write_tokens: None,
                     reasoning_tokens: None,
                 }))
                 .await;

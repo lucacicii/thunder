@@ -32,6 +32,17 @@ pub struct BridgeCost {
     pub tiers: Vec<serde_json::Value>,
 }
 
+/// pi `Model.promptCache`: best-effort prompt-cache lifetime in seconds per
+/// retention tier. Passthrough only — thunder's loop does not interpret it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgePromptCache {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModel {
@@ -68,6 +79,9 @@ pub struct BridgeModel {
     /// requires the field for usage cost accounting).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<BridgeCost>,
+    /// pi `Model.promptCache` passthrough (cache lifetime seconds per tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<BridgePromptCache>,
 }
 
 impl BridgeModel {

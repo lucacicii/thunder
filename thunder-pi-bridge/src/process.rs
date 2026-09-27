@@ -697,10 +697,12 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
             // pi-ai reports `input` as the *uncached* portion only; cache reads and
             // cache writes are separate. Thunder's `prompt_tokens` is the full prompt
             // (the panel derives cache-hit ratios and context occupancy from it), so
-            // fold both cache buckets back in. `cached_tokens` stays the read subset.
+            // fold both cache buckets back in. `cached_tokens` stays the read subset
+            // and `cache_write_tokens` the write subset for cache-waste accounting.
             prompt_tokens: Some(done.usage.input + done.usage.cache_read + done.usage.cache_write),
             completion_tokens: Some(done.usage.output),
             cached_tokens: Some(done.usage.cache_read),
+            cache_write_tokens: Some(done.usage.cache_write),
             reasoning_tokens: done.usage.reasoning,
         },
         Err(err) => {
@@ -714,6 +716,7 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
                 prompt_tokens: None,
                 completion_tokens: None,
                 cached_tokens: None,
+                cache_write_tokens: None,
                 reasoning_tokens: None,
             }
         }

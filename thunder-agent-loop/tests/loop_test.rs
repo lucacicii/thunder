@@ -58,6 +58,7 @@ impl LLMClientTrait for MockLLMClient {
                         prompt_tokens: Some(10),
                         completion_tokens: Some(8),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -74,6 +75,7 @@ impl LLMClientTrait for MockLLMClient {
                         prompt_tokens: Some(25),
                         completion_tokens: Some(12),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -259,6 +261,7 @@ async fn test_hard_repetition_limit_trips_circuit_breaker() {
                         prompt_tokens: Some(10),
                         completion_tokens: Some(10),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -306,6 +309,7 @@ async fn test_reasoning_only_final_turn_captured_in_final_content() {
                         prompt_tokens: Some(20),
                         completion_tokens: Some(15),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -371,6 +375,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             prompt_tokens: Some(10),
                             completion_tokens: Some(8),
                             cached_tokens: None,
+                            cache_write_tokens: None,
                             reasoning_tokens: None,
                         }))
                         .await;
@@ -386,6 +391,7 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
                             prompt_tokens: Some(20),
                             completion_tokens: Some(6),
                             cached_tokens: None,
+                            cache_write_tokens: None,
                             reasoning_tokens: None,
                         }))
                         .await;
@@ -479,6 +485,7 @@ async fn test_turn_stats_includes_reasoning_and_fallback_estimation() {
                         prompt_tokens: None,
                         completion_tokens: None,
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;

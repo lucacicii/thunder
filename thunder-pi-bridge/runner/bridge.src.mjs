@@ -282,6 +282,13 @@ async function handleStream(req, piAi) {
 	// Prompt-cache write hint: "none" disables cache writes for one-off
 	// requests (checkpoint summarization) that will never be reused.
 	if (typeof req.cacheRetention === "string") options.cacheRetention = req.cacheRetention;
+	// Per-conversation routing key (pi-ai `options.sessionId`): becomes
+	// OpenAI's `prompt_cache_key`, Mistral's `promptCacheKey`, and
+	// session-affinity headers on providers that support them — keeping every
+	// request of one conversation on the same prompt-cache shard.
+	if (typeof req.sessionId === "string" && req.sessionId.length > 0) {
+		options.sessionId = req.sessionId;
+	}
 	if (tools.length > 0) context.tools = tools;
 
 	try {

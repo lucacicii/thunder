@@ -34,6 +34,9 @@ function assertMappedContext(context, options) {
 	if (options?.reasoning !== "high") {
 		return `fake assertion failed: reasoning=${JSON.stringify(options?.reasoning)}`;
 	}
+	if (options?.sessionId !== "conv-42") {
+		return `fake assertion failed: sessionId=${JSON.stringify(options?.sessionId)}`;
+	}
 	return null;
 }
 

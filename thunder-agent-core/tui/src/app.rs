@@ -2329,11 +2329,15 @@ impl App {
         let mut base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
         base_cfg.temperature = Some(self.temperature);
         base_cfg.request_timeout_ms = timeout_ms;
+        // Prompt-cache routing affinity: bind the run to the conversation id.
+        base_cfg.session_id = Some(self.conversation.id.clone());
         if let Some(tl) = self.effective_thinking_level() {
             base_cfg.thinking_level = Some(tl);
         }
         if let Some(spec) = self.provider_registry.resolve(&model) {
             base_cfg.pruning.max_context_tokens = spec.context_window;
+            base_cfg.prompt_cache_warm = spec
+                .prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }
 
         let mut skills_plugin = SkillsPlugin::default();
@@ -2480,8 +2484,16 @@ impl App {
         let mut config = AgentConfig::new(model.clone()).with_unlimited_turns();
         config.temperature = Some(self.temperature);
         config.request_timeout_ms = timeout_ms;
+        // Prompt-cache routing affinity: bind the run to the conversation id.
+        config.session_id = Some(self.conversation.id.clone());
         if let Some(tl) = self.effective_thinking_level() {
             config.thinking_level = Some(tl);
+        }
+        // Prompt-cache warming: enabled only when the model declares both a
+        // promptCache lifetime and cost pricing in models.json.
+        if let Some(spec) = self.provider_registry.resolve(&model) {
+            config.prompt_cache_warm = spec
+                .prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }
         // Capability tier + multi-root jail mirror the host path.
         config.permission = self.permission;

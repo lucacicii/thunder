@@ -55,6 +55,8 @@ async fn test_provider_registry_update_model_context_window() {
         thinking_levels_probed: false,
         thinking_level_map: None,
         compat: None,
+        cost: None,
+        prompt_cache: None,
     });
 
     assert_eq!(registry.models[0].context_window, 128_000);

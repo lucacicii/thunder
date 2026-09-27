@@ -95888,6 +95888,9 @@ async function handleStream(req, piAi2) {
   if (typeof req.temperature === "number") options.temperature = req.temperature;
   if (typeof req.maxTokens === "number") options.maxTokens = req.maxTokens;
   if (typeof req.cacheRetention === "string") options.cacheRetention = req.cacheRetention;
+  if (typeof req.sessionId === "string" && req.sessionId.length > 0) {
+    options.sessionId = req.sessionId;
+  }
   if (tools.length > 0) context.tools = tools;
   try {
     for await (const ev of stream12(model, context, options)) {

@@ -62,6 +62,11 @@ struct StreamRequest<'a> {
     /// writes — used by one-off checkpoint summarization requests).
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_retention: Option<String>,
+    /// Per-conversation routing key forwarded as pi-ai `options.sessionId`
+    /// (OpenAI `prompt_cache_key`, Mistral `promptCacheKey`, session-affinity
+    /// headers). `None` keeps the field off the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
 }
 
 #[async_trait]
@@ -93,6 +98,7 @@ impl LLMClientTrait for PiAiClient {
             top_p: options.top_p,
             max_tokens: options.max_tokens,
             cache_retention: options.cache_retention.clone(),
+            session_id: options.session_id.clone(),
         };
         let payload = serde_json::to_string(&request)
             .map_err(|e| format!("failed to serialize bridge request: {e}"))?;
@@ -163,6 +169,7 @@ mod tests {
             top_p: None,
             max_tokens: Some(128),
             cache_retention: None,
+            session_id: None,
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["cmd"], "stream");
@@ -170,6 +177,7 @@ mod tests {
         assert_eq!(v["maxTokens"], 128);
         // None fields are skipped entirely (no nulls on the wire)
         assert!(v.get("topP").is_none());
+        assert!(v.get("sessionId").is_none());
         assert_eq!(v["messages"][0]["role"], "user");
     }
 }
