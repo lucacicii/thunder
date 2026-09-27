@@ -66,13 +66,31 @@ Rust 宿主通过异步 Stdio 与 `runner/host.mjs` 维持长连接，通信采�
 
 | 能力 | 走哪条路 | 约束 |
 |------|---------|------|
-| `ctx.exec()` / `ctx.fs.*` | 侧车 → Rust RPC | 继承**当前 run** 的能力档位（`SidecarConfig::permission` 是共享 slot，每次 `on_init` 覆写），路径受 workspace jail 限制 |
+| `ctx.exec()` / `ctx.fs.*` | 侧车 → Rust RPC → **完整 onion** | 合成为 `bash` / `write_file` / `read_file` 工具调用后派发，与模型调用**同一条 pipeline**：能力档位、模式、已记住的规则、路径 jail、事务、禁用命令表、审批门全部生效 |
 | `ctx.ui.*` | 侧车 → Rust → 客户端 | 线上恒为 `source: "plugin"`，客户端**不得**把插件弹窗的答复当作授权决定 |
-| `ctx.callTool()` | 侧车 → Rust → **完整 onion** | 派发走与模型调用**同一条** pipeline：档位、路径 jail、事务、审批门全部生效；被询问时弹窗会显示请求方插件名 |
+| `ctx.callTool()` | 侧车 → Rust → **完整 onion** | 同上；被询问时弹窗会显示请求方插件名 |
 | 审批 | `ApprovalGate`（`PermissionGuard` 之内） | 一律 fail-closed：无面板 / 超时 / 用户拒绝 → 拒绝，并以「什么都没发生」的 ground truth 回灌模型 |
 
 `pluginId` 由 Node 侧随请求带上：侧车是多插件共用一条通道，只有它知道是谁在问。
 **没有归属信息的插件调用与模型调用无法区分**，那等于给了一个可以伪装成助手的提权通道。
+
+### 为什么 `ctx.exec` 不再自己实现
+
+早期版本里 `ctx.exec()` 是手写 `bash -c`、`ctx.fs.writeFile()` 是手写原子写 —— 也就是
+把工具语义实现了第二遍。后果不是"重复代码"，而是**两份实现不一致**：
+
+- `SecurityGuard` 的禁用命令表不生效，插件能跑模型跑不了的命令；
+- 档位是唯一的检查，审批模式与"总是允许"规则都不生效 ——
+  `mode: ask` 下模型发 `bash` 会被问，插件发 `ctx.exec("git status")` 不会；
+- 路径 jail 与 10MB 上限各写一份，靠人工保持一致。
+
+现在这三个 RPC 只是**表达成它一直伪装成的那个工具调用**，交给 run 的 invoker 派发。
+参数名本来就与工具 schema 一致（`bash` 收 `{command, cwd}`，`ctx.exec` 收
+`(command, {cwd})`），所以映射是恒等的，并且逐方法显式写出：schema 变了会在映射处
+编译失败，而不是运行时静默错位。
+
+run 尚未注册工具时（`on_run_ready` 之前），`ctx.exec` 会被拒绝并说明原因 ——
+**不再有第二条静默的旁路**。
 
 ### 并发隔离
 
