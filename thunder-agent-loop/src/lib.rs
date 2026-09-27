@@ -5,6 +5,7 @@
 //!
 //! See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the A/B contract.
 
+pub mod cache;
 pub mod core;
 pub mod loop_engine;
 pub mod pruning;
@@ -14,6 +15,7 @@ pub mod types;
 
 /// Stable product surface for a single agent unit and for a scheduler composing many units.
 pub mod prelude {
+    pub use crate::cache::warmer::{CacheWarmDecision, PromptCacheWarmSettings, WarmSnapshot};
     pub use crate::core::pause::PauseGate;
     pub use crate::core::state::LoopStatus;
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};

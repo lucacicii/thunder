@@ -1,3 +1,4 @@
+use crate::cache::warmer::PromptCacheWarmSettings;
 use crate::tools::scratchpad::ScratchpadConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -188,6 +189,18 @@ pub struct AgentConfig {
     pub max_stream_retries: usize,
     pub thinking_level: Option<String>,
     pub workspace_dir: Option<PathBuf>,
+    /// Stable per-conversation id forwarded to the transport as pi-ai's
+    /// `options.sessionId`: it becomes OpenAI's `prompt_cache_key`, Mistral's
+    /// `promptCacheKey`, and Anthropic-compatible session-affinity headers,
+    /// routing every request of one conversation onto the same prompt-cache
+    /// shard. `None` disables affinity (one-off calls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Prompt-cache warming policy for this run. `None` (default) disables
+    /// warming. Hosts derive it from the resolved `ModelSpec`
+    /// (`promptCache` lifetime + `cost` pricing must both be declared).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_warm: Option<PromptCacheWarmSettings>,
     /// Additional workspace roots (e.g. repositories referenced by the task)
     /// granted the same read/write standing as the primary workspace. The
     /// security guard jails paths to the union of primary root + these roots.
@@ -216,6 +229,8 @@ impl Default for AgentConfig {
             max_stream_retries: 2,
             thinking_level: None,
             workspace_dir: None,
+            session_id: None,
+            prompt_cache_warm: None,
             extra_workspace_roots: Vec::new(),
             middleware: MiddlewareConfig::default(),
             pruning: ContextPruningConfig::default(),
@@ -287,6 +302,13 @@ impl AgentConfig {
 
     pub fn with_thinking_level(mut self, level: impl Into<String>) -> Self {
         self.thinking_level = Some(level.into());
+        self
+    }
+
+    /// Bind all requests of this run to one prompt-cache routing key.
+    /// Use the conversation id so resumed conversations keep their affinity.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
         self
     }
 

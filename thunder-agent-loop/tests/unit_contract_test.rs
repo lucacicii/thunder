@@ -32,6 +32,7 @@ impl LLMClientTrait for CountingClient {
                         prompt_tokens: Some(4),
                         completion_tokens: Some(4),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -45,6 +46,7 @@ impl LLMClientTrait for CountingClient {
                         prompt_tokens: Some(4),
                         completion_tokens: Some(2),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -193,6 +195,7 @@ async fn cancel_one_unit_does_not_stop_sibling() {
                                 prompt_tokens: Some(1),
                                 completion_tokens: Some(1),
                                 cached_tokens: None,
+                                cache_write_tokens: None,
                                 reasoning_tokens: None,
                             }))
                             .await;

@@ -38,6 +38,7 @@ impl LLMClientTrait for ContextOverflowMockClient {
                     prompt_tokens: Some(options.messages.len() * 10),
                     completion_tokens: Some(10),
                     cached_tokens: None,
+                    cache_write_tokens: None,
                     reasoning_tokens: None,
                 }))
                 .await;

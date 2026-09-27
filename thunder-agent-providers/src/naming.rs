@@ -126,6 +126,8 @@ pub async fn generate_title(
         thinking_level: Some("off".to_string()),
         // One-off utility call: never pay the prompt-cache write premium.
         cache_retention: Some("none".to_string()),
+        // One-off request: no session affinity (fresh routing id, like pi).
+        session_id: None,
     };
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

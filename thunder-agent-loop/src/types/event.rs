@@ -9,6 +9,11 @@ pub struct TurnStats {
     pub completion_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<usize>,
+    /// Prompt tokens freshly written into the provider's prompt cache this
+    /// turn (billed at the cache-write premium). Distinct from `cached_tokens`
+    /// (cache reads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<usize>,
     pub duration_ms: u64,

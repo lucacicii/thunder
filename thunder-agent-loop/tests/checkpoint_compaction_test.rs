@@ -78,6 +78,7 @@ impl LLMClientTrait for CheckpointMockClient {
                         prompt_tokens: Some(50),
                         completion_tokens: Some(20),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -109,6 +110,7 @@ impl LLMClientTrait for CheckpointMockClient {
                         prompt_tokens: Some(30),
                         completion_tokens: Some(10),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;
@@ -121,6 +123,7 @@ impl LLMClientTrait for CheckpointMockClient {
                         prompt_tokens: Some(30),
                         completion_tokens: Some(5),
                         cached_tokens: None,
+                        cache_write_tokens: None,
                         reasoning_tokens: None,
                     }))
                     .await;

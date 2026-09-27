@@ -154,6 +154,11 @@ pub struct ModelSpec {
     pub thinking_levels_probed: bool,
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
     pub compat: Option<serde_json::Value>,
+    /// pi `Model.cost` passthrough (per-million pricing) → `BridgeModel.cost`.
+    pub cost: Option<thunder_pi_bridge::BridgeCost>,
+    /// pi `Model.promptCache` passthrough (seconds per retention tier) →
+    /// `BridgeModel.prompt_cache`.
+    pub prompt_cache: Option<thunder_pi_bridge::BridgePromptCache>,
 }
 
 impl ModelSpec {
@@ -169,11 +174,48 @@ impl ModelSpec {
         m.max_tokens = self.max_tokens;
         m.thinking_level_map = self.thinking_level_map.clone();
         m.compat = self.compat.clone();
+        m.cost = self.cost.clone();
+        m.prompt_cache = self.prompt_cache.clone();
         m
     }
 
     pub fn model_ref(&self) -> ModelRef {
         ModelRef::new(&self.provider, &self.id)
+    }
+
+    /// Derive prompt-cache warming settings from the model's declared
+    /// `promptCache` lifetime and `cost` pricing (both must be present in
+    /// `models.json`; missing pricing leaves warming off because the
+    /// expected-savings gate cannot be evaluated — pi's "cache economics
+    /// unavailable" rule).
+    ///
+    /// `thinking_level` is the run's active level. Anthropic budget-derived
+    /// thinking (`anthropic-messages` + reasoning enabled without
+    /// `forceAdaptiveThinking`) derives `budget_tokens` from `max_tokens`, so a
+    /// one-token replay would change the cache key: such models report
+    /// `replay_safe: false` and never warm.
+    pub fn prompt_cache_warm_settings(
+        &self,
+        thinking_level: Option<&str>,
+    ) -> Option<thunder_agent_loop::cache::warmer::PromptCacheWarmSettings> {
+        let ttl_secs = self.prompt_cache.as_ref()?.short?;
+        let reasoning = thinking_level
+            .map(|level| !level.eq_ignore_ascii_case("off"))
+            .unwrap_or(false);
+        let anthropic = matches!(self.api, ProviderApi::AnthropicMessages);
+        let force_adaptive = self
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.get("forceAdaptiveThinking"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        Some(thunder_agent_loop::cache::warmer::PromptCacheWarmSettings {
+            ttl_secs,
+            input_price_per_m: self.cost.as_ref().map(|cost| cost.input),
+            cache_read_price_per_m: self.cost.as_ref().map(|cost| cost.cache_read),
+            cache_write_price_per_m: self.cost.as_ref().map(|cost| cost.cache_write),
+            replay_safe: !reasoning || !anthropic || force_adaptive,
+        })
     }
 
     pub fn selection_id(&self) -> String {
@@ -283,6 +325,19 @@ impl ProviderRegistry {
                     thinking_levels_probed: model.thinking_levels_probed.unwrap_or(false),
                     thinking_level_map,
                     compat: compat_val,
+                    cost: model.cost.map(|c| thunder_pi_bridge::BridgeCost {
+                        input: c.input.unwrap_or(0.0),
+                        output: c.output.unwrap_or(0.0),
+                        cache_read: c.cache_read.unwrap_or(0.0),
+                        cache_write: c.cache_write.unwrap_or(0.0),
+                        tiers: Vec::new(),
+                    }),
+                    prompt_cache: model.prompt_cache.map(|pc| {
+                        thunder_pi_bridge::BridgePromptCache {
+                            short: pc.short,
+                            long: pc.long,
+                        }
+                    }),
                 });
             }
         }
@@ -507,6 +562,33 @@ fn merge_compat(provider: &CompatConfig, model: Option<&CompatConfig>) -> Compat
         if model.max_tokens_field.is_some() {
             out.max_tokens_field = model.max_tokens_field.clone();
         }
+        if model.supports_long_cache_retention.is_some() {
+            out.supports_long_cache_retention = model.supports_long_cache_retention;
+        }
+        if model.supports_cache_control_on_tools.is_some() {
+            out.supports_cache_control_on_tools = model.supports_cache_control_on_tools;
+        }
+        if model.cache_control_format.is_some() {
+            out.cache_control_format = model.cache_control_format.clone();
+        }
+        if model.send_session_affinity_headers.is_some() {
+            out.send_session_affinity_headers = model.send_session_affinity_headers;
+        }
+        if model.session_affinity_format.is_some() {
+            out.session_affinity_format = model.session_affinity_format.clone();
+        }
+        if model.supports_mid_convo_system_messages.is_some() {
+            out.supports_mid_convo_system_messages = model.supports_mid_convo_system_messages;
+        }
+        if model.supports_mid_convo_tool_changes.is_some() {
+            out.supports_mid_convo_tool_changes = model.supports_mid_convo_tool_changes;
+        }
+        if model.supports_explicit_prompt_cache_mode.is_some() {
+            out.supports_explicit_prompt_cache_mode = model.supports_explicit_prompt_cache_mode;
+        }
+        if model.force_adaptive_thinking.is_some() {
+            out.force_adaptive_thinking = model.force_adaptive_thinking;
+        }
     }
     out
 }
@@ -581,6 +663,8 @@ fn builtin_models(
                     thinking_levels_probed: false,
                     thinking_level_map: None,
                     compat: serde_json::to_value(compat).ok(),
+                    cost: None,
+                    prompt_cache: None,
                 }
             })
             .collect(),
@@ -617,6 +701,8 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
                 thinking_levels_probed: false,
                 thinking_level_map: None,
                 compat: None,
+                cost: None,
+                prompt_cache: None,
             }
         })
         .collect()

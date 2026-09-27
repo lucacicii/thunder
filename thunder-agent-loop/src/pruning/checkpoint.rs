@@ -411,6 +411,8 @@ impl Summarizer {
             max_tokens: Some(self.max_tokens),
             thinking_level: None, // summaries never need deep reasoning
             cache_retention: Some("none".to_string()),
+            // One-off request: no session affinity (fresh routing id, like pi).
+            session_id: None,
         };
 
         let mut rx = self.client.stream_chat(options, cancel.clone()).await?;

@@ -795,11 +795,19 @@ impl DaemonService {
             let _permit = permit;
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
             base_cfg.request_timeout_ms = 120_000;
+            // Prompt-cache routing affinity: every request of this conversation
+            // reuses one cache shard (OpenAI prompt_cache_key / Mistral
+            // promptCacheKey / session-affinity headers).
+            base_cfg.session_id = Some(effective_session_id.clone());
             if let Some(ref tl) = chosen_thinking {
                 base_cfg.thinking_level = Some(tl.clone());
             }
             if let Some(spec) = registry.resolve(&chosen_model) {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
+                // Prompt-cache warming: enabled only when the model declares
+                // both a promptCache lifetime and cost pricing in models.json.
+                base_cfg.prompt_cache_warm = spec
+                    .prompt_cache_warm_settings(chosen_thinking.as_deref());
             }
 
             // Transport resolution order: injected factory (in-process tests /

@@ -72,6 +72,8 @@ fn echo_request() -> ChatRequestOptions {
         max_tokens: Some(512),
         thinking_level: Some("high".to_string()),
         cache_retention: None,
+        // Exercise the prompt-cache routing-key passthrough end to end.
+        session_id: Some("conv-42".to_string()),
     }
 }
 
@@ -102,6 +104,7 @@ async fn bridge_maps_stream_end_to_end() {
                 prompt_tokens,
                 completion_tokens,
                 cached_tokens,
+                cache_write_tokens,
                 reasoning_tokens,
             }) => {
                 completed = Some((
@@ -111,6 +114,7 @@ async fn bridge_maps_stream_end_to_end() {
                     prompt_tokens,
                     completion_tokens,
                     cached_tokens,
+                    cache_write_tokens,
                     reasoning_tokens,
                 ));
                 break;
@@ -123,7 +127,7 @@ async fn bridge_maps_stream_end_to_end() {
     assert_eq!(text, "Hello world");
     assert_eq!(reasoning, "pondering");
 
-    let (content, tool_calls, finish_reason, prompt, completion, cached, reasoning_tok) =
+    let (content, tool_calls, finish_reason, prompt, completion, cached, cache_written, reasoning_tok) =
         completed.expect("stream must complete");
     assert_eq!(content.as_deref(), Some("Hello world"));
     assert_eq!(finish_reason, "tool_calls");
@@ -131,6 +135,7 @@ async fn bridge_maps_stream_end_to_end() {
     assert_eq!(prompt, Some(16));
     assert_eq!(completion, Some(22));
     assert_eq!(cached, Some(4));
+    assert_eq!(cache_written, Some(1));
     assert_eq!(reasoning_tok, Some(6));
 
     assert_eq!(tool_calls.len(), 1);

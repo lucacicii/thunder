@@ -67,6 +67,40 @@ pub struct ModelFileConfig {
         alias = "probed"
     )]
     pub thinking_levels_probed: Option<bool>,
+    /// pi `Model.cost` passthrough (per-million pricing) for cost accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostConfig>,
+    /// pi `Model.promptCache` passthrough (seconds per retention tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCacheConfig>,
+}
+
+/// Per-model prompt-caching metadata (pi `Model.promptCache`, seconds per
+/// retention tier). `thunder` only passes it through to pi-ai; it is the TTL
+/// source for any future prompt-cache warming.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long: Option<u64>,
+}
+
+/// Per-million-token pricing (pi `Model.cost`). Thunder does not interpret
+/// these numbers; pi-ai's `calculateCost` reads them for cache read/write
+/// cost accounting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,6 +109,37 @@ pub struct CompatConfig {
     pub supports_developer_role: Option<bool>,
     pub supports_reasoning_effort: Option<bool>,
     pub max_tokens_field: Option<String>,
+    // --- prompt-cache-relevant compat flags (passthrough to pi-ai) ---
+    /// Provider cache lifetime tiering support; `false` models must not get
+    /// `ttl: "1h"` / `prompt_cache_retention: "24h"` under long retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_long_cache_retention: Option<bool>,
+    /// Anthropic-API only: whether tool definitions accept `cache_control`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_cache_control_on_tools: Option<bool>,
+    /// OpenAI-completions endpoints that accept Anthropic-style
+    /// `cache_control` blocks (e.g. vLLM): `"anthropic"` enables injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control_format: Option<String>,
+    /// Send a session-affinity routing header (`x-session-affinity` /
+    /// OpenRouter `x-session-id`) so requests land on the same cache shard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_session_affinity_headers: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_affinity_format: Option<String>,
+    /// Provider can represent mid-conversation system messages; when `false`
+    /// pi-ai collapses the transcript into one head system message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_changes: Option<bool>,
+    /// OpenAI Responses explicit prompt-cache mode (`prompt_cache_options`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_explicit_prompt_cache_mode: Option<bool>,
+    /// Anthropic thinking budget derives from `max_tokens`; only adaptive
+    /// thinking models can safely replay a request for cache warming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_adaptive_thinking: Option<bool>,
 }
 
 pub fn sort_thinking_levels(levels: &[String]) -> Vec<String> {

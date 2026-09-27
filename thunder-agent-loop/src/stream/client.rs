@@ -25,7 +25,12 @@ pub enum LLMStreamChunk {
         finish_reason: String,
         prompt_tokens: Option<usize>,
         completion_tokens: Option<usize>,
+        /// Prompt tokens served from the provider's prompt cache (cache reads).
         cached_tokens: Option<usize>,
+        /// Prompt tokens freshly written into the provider's prompt cache.
+        /// Distinct from `cached_tokens` because providers bill cache writes
+        /// at a premium; needed for cache-waste accounting.
+        cache_write_tokens: Option<usize>,
         reasoning_tokens: Option<usize>,
     },
 }
@@ -44,6 +49,11 @@ pub struct ChatRequestOptions {
     /// should pass `Some("none")` — they will never be reused, so paying the
     /// cache-write premium and polluting the cache is pure waste.
     pub cache_retention: Option<String>,
+    /// Stable per-conversation routing key (pi-ai `options.sessionId`):
+    /// OpenAI `prompt_cache_key`, Mistral `promptCacheKey`, and
+    /// Anthropic-compatible session-affinity headers. One-off requests pass
+    /// `None` so they do not pollute the conversation's cache routing.
+    pub session_id: Option<String>,
 }
 
 #[async_trait]
