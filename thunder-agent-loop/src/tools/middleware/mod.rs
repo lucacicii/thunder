@@ -1,4 +1,3 @@
-pub mod approval;
 pub mod output;
 pub mod permission_guard;
 pub mod resource;
@@ -6,7 +5,6 @@ pub mod security;
 pub mod telemetry;
 pub mod transaction;
 
-pub use approval::ApprovalGate;
 pub use output::OutputPostProcessorMiddleware;
 pub use permission_guard::PermissionGuardMiddleware;
 pub use resource::ResourceGuardMiddleware;
@@ -141,14 +139,17 @@ impl ToolPipeline {
             &crate::types::config::MiddlewareConfig::default(),
             crate::types::config::Permission::default(),
             None,
+            None,
         )
     }
 
     /// Assembles an Onion Middleware Pipeline adhering to caller's `MiddlewareConfig`.
     ///
-    /// `approval` is spliced in directly after the permission guard — see
-    /// [`ToolPipeline::insert_middleware_after`] for why that position is load
-    /// bearing.
+    /// `policy` and `ui` are the judge's inputs. Passing `None` for either
+    /// degrades safely: without a policy the guard has nothing to ask and lets
+    /// everything through (the host's tool registration is then the only
+    /// ceiling), and without a UI every `Ask` resolves as cancelled, so a
+    /// headless host refuses rather than assuming consent.
     #[allow(clippy::too_many_arguments)]
     pub fn configured(
         workspace_root: std::path::PathBuf,
@@ -157,7 +158,8 @@ impl ToolPipeline {
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
         permission: crate::types::config::Permission,
-        approval: Option<Arc<dyn ToolMiddleware>>,
+        policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     ) -> Self {
         let max_output_bytes = 64 * 1024;
         let terminal: Arc<dyn ToolHandler> = if cfg.enable_output_post_processor {
@@ -171,10 +173,23 @@ impl ToolPipeline {
         // Outermost gate: a denied capability never reaches the workspace.
         let mut all_roots = vec![workspace_root.clone()];
         all_roots.extend(extra_workspace_roots.iter().cloned());
-        pipeline.add_middleware(Arc::new(
-            permission_guard::PermissionGuardMiddleware::new(permission)
-                .with_workspace_roots(all_roots),
-        ));
+        // One layer, outermost. It judges with the policy when given one, and
+        // otherwise falls back to the bare tier so the pipeline is still
+        // defended for embedders that have not adopted `SessionPolicy` yet.
+        let mut guard = match policy {
+            Some(policy) => permission_guard::PermissionGuardMiddleware::new(
+                policy,
+                ui.unwrap_or_else(|| {
+                    Arc::new(crate::types::ui::NullHostUi) as Arc<dyn crate::types::ui::HostUi>
+                }),
+            ),
+            None => permission_guard::PermissionGuardMiddleware::new_tier_only(
+                permission,
+                all_roots.clone(),
+            ),
+        };
+        guard = guard.with_workspace_roots(all_roots);
+        pipeline.add_middleware(Arc::new(guard));
         if cfg.enable_security_guard {
             pipeline.add_middleware(Arc::new(
                 SecurityGuardMiddleware::new(&workspace_root)
@@ -193,18 +208,6 @@ impl ToolPipeline {
                 scratchpad,
             )));
         }
-        if let Some(gate) = approval {
-            // If the guard were ever removed there would be no tier check and
-            // the gate would silently become the only thing between the model and
-            // the shell. Refuse to install instead of degrading quietly.
-            if !pipeline
-                .insert_middleware_after(permission_guard::PermissionGuardMiddleware::NAME, gate)
-            {
-                tracing::error!(
-                    "Approval gate NOT installed: permission guard absent from the pipeline"
-                );
-            }
-        }
         pipeline
     }
 
@@ -215,22 +218,6 @@ impl ToolPipeline {
 
     pub fn add_middleware(&mut self, mw: Arc<dyn ToolMiddleware>) {
         self.middlewares.push(mw);
-    }
-
-    /// Insert `mw` immediately after the middleware named `anchor`.
-    ///
-    /// Position is security-relevant, which is why appending is not enough: the
-    /// approval gate must sit *inside* `PermissionGuardMiddleware` (so a tier
-    /// denial still short-circuits) but *outside* `TransactionMiddleware` (so a
-    /// refused call never stages a temp file it will not use).
-    ///
-    /// Returns `false` when the anchor is absent, leaving the stack untouched.
-    pub fn insert_middleware_after(&mut self, anchor: &str, mw: Arc<dyn ToolMiddleware>) -> bool {
-        let Some(idx) = self.middlewares.iter().position(|m| m.name() == anchor) else {
-            return false;
-        };
-        self.middlewares.insert(idx + 1, mw);
-        true
     }
 
     /// Whether a middleware with this name is in the stack.

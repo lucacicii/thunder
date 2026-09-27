@@ -48,7 +48,8 @@ impl ToolExecutor {
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
         cfg: &crate::types::config::MiddlewareConfig,
         permission: crate::types::config::Permission,
-        approval: Option<Arc<dyn ToolMiddleware>>,
+        policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     ) -> Self {
         let pipeline = ToolPipeline::configured(
             workspace_root,
@@ -57,7 +58,8 @@ impl ToolExecutor {
             scratchpad,
             cfg,
             permission,
-            approval,
+            policy,
+            ui,
         );
         Self { registry, pipeline }
     }

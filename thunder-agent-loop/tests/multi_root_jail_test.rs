@@ -45,6 +45,7 @@ async fn write_file_lands_in_extra_root_via_transaction() {
         &MiddlewareConfig::default(),
         Permission::Bash,
         None,
+        None,
     );
 
     // Absolute write into the referenced repository.

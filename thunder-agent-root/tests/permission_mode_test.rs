@@ -162,24 +162,33 @@ async fn role_and_mode_compose_without_escalating() {
         // role did not already grant.
         assert!(expected_tier <= permission, "{label} escalated the ceiling");
 
-        let policy = SessionPolicy::new(mode);
-        let write_asks = matches!(
-            policy
-                .decide(
-                    "write_file",
-                    &serde_json::json!({"path": "a", "content": "b"})
-                )
-                .await,
-            Decision::Ask(_)
+        // The tier is the *unclipped* role tier: the policy applies the mode's
+        // ceiling itself, so `plan` refuses writes even when handed `bash`.
+        let policy = SessionPolicy::new(permission, mode);
+        let write_call =
+            ToolCall::new_function("c1", "write_file", r#"{"path":"a","content":"b"}"#);
+        let shell_call = ToolCall::new_function("c2", "bash", r#"{"command":"ls"}"#);
+        let model = Caller::Model;
+
+        // Only a call the ceiling still permits can reach a prompt at all, so
+        // the expected prompting is gated on the tier.
+        let write_allowed = expected_tier >= ToolEffect::Write.required_tier();
+        let shell_allowed = expected_tier >= ToolEffect::Exec.required_tier();
+        let write_asks = matches!(policy.decide(&write_call, &model).await, Verdict::Ask(_));
+        let shell_asks = matches!(policy.decide(&shell_call, &model).await, Verdict::Ask(_));
+        // Under `plan` the ceiling is read-only, so nothing is ever *asked* —
+        // it is refused. That is the "narrow, don't negotiate" property, and it
+        // is why the expected prompting is gated on the tier.
+        assert_eq!(
+            write_asks,
+            expect_write_ask && write_allowed,
+            "write gate for {label}"
         );
-        let shell_asks = matches!(
-            policy
-                .decide("bash", &serde_json::json!({"command": "ls"}))
-                .await,
-            Decision::Ask(_)
+        assert_eq!(
+            shell_asks,
+            expect_shell_ask && shell_allowed,
+            "shell gate for {label}"
         );
-        assert_eq!(write_asks, expect_write_ask, "write gate for {label}");
-        assert_eq!(shell_asks, expect_shell_ask, "shell gate for {label}");
     }
 }
 
@@ -191,32 +200,55 @@ async fn plan_mode_removes_writes_by_clipping_the_tier_not_by_asking() {
     assert_eq!(mode.effective(Permission::Bash), Permission::Read);
     assert_eq!(mode.effective(Permission::Write), Permission::Read);
 
-    // So a run in plan mode has no `write_file` / `bash` tool registered at all
-    // (the host gates registration on the tier), which is strictly stronger than
-    // prompting: there is nothing to approve.
-    let policy = SessionPolicy::new(mode);
-    let write = policy
-        .decide(
-            "write_file",
-            &serde_json::json!({"path": "a", "content": "b"}),
-        )
-        .await;
-    let shell = policy
-        .decide("bash", &serde_json::json!({"command": "ls"}))
-        .await;
+    // Handed the *widest* tier, the policy still refuses: it applies the mode's
+    // ceiling itself, so a caller cannot forget to clip it. Before that, the
+    // host clipped on the way in and a policy built directly with `Bash` +
+    // `Plan` restricted nothing — the most dangerous reading of "plan" there
+    // was, and this assertion could not have been written.
+    let policy = SessionPolicy::new(Permission::Bash, mode);
+    let write_call = ToolCall::new_function("c1", "write_file", r#"{"path":"a","content":"b"}"#);
+    let shell_call = ToolCall::new_function("c2", "bash", r#"{"command":"ls"}"#);
+    let model = Caller::Model;
 
-    // The policy still has an opinion (it does not know the tier), but the tier
-    // has already made both moot. Asserting the shape rather than a specific
-    // verdict keeps this test honest about which layer is doing the work.
-    for decision in [write, shell] {
-        assert!(
-            matches!(
-                decision,
-                Decision::Ask(_) | Decision::Allow | Decision::Deny { .. }
-            ),
-            "unexpected decision shape"
-        );
+    for (tool, decision) in [
+        ("write_file", policy.decide(&write_call, &model).await),
+        ("bash", policy.decide(&shell_call, &model).await),
+    ] {
+        match decision {
+            Verdict::Deny { reason } => {
+                assert!(
+                    reason.contains("read-only"),
+                    "{tool}: the reason should name the ceiling, got: {reason}"
+                );
+            }
+            other => panic!("{tool}: plan mode must refuse outright, never negotiate: {other:?}"),
+        }
     }
+
+    // And a read is still fine, or the mode would be useless.
+    let read_call = ToolCall::new_function("c3", "read_file", r#"{"path":"a"}"#);
+    assert_eq!(policy.decide(&read_call, &model).await, Verdict::Allow);
+}
+
+/// Switching out of `plan` must restore the role's own tier. Without keeping the
+/// unclipped tier alongside, a `plan` → `ask` switch would strand the run at
+/// read-only.
+#[tokio::test]
+async fn leaving_plan_mode_restores_the_role_tier() {
+    let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Plan);
+    let write_call = ToolCall::new_function("c1", "write_file", r#"{"path":"a","content":"b"}"#);
+    let model = Caller::Model;
+    assert!(matches!(
+        policy.decide(&write_call, &model).await,
+        Verdict::Deny { .. }
+    ));
+
+    policy.set_mode(PermissionMode::Ask).await;
+    assert!(
+        matches!(policy.decide(&write_call, &model).await, Verdict::Ask(_)),
+        "ask mode should negotiate again, not stay stuck read-only"
+    );
+    assert_eq!(policy.tier().await, Permission::Bash);
 }
 
 #[test]

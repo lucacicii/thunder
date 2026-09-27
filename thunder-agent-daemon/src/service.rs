@@ -151,6 +151,11 @@ impl DaemonService {
     }
 
     /// The approval policy for a session, created on first use.
+    ///
+    /// The tier passed to `SessionPolicy::new` is only a seed: every run writes
+    /// its own via `set_tier`, because a role can differ between runs of one
+    /// session. Until then the policy enforces the widest tier, so a request
+    /// arriving before any run cannot be judged too narrowly.
     async fn session_policy(
         &self,
         session_id: &str,
@@ -163,7 +168,7 @@ impl DaemonService {
         Arc::clone(
             guard
                 .entry(session_id.to_string())
-                .or_insert_with(|| SessionPolicy::new(initial)),
+                .or_insert_with(|| SessionPolicy::new(Permission::Bash, initial)),
         )
     }
 

@@ -55,8 +55,13 @@ pub struct AgentLoop {
     status: Arc<AtomicU8>,
     /// Cooperative pause gate; shared with any handle that wants to pause this unit.
     pause_gate: Arc<crate::core::pause::PauseGate>,
-    /// Optional human-approval layer, spliced in behind the permission guard.
-    approval: Option<Arc<dyn crate::tools::middleware::ToolMiddleware>>,
+    /// The judge's inputs, threaded into every pipeline rebuild.
+    ///
+    /// `None` means "no policy adopted": the guard then enforces only the static
+    /// tier. `ui` of `None` inside a policy means every dialog is declined, so a
+    /// headless host refuses rather than assuming consent.
+    policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+    host_ui: Option<Arc<dyn crate::types::ui::HostUi>>,
 }
 
 impl AgentLoop {
@@ -81,6 +86,7 @@ impl AgentLoop {
             &config.middleware,
             config.permission,
             None,
+            None,
         );
 
         Self {
@@ -94,21 +100,24 @@ impl AgentLoop {
             running: Arc::new(AtomicBool::new(false)),
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
-            approval: None,
+            policy: None,
+            host_ui: None,
         }
     }
 
-    /// Install the human-approval layer.
+    /// Install the permission policy and the panel it may prompt through.
     ///
-    /// Spliced in directly after `PermissionGuardMiddleware`, so the capability
-    /// tier is still the ceiling and a refused call stages no files. Must be set
-    /// before the unit starts: the pipeline is rebuilt whenever a tool is
-    /// registered, and the gate travels with it.
-    pub fn with_approval_gate(
+    /// Both are held by the unit and travel with every pipeline rebuild, so a
+    /// tool registered later is still judged by the same policy. The policy
+    /// carries the live mode and remembered rules, so flipping the mode
+    /// mid-session takes effect on the next call without rebuilding anything.
+    pub fn with_policy(
         mut self,
-        gate: Arc<dyn crate::tools::middleware::ToolMiddleware>,
+        policy: Arc<crate::types::policy::SessionPolicy>,
+        ui: Arc<dyn crate::types::ui::HostUi>,
     ) -> Self {
-        self.approval = Some(gate);
+        self.policy = Some(policy);
+        self.host_ui = Some(ui);
         self.tool_executor = self.rebuild_executor();
         self
     }
@@ -125,7 +134,8 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
-            self.approval.clone(),
+            self.policy.clone(),
+            self.host_ui.clone(),
         )
     }
 
@@ -145,7 +155,8 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
-            self.approval.clone(),
+            self.policy.clone(),
+            self.host_ui.clone(),
         );
         self
     }
@@ -195,7 +206,8 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
-            self.approval.clone(),
+            self.policy.clone(),
+            self.host_ui.clone(),
         );
         self
     }
@@ -213,7 +225,8 @@ impl AgentLoop {
             Some(self.scratchpad.clone()),
             &self.config.middleware,
             self.config.permission,
-            self.approval.clone(),
+            self.policy.clone(),
+            self.host_ui.clone(),
         );
         self
     }
