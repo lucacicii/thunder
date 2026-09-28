@@ -14,12 +14,13 @@
 //! The permission tier is the load-bearing part: this crate is the authority,
 //! never the TypeScript plugin layer.
 
+use crate::selector::keyword_matches;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::policy::PermissionMode;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Role persona body.
 ///
@@ -252,12 +253,47 @@ impl RoleRegistry {
     /// hosts must not re-derive [`RoleSpec::permission`] on their own, or the
     /// tiers silently diverge between the daemon and the TUI. A missing or
     /// disabled role yields the permissive default, matching historic behaviour.
-    pub fn resolve_for_run(&self, token: Option<&str>) -> (Option<RoleSpec>, Permission) {
-        let role = token
-            .and_then(|t| self.resolve(t))
-            .filter(|role| role.enabled);
+    ///
+    /// An explicit token (slash command, `run_task.role`, `set_role`) always
+    /// wins — and a *miss* wins too: an unknown or disabled token must not
+    /// degrade into a trigger match, because the caller asked for a specific
+    /// role and silently substituting another would misreport who is running.
+    /// Only a run with no token at all scans the prompt against each role's
+    /// `triggers` keywords — see [`RoleRegistry::select_by_trigger`].
+    pub fn resolve_for_run(
+        &self,
+        token: Option<&str>,
+        prompt: &str,
+    ) -> (Option<RoleSpec>, Permission) {
+        let role = match token {
+            Some(t) => self.resolve(t).filter(|role| role.enabled),
+            None => self.select_by_trigger(prompt),
+        };
         let permission = role.as_ref().map(|r| r.permission).unwrap_or_default();
         (role, permission)
+    }
+
+    /// Keyword auto-selection for prompts that arrived without a role token.
+    ///
+    /// Matching mirrors the plugin selector ([`keyword_matches`]): ASCII
+    /// keywords require word boundaries ("design" does not match
+    /// "redesigned"); non-ASCII keywords (中文) match as substrings. The scan
+    /// is deterministic — roles in [`RoleRegistry::list_enabled`] order
+    /// (id-sorted), first hit wins — so a trigger list is an ordered
+    /// preference, not a vote.
+    fn select_by_trigger(&self, prompt: &str) -> Option<RoleSpec> {
+        let p_lower = prompt.to_lowercase();
+        for role in self.list_enabled() {
+            if let Some(kw) = role
+                .triggers
+                .iter()
+                .find(|kw| keyword_matches(&p_lower, kw))
+            {
+                info!(role = %role.id, trigger = %kw, "Role auto-selected by keyword");
+                return Some(role);
+            }
+        }
+        None
     }
 
     pub fn get(&self, id: &str) -> Option<&RoleSpec> {
@@ -455,5 +491,84 @@ mod tests {
     async fn empty_persona_is_detected() {
         assert!(Persona::default().is_empty());
         assert!(!Persona::Lines(vec!["x".into()]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn triggers_auto_select_a_role_when_no_token_was_given() {
+        let dir = tempdir().unwrap();
+        let f = write(
+            dir.path(),
+            "roles.jsonl",
+            concat!(
+                r#"{"id":"architect","permission":"write","triggers":["architecture","ADR"]}"#,
+                "\n",
+                r#"{"id":"pm","permission":"read","triggers":["排期","milestone"]}"#,
+                "\n"
+            ),
+        )
+        .await;
+        let reg = RoleRegistry::load_from_sources(vec![f]).await;
+
+        // ASCII keywords need word boundaries.
+        let (r, tier) = reg.resolve_for_run(None, "Please review the architecture of this module");
+        assert_eq!(r.unwrap().id, "architect");
+        assert_eq!(tier, Permission::Write);
+
+        // ...so "redesigned" must not fire the "design"-style keyword "ADR"-free roles.
+        let (r, _) = reg.resolve_for_run(None, "The login flow was redesigned last sprint");
+        assert!(r.is_none(), "substring inside a larger word must not match");
+
+        // Non-ASCII keywords match as substrings.
+        let (r, tier) = reg.resolve_for_run(None, "帮我做个新版本的排期计划");
+        assert_eq!(r.unwrap().id, "pm");
+        assert_eq!(tier, Permission::Read);
+
+        // No keyword, no role.
+        let (r, tier) = reg.resolve_for_run(None, "hello world");
+        assert!(r.is_none());
+        assert_eq!(tier, Permission::Bash, "no role keeps the historic default");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_token_beats_the_triggers() {
+        let dir = tempdir().unwrap();
+        let f = write(
+            dir.path(),
+            "roles.jsonl",
+            concat!(
+                r#"{"id":"a","permission":"read","triggers":["architecture"]}"#,
+                "\n",
+                r#"{"id":"b","permission":"bash"}"#,
+                "\n"
+            ),
+        )
+        .await;
+        let reg = RoleRegistry::load_from_sources(vec![f]).await;
+
+        // The prompt would auto-select "a" by keyword; the explicit "b" wins.
+        let (r, tier) = reg.resolve_for_run(Some("b"), "talk about architecture");
+        assert_eq!(r.unwrap().id, "b");
+        assert_eq!(tier, Permission::Bash);
+
+        // A requested-but-unknown token must not fall through to triggers:
+        // the user asked for a specific role, silently substituting another
+        // would be a lie about who is running.
+        let (r, _) = reg.resolve_for_run(Some("missing"), "talk about architecture");
+        assert!(r.is_none(), "unknown token must not degrade into trigger match");
+    }
+
+    #[tokio::test]
+    async fn disabled_roles_never_trigger() {
+        let dir = tempdir().unwrap();
+        let f = write(
+            dir.path(),
+            "roles.jsonl",
+            r#"{"id":"off","permission":"read","enabled":false,"triggers":["architecture"]}"#,
+        )
+        .await;
+        let reg = RoleRegistry::load_from_sources(vec![f]).await;
+
+        let (r, _) = reg.resolve_for_run(None, "review the architecture");
+        assert!(r.is_none());
     }
 }

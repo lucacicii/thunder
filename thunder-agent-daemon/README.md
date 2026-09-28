@@ -47,7 +47,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"ping","id":"req-1"}
 {"method":"list_models","id":"req-2"}
 {"method":"list_roles","id":"req-3","workspace_dir":"/path/to/repo"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan","mode":"ask"}
+{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan"}
 {"method":"cancel_task","id":"req-5","task_id":"task-1"}
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}
@@ -55,7 +55,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
 {"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":false}
 {"method":"answer_ui","id":"req-11","request_id":"ui_1234_3_101","cancelled":true}
-{"method":"set_permission_mode","id":"req-12","session_id":"sess-001","mode":"accept_edits"}
+{"method":"set_role","id":"req-12","session_id":"sess-001","role":"auto"}
 {"method":"get_permission_state","id":"req-13","session_id":"sess-001"}
 ```
 
@@ -211,13 +211,16 @@ TypeScript 插件的 `ctx.exec()` / `ctx.fs.*` 不再自己实现 shell 与写�
 ### 中途切换
 
 ```json
-{"method":"set_permission_mode","session_id":"sess-001","mode":"yolo"}
+{"method":"set_role","session_id":"sess-001","role":"reviewer"}
 ```
 
-对**下一个工具调用**立即生效，包括已在运行的任务中的调用 —— 模式是每次调用现读的，
-不是在建管线时烤进去的。会话内的"总是允许"规则同样跨轮保留，随会话结束丢弃。
+重新从 `roles.jsonl` 解析角色（项目级 `.arp/roles.jsonl` 优先），并据此重写会话的
+档位与模式 —— `roles.jsonl` 是唯一事实来源，没有独立的模式可设。对**下一个工具调用**
+立即生效，包括已在运行的任务中的调用 —— 模式是每次调用现读的，不是在建管线时
+烤进去的。会话内的"总是允许"规则同样跨轮保留，随会话结束丢弃。
 
-`get_permission_state` 可查看当前模式与已记住的规则。
+`get_permission_state` 可查看当前模式与已记住的规则；`list_roles` 可列出可选角色
+供面板下拉框使用。
 
 ---
 

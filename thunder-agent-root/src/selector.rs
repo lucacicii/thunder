@@ -192,7 +192,7 @@ impl PluginSelector {
 /// `"specifically"`, `"mcp"` must not match inside `"checksumcp"`. Keywords
 /// containing non-ASCII (CJK) fall back to plain substring matching, where
 /// word boundaries are not meaningful.
-fn keyword_matches(p_lower: &str, kw: &str) -> bool {
+pub(crate) fn keyword_matches(p_lower: &str, kw: &str) -> bool {
     if kw.is_empty() {
         return false;
     }

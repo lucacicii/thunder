@@ -34,17 +34,9 @@ pub enum DaemonRequest {
         thinking_level: Option<String>,
         /// Role id to activate for this run (e.g. "plan"). Resolved against
         /// `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`.
+        /// The role's `permission` (tier) and `mode` are authoritative for this
+        /// run — there is no per-run mode override; switch roles instead.
         role: Option<String>,
-        /// Approval mode override for this run: `plan` | `ask` |
-        /// `accept_edits` | `manual` | `yolo`.
-        ///
-        /// Omit to keep the session's current mode (so a `set_permission_mode`
-        /// issued mid-session sticks), falling back to the role's own `mode`.
-        ///
-        /// Narrows only: it can clip the role's capability tier (plan mode) and
-        /// decide what prompts, but it can never grant a right the role lacks.
-        #[serde(default)]
-        mode: Option<String>,
     },
     /// List all roles visible from global + workspace scopes
     ListRoles {
@@ -79,15 +71,18 @@ pub enum DaemonRequest {
         #[serde(default)]
         cancelled: bool,
     },
-    /// Switch a session's approval mode without starting a task.
+    /// Switch a session's active role without starting a task.
     ///
+    /// Re-resolves the role from `roles.jsonl` (project scope first) and
+    /// rewrites the session policy's tier and mode from it — `roles.jsonl` is
+    /// the single source of truth, so there is no mode to set directly.
     /// Takes effect on the very next tool call, including one already in flight
-    /// in a running task: the gate reads the mode per call rather than baking it
+    /// in a running task: the gate reads the policy per call rather than baking it
     /// in at pipeline build time.
-    SetPermissionMode {
+    SetRole {
         id: Option<String>,
         session_id: String,
-        mode: String,
+        role: String,
     },
     /// Report a session's current mode and its remembered "always allow" rules.
     GetPermissionState {
