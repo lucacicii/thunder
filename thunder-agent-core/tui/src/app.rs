@@ -490,7 +490,9 @@ impl App {
         let id = id.to_string();
         tokio::spawn(async move {
             let registry = RoleRegistry::load_default(Some(&ws)).await;
-            let (role, permission) = registry.resolve_for_run(Some(&id));
+            // Explicit id: no trigger fallback — a picker selection names the
+            // role, and a miss must surface as "no role", not a substitute.
+            let (role, permission) = registry.resolve_for_run(Some(&id), "");
             let _ = event_tx.send(crate::event::AppEvent::RoleResolved { role, permission });
         });
     }
@@ -2410,10 +2412,6 @@ impl App {
                 // this `None` falls back to the root's `NullHostUi`: plugins get
                 // a working-but-silent surface where every dialog is declined.
                 ui: None,
-                // Until the TUI grows a real approval panel, a gate would only
-                // ever be able to refuse — which is safe but useless. Keep the
-                // run unprompted and let the daemon own the interactive path.
-                mode: Some(PermissionMode::Yolo),
                 // The TUI is single-run, but a route is still required: the
                 // plugin sidecar refuses calls that cannot be attributed.
                 route: Some(run_route),

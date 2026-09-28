@@ -302,7 +302,6 @@ impl DaemonService {
                 extra_workspace_dirs,
                 thinking_level,
                 role,
-                mode,
             } => {
                 self.handle_run_task(
                     id,
@@ -315,7 +314,6 @@ impl DaemonService {
                     extra_workspace_dirs,
                     thinking_level,
                     role,
-                    mode,
                 )
                 .await;
             }
@@ -339,6 +337,8 @@ impl DaemonService {
                             "thinking_level": r.thinking_level,
                             "ask_user": r.ask_user,
                             "exit_gate": r.exit_gate,
+                            "enabled": r.enabled,
+                            "triggers": r.triggers,
                         })
                     })
                     .collect();
@@ -465,40 +465,66 @@ impl DaemonService {
                 .await;
             }
 
-            DaemonRequest::SetPermissionMode {
+            DaemonRequest::SetRole {
                 id,
                 session_id,
-                mode,
+                role,
             } => {
-                match PermissionMode::parse(&mode) {
-                    Some(parsed) => {
+                // The role resolves against the conversation's bound workspace
+                // so project-scoped `.arp/roles.jsonl` applies; sessions without
+                // one fall back to the global registry.
+                let workspace = match self.store.load(&session_id).await {
+                    Ok(Some(conv)) => conv.workspace,
+                    _ => None,
+                };
+                let registry = RoleRegistry::load_default(
+                    workspace.as_deref().map(std::path::Path::new),
+                )
+                .await;
+                let (spec, permission) = registry.resolve_for_run(Some(&role), "");
+                match spec {
+                    Some(spec) => {
                         // Reuse the session's policy when one exists so a switch
                         // applies to a task that is already running; otherwise
                         // create it so the next run inherits the choice.
                         let policy = self
                             .session_policy(&session_id, PermissionMode::default())
                             .await;
-                        policy.set_mode(parsed).await;
-                        info!(session_id = %session_id, mode = parsed.as_str(), "Approval mode switched");
+                        let mode = spec.mode.unwrap_or_default();
+                        policy.set_tier(permission).await;
+                        policy.set_mode(mode).await;
+                        info!(
+                            session_id = %session_id,
+                            role = %spec.id,
+                            mode = mode.as_str(),
+                            "Active role switched"
+                        );
                         self.send_response(DaemonResponse::Response {
                             id,
                             success: true,
                             data: Some(serde_json::json!({
                                 "session_id": session_id,
-                                "mode": parsed.as_str(),
+                                "role": spec.id,
+                                "permission": permission.as_str(),
+                                "mode": mode.as_str(),
                             })),
                             error: None,
                         })
                         .await;
                     }
                     None => {
+                        // Unknown or disabled: list what is available so the
+                        // panel can repopulate its role picker.
+                        let available: Vec<String> = registry
+                            .list_enabled()
+                            .into_iter()
+                            .map(|r| r.id)
+                            .collect();
                         self.send_response(DaemonResponse::Response {
                             id,
                             success: false,
-                            data: Some(serde_json::json!({ "valid_modes":
-                                PermissionMode::ALL.map(|m| m.as_str())
-                            })),
-                            error: Some(format!("unknown mode: {mode}")),
+                            data: Some(serde_json::json!({ "valid_roles": available })),
+                            error: Some(format!("unknown or disabled role: {role}")),
                         })
                         .await;
                     }
@@ -730,7 +756,6 @@ impl DaemonService {
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         role_id: Option<String>,
-        mode: Option<String>,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -876,7 +901,11 @@ impl DaemonService {
         let role_registry =
             RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
         // Single-sourced role→permission derivation (see `RoleRegistry::resolve_for_run`).
-        let (chosen_role, chosen_permission) = role_registry.resolve_for_run(role_id.as_deref());
+        // An explicit `role` wins; without one the prompt itself is scanned
+        // against each role's `triggers` keywords, so plain-language prompts
+        // can land in a role without a slash command.
+        let (chosen_role, chosen_permission) =
+            role_registry.resolve_for_run(role_id.as_deref(), &prompt);
         if role_id.is_some() && chosen_role.is_none() {
             warn!(role = ?role_id, "Requested role not found or disabled; running unconstrained");
         }
@@ -888,34 +917,15 @@ impl DaemonService {
             );
         }
 
-        // Approval mode precedence: explicit request → the session's current mode
-        // (so a mid-session `set_permission_mode` survives the next turn) → the
-        // role's own mode → `ask`.
-        let requested_mode = match mode.as_deref() {
-            Some(raw) => match PermissionMode::parse(raw) {
-                Some(m) => Some(m),
-                None => {
-                    warn!(mode = %raw, "Unrecognised mode requested; keeping the session's current mode");
-                    None
-                }
-            },
-            None => None,
-        };
+        // The session policy is reused across runs so remembered "always
+        // allow" rules survive a turn. The mode itself is deliberately *not*
+        // set here: `roles.jsonl` is the single source of truth, and the host
+        // re-applies the role's tier and mode on every run. A mid-session
+        // `set_role` rewrites the same policy from its role, never carried
+        // forward implicitly.
         let policy = self
             .session_policy(&effective_session_id, PermissionMode::default())
             .await;
-        let effective_mode = match requested_mode {
-            Some(m) => m,
-            // No explicit request: keep whatever the session is already in, so a
-            // mid-session `set_permission_mode` is not silently reverted here.
-            None => policy.mode().await,
-        };
-        policy.set_mode(effective_mode).await;
-        info!(
-            session_id = %effective_session_id,
-            mode = effective_mode.as_str(),
-            "Approval mode for task"
-        );
 
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
@@ -966,7 +976,6 @@ impl DaemonService {
         let run_task_id = task_id.clone();
         let run_session_id = effective_session_id.clone();
         let run_policy = Arc::clone(&policy);
-        let run_mode = effective_mode;
 
         // Spawn async task runner
         tokio::spawn(async move {
@@ -1049,7 +1058,6 @@ impl DaemonService {
                 ui: Some(Arc::new(
                     host_ui.scoped(run_task_id.clone(), Some(run_session_id)),
                 )),
-                mode: Some(run_mode),
                 // `task_id` is unique per run and readable in panel logs, and it
                 // is the key a plugin's reverse RPC is authorised against.
                 route: Some(run_task_id),

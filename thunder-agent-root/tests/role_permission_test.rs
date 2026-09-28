@@ -74,7 +74,6 @@ async fn tools_for(permission: Permission) -> Vec<String> {
         permission,
         pause_gate: None,
         ui: None,
-        mode: None,
         policy: None,
         route: None,
     };

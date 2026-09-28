@@ -116,7 +116,6 @@ export default definePlugin({
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
         ui: None,
-        mode: None,
         policy: None,
     };
 

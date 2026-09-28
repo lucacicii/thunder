@@ -14,7 +14,7 @@ use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::invoke::{
     empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
 };
-use thunder_agent_loop::types::policy::{PermissionMode, SessionPolicy};
+use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
@@ -33,6 +33,11 @@ pub struct RootRunOptions {
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
     /// Active role for this run. `None` keeps the historical behaviour.
+    ///
+    /// The role is the single source of truth for both the tier and the
+    /// approval mode: `role.permission` is the ceiling, `role.mode` decides
+    /// when a human is asked. There is deliberately no per-run mode override
+    /// — a panel that wants a different mode switches roles, not modes.
     pub role: Option<RoleSpec>,
     /// Tool capability tier. Derived from `role.permission` when a role is set.
     pub permission: Permission,
@@ -43,11 +48,6 @@ pub struct RootRunOptions {
     /// panel can attribute a dialog to the run that raised it; `None` falls back
     /// to the root's [`ThunderRoot::with_host_ui`] surface.
     pub ui: Option<Arc<dyn HostUi>>,
-    /// How intrusive this run may be before it stops asking.
-    ///
-    /// Narrowing only: the mode can clip `permission` (plan mode) and decide what
-    /// needs a prompt, but it can never raise the tier.
-    pub mode: Option<PermissionMode>,
     /// Explicit run identifier. Defaults to a generated one.
     ///
     /// Hosts pass their own (the daemon uses `task_id`) so the id is meaningful
@@ -73,7 +73,6 @@ impl Default for RootRunOptions {
             permission: Permission::default(),
             pause_gate: None,
             ui: None,
-            mode: None,
             route: None,
             policy: None,
         }
@@ -349,15 +348,15 @@ impl ThunderRoot {
 
         // 1b. Resolve the approval policy for this run.
         //
-        // Two rules, in this order:
-        //   * the role's tier is the ceiling; the mode may only clip it
-        //     (`PermissionMode::effective`), so no mode can grant a right the
-        //     role did not already have;
-        //   * an explicit `RunTask.mode` beats the role's own mode, so a panel
-        //     can switch modes without editing `roles.jsonl`.
+        // `roles.jsonl` is the single source of truth for the mode: the role's
+        // tier is the ceiling and its mode decides when a human is asked. The
+        // mode may only clip the tier (`PermissionMode::effective`), so it can
+        // never grant a right the role did not already have. A run without a
+        // role keeps the historical default (`Yolo`).
         let mode = options
-            .mode
-            .or_else(|| options.role.as_ref().and_then(|r| r.mode))
+            .role
+            .as_ref()
+            .and_then(|r| r.mode)
             .unwrap_or_default();
         let effective_permission = mode.effective(options.permission);
         // A host-supplied policy is reused across the session (so remembered
