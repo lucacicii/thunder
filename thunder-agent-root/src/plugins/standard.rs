@@ -44,6 +44,8 @@ pub struct StandardHostBuilder {
     store: Arc<dyn ConversationStore>,
     #[cfg(feature = "skills")]
     skills: Option<SkillsPlugin>,
+    #[cfg(feature = "mcp")]
+    mcp: Option<crate::plugins::McpPlugin>,
     #[cfg(feature = "script-plugin")]
     script: Option<ScriptPlugin>,
 }
@@ -56,6 +58,8 @@ impl StandardHostBuilder {
             store,
             #[cfg(feature = "skills")]
             skills: None,
+            #[cfg(feature = "mcp")]
+            mcp: None,
             #[cfg(feature = "script-plugin")]
             script: None,
         }
@@ -66,6 +70,13 @@ impl StandardHostBuilder {
     #[cfg(feature = "skills")]
     pub fn with_skills(mut self, skills: SkillsPlugin) -> Self {
         self.skills = Some(skills);
+        self
+    }
+
+    /// Use `mcp` instead of the default `McpPlugin` (e.g. to share an MCP client pool).
+    #[cfg(feature = "mcp")]
+    pub fn with_mcp_plugin(mut self, mcp: crate::plugins::McpPlugin) -> Self {
+        self.mcp = Some(mcp);
         self
     }
 
@@ -91,7 +102,7 @@ impl StandardHostBuilder {
 
         #[cfg(feature = "mcp")]
         {
-            root = root.with_plugin(crate::plugins::McpPlugin::default());
+            root = root.with_plugin(self.mcp.unwrap_or_default());
         }
 
         #[cfg(feature = "script-plugin")]
