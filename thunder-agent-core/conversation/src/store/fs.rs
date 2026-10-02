@@ -142,6 +142,69 @@ impl FsConversationStore {
         self.rebuild_index().await
     }
 
+    /// Read the on-disk index, tolerating absence and corruption.
+    ///
+    /// The store root is shared between processes (the TUI and the daemon
+    /// both default to `~/.thunder/conversations`), so the on-disk index can
+    /// hold rows this process has never seen. A corrupt or unreadable file
+    /// degrades to "no rows" rather than an error: callers merge on top of
+    /// it and the rebuild path remains available.
+    async fn read_disk_index(&self) -> HashMap<String, ConversationSummary> {
+        let index_path = self.index_file();
+        if !index_path.exists() {
+            return HashMap::new();
+        }
+        match fs::read(&index_path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+                warn!("Corrupted index.json while merging: {err}");
+                HashMap::new()
+            }),
+            Err(err) => {
+                warn!("Failed to read index.json while merging: {err}");
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Drop index rows whose conversation directory no longer exists.
+    ///
+    /// A delete issued by *another* process removes the directory first; a
+    /// stale in-memory copy here must not resurrect that row on the next
+    /// write. An inconclusive stat keeps the row — never destroy an entry
+    /// because of a transient filesystem error.
+    async fn prune_missing_dirs(&self, map: &mut HashMap<String, ConversationSummary>) {
+        let mut vanished = Vec::new();
+        for id in map.keys() {
+            let conv_file = self.conv_file(id);
+            if let Ok(false) = tokio::fs::try_exists(&conv_file).await {
+                vanished.push(id.clone());
+            }
+        }
+        for id in vanished {
+            map.remove(&id);
+        }
+    }
+
+    /// Merge `overlay` into `base`, preferring the row with the newer
+    /// `updated_at_ms` on id conflicts.
+    ///
+    /// Owned maps because the merge is done by moving entries; the callers
+    /// only need the result.
+    fn merge_index_maps(
+        mut base: HashMap<String, ConversationSummary>,
+        overlay: HashMap<String, ConversationSummary>,
+    ) -> HashMap<String, ConversationSummary> {
+        for (id, summary) in overlay {
+            match base.get(&id) {
+                Some(existing) if existing.updated_at_ms > summary.updated_at_ms => {}
+                _ => {
+                    base.insert(id, summary);
+                }
+            }
+        }
+        base
+    }
+
     pub async fn rebuild_index(&self) -> Result<(), ConversationError> {
         let mut map = HashMap::new();
         let mut entries = fs::read_dir(&self.root).await?;
@@ -165,13 +228,30 @@ impl FsConversationStore {
         Ok(())
     }
 
+    /// Persist the index with a read-merge-write cycle.
+    ///
+    /// Writing the in-memory map verbatim would erase rows created by other
+    /// processes sharing this root (the classic TUI + daemon collision: the
+    /// later writer's stale full-map overwrite makes the other process's new
+    /// conversations invisible to `list`). Instead: re-read the on-disk index,
+    /// merge our rows in (newer `updated_at_ms` wins on conflicts), prune rows
+    /// whose directories have vanished, then atomically rename. The tmp file
+    /// is unique per write so concurrent writers never clobber each other's
+    /// in-flight temp file.
     async fn persist_index(
         &self,
         map: &HashMap<String, ConversationSummary>,
     ) -> Result<(), ConversationError> {
-        let json = serde_json::to_vec_pretty(map)?;
+        let mut merged = Self::merge_index_maps(self.read_disk_index().await, map.clone());
+        self.prune_missing_dirs(&mut merged).await;
+
+        let json = serde_json::to_vec_pretty(&merged)?;
         let index_path = self.index_file();
-        let tmp_path = self.root.join(".index.json.tmp");
+        let tmp_path = self.root.join(format!(
+            ".index.json.tmp.{}.{}",
+            std::process::id(),
+            crate::types::now_ms()
+        ));
         fs::write(&tmp_path, json).await?;
         fs::rename(&tmp_path, &index_path).await?;
         Ok(())
@@ -241,8 +321,17 @@ impl ConversationStore for FsConversationStore {
         &self,
         filter: &ConversationFilter,
     ) -> Result<Vec<ConversationSummary>, ConversationError> {
-        let lock = self.index.read().await;
-        let mut summaries: Vec<ConversationSummary> = lock
+        // Merge the in-memory view with the on-disk index: conversations
+        // created by another process sharing this root (TUI while the daemon
+        // runs, or vice versa) must be visible without a restart. Newer rows
+        // win; rows without a backing directory are dropped so deletes made
+        // elsewhere are respected here too. One small file read per call —
+        // `list` is a panel-facing path, not a hot loop.
+        let memory = self.index.read().await.clone();
+        let mut merged = Self::merge_index_maps(self.read_disk_index().await, memory);
+        self.prune_missing_dirs(&mut merged).await;
+
+        let mut summaries: Vec<ConversationSummary> = merged
             .values()
             .filter(|s| filter.matches(s))
             .cloned()

@@ -183,3 +183,77 @@ async fn raw_transcript_sidecar_round_trips() {
     // Missing session → None, not an error.
     assert!(store.load_raw_transcript("nope").await.unwrap().is_none());
 }
+
+/// Two `FsConversationStore` instances over one root model the real deployment:
+/// the TUI and the daemon both default to `~/.thunder/conversations` and hold
+/// independent in-memory indexes. A save by one process must never erase the
+/// other's rows from the shared `index.json`.
+#[tokio::test]
+async fn fs_store_shared_root_saves_do_not_clobber_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Both "processes" open before any conversation exists: neither knows
+    // about the other's future writes.
+    let store_a = FsConversationStore::new(dir.path()).await.unwrap();
+    let store_b = FsConversationStore::new(dir.path()).await.unwrap();
+
+    let conv_a = Conversation::new("shared_a");
+    store_a.save(&conv_a).await.unwrap();
+
+    // B's in-memory index predates A's save; B saving must merge, not
+    // overwrite the on-disk index with its (conv_a-less) map.
+    let conv_b = Conversation::new("shared_b");
+    store_b.save(&conv_b).await.unwrap();
+
+    let listed_by_a = store_a.list(&ConversationFilter::new()).await.unwrap();
+    let listed_by_b = store_b.list(&ConversationFilter::new()).await.unwrap();
+    let ids = |rows: Vec<ConversationSummary>| {
+        let mut v: Vec<String> = rows.into_iter().map(|r| r.id).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        ids(listed_by_a),
+        vec!["shared_a".to_string(), "shared_b".to_string()],
+        "store A must still see its own conversation after B's save"
+    );
+    assert_eq!(
+        ids(listed_by_b),
+        vec!["shared_a".to_string(), "shared_b".to_string()],
+        "store B must see A's conversation without a restart (merged read)"
+    );
+}
+
+/// A delete issued by one process must survive the other process's next
+/// write, even though the other process still holds the deleted row in its
+/// stale in-memory index.
+#[tokio::test]
+async fn fs_store_shared_root_delete_is_not_resurrected() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let store_a = FsConversationStore::new(dir.path()).await.unwrap();
+    let store_b = FsConversationStore::new(dir.path()).await.unwrap();
+
+    let conv = Conversation::new("doomed");
+    store_a.save(&conv).await.unwrap();
+    // B loads the row into its in-memory index (same as a daemon that listed
+    // conversations at startup).
+    let _ = store_b.list(&ConversationFilter::new()).await.unwrap();
+
+    // A deletes: directory removed first, then the index row.
+    assert!(store_a.delete("doomed").await.unwrap());
+
+    // B still carries "doomed" in memory and saves an unrelated conversation.
+    // The persist path must prune the vanished directory's row instead of
+    // resurrecting it in the shared index.
+    let unrelated = Conversation::new("unrelated");
+    store_b.save(&unrelated).await.unwrap();
+
+    let rows = store_a.list(&ConversationFilter::new()).await.unwrap();
+    let ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        vec!["unrelated".to_string()],
+        "a delete issued by one process must not be undone by another's save"
+    );
+}
