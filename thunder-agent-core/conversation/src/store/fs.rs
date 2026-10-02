@@ -18,6 +18,30 @@ pub struct FsConversationStore {
 impl FsConversationStore {
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, ConversationError> {
         let root = root.into();
+        // `create_dir_all` followed by `read_dir` is not atomic: when several
+        // processes (the TUI and the daemon), or parallel test tasks, build a
+        // store for the same *fresh* root at the same moment, a loser can
+        // observe a transient NotFound between another caller's `mkdir` and
+        // its completion. Retry the whole sequence a few times instead of
+        // failing every caller that lost the race.
+        let mut last_err: Option<std::io::Error> = None;
+        for _ in 0..10 {
+            match Self::open_ready(root.clone()).await {
+                Ok(store) => return Ok(store),
+                Err(ConversationError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                    last_err = Some(err);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(ConversationError::Io(last_err.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "conversation store root is unavailable")
+        })))
+    }
+
+    /// One attempt at `new`; the caller retries transient NotFound races.
+    async fn open_ready(root: PathBuf) -> Result<Self, ConversationError> {
         fs::create_dir_all(&root).await?;
 
         let store = Self {
