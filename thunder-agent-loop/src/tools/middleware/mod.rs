@@ -173,6 +173,18 @@ impl ToolPipeline {
         // Outermost gate: a denied capability never reaches the workspace.
         let mut all_roots = vec![workspace_root.clone()];
         all_roots.extend(extra_workspace_roots.iter().cloned());
+        let mut extra_roots_list: Vec<std::path::PathBuf> = extra_workspace_roots.to_vec();
+        // Automatically whitelist the scratchpad directory so the model can inspect
+        // persisted oversized logs without being blocked by the workspace path jail.
+        if let Some(ref sp) = scratchpad {
+            let sp_dir = sp.session_dir().to_path_buf();
+            if !all_roots.contains(&sp_dir) {
+                all_roots.push(sp_dir.clone());
+            }
+            if !extra_roots_list.contains(&sp_dir) {
+                extra_roots_list.push(sp_dir);
+            }
+        }
         // One layer, outermost. It judges with the policy when given one, and
         // otherwise falls back to the bare tier so the pipeline is still
         // defended for embedders that have not adopted `SessionPolicy` yet.
@@ -192,8 +204,7 @@ impl ToolPipeline {
         pipeline.add_middleware(Arc::new(guard));
         if cfg.enable_security_guard {
             pipeline.add_middleware(Arc::new(
-                SecurityGuardMiddleware::new(&workspace_root)
-                    .with_extra_roots(extra_workspace_roots.iter().cloned()),
+                SecurityGuardMiddleware::new(&workspace_root).with_extra_roots(extra_roots_list),
             ));
         }
         if cfg.enable_resource_guard {

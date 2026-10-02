@@ -98,6 +98,8 @@ pub struct Conversation {
     pub shared_roots: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub status: ConversationStatus,
     pub messages: Vec<ChatMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -124,6 +126,7 @@ impl Conversation {
             workspace: None,
             shared_roots: Vec::new(),
             thinking_level: None,
+            role: None,
             status: ConversationStatus::Active,
             messages: Vec::new(),
             stages: Vec::new(),

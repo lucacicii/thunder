@@ -376,8 +376,12 @@ impl ToolMiddleware for TransactionMiddleware {
         timeout: Option<Duration>,
         next: Arc<dyn ToolHandler>,
     ) -> ToolExecutionResult {
-        // Intercept write_file calls for atomic staging
-        if call.function.name == "write_file" {
+        let is_write_effect = call.function.name == "write_file"
+            || crate::types::policy::ToolEffect::of(&call.function.name)
+                == crate::types::policy::ToolEffect::Write;
+
+        // Intercept mutating file write calls for atomic staging
+        if is_write_effect {
             let start = Instant::now();
 
             let parsed: Result<serde_json::Value, _> =
@@ -386,14 +390,26 @@ impl ToolMiddleware for TransactionMiddleware {
                 Ok(v) => v,
                 Err(err) => {
                     return ToolExecutionResult::error(
-                        format!("Error parsing arguments for write_file: {}", err),
+                        format!(
+                            "Error parsing arguments for {}: {}",
+                            call.function.name, err
+                        ),
                         start.elapsed(),
                     );
                 }
             };
 
-            let path_str = args.get("path").and_then(|v| v.as_str());
-            let content_str = args.get("content").and_then(|v| v.as_str());
+            let path_str = args
+                .get("path")
+                .or_else(|| args.get("file_path"))
+                .or_else(|| args.get("filePath"))
+                .or_else(|| args.get("target"))
+                .and_then(|v| v.as_str());
+            let content_str = args
+                .get("content")
+                .or_else(|| args.get("text"))
+                .or_else(|| args.get("patch"))
+                .and_then(|v| v.as_str());
 
             if let (Some(path_str), Some(content_str)) = (path_str, content_str) {
                 let p = Path::new(path_str);

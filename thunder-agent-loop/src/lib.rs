@@ -44,9 +44,9 @@ pub mod prelude {
     };
     pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};
     pub use crate::types::policy::{
-        call_hash, deny_reason, describe_call, tier_allows, AllowRule, ApprovalRequest, Caller,
-        PermissionMode, SessionPolicy, ToolEffect, Verdict, ALLOW_ALWAYS, ALLOW_ONCE, DENY,
-        DENY_WITH_REASON,
+        call_hash, deny_reason, describe_call, tier_allows, AllowRule, ApprovalMode,
+        ApprovalRequest, Caller, PermissionMode, SessionPolicy, ToolEffect, Verdict, ALLOW_ALWAYS,
+        ALLOW_ONCE, DENY, DENY_WITH_REASON,
     };
     pub use crate::types::tool::{
         AgentTool, FunctionDefinition, ToolDefinition, ToolExecutionContext, ToolExecutionResult,

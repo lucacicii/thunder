@@ -82,10 +82,8 @@ pub struct RoleSpec {
     pub permission: Permission,
     /// Approval mode, i.e. how often this role stops to ask.
     ///
-    /// Separate from `permission` on purpose: the tier decides what is possible,
-    /// the mode decides what needs a human. A mode can only narrow the tier
-    /// (`plan` clips it to read-only), so `{"permission":"read","mode":"yolo"}`
-    /// is still read-only — by design, not by accident.
+    /// Separate from `permission`: the tier decides what is possible (Read ⊂ Write ⊂ Bash),
+    /// the mode decides what needs human approval (never, shell_only, mutations, always).
     #[serde(
         default,
         rename = "mode",
@@ -281,7 +279,7 @@ impl RoleRegistry {
     /// is deterministic — roles in [`RoleRegistry::list_enabled`] order
     /// (id-sorted), first hit wins — so a trigger list is an ordered
     /// preference, not a vote.
-    fn select_by_trigger(&self, prompt: &str) -> Option<RoleSpec> {
+    pub fn select_by_trigger(&self, prompt: &str) -> Option<RoleSpec> {
         let p_lower = prompt.to_lowercase();
         for role in self.list_enabled() {
             if let Some(kw) = role
@@ -554,7 +552,10 @@ mod tests {
         // the user asked for a specific role, silently substituting another
         // would be a lie about who is running.
         let (r, _) = reg.resolve_for_run(Some("missing"), "talk about architecture");
-        assert!(r.is_none(), "unknown token must not degrade into trigger match");
+        assert!(
+            r.is_none(),
+            "unknown token must not degrade into trigger match"
+        );
     }
 
     #[tokio::test]

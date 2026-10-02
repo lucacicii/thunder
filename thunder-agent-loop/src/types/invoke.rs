@@ -120,6 +120,8 @@ pub struct PipelineToolInvoker {
     timeout: Option<Duration>,
     /// Notifies the user that a plugin acted on its own initiative.
     ui: Option<Arc<dyn HostUi>>,
+    /// Cancellation token from the owning run so plugin tool invocations abort promptly.
+    cancellation_token: Option<tokio_util::sync::CancellationToken>,
     counter: std::sync::atomic::AtomicU64,
 }
 
@@ -130,6 +132,7 @@ impl PipelineToolInvoker {
             turn: 0,
             timeout: None,
             ui: None,
+            cancellation_token: None,
             counter: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -141,6 +144,11 @@ impl PipelineToolInvoker {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_cancellation(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 
@@ -180,7 +188,7 @@ impl ToolInvoker for PipelineToolInvoker {
         let tool_ctx = ToolExecutionContext {
             tool_call_id,
             turn: ctx.turn.unwrap_or(self.turn),
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            cancellation_token: self.cancellation_token.clone().unwrap_or_default(),
             caller: Some(ctx.plugin_id.clone()),
             // The plugin's own session, so downstream shared services resolve
             // the same run the host would.

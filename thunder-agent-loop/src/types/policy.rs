@@ -17,8 +17,7 @@
 //!
 //! * [`Permission`] — the capability *ceiling*: what is possible at all. A hard
 //!   limit; nothing in this module may widen it.
-//! * [`PermissionMode`] — what still needs a human. It can only *narrow*:
-//!   `Plan` clips the ceiling to read-only, and `Yolo` merely stops asking.
+//! * [`ApprovalMode`] — what still needs human approval (never, shell_only, mutations, always).
 //! * [`AllowRule`]s — what the user has already said yes to this session.
 //!
 //! A read-only role stays read-only in every mode. There is deliberately no
@@ -27,13 +26,8 @@
 //! ```
 //! use thunder_agent_loop::prelude::*;
 //!
-//! // A read-only role, even in yolo mode, cannot write.
-//! let ceiling = PermissionMode::Yolo.ceiling();
-//! assert_eq!(ceiling, None); // yolo does not raise the tier
+//! // A read-only role, even in never/yolo mode, cannot write.
 //! assert_eq!(Permission::Read.min(Permission::Bash), Permission::Read);
-//!
-//! // Plan mode does lower it.
-//! assert_eq!(Permission::Bash.min(PermissionMode::Plan.ceiling().unwrap()), Permission::Read);
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -43,100 +37,70 @@ use tokio::sync::Mutex;
 use crate::types::config::Permission;
 use crate::types::message::ToolCall;
 
-/// How intrusive the agent may be before it stops asking.
+/// How intrusive the agent may be before it stops asking for human approval.
 ///
-/// Serialised in `lowercase` so `roles.jsonl` reads `{"mode":"accept_edits"}`.
+/// Pure approval strategy: strictly dictates *when to prompt humans*.
+/// It never alters, lowers, or escalates the role's capability tier (`Permission`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PermissionMode {
-    /// Read-only. Writes and shell are refused outright, with guidance to
-    /// produce a plan instead. Exits via an explicit approval, never by
-    /// silently escalating.
-    Plan,
-    /// Read freely; ask before every write and every shell command.
-    Ask,
-    /// Read and write freely; still ask before shell commands.
-    ///
-    /// `acceptEdits` is accepted as an alias: role files are hand-written, and
-    /// rejecting a plausible spelling fails silently (the whole line is skipped).
-    #[serde(alias = "acceptEdits", alias = "accept-edits")]
-    AcceptEdits,
-    /// Ask before *every* tool call, including reads.
-    Manual,
-    /// Never ask. The role's tier still applies — this removes prompts, it does
-    /// not grant rights.
-    ///
-    /// # Why this is the default
-    ///
-    /// The gate fails *closed*: with no panel attached, every dialog resolves as
-    /// cancelled, which reads as "refused". Defaulting to [`PermissionMode::Ask`]
-    /// would therefore make a headless host refuse every write, every shell
-    /// command, and every plugin tool — silently breaking every existing run on
-    /// upgrade. A security feature nobody asked for, that breaks the product on
-    /// day one, gets switched off wholesale.
-    ///
-    /// So approval is **opt in**: set `mode` on a role, or pass `mode` to
-    /// `run_task`. The default preserves the pre-gate behaviour exactly.
+pub enum ApprovalMode {
+    /// Never ask for human approval. Runs all operations permitted by the role tier.
     #[default]
-    Yolo,
+    #[serde(alias = "yolo", alias = "none", alias = "bypass")]
+    Never,
+    /// Read and write freely; ask before executing shell/terminal commands.
+    #[serde(alias = "accept_edits", alias = "acceptEdits", alias = "ask_shell")]
+    ShellOnly,
+    /// Read freely; ask before modifying files or executing shell commands.
+    #[serde(alias = "ask", alias = "writes")]
+    Mutations,
+    /// Ask before every single tool call, including reads.
+    #[serde(alias = "manual", alias = "all")]
+    Always,
 }
 
-impl PermissionMode {
-    /// An upper bound this mode imposes on the run's tier, if any.
-    ///
-    /// Only [`PermissionMode::Plan`] lowers it. Returning `None` means "inherit
-    /// the role's tier unchanged".
-    pub fn ceiling(self) -> Option<crate::types::config::Permission> {
-        match self {
-            PermissionMode::Plan => Some(crate::types::config::Permission::Read),
-            _ => None,
-        }
-    }
+/// Backward compatibility alias for the approval mode.
+pub type PermissionMode = ApprovalMode;
 
-    /// The tier actually in force: the role's, clipped by the mode.
-    pub fn effective(
-        self,
-        tier: crate::types::config::Permission,
-    ) -> crate::types::config::Permission {
-        match self.ceiling() {
-            Some(ceiling) => tier.min(ceiling),
-            None => tier,
-        }
-    }
-
+impl ApprovalMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            PermissionMode::Plan => "plan",
-            PermissionMode::Ask => "ask",
-            PermissionMode::AcceptEdits => "accept_edits",
-            PermissionMode::Manual => "manual",
-            PermissionMode::Yolo => "yolo",
+            ApprovalMode::Never => "never",
+            ApprovalMode::ShellOnly => "shell_only",
+            ApprovalMode::Mutations => "mutations",
+            ApprovalMode::Always => "always",
         }
     }
 
-    /// Every mode, for a palette or a `/mode` cycle.
-    pub const ALL: [PermissionMode; 5] = [
-        PermissionMode::Ask,
-        PermissionMode::AcceptEdits,
-        PermissionMode::Manual,
-        PermissionMode::Plan,
-        PermissionMode::Yolo,
+    /// Every mode in ascending order of invasiveness.
+    pub const ALL: [ApprovalMode; 4] = [
+        ApprovalMode::Never,
+        ApprovalMode::ShellOnly,
+        ApprovalMode::Mutations,
+        ApprovalMode::Always,
     ];
 
-    /// The next mode in [`PermissionMode::ALL`], for a Shift+Tab style toggle.
-    pub fn next(self) -> PermissionMode {
-        let idx = PermissionMode::ALL
+    /// The next mode in [`ApprovalMode::ALL`], for a Shift+Tab style toggle.
+    pub fn next(self) -> ApprovalMode {
+        let idx = ApprovalMode::ALL
             .iter()
             .position(|m| *m == self)
             .unwrap_or(0);
-        PermissionMode::ALL[(idx + 1) % PermissionMode::ALL.len()]
+        ApprovalMode::ALL[(idx + 1) % ApprovalMode::ALL.len()]
     }
 
-    pub fn parse(raw: &str) -> Option<PermissionMode> {
+    pub fn parse(raw: &str) -> Option<ApprovalMode> {
         let normalised = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
-        PermissionMode::ALL
-            .into_iter()
-            .find(|m| m.as_str() == normalised)
+        match normalised.as_str() {
+            "never" | "yolo" | "none" | "bypass" => Some(ApprovalMode::Never),
+            "shell_only" | "accept_edits" | "acceptedits" | "ask_shell" => {
+                Some(ApprovalMode::ShellOnly)
+            }
+            "mutations" | "ask" | "writes" => Some(ApprovalMode::Mutations),
+            "always" | "manual" | "all" => Some(ApprovalMode::Always),
+            "plan" => Some(ApprovalMode::Never),
+            _ => None,
+        }
     }
 }
 
@@ -159,15 +123,29 @@ pub enum ToolEffect {
 impl ToolEffect {
     /// Classify by tool name.
     ///
-    /// Plugin, MCP and skill tools all fall into [`ToolEffect::Other`], which
-    /// behaves like `Write`. That is the fail-safe direction: a new tool
-    /// prompts until someone classifies it.
+    /// Plugin, MCP and skill tools default to [`ToolEffect::Other`] (which behaves
+    /// like `Write`) unless their name indicates command execution semantics, in which
+    /// case they require [`ToolEffect::Exec`] (Bash tier). That prevents unclassified
+    /// terminal/exec MCP tools from escalating under a Write-only role.
     pub fn of(tool: &str) -> ToolEffect {
-        match tool {
+        let lower = tool.to_ascii_lowercase();
+        match lower.as_str() {
             "read_file" | "grep" | "find" | "ls" | "list_dir" | "read" | "glob" => ToolEffect::Read,
             "bash" | "shell" | "powershell" => ToolEffect::Exec,
             "write_file" | "edit" | "write" | "apply_patch" | "notebook_edit" => ToolEffect::Write,
-            _ => ToolEffect::Other,
+            _ => {
+                if lower.contains("exec")
+                    || lower.contains("shell")
+                    || lower.contains("terminal")
+                    || lower.contains("powershell")
+                    || lower.contains("command")
+                    || lower.ends_with("_bash")
+                {
+                    ToolEffect::Exec
+                } else {
+                    ToolEffect::Other
+                }
+            }
         }
     }
 
@@ -187,6 +165,23 @@ impl ToolEffect {
             ToolEffect::Exec => Permission::Bash,
         }
     }
+}
+
+/// Destructive command patterns that can never be executed under any
+/// circumstances or approved by any dialog.
+pub fn is_forbidden_destructive_call(tool: &str, args: &serde_json::Value) -> Option<&'static str> {
+    let lower = tool.to_ascii_lowercase();
+    if lower == "bash" || lower == "shell" || lower == "powershell" || lower.contains("exec") {
+        if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+            let trimmed = cmd.trim();
+            for pattern in &["rm -rf /", "rm -rf /*", ":(){ :|:& };:", "mkfs", "dd if="] {
+                if trimmed.contains(pattern) {
+                    return Some(pattern);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Options offered by the approval dialog, in display order.
@@ -327,17 +322,10 @@ impl AllowRule {
 
 #[derive(Debug)]
 struct SessionInner {
-    /// The run's effective capability ceiling: the role's tier, clipped by the
-    /// mode. Per-run, not per-session: a later run may carry a different role.
-    /// Held here rather than passed alongside, so a verdict can never be
-    /// computed against a tier from a different subsystem.
+    /// The run's capability ceiling. Set from the role's tier.
     tier: Permission,
-    /// The role's own tier, before the mode clipped it.
-    ///
-    /// Kept so switching out of `plan` can restore it; without this, a
-    /// `plan` → `ask` switch would leave the run stuck at read-only.
     role_tier: Permission,
-    mode: PermissionMode,
+    mode: ApprovalMode,
     rules: Vec<AllowRule>,
 }
 
@@ -375,19 +363,13 @@ pub struct SessionPolicy {
 }
 
 impl Default for SessionPolicy {
-    /// The historical, unconstrained behaviour: full tier, no prompting.
-    ///
-    /// Hosts construct with [`SessionPolicy::new`] so the role tier is explicit;
-    /// this exists for the pipeline's own fallback. A `Default` that quietly
-    /// under-constrains would be the wrong implicit behaviour for a security
-    /// type, so it errs toward the *wider* of the two rather than inventing a
-    /// middle ground.
+    /// The default: full tier, no prompting (Never).
     fn default() -> Self {
         Self {
             inner: Mutex::new(SessionInner {
                 tier: Permission::Bash,
                 role_tier: Permission::Bash,
-                mode: PermissionMode::Yolo,
+                mode: ApprovalMode::Never,
                 rules: Vec::new(),
             }),
         }
@@ -395,17 +377,14 @@ impl Default for SessionPolicy {
 }
 
 impl SessionPolicy {
-    /// Build a policy for a role's tier and a mode.
+    /// Build a policy for a role's tier and an approval mode.
     ///
-    /// The mode's ceiling is applied *here* rather than left to the caller. It
-    /// used to be the host's job, which meant any caller that forgot to clip got
-    /// a `plan` mode that restricted nothing — the most dangerous possible
-    /// reading of "plan". Clipping at the one place that stores the tier makes
-    /// that unrepresentable.
-    pub fn new(tier: Permission, mode: PermissionMode) -> Arc<Self> {
+    /// Capability tier is strictly governed by the role's `tier`.
+    /// Approval modes only decide *when to prompt humans*, never alter capabilities.
+    pub fn new(tier: Permission, mode: ApprovalMode) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(SessionInner {
-                tier: mode.effective(tier),
+                tier,
                 role_tier: tier,
                 mode,
                 rules: Vec::new(),
@@ -414,32 +393,21 @@ impl SessionPolicy {
     }
 
     /// The mode currently in force.
-    pub async fn mode(&self) -> PermissionMode {
+    pub async fn mode(&self) -> ApprovalMode {
         self.inner.lock().await.mode
     }
 
-    /// Flip the mode, re-applying its ceiling to the stored tier.
-    ///
-    /// Takes effect on the next tool call — the guard reads it per call rather
-    /// than baking it in, which is what makes a mid-session switch possible.
-    /// Switching *into* `plan` must lower the ceiling, and switching out of it
-    /// must restore the role's own tier, so the role tier is kept alongside
-    /// rather than overwritten.
-    pub async fn set_mode(&self, mode: PermissionMode) {
+    /// Flip the mode.
+    pub async fn set_mode(&self, mode: ApprovalMode) {
         let mut guard = self.inner.lock().await;
         guard.mode = mode;
-        guard.tier = mode.effective(guard.role_tier);
     }
 
-    /// Set the run's capability ceiling, clipped by the current mode.
-    ///
-    /// Written on every run, since the role may differ between runs of one
-    /// session. Narrowing takes effect immediately: [`SessionPolicy::decide`]
-    /// checks the tier before the remembered rules, so tightening the ceiling
-    /// cannot be undone by a rule recorded when it was wider.
+    /// Set the run's capability ceiling.
     pub async fn set_tier(&self, tier: Permission) {
         let mut guard = self.inner.lock().await;
-        guard.tier = guard.mode.effective(tier);
+        guard.role_tier = tier;
+        guard.tier = tier;
     }
 
     /// Remember an "always allow" rule. Duplicate rules are collapsed.
@@ -506,10 +474,10 @@ impl SessionPolicy {
 
         // 3. Does this mode want a human for it?
         let needs_ask = match mode {
-            PermissionMode::Manual => true,
-            PermissionMode::Ask | PermissionMode::Plan => effect.is_prompt_worthy(),
-            PermissionMode::AcceptEdits => effect == ToolEffect::Exec,
-            PermissionMode::Yolo => false,
+            ApprovalMode::Always => true,
+            ApprovalMode::Mutations => effect.is_prompt_worthy(),
+            ApprovalMode::ShellOnly => effect == ToolEffect::Exec,
+            ApprovalMode::Never => false,
         };
 
         if !needs_ask {
@@ -634,66 +602,79 @@ mod tests {
 
     #[test]
     fn parse_accepts_the_shapes_users_actually_type() {
-        assert_eq!(PermissionMode::parse("plan"), Some(PermissionMode::Plan));
+        assert_eq!(ApprovalMode::parse("never"), Some(ApprovalMode::Never));
+        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Never));
         assert_eq!(
-            PermissionMode::parse("Accept-Edits"),
-            Some(PermissionMode::AcceptEdits)
+            ApprovalMode::parse("Shell_Only"),
+            Some(ApprovalMode::ShellOnly)
         );
         assert_eq!(
-            PermissionMode::parse(" accept edits "),
-            Some(PermissionMode::AcceptEdits)
+            ApprovalMode::parse("accept-edits"),
+            Some(ApprovalMode::ShellOnly)
         );
-        assert_eq!(PermissionMode::parse("yolo"), Some(PermissionMode::Yolo));
-        assert_eq!(PermissionMode::parse("nonsense"), None);
+        assert_eq!(
+            ApprovalMode::parse("mutations"),
+            Some(ApprovalMode::Mutations)
+        );
+        assert_eq!(ApprovalMode::parse("ask"), Some(ApprovalMode::Mutations));
+        assert_eq!(ApprovalMode::parse("always"), Some(ApprovalMode::Always));
+        assert_eq!(ApprovalMode::parse("manual"), Some(ApprovalMode::Always));
+        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Never));
+        assert_eq!(ApprovalMode::parse("nonsense"), None);
     }
 
     #[test]
     fn mode_round_trips_through_json() {
-        for mode in PermissionMode::ALL {
+        for mode in ApprovalMode::ALL {
             let json = serde_json::to_string(&mode).unwrap();
             assert_eq!(json, format!("\"{}\"", mode.as_str()));
-            // `roles.jsonl` goes through serde; `parse` handles the hand-typed
-            // forms a panel or slash command produces.
-            let back: PermissionMode = serde_json::from_str(&json).unwrap();
+            let back: ApprovalMode = serde_json::from_str(&json).unwrap();
             assert_eq!(back, mode);
-            assert_eq!(PermissionMode::parse(mode.as_str()), Some(mode));
+            assert_eq!(ApprovalMode::parse(mode.as_str()), Some(mode));
         }
     }
 
     #[test]
     fn no_mode_can_escalate_a_read_only_role() {
-        for mode in PermissionMode::ALL {
-            assert_eq!(
-                mode.effective(Permission::Read),
-                Permission::Read,
-                "{} must never grant more than read",
-                mode.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn plan_mode_clips_the_tier_but_leaves_lower_tiers_alone() {
-        assert_eq!(
-            PermissionMode::Plan.effective(Permission::Bash),
-            Permission::Read
-        );
-        assert_eq!(
-            PermissionMode::Plan.effective(Permission::Read),
-            Permission::Read
-        );
-        assert_eq!(
-            PermissionMode::Ask.effective(Permission::Bash),
-            Permission::Bash
-        );
+        rt(async {
+            for mode in ApprovalMode::ALL {
+                let policy = SessionPolicy::new(Permission::Read, mode);
+                let write = call(
+                    "write_file",
+                    args(serde_json::json!({"path": "a.txt", "content": "x"})),
+                );
+                let shell = call("bash", args(serde_json::json!({"command": "ls"})));
+                assert!(
+                    matches!(policy.decide(&write, &MODEL).await, Verdict::Deny { .. }),
+                    "{} must never allow writes for Read tier",
+                    mode.as_str()
+                );
+                assert!(
+                    matches!(policy.decide(&shell, &MODEL).await, Verdict::Deny { .. }),
+                    "{} must never allow shell for Read tier",
+                    mode.as_str()
+                );
+            }
+        });
     }
 
     #[test]
     fn unknown_tools_are_not_assumed_harmless() {
         assert_eq!(ToolEffect::of("some_plugin_tool"), ToolEffect::Other);
+        assert_eq!(
+            ToolEffect::of("some_plugin_tool").required_tier(),
+            Permission::Write
+        );
         assert!(ToolEffect::of("some_plugin_tool").is_prompt_worthy());
         assert!(!ToolEffect::of("read_file").is_prompt_worthy());
         assert_eq!(ToolEffect::of("bash"), ToolEffect::Exec);
+        // Execution-oriented external tools require the Bash tier, not just Write
+        assert_eq!(ToolEffect::of("mcp_terminal_exec"), ToolEffect::Exec);
+        assert_eq!(
+            ToolEffect::of("mcp_terminal_exec").required_tier(),
+            Permission::Bash
+        );
+        assert_eq!(ToolEffect::of("custom_shell_command"), ToolEffect::Exec);
     }
 
     /// The gap that made the two old tables a liability: `apply_patch` mutates
@@ -724,9 +705,9 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_prompts_for_writes_and_shell_only() {
+    fn mutations_mode_prompts_for_writes_and_shell_only() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Mutations);
             let read = call("read_file", args(serde_json::json!({"path": "a.txt"})));
             let write = call(
                 "write_file",
@@ -747,9 +728,9 @@ mod tests {
     }
 
     #[test]
-    fn accept_edits_silences_writes_but_not_shell() {
+    fn shell_only_silences_writes_but_not_shell() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::AcceptEdits);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::ShellOnly);
             let write = call(
                 "write_file",
                 args(serde_json::json!({"path": "a.txt", "content": "x"})),
@@ -764,9 +745,9 @@ mod tests {
     }
 
     #[test]
-    fn manual_mode_asks_even_for_reads() {
+    fn always_mode_asks_even_for_reads() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Manual);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Always);
             let read = call("read_file", args(serde_json::json!({"path": "a.txt"})));
             assert!(matches!(
                 policy.decide(&read, &MODEL).await,
@@ -776,9 +757,9 @@ mod tests {
     }
 
     #[test]
-    fn yolo_asks_nothing() {
+    fn never_mode_asks_nothing() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Yolo);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Never);
             let shell = call("bash", args(serde_json::json!({"command": "rm -rf /"})));
             assert_eq!(policy.decide(&shell, &MODEL).await, Verdict::Allow);
         });
@@ -793,7 +774,7 @@ mod tests {
                 AllowRule::for_call("bash", &args(serde_json::json!({"command": "git status"})))
                     .unwrap();
 
-            let wide = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let wide = SessionPolicy::new(Permission::Bash, ApprovalMode::Mutations);
             wide.remember(rule.clone()).await;
             assert_eq!(
                 wide.decide(
@@ -826,7 +807,7 @@ mod tests {
     #[test]
     fn a_rule_survives_an_ordinary_turn() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Mutations);
             let rule =
                 AllowRule::for_call("bash", &args(serde_json::json!({"command": "git status"})))
                     .unwrap();
@@ -941,11 +922,11 @@ mod tests {
 
     #[test]
     fn mode_next_cycles_through_every_mode() {
-        let mut mode = PermissionMode::default();
-        for _ in 0..PermissionMode::ALL.len() {
+        let mut mode = ApprovalMode::default();
+        for _ in 0..ApprovalMode::ALL.len() {
             mode = mode.next();
         }
-        assert_eq!(mode, PermissionMode::default(), "cycle wraps around");
+        assert_eq!(mode, ApprovalMode::default(), "cycle wraps around");
     }
 
     /// Unparseable arguments must not become an empty object, which would match
@@ -953,7 +934,7 @@ mod tests {
     #[test]
     fn malformed_arguments_do_not_match_a_rule() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Mutations);
             let rule =
                 AllowRule::for_call("write_file", &args(serde_json::json!({"path": "a"}))).unwrap();
             policy.remember(rule).await;
@@ -969,7 +950,7 @@ mod tests {
     #[test]
     fn a_plugin_call_is_judged_by_the_same_tier() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Read, PermissionMode::Yolo);
+            let policy = SessionPolicy::new(Permission::Read, ApprovalMode::Never);
             let write = call(
                 "write_file",
                 args(serde_json::json!({"path": "a", "content": "b"})),
@@ -977,7 +958,7 @@ mod tests {
             let plugin = Caller::Plugin("evil".into());
             match policy.decide(&write, &plugin).await {
                 Verdict::Deny { reason } => assert!(reason.contains("read-only")),
-                other => panic!("yolo must not lift the tier for a plugin: {other:?}"),
+                other => panic!("never mode must not lift the tier for a plugin: {other:?}"),
             }
         });
     }
@@ -985,7 +966,7 @@ mod tests {
     #[test]
     fn an_ask_carries_the_caller_so_a_dialog_can_name_it() {
         rt(async {
-            let policy = SessionPolicy::new(Permission::Bash, PermissionMode::Ask);
+            let policy = SessionPolicy::new(Permission::Bash, ApprovalMode::Mutations);
             let shell = call("bash", args(serde_json::json!({"command": "ls"})));
             match policy.decide(&shell, &Caller::Plugin("evil".into())).await {
                 Verdict::Ask(req) => {

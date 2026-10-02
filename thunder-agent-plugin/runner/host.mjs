@@ -247,6 +247,10 @@ function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
       },
     },
     // Inter-plugin tool calling with Cycle Guard & Max Depth 3
+    // All tool calls (both host builtins and sibling TS plugin tools) MUST
+    // route through Rust's onion tool pipeline via `call_tool` RPC.
+    // This guarantees that SessionPolicy, permission tiers, and approval gates
+    // are strictly evaluated and cannot be bypassed by in-process shortcuts.
     callTool: async (toolName, toolArgs) => {
       if (callChain.includes(toolName)) {
         throw new Error(
@@ -259,22 +263,6 @@ function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
         );
       }
 
-      const nextChain = [...callChain, toolName];
-
-      // Find tool in active plugins
-      for (const plugin of activePlugins.values()) {
-        const found = plugin.tools.find((t) => t.name === toolName);
-        if (found) {
-          const subCtx = createPluginContext(plugin.id, turnCtx, nextChain);
-          return await found.execute(toolArgs, subCtx);
-        }
-      }
-
-      // If not a local TS tool, delegate to the host, which dispatches it
-      // through the same pipeline (and therefore the same guards and approval
-      // gate) a model-initiated call goes through. `pluginId` rides along so the
-      // host can attribute the call: an unattributed plugin call would be
-      // indistinguishable from one the assistant made.
       return rpc("call_tool", {
         tool: toolName,
         args: toolArgs,

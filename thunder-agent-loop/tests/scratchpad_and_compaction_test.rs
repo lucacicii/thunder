@@ -99,7 +99,44 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
 
     assert!(retrieved.contains("CRITICAL_KEY_VALUE_42981"));
 
+    // Verify that reading the scratchpad artifact through the full Onion Pipeline
+    // (with SecurityGuard Path Jail enabled) succeeds without being blocked.
+    let ws = std::env::temp_dir().join(format!("thunder_ws_{}", std::process::id()));
+    let _ = tokio::fs::create_dir_all(&ws).await;
+    let mut pipe_reg = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
+    pipe_reg.register(Arc::new(ReadFileTool::default()));
+
+    let pipeline = thunder_agent_loop::tools::middleware::ToolPipeline::configured(
+        ws.clone(),
+        &[],
+        pipe_reg,
+        Some(manager.clone()),
+        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
+        Permission::Bash,
+        None,
+        None,
+    );
+
+    let read_call = ToolCall::new_function(
+        "read_pipe_1",
+        "read_file",
+        json!({
+            "path": artifact.file_path.to_str().unwrap(),
+            "offset": 500,
+            "limit": 1
+        })
+        .to_string(),
+    );
+    let pipe_res = pipeline.execute(&read_call, &read_ctx, None).await;
+    assert!(
+        !pipe_res.is_error,
+        "scratchpad artifact must be readable through security pipeline: {}",
+        pipe_res.output
+    );
+    assert!(pipe_res.output.contains("CRITICAL_KEY_VALUE_42981"));
+
     // Cleanup
+    let _ = tokio::fs::remove_dir_all(&ws).await;
     manager.cleanup().await.unwrap();
     assert!(!manager.session_dir().exists());
 }

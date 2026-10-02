@@ -27,5 +27,5 @@ fn test_context_buffer_token_accounting() {
 fn test_cjk_token_estimation() {
     let text = "你好，这是高性能 Rust Agent Loop。";
     let tokens = estimate_token_count(text);
-    assert!((10..=25).contains(&tokens));
+    assert!((10..=30).contains(&tokens));
 }

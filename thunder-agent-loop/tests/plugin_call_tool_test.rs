@@ -12,7 +12,7 @@ use thunder_agent_loop::tools::executor::ToolExecutor;
 use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
 
-fn pipeline(tier: Permission, mode: PermissionMode, ws: &std::path::Path) -> ToolPipeline {
+fn pipeline(tier: Permission, mode: ApprovalMode, ws: &std::path::Path) -> ToolPipeline {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     registry.register(Arc::new(WriteFileTool::default()));
     registry.register(Arc::new(ReadFileTool::default()));
@@ -55,7 +55,7 @@ fn ctx(plugin: &str) -> ToolInvocationContext {
 async fn a_plugin_can_use_the_runs_own_authority() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, PermissionMode::Yolo, ws);
+    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
     let inv = invoker(p, 1);
 
     let out = inv
@@ -83,7 +83,7 @@ async fn a_plugin_cannot_escalate_past_the_tier() {
     // Read-only role. No mode can change that, and no mode may reach a dialog
     // either — the ceiling is checked first, so a user is never offered a choice
     // the role already decided.
-    for mode in PermissionMode::ALL {
+    for mode in ApprovalMode::ALL {
         let p = pipeline(Permission::Read, mode, ws);
         let inv = invoker(p, 1);
 
@@ -123,7 +123,7 @@ async fn a_plugin_cannot_escalate_past_the_tier() {
 async fn a_plugin_cannot_escape_the_path_jail() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, PermissionMode::Yolo, ws);
+    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
     let inv = invoker(p, 1);
 
     let err = inv
@@ -183,7 +183,10 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Ask)),
+        Some(SessionPolicy::new(
+            Permission::Bash,
+            ApprovalMode::Mutations,
+        )),
         Some(Arc::new(Recorder {
             titles: Arc::clone(&titles),
         })),
@@ -253,7 +256,10 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Ask)),
+        Some(SessionPolicy::new(
+            Permission::Bash,
+            ApprovalMode::Mutations,
+        )),
         Some(Arc::new(Recorder {
             titles: Arc::clone(&titles),
         })),
@@ -284,7 +290,7 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
 async fn an_unknown_tool_is_an_ordinary_error() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, PermissionMode::Yolo, ws);
+    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
     let inv = invoker(p, 1);
 
     let err = inv
@@ -304,4 +310,42 @@ async fn no_invoker_means_a_clear_refusal() {
         .expect_err("no invoker means no call");
     assert!(err.contains("not callable"), "got: {err}");
     assert!(err.contains("demo"), "must name the caller: {err}");
+}
+
+/// A plugin call aborts when the owning run's cancellation token is triggered.
+#[tokio::test]
+async fn cancellation_propagates_to_plugin_invocations() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path();
+    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let executor =
+        ToolExecutor::with_pipeline(ToolRegistry::new(64 * 1024, Duration::from_secs(5)), p);
+    let inv = Arc::new(
+        PipelineToolInvoker::new(executor)
+            .with_turn(1)
+            .with_cancellation(cancel.clone()),
+    );
+
+    // Cancel before or during invocation
+    cancel.cancel();
+
+    let err = inv
+        .invoke(
+            "write_file",
+            serde_json::json!({ "path": "never_written.txt", "content": "data" }),
+            &ctx("demo"),
+        )
+        .await
+        .expect_err("cancelled run must refuse plugin tool execution");
+
+    assert!(
+        err.contains("cancelled") || err.contains("not run"),
+        "error should indicate task cancellation: {err}"
+    );
+    assert!(
+        !ws.join("never_written.txt").exists(),
+        "no file should be written"
+    );
 }

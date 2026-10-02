@@ -20,7 +20,7 @@ async fn config_for_test(
     tools: Option<Arc<dyn ToolInvoker>>,
 ) -> SidecarConfig {
     let runs = run_registry();
-    let policy = Arc::new(SessionPolicy::new(permission, PermissionMode::Yolo));
+    let policy = Arc::new(SessionPolicy::new(permission, ApprovalMode::Never));
     runs.write()
         .await
         .begin_run(
@@ -103,7 +103,7 @@ async fn register_run(
     ws: &std::path::Path,
     tier: Permission,
 ) {
-    let policy = SessionPolicy::new(tier, PermissionMode::Yolo);
+    let policy = SessionPolicy::new(tier, ApprovalMode::Never);
     let invoker = run_invoker_with(ws, Arc::clone(&policy)).await;
     runs.write()
         .await
@@ -621,7 +621,7 @@ export default definePlugin({
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, PermissionMode::Yolo)),
+        Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
         Some(Arc::new(NullHostUi)),
     );
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
@@ -670,6 +670,138 @@ export default definePlugin({
         tokio::fs::read_to_string(&landed).await.unwrap(),
         "from-plugin"
     );
+}
+
+/// Sibling TypeScript plugin tool calls (`ctx.callTool` to another TS plugin tool)
+/// must route through Rust's ToolPipeline rather than bypassing via Node in-memory shortcuts.
+#[tokio::test]
+async fn ts_plugin_calling_sibling_ts_plugin_routes_through_pipeline() {
+    use thunder_agent_loop::prelude::*;
+    use thunder_agent_loop::tools::executor::ToolExecutor;
+    use thunder_agent_loop::tools::middleware::ToolPipeline;
+    use thunder_agent_loop::tools::registry::ToolRegistry;
+
+    if !SidecarManager::is_node_available().await {
+        eprintln!("Node.js not available, skipping test");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let ws_dir = temp.path().to_path_buf();
+    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
+
+    // Plugin A calls Plugin B's tool
+    tokio::fs::write(
+        plugins_dir.join("plugin_a.ts"),
+        r#"
+export default definePlugin({
+  name: "plugin_a",
+  tools: [{
+    name: "tool_caller",
+    description: "calls tool from sibling plugin b",
+    execute: async (args, ctx) => {
+      const res = await ctx.callTool("tool_calculator", { a: 10, b: 25 });
+      return `result: ${res}`;
+    }
+  }]
+});
+"#,
+    )
+    .await
+    .unwrap();
+
+    // Plugin B provides tool_calculator
+    tokio::fs::write(
+        plugins_dir.join("plugin_b.ts"),
+        r#"
+export default definePlugin({
+  name: "plugin_b",
+  tools: [{
+    name: "tool_calculator",
+    description: "adds two numbers",
+    execute: async (args, ctx) => {
+      return String(Number(args.a) + Number(args.b));
+    }
+  }]
+});
+"#,
+    )
+    .await
+    .unwrap();
+
+    let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
+    let invoker_slot: Arc<tokio::sync::RwLock<Option<Arc<dyn ToolInvoker>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
+    struct DelegatingInvoker(Arc<tokio::sync::RwLock<Option<Arc<dyn ToolInvoker>>>>);
+    #[async_trait::async_trait]
+    impl ToolInvoker for DelegatingInvoker {
+        async fn invoke(
+            &self,
+            tool: &str,
+            args: serde_json::Value,
+            ctx: &ToolInvocationContext,
+        ) -> Result<String, String> {
+            let inner = self.0.read().await.clone().expect("invoker ready");
+            inner.invoke(tool, args, ctx).await
+        }
+    }
+
+    let invoker: Arc<dyn ToolInvoker> = Arc::new(DelegatingInvoker(Arc::clone(&invoker_slot)));
+    let config =
+        config_for_test(&ws_dir, &plugins_dir, Permission::Bash, None, Some(invoker)).await;
+
+    let sidecar = SidecarManager::new(config);
+    sidecar.start().await.expect("start sidecar");
+    for _ in 0..100 {
+        if sidecar.list_tools().await.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let all_tools = sidecar.list_tools().await;
+    assert_eq!(all_tools.len(), 2, "both plugins loaded");
+
+    for t in all_tools {
+        registry.register(Arc::new(TsToolBridge::new(t, Arc::clone(&sidecar))));
+    }
+
+    let pipeline = ToolPipeline::configured(
+        ws_dir.clone(),
+        &[],
+        registry,
+        None,
+        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
+        Permission::Bash,
+        Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
+        Some(Arc::new(NullHostUi)),
+    );
+    let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
+    *invoker_slot.write().await = Some(Arc::new(PipelineToolInvoker::new(executor).with_turn(1)));
+
+    let caller_tool = sidecar
+        .list_tools()
+        .await
+        .into_iter()
+        .find(|t| t.name == "tool_caller")
+        .expect("registered");
+    let bridge = TsToolBridge::new(caller_tool, Arc::clone(&sidecar));
+    let ctx = ToolExecutionContext {
+        tool_call_id: "call_ab".into(),
+        turn: 1,
+        cancellation_token: CancellationToken::new(),
+        route: Some(route().to_string()),
+        ..Default::default()
+    };
+
+    let result = bridge
+        .execute(serde_json::json!({}), &ctx)
+        .await
+        .expect("inter-plugin call must succeed via Rust pipeline");
+
+    assert_eq!(result, "result: 35");
 }
 
 /// The regression this whole refactor exists for: two *concurrent* runs sharing
