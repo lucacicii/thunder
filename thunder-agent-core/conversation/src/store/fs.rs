@@ -36,7 +36,10 @@ impl FsConversationStore {
             }
         }
         Err(ConversationError::Io(last_err.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "conversation store root is unavailable")
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "conversation store root is unavailable",
+            )
         })))
     }
 
