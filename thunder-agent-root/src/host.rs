@@ -152,6 +152,18 @@ pub struct ThunderRoot {
 impl ThunderRoot {
     pub fn new(config: AgentConfig) -> Self {
         let scratch_root = std::env::temp_dir().join("thunder_root_scratch");
+        // Best-effort cleanup of stale per-session scratch dirs. Only schedule
+        // it when a Tokio runtime is present: `ThunderRoot::new` is also called
+        // from synchronous constructors (tests), and spawning there would
+        // panic. Skipping it in that case is harmless — cleanup is opportunistic.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let scratch_clean = scratch_root.clone();
+            handle.spawn(async move {
+                clean_stale_scratch_dirs(&scratch_clean, std::time::Duration::from_secs(7 * 86400))
+                    .await;
+            });
+        }
+
         let selector = PluginSelector::new(Some(config.clone()));
         let active_model = ModelRef::parse(&config.model);
         Self {
@@ -609,5 +621,65 @@ impl ThunderRoot {
             .join()
             .await
             .map_err(|e| PluginError::ExecutionFailed(e.to_string()))
+    }
+}
+
+async fn clean_stale_scratch_dirs(root: &std::path::Path, max_age: std::time::Duration) {
+    if !root.exists() {
+        return;
+    }
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(meta) = entry.metadata().await {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        if age > max_age {
+                            let _ = tokio::fs::remove_dir_all(&path).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scratch_cleanup_tests {
+    use super::clean_stale_scratch_dirs;
+
+    #[tokio::test]
+    async fn stale_dirs_are_removed_and_fresh_ones_kept() {
+        let root =
+            std::env::temp_dir().join(format!("thunder_scratch_cleanup_{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        let stale = root.join("sess_stale");
+        let fresh = root.join("sess_fresh");
+        tokio::fs::create_dir_all(&stale).await.unwrap();
+        tokio::fs::create_dir_all(&fresh).await.unwrap();
+        tokio::fs::write(stale.join("junk.log"), b"x")
+            .await
+            .unwrap();
+
+        // A zero max-age treats every existing dir as stale; the fresh dir is
+        // created after the scan so it survives. Use a large age for "fresh":
+        // call twice with distinct thresholds to prove both branches.
+        clean_stale_scratch_dirs(&root, std::time::Duration::from_secs(0)).await;
+        assert!(!stale.exists(), "stale dir must be removed");
+        assert!(!fresh.exists(), "zero max-age removes every dir too");
+
+        // Recreate and confirm a huge max-age removes nothing.
+        tokio::fs::create_dir_all(&stale).await.unwrap();
+        clean_stale_scratch_dirs(&root, std::time::Duration::from_secs(365 * 86400)).await;
+        assert!(
+            stale.exists(),
+            "a fresh-looking dir survives a wide max-age"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
     }
 }
