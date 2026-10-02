@@ -138,12 +138,19 @@ impl SkillLoader {
         paths.push(PathBuf::from("skills"));
 
         // 2. User home directory skill paths (Agent & Thunder standards)
-        if let Ok(home) = std::env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            paths.push(home_path.join(".agents/skills"));
-            paths.push(home_path.join(".thunder/skills"));
-            paths.push(home_path.join(".pi/agent/skills"));
-            paths.push(home_path.join(".pi/skills"));
+        // Can be disabled via THUNDER_SKILLS_NO_GLOBAL=1 to prevent cross-workspace skill pollution and prompt bloat
+        let disable_global = std::env::var("THUNDER_SKILLS_NO_GLOBAL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if !disable_global {
+            if let Ok(home) = std::env::var("HOME") {
+                let home_path = PathBuf::from(home);
+                paths.push(home_path.join(".agents/skills"));
+                paths.push(home_path.join(".thunder/skills"));
+                paths.push(home_path.join(".pi/agent/skills"));
+                paths.push(home_path.join(".pi/skills"));
+            }
         }
 
         paths

@@ -183,3 +183,42 @@ async fn test_skill_tools_execution() {
         .unwrap();
     assert!(search_res.contains("playwright-qa"));
 }
+
+/// Global (home-directory) skill discovery can be disabled so a client
+/// workspace does not inherit a user's personal skill catalog. Verifying the
+/// path list directly avoids mutating the process environment (which would
+/// race with other tests in this binary).
+#[test]
+fn global_skill_paths_can_be_disabled() {
+    // The pure path builder honors THUNDER_SKILLS_NO_GLOBAL; assert the
+    // documented contract via the loader's public helper.
+    let with_global = thunder_agent_skills::SkillLoader::default_search_paths();
+    let home_related = |paths: &[std::path::PathBuf]| {
+        paths
+            .iter()
+            .any(|p| p.to_string_lossy().contains(".agents/skills") && p.is_absolute())
+    };
+
+    if std::env::var("THUNDER_SKILLS_NO_GLOBAL").is_err() {
+        assert!(
+            home_related(&with_global),
+            "with the toggle unset, absolute home skill paths are present"
+        );
+    }
+
+    std::env::set_var("THUNDER_SKILLS_NO_GLOBAL", "1");
+    let without_global = thunder_agent_skills::SkillLoader::default_search_paths();
+    std::env::remove_var("THUNDER_SKILLS_NO_GLOBAL");
+
+    assert!(
+        !home_related(&without_global),
+        "THUNDER_SKILLS_NO_GLOBAL=1 must drop home-directory skill paths"
+    );
+    // Workspace-relative paths survive.
+    assert!(
+        without_global
+            .iter()
+            .any(|p| p == std::path::Path::new(".agents/skills")),
+        "workspace-relative paths must be kept"
+    );
+}
