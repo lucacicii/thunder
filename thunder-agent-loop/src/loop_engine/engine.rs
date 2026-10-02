@@ -1178,12 +1178,31 @@ struct Emitter {
 
 impl Emitter {
     async fn emit(&self, event: AgentEvent) {
+        let is_micro_delta = matches!(
+            event,
+            AgentEvent::TokenDelta { .. }
+                | AgentEvent::ReasoningDelta { .. }
+                | AgentEvent::ToolCallChunk { .. }
+        );
+
         let observed = ObservedEvent {
             agent_id: self.agent_id.clone(),
             event,
         };
         self.dispatcher.emit(observed.clone());
-        let _ = self.event_sender.send(observed).await;
+
+        if is_micro_delta {
+            // For streaming micro-deltas, never block the core engine loop
+            // indefinitely if the consumer's channel is saturated.
+            let _ = self.event_sender.try_send(observed);
+        } else {
+            // For structural lifecycle events, ensure delivery with a safe fallback deadline.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.event_sender.send(observed),
+            )
+            .await;
+        }
     }
 }
 
