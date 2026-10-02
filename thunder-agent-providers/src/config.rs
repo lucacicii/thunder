@@ -51,6 +51,11 @@ pub struct ModelFileConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub reasoning: bool,
+    /// Content modalities accepted by the model (pi `Model.input`), e.g.
+    /// `["text"]` or `["text","image"]`. Omitted → text-only. Set
+    /// `["text","image"]` for vision models so pi-ai keeps image blocks.
+    #[serde(default, alias = "modalities")]
+    pub input: Option<Vec<String>>,
     pub context_window: Option<usize>,
     pub max_tokens: Option<usize>,
     pub compat: Option<CompatConfig>,

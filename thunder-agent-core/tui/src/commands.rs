@@ -132,6 +132,13 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::General,
     ),
     SlashCommand::new(
+        "image",
+        &["attach", "img"],
+        "<path> [path...]",
+        "Attach local image file(s) to the next prompt (png/jpeg/webp/gif)",
+        CommandCategory::General,
+    ),
+    SlashCommand::new(
         "skills",
         &["skill", "sk"],
         "[attach | load <name> | show <name> | off]",

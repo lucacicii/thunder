@@ -95800,7 +95800,24 @@ function thunderToPiContext(messages, model) {
         break;
       }
       case "user": {
-        piMessages.push({ role: "user", content: m2.content ?? "", timestamp: ts });
+        const parts = Array.isArray(m2.parts) ? m2.parts : null;
+        if (parts && parts.length > 0) {
+          const hasTextPart = parts.some((p) => p.type === "text");
+          const blocks = [];
+          if (typeof m2.content === "string" && m2.content.length > 0 && !hasTextPart) {
+            blocks.push({ type: "text", text: m2.content });
+          }
+          for (const p of parts) {
+            if (p.type === "image") {
+              blocks.push({ type: "image", mimeType: p.mimeType, data: p.data });
+            } else {
+              blocks.push({ type: "text", text: p.text ?? "" });
+            }
+          }
+          piMessages.push({ role: "user", content: blocks, timestamp: ts });
+        } else {
+          piMessages.push({ role: "user", content: m2.content ?? "", timestamp: ts });
+        }
         break;
       }
       case "assistant": {

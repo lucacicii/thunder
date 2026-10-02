@@ -101,6 +101,8 @@ pub struct App {
     pub selected_session_idx: usize,
     pub input: String,
     pub input_history: Vec<String>,
+    /// Image attachments staged for the next prompt (`/image <path>`).
+    pub pending_images: Vec<ContentPart>,
     pub history_idx: Option<usize>,
     pub command_popup_idx: usize,
     pub picker: PickerState,
@@ -172,6 +174,7 @@ impl App {
             selected_session_idx: 0,
             input: String::new(),
             input_history: Vec::new(),
+            pending_images: Vec::new(),
             history_idx: None,
             command_popup_idx: 0,
             picker: PickerState::new(),
@@ -1359,6 +1362,76 @@ impl App {
         }
     }
 
+    /// Stage local image files for the next prompt.
+    ///
+    /// Bytes are validated with the shared ingress rules (magic bytes + size),
+    /// so a mislabelled or oversized file is rejected with a status message
+    /// rather than being sent to the model.
+    fn handle_image_command(&mut self, args: &[&str]) {
+        if args.is_empty() {
+            self.set_status_message(
+                "Usage: /image <path> [path...] — png/jpeg/webp/gif".to_string(),
+            );
+            return;
+        }
+
+        let mut added = 0usize;
+        let mut error: Option<String> = None;
+
+        for arg in args {
+            if self.pending_images.len() >= MAX_IMAGES_PER_MESSAGE {
+                error = Some(format!(
+                    "At most {MAX_IMAGES_PER_MESSAGE} images per prompt"
+                ));
+                break;
+            }
+
+            let raw = Path::new(arg);
+            let path = if raw.is_relative() {
+                self.workspace_dir.join(raw)
+            } else {
+                raw.to_path_buf()
+            };
+            let label = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("image")
+                .to_string();
+
+            match std::fs::read(&path) {
+                Ok(bytes) => match validate_image_bytes(&bytes, &label) {
+                    Ok((mime, data)) => {
+                        self.pending_images.push(ContentPart::Image {
+                            mime_type: mime.to_string(),
+                            data,
+                            name: Some(label),
+                            path: None,
+                            sha256: None,
+                        });
+                        added += 1;
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        break;
+                    }
+                },
+                Err(e) => {
+                    error = Some(format!("Cannot read '{}': {e}", path.display()));
+                    break;
+                }
+            }
+        }
+
+        if let Some(err) = error {
+            self.set_status_message(format!("🖼 Image error: {err}"));
+        } else if added > 0 {
+            self.set_status_message(format!(
+                "🖼 {} image(s) attached for the next prompt",
+                self.pending_images.len()
+            ));
+        }
+    }
+
     pub fn execute_slash_command(
         &mut self,
         raw_cmd: &str,
@@ -1378,6 +1451,12 @@ impl App {
         let args = &parts[1..];
 
         match cmd_token.to_lowercase().as_str() {
+            // 0. /image <path> [path...] — stage local images for the next prompt
+            "image" | "attach" | "img" => {
+                self.handle_image_command(args);
+                true
+            }
+
             // 1. /resume [session_id | #]
             "resume" | "load_session" | "switch" | "sessions" => {
                 if let Some(target) = args.first() {
@@ -2270,7 +2349,15 @@ impl App {
             (self.execution_mode, raw_prompt)
         };
 
-        self.conversation.add_user_message(prompt.clone());
+        // Fold any staged images into the user turn. Text stays the trigger /
+        // title projection; the images ride along as multimodal parts.
+        if self.pending_images.is_empty() {
+            self.conversation.add_user_message(prompt.clone());
+        } else {
+            let images = std::mem::take(&mut self.pending_images);
+            self.conversation
+                .add_user_message_with_parts(prompt.clone(), images);
+        }
         self.agent_status = AgentStatus::Thinking;
         self.streaming_delta.clear();
         self.reasoning_delta.clear();

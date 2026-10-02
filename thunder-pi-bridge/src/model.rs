@@ -60,8 +60,9 @@ pub struct BridgeModel {
     #[serde(default)]
     pub reasoning: bool,
     /// pi `Model.input`: content modalities, e.g. `["text"]` or `["text","image"]`.
-    /// pi-ai requires it (image downgrade logic reads it); thunder is text-only
-    /// by default, so an empty vec is normalized to `["text"]` by the sidecar.
+    /// pi-ai requires it (image downgrade logic reads it); an empty vec is
+    /// normalized to `["text"]` by the sidecar. Set `["text","image"]` for
+    /// vision models so pi-ai keeps image blocks instead of downgrading them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
     #[serde(default)]

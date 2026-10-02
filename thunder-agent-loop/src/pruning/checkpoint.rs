@@ -15,7 +15,7 @@
 use crate::core::context::ContextBuffer;
 use crate::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use crate::types::config::AgentConfig;
-use crate::types::message::ChatMessage;
+use crate::types::message::{ChatMessage, ContentPart};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -234,8 +234,29 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
                 }
                 out.push_str(&format!("[System]: {}\n", truncate_chars(content, 2000)));
             }
-            ChatMessage::User { content, .. } => {
+            ChatMessage::User { content, parts, .. } => {
                 out.push_str(&format!("[User]: {}\n", truncate_chars(content, 2000)));
+                if let Some(parts) = parts {
+                    for part in parts {
+                        match part {
+                            ContentPart::Text { text } => {
+                                out.push_str(&format!("[User]: {}\n", truncate_chars(text, 2000)));
+                            }
+                            ContentPart::Image {
+                                mime_type, data, ..
+                            } => {
+                                // The summary cannot carry pixels; record that an
+                                // image was present (and its rough size) so the
+                                // model still knows context was attached.
+                                out.push_str(&format!(
+                                    "[User attached image: {} (~{} base64 bytes)]\n",
+                                    mime_type,
+                                    data.len()
+                                ));
+                            }
+                        }
+                    }
+                }
             }
             ChatMessage::Assistant {
                 content,

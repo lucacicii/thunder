@@ -37,6 +37,11 @@ pub enum DaemonRequest {
         /// The role's `permission` (tier) and `mode` are authoritative for this
         /// run — there is no per-run mode override; switch roles instead.
         role: Option<String>,
+        /// Image attachments for the user turn. Path-based attachments are
+        /// preferred (the daemon reads and validates them); inline base64 is
+        /// accepted for clipboard paste. Older daemons ignore this field.
+        #[serde(default)]
+        attachments: Option<Vec<Attachment>>,
     },
     /// List all roles visible from global + workspace scopes
     ListRoles {
@@ -121,6 +126,24 @@ pub enum DaemonRequest {
         session_id: String,
         title: String,
     },
+}
+
+/// One image attached to a `run_task` request.
+///
+/// Exactly one of `path` / `data` is required. `path` is read and validated by
+/// the daemon (path jail + magic bytes); `data` is a base64 image payload sent
+/// by a host that already holds the bytes (e.g. clipboard paste).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    #[serde(default, alias = "path")]
+    pub path: Option<String>,
+    #[serde(default, alias = "data")]
+    pub data: Option<String>,
+    #[serde(default, alias = "mimeType", alias = "mime_type")]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Outgoing message to host (Electron) via stdout

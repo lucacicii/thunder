@@ -30,13 +30,27 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 ]));
                 lines.push(Line::raw(""));
             }
-            ChatMessage::User { content, .. } => {
+            ChatMessage::User { content, parts, .. } => {
                 lines.push(Line::from(vec![Span::styled(
                     "👤 You",
                     Style::default()
                         .fg(theme.user_bubble)
                         .add_modifier(Modifier::BOLD),
                 )]));
+                if let Some(parts) = parts {
+                    let images = parts.iter().filter(|p| p.is_image()).count();
+                    if images > 0 {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                format!("🖼 {images} image(s)"),
+                                Style::default()
+                                    .fg(theme.tool_bubble)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    }
+                }
                 for line in content.lines() {
                     lines.push(Line::from(vec![
                         Span::raw("  "),

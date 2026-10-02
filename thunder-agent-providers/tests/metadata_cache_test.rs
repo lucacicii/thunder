@@ -44,6 +44,7 @@ async fn test_provider_registry_update_model_context_window() {
         api_key: None,
         headers: std::collections::HashMap::new(),
         reasoning: false,
+        input: Vec::new(),
         context_window: 128_000,
         max_tokens: 4096,
         available: true,

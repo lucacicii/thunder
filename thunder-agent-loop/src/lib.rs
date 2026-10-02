@@ -16,6 +16,10 @@ pub mod types;
 /// Stable product surface for a single agent unit and for a scheduler composing many units.
 pub mod prelude {
     pub use crate::cache::warmer::{CacheWarmDecision, PromptCacheWarmSettings, WarmSnapshot};
+    pub use crate::core::images::{
+        base64_decode, base64_encode, decode_image_data_url, is_allowed_image_mime,
+        sniff_image_mime, validate_image_bytes, MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES,
+    };
     pub use crate::core::pause::PauseGate;
     pub use crate::core::state::LoopStatus;
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
@@ -42,7 +46,7 @@ pub mod prelude {
         empty_tool_invoker_slot, NullToolInvoker, PipelineToolInvoker, ToolInvocationContext,
         ToolInvoker, ToolInvokerSlot,
     };
-    pub use crate::types::message::{ChatMessage, Role, ToolCall, ToolCallFunction};
+    pub use crate::types::message::{ChatMessage, ContentPart, Role, ToolCall, ToolCallFunction};
     pub use crate::types::policy::{
         call_hash, deny_reason, describe_call, tier_allows, AllowRule, ApprovalMode,
         ApprovalRequest, Caller, PermissionMode, SessionPolicy, ToolEffect, Verdict, ALLOW_ALWAYS,
