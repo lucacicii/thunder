@@ -21,7 +21,11 @@ async fn concurrent_new_on_a_clean_root_succeeds() {
         }
         for handle in handles {
             let result = handle.await.unwrap();
-            assert!(result.is_ok(), "FsConversationStore::new failed: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "FsConversationStore::new failed: {:?}",
+                result.err()
+            );
         }
     }
 }
