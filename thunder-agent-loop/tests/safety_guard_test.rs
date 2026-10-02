@@ -55,6 +55,34 @@ async fn test_bash_non_interactive_environment() {
     assert!(output.contains("DEBIAN=noninteractive"));
 }
 
+#[tokio::test]
+async fn test_bash_sensitive_env_sanitized() {
+    std::env::set_var("MOCK_SECRET_API_KEY", "super_secret_key_123");
+    std::env::set_var("GITHUB_TOKEN", "ghp_secret_token_456");
+
+    let bash = BashTool::default();
+    let ctx = ToolExecutionContext {
+        tool_call_id: "test_sec_env".to_string(),
+        turn: 1,
+        cancellation_token: CancellationToken::new(),
+        ..Default::default()
+    };
+
+    let res = bash
+        .execute(
+            json!({ "command": "echo \"KEY=${MOCK_SECRET_API_KEY},TOKEN=${GITHUB_TOKEN}\"" }),
+            &ctx,
+        )
+        .await;
+
+    assert!(res.is_ok());
+    let output = res.unwrap();
+    assert_eq!(output.trim(), "KEY=,TOKEN=");
+
+    std::env::remove_var("MOCK_SECRET_API_KEY");
+    std::env::remove_var("GITHUB_TOKEN");
+}
+
 #[test]
 fn test_atomic_turn_group_pruning_no_orphans() {
     let mut ctx = ContextBuffer::new();

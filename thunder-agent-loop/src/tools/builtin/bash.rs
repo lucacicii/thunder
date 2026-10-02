@@ -79,9 +79,14 @@ impl AgentTool for BashTool {
             .arg(command)
             .stdin(Stdio::null()) // Prevent interactive hanging on user stdin prompts
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Injected non-interactive safe environment variables
-            .env("DEBIAN_FRONTEND", "noninteractive")
+            .stderr(Stdio::piped());
+
+        // Sanitize environment: strip sensitive credential patterns (API keys, secrets, tokens)
+        // to prevent exfiltration through shell execution, unless explicitly passed through.
+        apply_env_sanitization(&mut cmd);
+
+        // Injected non-interactive safe environment variables
+        cmd.env("DEBIAN_FRONTEND", "noninteractive")
             .env("CI", "true")
             .env("TERM", "dumb")
             .env("PAGER", "cat")
@@ -228,3 +233,34 @@ fn kill_process_tree(child: &tokio::process::Child) {
 
 #[cfg(not(unix))]
 fn kill_process_tree(_child: &tokio::process::Child) {}
+
+fn is_sensitive_env_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.contains("KEY")
+        || upper.contains("TOKEN")
+        || upper.contains("SECRET")
+        || upper.contains("PASSWORD")
+        || upper.contains("AUTH")
+        || upper.contains("CREDENTIAL")
+        || upper.starts_with("AWS_")
+        || upper.starts_with("GITHUB_")
+        || upper.starts_with("OPENAI_")
+        || upper.starts_with("ANTHROPIC_")
+        || upper.starts_with("DEEPSEEK_")
+}
+
+fn apply_env_sanitization(cmd: &mut Command) {
+    let passthrough: Vec<String> = std::env::var("THUNDER_ENV_PASSTHROUGH")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for (k, _) in std::env::vars() {
+        let upper = k.to_ascii_uppercase();
+        if is_sensitive_env_var(&upper) && !passthrough.contains(&upper) {
+            cmd.env_remove(&k);
+        }
+    }
+}
