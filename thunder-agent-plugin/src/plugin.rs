@@ -103,6 +103,11 @@ impl TsScriptPluginEngine {
         self.sidecar.reload(path).await;
     }
 
+    /// Add a new plugin directory to the sidecar and trigger a reload.
+    pub async fn add_plugin_dir(&self, dir: PathBuf) {
+        self.sidecar.add_plugin_dirs(vec![dir]).await;
+    }
+
     pub async fn list_tools(&self) -> Vec<Arc<dyn AgentTool>> {
         let tools_meta = self.sidecar.list_tools().await;
         let mut tools: Vec<Arc<dyn AgentTool>> = Vec::new();

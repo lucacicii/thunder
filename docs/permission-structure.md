@@ -84,13 +84,13 @@ flowchart TB
 
 ---
 
-## 2. 正交的两根轴：tier（档位）× mode（模式）
+## 2. 正交的两根轴：tier（档位）× mode（审批模式）
 
-这是整套权限设计的核心。**tier 决定"什么根本不可能"，mode 决定"什么时候必须问人"**。
+这是整套权限设计的核心。**tier 决定"什么根本不可能"（能力天花板），mode 决定"什么时候向人类确认"（审批策略）**。两轴完全独立，绝不反向耦合。
 
 ```mermaid
 flowchart LR
-    subgraph T["tier ＝ 能力天花板（硬上限，不可抬升）"]
+    subgraph T["tier ＝ 能力天花板（硬上限，物理不可越权）"]
         direction LR
         T1["read<br/>fs_write=off, bash=off"]
         T2["write<br/>fs_write=on, bash=off"]
@@ -98,49 +98,38 @@ flowchart LR
         T1 <-->|⊂| T2 <-->|⊂| T3
     end
 
-    subgraph M["mode ＝ 审批频率（只能向下压 tier）"]
+    subgraph M["mode ＝ 审批策略（纯粹决定何时弹窗）"]
         direction LR
-        M1["plan<br/>只读"]
-        M2["ask<br/>写/执行都问"]
-        M3["accept_edits<br/>只问 shell"]
-        M4["manual<br/>每次都问"]
-        M5["yolo<br/>不问（默认）"]
+        M1["never / yolo<br/>0 弹窗直接放行"]
+        M2["shell_only<br/>仅 Shell 弹窗"]
+        M3["mutations / ask<br/>改写与 Shell 弹窗"]
+        M4["always / manual<br/>每步全量弹窗"]
     end
 
-    T3 --> E["effective = mode.effective(tier)<br/>= min(tier, mode.ceiling())"]
-    M1 -.->|ceiling = Read<br/>唯一会压低档位的模式| E
-    M2 -.->|ceiling = None<br/>继承档位| E
-    M3 -.->|None| E
-    M4 -.->|None| E
-    M5 -.->|None| E
-
-    E --> R["实际生效档位"]
-
-    style M1 fill:#fce8e6,stroke:#ea4335,stroke-width:2px
-    style M5 fill:#e8f0fe,stroke:#4285f4
+    T3 --- P["SessionPolicy"]
+    M1 --- P
 ```
 
 ### 2.1 模式 × 效果 决策矩阵
 
-`ToolEffect::of(tool)` 按工具名分类（`policy.rs:157`）：
+`ToolEffect::of(tool)` 按工具名分类（`policy.rs`）：
 
 | ToolEffect | 匹配工具 | required_tier | prompt_worthy |
 |---|---|---|---|
 | `Read` | `read_file` `grep` `find` `ls` `list_dir` `read` `glob` | `Read` | ❌ |
 | `Write` | `write_file` `edit` `write` `apply_patch` `notebook_edit` | `Write` | ✅ |
-| `Exec` | `bash` `shell` `powershell` | `Bash` | ✅ |
-| `Other` | **其他一切（含插件 / MCP / 技能工具）** | `Write` | ✅ |
+| `Exec` | `bash` `shell` `powershell` 以及名称含 `exec/terminal/cmd` 的工具 | `Bash` | ✅ |
+| `Other` | **其他一切（普通插件 / MCP 工具）** | `Write` | ✅ |
 
-> ⚠️ 未知工具落入 `Other`，行为等同 `Write` —— fail-safe 方向：新工具在被人分类之前会一直弹窗。
-> ⚠️ `Other` 要求 `Write` 而**不是** `Bash`：未分类的工具不应仅仅因为"未知"就能 shell out。
+`decide()` 的输出矩阵（纯净正交，无任何死状态）：
 
-`decide()` 的输出矩阵（`policy.rs:484-537`）：
+| tier ＼ mode | never (yolo) | shell_only | mutations (ask) | always (manual) |
+|---|---|---|---|---|
+| **read** | 读 Allow<br>写/执行 Deny | 读 Allow<br>写/执行 Deny | 读 Allow<br>写/执行 Deny | 读 Ask<br>写/执行 Deny |
+| **write** | 读写 Allow<br>执行 Deny | 读写 Allow<br>执行 Deny | 读 Allow / 写 Ask<br>执行 Deny | 读写 Ask<br>执行 Deny |
+| **bash** | 读写执行 Allow | 读写 Allow<br>执行 Ask | 读 Allow<br>写执行 Ask | 全 Ask |
 
-| tier ＼ mode | plan | ask | accept_edits | manual | yolo |
-|---|---|---|---|---|---|
-| **read** | 读 Allow<br>写/执行 **Deny** | 读 Allow<br>写/执行 Ask | 同 ask | 读 Ask<br>写/执行 Ask | 全 Allow |
-| **write** | 读 Allow<br>写/执行 **Deny** | 读 Allow<br>写 Ask<br>执行 Ask | 读 Allow<br>写 Allow<br>执行 Ask | 全 Ask | 全 Allow |
-| **bash** | 读 Allow<br>写/执行 **Deny** | 读 Allow<br>写 Ask<br>执行 Ask | 读 Allow<br>写 Allow<br>执行 Ask | 全 Ask | 全 Allow |
+> 提示：在只读角色（`Permission::Read`）下，由于写和执行均已在第一步物理硬拒绝，前端自动锁定为 `never`（免审放行），彻底消除了“只读却问人”的冗余状态。
 
 ---
 

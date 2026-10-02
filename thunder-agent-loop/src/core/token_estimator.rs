@@ -34,7 +34,9 @@ pub fn estimate_token_count(text: &str) -> usize {
     }
 
     let ascii_count = total_chars.saturating_sub(cjk_count);
-    let cjk_tokens = (cjk_count * 8).div_ceil(10); // ~0.8 token per char
+    // Modern BPE tokenizers (OpenAI o200k/cl100k, Claude, DeepSeek) map multi-byte UTF-8 CJK characters
+    // to ~1.4 - 1.8 tokens per char on average. ~1.5 tokens avoids 2x under-estimation.
+    let cjk_tokens = (cjk_count * 15).div_ceil(10); // ~1.5 tokens per CJK char
     let effective_ascii = ascii_count.saturating_sub(whitespace_count / 2);
     let ascii_tokens = (effective_ascii * 10).div_ceil(37); // ~3.7 chars per token
     let punct_tokens = (punctuation_count * 2).div_ceil(10);
@@ -54,6 +56,6 @@ mod tests {
 
         let cjk = "你好，世界！这是一个用于 Agent Loop 的测试。";
         let cjk_tokens = estimate_token_count(cjk);
-        assert!((12..=25).contains(&cjk_tokens));
+        assert!((20..=40).contains(&cjk_tokens));
     }
 }

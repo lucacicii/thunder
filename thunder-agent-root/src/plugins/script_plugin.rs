@@ -24,6 +24,7 @@ pub struct ScriptPlugin {
     engine: Arc<RwLock<Option<TsScriptPluginEngine>>>,
     cached_tools: Arc<RwLock<Vec<Arc<dyn AgentTool>>>>,
     cached_prompt: Arc<RwLock<Option<String>>>,
+    scanned_workspaces: Arc<RwLock<std::collections::HashSet<PathBuf>>>,
 }
 
 #[cfg(feature = "script-plugin")]
@@ -46,6 +47,7 @@ impl ScriptPlugin {
             engine: Arc::new(RwLock::new(None)),
             cached_tools: Arc::new(RwLock::new(Vec::new())),
             cached_prompt: Arc::new(RwLock::new(None)),
+            scanned_workspaces: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -123,8 +125,22 @@ impl ThunderPlugin for ScriptPlugin {
                 *self.cached_tools.write().await = tools;
                 let prompt = engine.get_system_prompts().await;
                 *self.cached_prompt.write().await = prompt;
+                self.scanned_workspaces.write().await.insert(ws.clone());
                 *lock = Some(engine);
             }
+        } else if !self.scanned_workspaces.read().await.contains(&ws) {
+            // Dynamic workspace discovery: rescan if this workspace's .arp/plugins exists
+            let ws_plugin_dir = ws.join(".arp").join("plugins");
+            if ws_plugin_dir.exists() {
+                if let Some(engine) = lock.as_ref() {
+                    engine.add_plugin_dir(ws_plugin_dir).await;
+                    let tools = engine.list_tools().await;
+                    *self.cached_tools.write().await = tools;
+                    let prompt = engine.get_system_prompts().await;
+                    *self.cached_prompt.write().await = prompt;
+                }
+            }
+            self.scanned_workspaces.write().await.insert(ws.clone());
         }
 
         // Phase one of two: identity and policy, both per-run. Registered on

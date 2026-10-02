@@ -88,7 +88,7 @@ fn guard(policy: Arc<SessionPolicy>, ui: Arc<dyn HostUi>) -> Arc<PermissionGuard
     Arc::new(PermissionGuardMiddleware::new(policy, ui))
 }
 
-fn policy(tier: Permission, mode: PermissionMode) -> Arc<SessionPolicy> {
+fn policy(tier: Permission, mode: ApprovalMode) -> Arc<SessionPolicy> {
     SessionPolicy::new(tier, mode)
 }
 
@@ -106,7 +106,7 @@ fn the_layer_sits_outside_the_transaction() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(policy(Permission::Bash, PermissionMode::Ask)),
+        Some(policy(Permission::Bash, ApprovalMode::Mutations)),
         Some(Arc::new(NullHostUi)),
     );
     let order: Vec<String> = pipeline
@@ -159,7 +159,10 @@ fn a_pipeline_without_a_policy_still_has_the_judge() {
 #[tokio::test]
 async fn a_forbidden_call_never_reaches_a_dialog() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Read, PermissionMode::Ask), ui.clone());
+    let g = guard(
+        policy(Permission::Read, ApprovalMode::Mutations),
+        ui.clone(),
+    );
     let res = g
         .handle(
             &call(
@@ -184,7 +187,7 @@ async fn a_forbidden_call_never_reaches_a_dialog() {
 #[tokio::test]
 async fn the_denial_names_the_ceiling() {
     let g = guard(
-        policy(Permission::Read, PermissionMode::Ask),
+        policy(Permission::Read, ApprovalMode::Mutations),
         Arc::new(NullHostUi),
     );
     let res = g
@@ -209,11 +212,11 @@ async fn the_denial_names_the_ceiling() {
     );
 }
 
-/// Plan mode lowers the ceiling, so a write is a denial and not a question.
+/// A read-only role refuses writes outright, and never raises a dialog.
 #[tokio::test]
-async fn plan_mode_refuses_rather_than_asks() {
+async fn read_only_tier_refuses_rather_than_asks() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Plan), ui.clone());
+    let g = guard(policy(Permission::Read, ApprovalMode::Never), ui.clone());
     let res = g
         .handle(
             &call(
@@ -228,7 +231,7 @@ async fn plan_mode_refuses_rather_than_asks() {
     assert!(res.is_error);
     assert!(
         ui.titles().is_empty(),
-        "plan mode must not negotiate a write"
+        "read-only tier must not negotiate a write"
     );
 }
 
@@ -237,7 +240,7 @@ async fn plan_mode_refuses_rather_than_asks() {
 #[tokio::test]
 async fn allow_once_runs_the_call() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Ask), ui);
+    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
     let res = g
         .handle(
             &call("bash", serde_json::json!({"command": "ls"})),
@@ -253,7 +256,7 @@ async fn allow_once_runs_the_call() {
 #[tokio::test]
 async fn refusal_is_a_tool_result_with_ground_truth_not_an_exception() {
     let ui = ScriptedUi::new(vec![UiResponse::value(DENY)]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Ask), ui);
+    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
     let res = g
         .handle(
             &call("bash", serde_json::json!({"command": "rm -rf build"})),
@@ -285,7 +288,7 @@ async fn every_non_answer_is_a_refusal() {
     // the deny branch. This layer never fails open.
     for answer in [UiResponse::Cancelled, UiResponse::value("something-else")] {
         let g = guard(
-            policy(Permission::Bash, PermissionMode::Ask),
+            policy(Permission::Bash, ApprovalMode::Mutations),
             ScriptedUi::new(vec![answer]),
         );
         let res = g
@@ -300,7 +303,7 @@ async fn every_non_answer_is_a_refusal() {
     }
     // A null UI is the headless host case: it must refuse rather than hang.
     let g = guard(
-        policy(Permission::Bash, PermissionMode::Ask),
+        policy(Permission::Bash, ApprovalMode::Mutations),
         Arc::new(NullHostUi),
     );
     let res = g
@@ -320,7 +323,7 @@ async fn deny_with_reason_reaches_the_model() {
         UiResponse::value(DENY_WITH_REASON),
         UiResponse::value("先别动生产配置"),
     ]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Ask), ui);
+    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
     let res = g
         .handle(
             &call(
@@ -343,7 +346,7 @@ async fn deny_with_reason_reaches_the_model() {
 #[tokio::test]
 async fn yolo_never_raises_a_dialog() {
     let ui = ScriptedUi::new(vec![]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Yolo), ui.clone());
+    let g = guard(policy(Permission::Bash, ApprovalMode::Never), ui.clone());
     let res = g
         .handle(
             &call("bash", serde_json::json!({"command": "ls"})),
@@ -359,7 +362,10 @@ async fn yolo_never_raises_a_dialog() {
 #[tokio::test]
 async fn reads_do_not_prompt_in_ask_mode() {
     let ui = ScriptedUi::new(vec![]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Ask), ui.clone());
+    let g = guard(
+        policy(Permission::Bash, ApprovalMode::Mutations),
+        ui.clone(),
+    );
     let res = g
         .handle(
             &call("read_file", serde_json::json!({"path": "a.txt"})),
@@ -375,7 +381,7 @@ async fn reads_do_not_prompt_in_ask_mode() {
 #[tokio::test]
 async fn a_cancelled_run_raises_no_dialog() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Manual), ui.clone());
+    let g = guard(policy(Permission::Bash, ApprovalMode::Always), ui.clone());
     let token = tokio_util::sync::CancellationToken::new();
     token.cancel();
     let mut c = ctx();
@@ -400,7 +406,10 @@ async fn a_cancelled_run_raises_no_dialog() {
 #[tokio::test]
 async fn a_plugin_request_is_labelled_and_a_model_request_is_not() {
     let ui = ScriptedUi::new(vec![UiResponse::value(DENY)]);
-    let g = guard(policy(Permission::Bash, PermissionMode::Ask), ui.clone());
+    let g = guard(
+        policy(Permission::Bash, ApprovalMode::Mutations),
+        ui.clone(),
+    );
 
     let mut plugin_ctx = ctx();
     plugin_ctx.caller = Some("evil_plugin".into());
@@ -427,7 +436,10 @@ async fn a_plugin_request_is_labelled_and_a_model_request_is_not() {
 
     // A model-initiated call of the same shape must not be dressed up as one.
     let ui2 = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g2 = guard(policy(Permission::Bash, PermissionMode::Ask), ui2.clone());
+    let g2 = guard(
+        policy(Permission::Bash, ApprovalMode::Mutations),
+        ui2.clone(),
+    );
     g2.handle(
         &call("bash", serde_json::json!({"command": "ls"})),
         &ctx(),
@@ -451,7 +463,7 @@ async fn parallel_calls_are_prompted_one_at_a_time() {
         UiResponse::value(ALLOW_ONCE),
     ]);
     let g = guard(
-        policy(Permission::Bash, PermissionMode::Ask),
+        policy(Permission::Bash, ApprovalMode::Mutations),
         Arc::clone(&ui) as Arc<dyn HostUi>,
     );
 
@@ -506,7 +518,7 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
-        Some(policy(Permission::Bash, PermissionMode::Yolo)),
+        Some(policy(Permission::Bash, ApprovalMode::Never)),
         Some(Arc::new(NullHostUi)),
     );
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
@@ -532,7 +544,7 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
         None,
         &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Read,
-        Some(policy(Permission::Read, PermissionMode::Yolo)),
+        Some(policy(Permission::Read, ApprovalMode::Never)),
         Some(Arc::new(NullHostUi)),
     );
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);

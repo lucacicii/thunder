@@ -359,6 +359,158 @@ impl AskUserPlugin {
     }
 }
 
+/// Terminal-native [`HostUi`] bridge, adapting modal questions to the TUI event loop.
+#[derive(Clone)]
+pub struct TuiHostUi {
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    counter: Arc<AtomicU64>,
+}
+
+impl TuiHostUi {
+    pub fn new(event_tx: mpsc::UnboundedSender<AppEvent>) -> Self {
+        Self {
+            event_tx,
+            counter: Arc::new(AtomicU64::new(1)),
+        }
+    }
+}
+
+#[async_trait]
+impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
+    async fn request(
+        &self,
+        source: thunder_agent_loop::types::ui::UiSource,
+        request: thunder_agent_loop::types::ui::UiRequest,
+    ) -> thunder_agent_loop::types::ui::UiResponse {
+        use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT};
+
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst);
+        let question_id = format!("tui:ui:{seq}");
+        let (tx, rx) = oneshot::channel();
+
+        let ask_question = match &request {
+            UiRequest::Select { title, options, .. } => {
+                let ask_opts = options
+                    .iter()
+                    .map(|o| AskOption {
+                        label: o.clone(),
+                        description: None,
+                    })
+                    .collect();
+                AskQuestion {
+                    question: title.clone(),
+                    header: Some(if source == UiSource::Host {
+                        "权限审批 (Approval)".to_string()
+                    } else {
+                        "插件交互 (Plugin)".to_string()
+                    }),
+                    multi_select: false,
+                    options: ask_opts,
+                }
+            }
+            UiRequest::Confirm { title, message, .. } => AskQuestion {
+                question: if message.is_empty() {
+                    title.clone()
+                } else {
+                    format!("{title}\n{message}")
+                },
+                header: Some("确认 (Confirm)".to_string()),
+                multi_select: false,
+                options: vec![
+                    AskOption {
+                        label: "确认".to_string(),
+                        description: None,
+                    },
+                    AskOption {
+                        label: "取消".to_string(),
+                        description: None,
+                    },
+                ],
+            },
+            UiRequest::Input {
+                title, placeholder, ..
+            } => AskQuestion {
+                question: title.clone(),
+                header: placeholder.clone(),
+                multi_select: false,
+                options: Vec::new(),
+            },
+            UiRequest::Editor { title, prefill, .. } => AskQuestion {
+                question: title.clone(),
+                header: prefill.clone(),
+                multi_select: false,
+                options: Vec::new(),
+            },
+        };
+
+        let incoming = IncomingQuestion {
+            question_id,
+            questions: vec![ask_question],
+            responder: tx,
+        };
+
+        if self
+            .event_tx
+            .send(AppEvent::UserQuestion(incoming))
+            .is_err()
+        {
+            return UiResponse::Cancelled;
+        }
+
+        let timeout_dur = match request {
+            UiRequest::Select {
+                timeout_ms: Some(ms),
+                ..
+            }
+            | UiRequest::Confirm {
+                timeout_ms: Some(ms),
+                ..
+            }
+            | UiRequest::Input {
+                timeout_ms: Some(ms),
+                ..
+            }
+            | UiRequest::Editor {
+                timeout_ms: Some(ms),
+                ..
+            } => Duration::from_millis(ms),
+            _ => DEFAULT_UI_TIMEOUT,
+        };
+
+        match tokio::time::timeout(timeout_dur, rx).await {
+            Ok(Ok(val)) => {
+                if val.is_null() {
+                    UiResponse::Cancelled
+                } else if let Some(obj) = val.as_object() {
+                    if let Some(ans) = obj.values().next().and_then(|v| v.as_str()) {
+                        match request {
+                            UiRequest::Confirm { .. } => UiResponse::Confirmed {
+                                confirmed: ans == "确认" || ans == "yes" || ans == "true",
+                            },
+                            _ => UiResponse::value(ans.to_string()),
+                        }
+                    } else {
+                        UiResponse::Cancelled
+                    }
+                } else {
+                    UiResponse::Cancelled
+                }
+            }
+            _ => UiResponse::Cancelled,
+        }
+    }
+
+    fn notify(
+        &self,
+        _source: thunder_agent_loop::types::ui::UiSource,
+        _message: &str,
+        _level: thunder_agent_loop::types::ui::NotifyLevel,
+    ) {
+    }
+
+    fn set_status(&self, _key: &str, _text: Option<String>) {}
+}
+
 #[async_trait]
 impl ThunderPlugin for AskUserPlugin {
     fn manifest(&self) -> &PluginManifest {
@@ -550,5 +702,44 @@ mod tests {
             .expect("cancel unblocks promptly")
             .unwrap();
         assert!(res.is_err(), "cancellation surfaces as an error");
+    }
+
+    #[tokio::test]
+    async fn tui_host_ui_select_bridges_to_user_question_and_returns_choice() {
+        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+
+        let (event_tx, mut rx) = mpsc::unbounded_channel();
+        let ui = TuiHostUi::new(event_tx);
+
+        let handle = tokio::spawn(async move {
+            ui.request(
+                UiSource::Host,
+                UiRequest::Select {
+                    title: "执行 bash".to_string(),
+                    options: vec!["允许一次".to_string(), "拒绝".to_string()],
+                    timeout_ms: Some(5000),
+                },
+            )
+            .await
+        });
+
+        let event = rx.recv().await.expect("event received");
+        let incoming = match event {
+            AppEvent::UserQuestion(q) => q,
+            _ => panic!("expected UserQuestion"),
+        };
+
+        assert_eq!(incoming.questions.len(), 1);
+        assert_eq!(incoming.questions[0].question, "执行 bash");
+        assert_eq!(incoming.questions[0].options.len(), 2);
+
+        let mut pending = PendingQuestion::from_incoming(incoming).expect("pending question");
+        let payload = pending
+            .answer_current("允许一次".to_string())
+            .expect("resolves immediately");
+        pending.resolve(payload);
+
+        let response = handle.await.unwrap();
+        assert_eq!(response, UiResponse::value("允许一次"));
     }
 }

@@ -27,6 +27,8 @@ pub struct DaemonService {
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Live pause gates per running task.
     active_pauses: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::pause::PauseGate>>>>,
+    /// Active running task per session, to prevent concurrent turn races.
+    active_sessions: Arc<Mutex<HashMap<String, String>>>,
     output_tx: mpsc::Sender<String>,
     concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     default_workspace: PathBuf,
@@ -138,6 +140,7 @@ impl DaemonService {
             store: Arc::new(store),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             active_pauses: Arc::new(Mutex::new(HashMap::new())),
+            active_sessions: Arc::new(Mutex::new(HashMap::new())),
             output_tx,
             concurrency_semaphore,
             default_workspace,
@@ -165,6 +168,13 @@ impl DaemonService {
             return Arc::clone(existing);
         }
         let mut guard = self.session_policies.write().await;
+        // Bounded capacity: evict oldest entry if size exceeds limit (prevents unbounded memory growth)
+        const MAX_SESSION_POLICIES: usize = 256;
+        if guard.len() >= MAX_SESSION_POLICIES && !guard.contains_key(session_id) {
+            if let Some(oldest_key) = guard.keys().next().cloned() {
+                guard.remove(&oldest_key);
+            }
+        }
         Arc::clone(
             guard
                 .entry(session_id.to_string())
@@ -477,10 +487,9 @@ impl DaemonService {
                     Ok(Some(conv)) => conv.workspace,
                     _ => None,
                 };
-                let registry = RoleRegistry::load_default(
-                    workspace.as_deref().map(std::path::Path::new),
-                )
-                .await;
+                let registry =
+                    RoleRegistry::load_default(workspace.as_deref().map(std::path::Path::new))
+                        .await;
                 let (spec, permission) = registry.resolve_for_run(Some(&role), "");
                 match spec {
                     Some(spec) => {
@@ -493,6 +502,10 @@ impl DaemonService {
                         let mode = spec.mode.unwrap_or_default();
                         policy.set_tier(permission).await;
                         policy.set_mode(mode).await;
+                        if let Ok(Some(mut conv)) = self.store.load(&session_id).await {
+                            conv.role = Some(spec.id.clone());
+                            let _ = self.store.save(&conv).await;
+                        }
                         info!(
                             session_id = %session_id,
                             role = %spec.id,
@@ -515,11 +528,8 @@ impl DaemonService {
                     None => {
                         // Unknown or disabled: list what is available so the
                         // panel can repopulate its role picker.
-                        let available: Vec<String> = registry
-                            .list_enabled()
-                            .into_iter()
-                            .map(|r| r.id)
-                            .collect();
+                        let available: Vec<String> =
+                            registry.list_enabled().into_iter().map(|r| r.id).collect();
                         self.send_response(DaemonResponse::Response {
                             id,
                             success: false,
@@ -557,6 +567,10 @@ impl DaemonService {
                 } else {
                     false
                 };
+                self.active_sessions
+                    .lock()
+                    .await
+                    .retain(|_, tid| tid != &task_id);
 
                 self.send_response(DaemonResponse::Response {
                     id,
@@ -826,6 +840,27 @@ impl DaemonService {
             )
         });
 
+        // Reject concurrent execution within the same conversation session
+        // to prevent race conditions and history clobbering.
+        {
+            let mut sessions = self.active_sessions.lock().await;
+            if let Some(running_task) = sessions.get(&effective_session_id) {
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: false,
+                    data: None,
+                    error: Some(format!(
+                        "Session '{effective_session_id}' is busy: task '{running_task}' is currently executing. Wait for it to complete or cancel it."
+                    )),
+                })
+                .await;
+                self.active_tasks.lock().await.remove(&task_id);
+                self.active_pauses.lock().await.remove(&task_id);
+                return;
+            }
+            sessions.insert(effective_session_id.clone(), task_id.clone());
+        }
+
         // Load or create conversation
         let mut conversation = match self.store.load(&effective_session_id).await {
             Ok(Some(existing)) => existing,
@@ -901,11 +936,22 @@ impl DaemonService {
         let role_registry =
             RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
         // Single-sourced role→permission derivation (see `RoleRegistry::resolve_for_run`).
-        // An explicit `role` wins; without one the prompt itself is scanned
-        // against each role's `triggers` keywords, so plain-language prompts
-        // can land in a role without a slash command.
-        let (chosen_role, chosen_permission) =
-            role_registry.resolve_for_run(role_id.as_deref(), &prompt);
+        // Precedence: explicit role token -> prompt triggers -> previously bound conversation role -> default unconstrained.
+        let (chosen_role, chosen_permission) = {
+            if let Some(ref explicit_role) = role_id {
+                role_registry.resolve_for_run(Some(explicit_role), &prompt)
+            } else {
+                let triggered = role_registry.select_by_trigger(&prompt);
+                if triggered.is_some() {
+                    let perm = triggered.as_ref().map(|r| r.permission).unwrap_or_default();
+                    (triggered, perm)
+                } else if let Some(ref bound_role) = conversation.role {
+                    role_registry.resolve_for_run(Some(bound_role), &prompt)
+                } else {
+                    role_registry.resolve_for_run(None, &prompt)
+                }
+            }
+        };
         if role_id.is_some() && chosen_role.is_none() {
             warn!(role = ?role_id, "Requested role not found or disabled; running unconstrained");
         }
@@ -927,11 +973,12 @@ impl DaemonService {
             .session_policy(&effective_session_id, PermissionMode::default())
             .await;
 
-        // Bind model, workspace, and thinking_level permanently to this conversation
+        // Bind model, workspace, role, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
         conversation.workspace = Some(chosen_workspace.clone());
         conversation.shared_roots = chosen_shared_roots.clone();
         conversation.thinking_level = chosen_thinking.clone();
+        conversation.role = chosen_role.as_ref().map(|r| r.id.clone());
 
         conversation.add_user_message(&prompt);
         let _ = self.store.save(&conversation).await;
@@ -958,6 +1005,7 @@ impl DaemonService {
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
         let active_pauses = self.active_pauses.clone();
+        let active_sessions = self.active_sessions.clone();
         let output_tx = self.output_tx.clone();
         let client_factory = self.client_factory.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
@@ -1307,6 +1355,7 @@ impl DaemonService {
 
             active_tasks.lock().await.remove(&task_id);
             active_pauses.lock().await.remove(&task_id);
+            active_sessions.lock().await.remove(&effective_session_id);
         });
     }
 }

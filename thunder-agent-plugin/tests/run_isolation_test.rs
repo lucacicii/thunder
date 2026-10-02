@@ -20,7 +20,7 @@ fn register(runs: &RunRegistry, route: &str, ws: &std::path::Path, permission: P
             .begin_run(
                 route,
                 ws.to_path_buf(),
-                SessionPolicy::new(permission, PermissionMode::Yolo),
+                SessionPolicy::new(permission, ApprovalMode::Never),
                 Some(Arc::new(NullHostUi)),
             )
             .await;
@@ -40,7 +40,7 @@ fn register_with_ui(
             .begin_run(
                 route,
                 ws.to_path_buf(),
-                SessionPolicy::new(permission, PermissionMode::Yolo),
+                SessionPolicy::new(permission, ApprovalMode::Never),
                 Some(ui),
             )
             .await;

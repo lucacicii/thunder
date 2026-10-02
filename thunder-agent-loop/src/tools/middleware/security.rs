@@ -128,14 +128,13 @@ impl SecurityGuardMiddleware {
         Ok(normalized)
     }
 
-    /// Validates a statically-known absolute shell target. Unresolvable targets
-    /// (containing `$`, backticks, `~`) and non-absolute targets pass through.
+    /// Validates a statically-known shell write target.
+    /// Absolute paths, home-relative paths (`~/...`), and directory-traversal
+    /// relative paths (`../...`) are validated against allowed roots.
+    /// Unresolvable targets containing substitutions (`$`, backticks) pass through.
     fn check_static_target(&self, target: &str) -> Result<(), String> {
         let target = target.trim_matches(|c| c == '"' || c == '\'');
-        if !target.starts_with('/') {
-            return Ok(());
-        }
-        if target.contains('$') || target.contains('`') || target.contains('~') {
+        if target.contains('$') || target.contains('`') {
             return Ok(());
         }
         if DEVICE_ALLOWLIST
@@ -144,7 +143,27 @@ impl SecurityGuardMiddleware {
         {
             return Ok(());
         }
-        let normalized = normalize_path(&resolve_for_check(Path::new(target)));
+
+        let candidate = if target.starts_with('/') {
+            PathBuf::from(target)
+        } else if target.starts_with("~/") || target == "~" {
+            if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                if target == "~" {
+                    home
+                } else {
+                    home.join(&target[2..])
+                }
+            } else {
+                return Ok(());
+            }
+        } else if target.starts_with("..") || target.starts_with("./..") {
+            self.workspace_root.join(target)
+        } else {
+            // Normal relative path within workspace
+            return Ok(());
+        };
+
+        let normalized = normalize_path(&resolve_for_check(&candidate));
         if self.is_allowed(&normalized) {
             Ok(())
         } else {
@@ -377,10 +396,16 @@ impl ToolMiddleware for SecurityGuardMiddleware {
     ) -> ToolExecutionResult {
         let start = Instant::now();
 
-        // 1. Inspect arguments for path traversal
+        // 1. Inspect arguments for path traversal across standard target fields
         if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
-            // Check 'path' parameter
-            if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
+            let path_str = args
+                .get("path")
+                .or_else(|| args.get("file_path"))
+                .or_else(|| args.get("filePath"))
+                .or_else(|| args.get("target"))
+                .and_then(|v| v.as_str());
+
+            if let Some(path_str) = path_str {
                 if let Err(violation) = self.check_path(Path::new(path_str)) {
                     let notice = SystemNotice::new(
                         "SecurityGuard",
@@ -621,6 +646,8 @@ mod tests {
             "echo hacked >> /etc/hosts",
             "echo hacked 2> /etc/hosts",
             "echo hacked >/etc/hosts",
+            "echo hacked > ../escaped.txt",
+            "echo hacked > ~/.bashrc",
             "tee /etc/hosts",
             "sed -i 's/a/b/' /etc/hosts",
             "cp inner.txt /etc/hosts",

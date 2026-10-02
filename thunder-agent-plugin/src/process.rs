@@ -45,6 +45,7 @@ struct PendingPromptRequest {
 
 pub struct SidecarManager {
     config: SidecarConfig,
+    plugin_dirs: Arc<RwLock<Vec<PathBuf>>>,
     stdin_tx: RwLock<Option<mpsc::Sender<HostMessage>>>,
     active_plugins: RwLock<Vec<PluginMeta>>,
     active_tools: RwLock<Vec<ToolMeta>>,
@@ -284,9 +285,11 @@ fn route_of(params: &serde_json::Value) -> String {
 
 impl SidecarManager {
     pub fn new(config: SidecarConfig) -> Arc<Self> {
+        let plugin_dirs = Arc::new(RwLock::new(config.plugin_dirs.clone()));
         Arc::new(Self {
             runs: Arc::clone(&config.runs),
             config,
+            plugin_dirs,
             stdin_tx: RwLock::new(None),
             active_plugins: RwLock::new(Vec::new()),
             active_tools: RwLock::new(Vec::new()),
@@ -449,14 +452,18 @@ impl SidecarManager {
                         }
                     }
                     ClientMessage::RpcRequest { id, method, params } => {
-                        let resp = Self::handle_client_rpc(&runs, &method, params).await;
-                        this.send_message(HostMessage::RpcResponse {
-                            id,
-                            success: resp.is_ok(),
-                            data: resp.as_ref().ok().cloned(),
-                            error: resp.err(),
-                        })
-                        .await;
+                        let this = Arc::clone(&this);
+                        let runs = Arc::clone(&runs);
+                        tokio::spawn(async move {
+                            let resp = Self::handle_client_rpc(&runs, &method, params).await;
+                            this.send_message(HostMessage::RpcResponse {
+                                id,
+                                success: resp.is_ok(),
+                                data: resp.as_ref().ok().cloned(),
+                                error: resp.err(),
+                            })
+                            .await;
+                        });
                     }
                     ClientMessage::ReloadAck {
                         success,
@@ -611,11 +618,34 @@ impl SidecarManager {
     }
 
     pub async fn reload(&self, path: Option<PathBuf>) {
+        let dirs = self.plugin_dirs.read().await.clone();
         self.send_message(HostMessage::Reload {
             path,
-            plugin_dirs: Some(self.config.plugin_dirs.clone()),
+            plugin_dirs: Some(dirs),
         })
         .await;
+    }
+
+    /// Add new plugin directories dynamically and trigger rescan.
+    pub async fn add_plugin_dirs(&self, extra_dirs: Vec<PathBuf>) {
+        let mut dirs = self.plugin_dirs.write().await;
+        let mut changed = false;
+        for d in extra_dirs {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+                changed = true;
+            }
+        }
+        if changed {
+            let current = dirs.clone();
+            drop(dirs);
+            self.send_message(HostMessage::Reload {
+                path: None,
+                plugin_dirs: Some(current),
+            })
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     pub async fn list_tools(&self) -> Vec<ToolMeta> {

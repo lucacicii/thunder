@@ -348,22 +348,17 @@ impl ThunderRoot {
 
         // 1b. Resolve the approval policy for this run.
         //
-        // `roles.jsonl` is the single source of truth for the mode: the role's
-        // tier is the ceiling and its mode decides when a human is asked. The
-        // mode may only clip the tier (`PermissionMode::effective`), so it can
-        // never grant a right the role did not already have. A run without a
-        // role keeps the historical default (`Yolo`).
+        // `roles.jsonl` is the single source of truth: the role's tier is the
+        // capability ceiling, and its approval mode dictates when humans are asked.
         let mode = options
             .role
             .as_ref()
             .and_then(|r| r.mode)
             .unwrap_or_default();
-        let effective_permission = mode.effective(options.permission);
+        let effective_permission = options.permission;
         // A host-supplied policy is reused across the session (so remembered
         // rules and a mid-session mode switch survive); a fresh one is created
-        // when the host has none. Either way the policy is authoritative for the
-        // tier: it re-applies the mode's ceiling, so the host cannot forget to
-        // clip it.
+        // when the host has none.
         let policy = options
             .policy
             .clone()
@@ -574,6 +569,7 @@ impl ThunderRoot {
             *slot = Some(Arc::new(
                 PipelineToolInvoker::new(agent.tool_executor().clone())
                     .with_turn(1)
+                    .with_cancellation(cancel.clone())
                     .with_ui(Arc::clone(&ui)),
             ));
         }

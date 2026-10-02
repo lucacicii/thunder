@@ -2407,11 +2407,9 @@ impl App {
                 role: None,
                 permission,
                 pause_gate: Some(pause_gate),
-                // The TUI drives the loop directly, so it renders dialogs itself
-                // and has no separate panel channel to route them over. Leaving
-                // this `None` falls back to the root's `NullHostUi`: plugins get
-                // a working-but-silent surface where every dialog is declined.
-                ui: None,
+                // Forward terminal-native HostUi so approval dialogs (mode: ask / manual)
+                // and plugin UI requests present interactive modals rather than failing closed.
+                ui: Some(Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()))),
                 // The TUI is single-run, but a route is still required: the
                 // plugin sidecar refuses calls that cannot be attributed.
                 route: Some(run_route),
