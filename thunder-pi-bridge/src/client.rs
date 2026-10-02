@@ -180,4 +180,34 @@ mod tests {
         assert!(v.get("sessionId").is_none());
         assert_eq!(v["messages"][0]["role"], "user");
     }
+
+    #[test]
+    fn stream_request_serializes_multimodal_parts() {
+        use thunder_agent_loop::types::message::ContentPart;
+        let mut model = BridgeModel::new("p", "m", crate::model::API_OPENAI_COMPLETIONS);
+        model.base_url = "https://x".into();
+        let msg = thunder_agent_loop::types::message::ChatMessage::user_multimodal(
+            "what is in this image?",
+            vec![ContentPart::image("image/png", "aGVsbG8=")],
+        );
+        let req = StreamRequest {
+            cmd: "stream",
+            id: "req-2".into(),
+            model: &model,
+            messages: &[msg],
+            tools: &[],
+            thinking_level: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            cache_retention: None,
+            session_id: None,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["messages"][0]["role"], "user");
+        assert_eq!(v["messages"][0]["content"], "what is in this image?");
+        assert_eq!(v["messages"][0]["parts"][0]["type"], "image");
+        assert_eq!(v["messages"][0]["parts"][0]["mimeType"], "image/png");
+        assert_eq!(v["messages"][0]["parts"][0]["data"], "aGVsbG8=");
+    }
 }

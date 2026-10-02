@@ -283,6 +283,7 @@ impl DaemonService {
                             "selection_id": m.selection_id(),
                             "available": m.available,
                             "reasoning": m.reasoning,
+                            "input": m.input,
                             "thinking_levels": m.thinking_levels,
                             "default_thinking_level": m.default_thinking_level,
                             "context_window": m.context_window,
@@ -360,6 +361,7 @@ impl DaemonService {
                 extra_workspace_dirs,
                 thinking_level,
                 role,
+                attachments,
             } => {
                 self.handle_run_task(
                     id,
@@ -372,6 +374,7 @@ impl DaemonService {
                     extra_workspace_dirs,
                     thinking_level,
                     role,
+                    attachments,
                 )
                 .await;
             }
@@ -826,6 +829,7 @@ impl DaemonService {
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         role_id: Option<String>,
+        attachments: Option<Vec<crate::protocol::Attachment>>,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -1036,7 +1040,70 @@ impl DaemonService {
         conversation.thinking_level = chosen_thinking.clone();
         conversation.role = chosen_role.as_ref().map(|r| r.id.clone());
 
-        conversation.add_user_message(&prompt);
+        // Resolve image attachments before recording the turn. A bad upload is
+        // rejected to the host (never silently downgraded to a text-only turn),
+        // and the session/task bookkeeping acquired above is released.
+        let image_parts = match crate::attachments::resolve_attachments(
+            attachments.as_deref().unwrap_or(&[]),
+            std::path::Path::new(&chosen_workspace),
+            &chosen_shared_roots,
+        )
+        .await
+        {
+            Ok(parts) => parts,
+            Err(err) => {
+                error!(task_id = %task_id, error = %err, "Rejected image attachments");
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: false,
+                    data: None,
+                    error: Some(err),
+                })
+                .await;
+                self.active_tasks.lock().await.remove(&task_id);
+                self.active_pauses.lock().await.remove(&task_id);
+                self.active_sessions
+                    .lock()
+                    .await
+                    .remove(&effective_session_id);
+                return;
+            }
+        };
+
+        // Gate attachments on the selected model's modality so the operator gets
+        // a clear error instead of a provider-side "image not supported". An
+        // unresolved model (mock / custom) is passed through: the registry is
+        // not the authority for a model it does not know.
+        if !image_parts.is_empty() {
+            if let Some(spec) = registry.resolve(&chosen_model) {
+                if !crate::attachments::model_supports_images(&spec.input) {
+                    let err = format!(
+                        "Model '{}' does not accept image input; choose a vision model or remove the attachments.",
+                        chosen_model
+                    );
+                    self.send_response(DaemonResponse::Response {
+                        id,
+                        success: false,
+                        data: None,
+                        error: Some(err),
+                    })
+                    .await;
+                    self.active_tasks.lock().await.remove(&task_id);
+                    self.active_pauses.lock().await.remove(&task_id);
+                    self.active_sessions
+                        .lock()
+                        .await
+                        .remove(&effective_session_id);
+                    return;
+                }
+            }
+        }
+
+        if image_parts.is_empty() {
+            conversation.add_user_message(&prompt);
+        } else {
+            conversation.add_user_message_with_parts(&prompt, image_parts);
+        }
         let _ = self.store.save(&conversation).await;
 
         // Acknowledge task initiation

@@ -174,7 +174,27 @@ function thunderToPiContext(messages, model) {
 				break;
 			}
 			case "user": {
-				piMessages.push({ role: "user", content: m.content ?? "", timestamp: ts });
+				const parts = Array.isArray(m.parts) ? m.parts : null;
+				if (parts && parts.length > 0) {
+					// Multimodal message: map thunder ContentPart[] onto pi-ai
+					// content blocks. `content` is the text projection, so it is
+					// prepended unless an explicit text part already carries it.
+					const hasTextPart = parts.some((p) => p.type === "text");
+					const blocks = [];
+					if (typeof m.content === "string" && m.content.length > 0 && !hasTextPart) {
+						blocks.push({ type: "text", text: m.content });
+					}
+					for (const p of parts) {
+						if (p.type === "image") {
+							blocks.push({ type: "image", mimeType: p.mimeType, data: p.data });
+						} else {
+							blocks.push({ type: "text", text: p.text ?? "" });
+						}
+					}
+					piMessages.push({ role: "user", content: blocks, timestamp: ts });
+				} else {
+					piMessages.push({ role: "user", content: m.content ?? "", timestamp: ts });
+				}
 				break;
 			}
 			case "assistant": {

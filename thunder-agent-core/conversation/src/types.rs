@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thunder_agent_loop::core::context::ContextBuffer;
-use thunder_agent_loop::types::message::{ChatMessage, Role, ToolCall};
+use thunder_agent_loop::types::message::{ChatMessage, ContentPart, Role, ToolCall};
 use thunder_agent_loop::AgentRunResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +212,26 @@ impl Conversation {
         self.touch();
     }
 
+    /// Add a user message with image attachments (or interleaved parts).
+    ///
+    /// `text` is the trigger/title projection; `parts` carries the multimodal
+    /// content. Empty `parts` degrades to [`Self::add_user_message`] so a
+    /// caller never records an empty `parts` array.
+    pub fn add_user_message_with_parts(
+        &mut self,
+        text: impl Into<String>,
+        parts: Vec<ContentPart>,
+    ) {
+        let text_str = text.into();
+        if self.title.is_none() {
+            let auto_title: String = text_str.chars().take(40).collect();
+            self.title = Some(auto_title);
+        }
+        self.messages
+            .push(ChatMessage::user_multimodal(text_str, parts));
+        self.touch();
+    }
+
     pub fn add_assistant_message(
         &mut self,
         content: Option<String>,
@@ -409,7 +429,21 @@ impl Conversation {
         let mut char_count = 0;
         for m in &self.messages {
             match m {
-                ChatMessage::User { content, .. } => char_count += content.len(),
+                ChatMessage::User { content, parts, .. } => {
+                    char_count += content.len();
+                    if let Some(parts) = parts {
+                        for part in parts {
+                            match part {
+                                ContentPart::Text { text } => char_count += text.len(),
+                                // Count the placeholder the model would see, not
+                                // the raw base64 (which over-weights images).
+                                ContentPart::Image { mime_type, .. } => {
+                                    char_count += mime_type.len() + 24
+                                }
+                            }
+                        }
+                    }
+                }
                 ChatMessage::Assistant { content, .. } => {
                     char_count += content.as_ref().map(|c| c.len()).unwrap_or(0)
                 }

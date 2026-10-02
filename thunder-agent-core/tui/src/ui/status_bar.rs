@@ -67,8 +67,25 @@ pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Span::raw("")
     };
 
-    let paragraph = Paragraph::new(Line::from(vec![prompt_prefix, input_text, cursor_span]))
-        .style(Style::default().bg(Color::Rgb(13, 17, 23)));
+    // Staged image attachments for the next prompt (from `/image <path>`).
+    let attachment_badge = if app.pending_images.is_empty() {
+        Span::raw("")
+    } else {
+        Span::styled(
+            format!("🖼 {} ", app.pending_images.len()),
+            Style::default()
+                .fg(theme.tool_bubble)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let paragraph = Paragraph::new(Line::from(vec![
+        prompt_prefix,
+        attachment_badge,
+        input_text,
+        cursor_span,
+    ]))
+    .style(Style::default().bg(Color::Rgb(13, 17, 23)));
 
     f.render_widget(paragraph, area);
 }

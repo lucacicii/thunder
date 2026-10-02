@@ -1,5 +1,5 @@
-use crate::core::token_estimator::estimate_token_count;
-use crate::types::message::{ChatMessage, Role};
+use crate::core::token_estimator::{estimate_image_tokens, estimate_token_count};
+use crate::types::message::{ChatMessage, ContentPart, Role};
 
 #[derive(Debug, Clone)]
 pub struct MessageEntry {
@@ -38,11 +38,27 @@ impl ContextBuffer {
                 }
                 tokens += estimate_token_count(content);
             }
-            ChatMessage::User { content, name } => {
+            ChatMessage::User {
+                content,
+                name,
+                parts,
+            } => {
                 if name.is_some() {
                     tokens += 1;
                 }
                 tokens += estimate_token_count(content);
+                if let Some(parts) = parts {
+                    for part in parts {
+                        match part {
+                            ContentPart::Text { text } => {
+                                tokens += estimate_token_count(text);
+                            }
+                            ContentPart::Image { mime_type, .. } => {
+                                tokens += estimate_image_tokens(mime_type);
+                            }
+                        }
+                    }
+                }
             }
             ChatMessage::Assistant {
                 content,

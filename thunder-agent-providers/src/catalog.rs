@@ -143,6 +143,9 @@ pub struct ModelSpec {
     pub api_key: Option<String>,
     pub headers: HashMap<String, String>,
     pub reasoning: bool,
+    /// pi `Model.input` content modalities (`["text"]` / `["text","image"]`).
+    /// Empty is normalized to `["text"]` by the pi-bridge sidecar.
+    pub input: Vec<String>,
     pub context_window: usize,
     pub max_tokens: usize,
     pub available: bool,
@@ -170,6 +173,7 @@ impl ModelSpec {
         m.api_key = self.api_key.clone();
         m.headers = self.headers.clone();
         m.reasoning = self.reasoning;
+        m.input = self.input.clone();
         m.context_window = self.context_window;
         m.max_tokens = self.max_tokens;
         m.thinking_level_map = self.thinking_level_map.clone();
@@ -312,6 +316,7 @@ impl ProviderRegistry {
                     api_key: provider_key.clone(),
                     headers: provider.headers.clone(),
                     reasoning: model.reasoning,
+                    input: model.input.clone().unwrap_or_default(),
                     context_window,
                     max_tokens: model.max_tokens.unwrap_or(16_384),
                     available: has_key && !base_url.trim().is_empty(),
@@ -649,6 +654,7 @@ fn builtin_models(
                     api_key: api_key.clone(),
                     headers: headers.clone(),
                     reasoning: *reasoning,
+                    input: Vec::new(),
                     context_window,
                     max_tokens: 16_384,
                     available: has_key && !resolved_base.trim().is_empty(),
@@ -690,6 +696,7 @@ fn fallback_openai_catalog(auth: &AuthFile, cache: &ModelMetadataCache) -> Vec<M
                 api_key: key.clone(),
                 headers: HashMap::new(),
                 reasoning: false,
+                input: Vec::new(),
                 context_window,
                 max_tokens: 16_384,
                 available: has_key,

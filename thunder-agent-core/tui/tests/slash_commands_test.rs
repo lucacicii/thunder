@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 fn test_slash_command_autocomplete_filtering() {
     // 1. Slash prefix returns all commands
     let all = filter_commands("/");
-    assert_eq!(all.len(), 23);
+    assert_eq!(all.len(), 24);
 
     // 2. Filter by prefix
     let sk = filter_commands("/sk");
@@ -178,4 +178,51 @@ async fn test_slash_commands_execution_flow() {
     // 9. Test /quit
     app.execute_slash_command("/quit", tx);
     assert!(app.should_quit);
+}
+
+#[tokio::test]
+async fn test_image_command_stages_and_folds_into_user_turn() {
+    let dir = tempdir().unwrap();
+
+    // Minimal valid PNG header: magic bytes are all `sniff_image_mime` needs.
+    let png_path = dir.path().join("pixel.png");
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(&[0u8; 16]);
+    std::fs::write(&png_path, &png).unwrap();
+
+    let mut app = App::new("gpt-4o");
+    app.workspace_dir = dir.path().to_path_buf();
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    // 1. A valid image is staged.
+    let cmd = format!("/image {}", png_path.display());
+    app.execute_slash_command(&cmd, tx.clone());
+    assert_eq!(app.pending_images.len(), 1);
+
+    // 2. A non-image file is rejected and does not stage.
+    let txt_path = dir.path().join("note.txt");
+    std::fs::write(&txt_path, b"definitely not an image").unwrap();
+    let bad = format!("/image {}", txt_path.display());
+    app.execute_slash_command(&bad, tx.clone());
+    assert_eq!(app.pending_images.len(), 1, "rejected file must not stage");
+
+    // 3. Submitting folds the staged images into the user turn as parts.
+    app.submit_prompt("what is this?".to_string(), tx);
+    assert!(app.pending_images.is_empty(), "staging must be consumed");
+
+    let last_user = app
+        .conversation
+        .messages
+        .iter()
+        .rev()
+        .find(|m| {
+            matches!(
+                m,
+                thunder_agent_loop::types::message::ChatMessage::User { .. }
+            )
+        })
+        .expect("a user turn must exist");
+    assert!(last_user.has_images());
+    assert_eq!(last_user.image_count(), 1);
+    assert_eq!(last_user.content_str(), Some("what is this?"));
 }
