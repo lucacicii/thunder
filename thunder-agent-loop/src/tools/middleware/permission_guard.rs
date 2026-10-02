@@ -7,7 +7,7 @@ use crate::types::policy::{
     ALLOW_ALWAYS, ALLOW_ONCE, DENY, DENY_WITH_REASON,
 };
 use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
-use crate::types::ui::{HostUi, UiRequest, UiSource, DEFAULT_UI_TIMEOUT};
+use crate::types::ui::{HostUi, UiRequest, UiSource};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,12 +74,15 @@ impl PermissionGuardMiddleware {
     /// Layer name, and the anchor the pipeline inserts behind.
     pub const NAME: &'static str = "PermissionGuardMiddleware";
 
+    /// Default wait for human approval before failing closed (10 minutes, giving the developer time to review diffs).
+    pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
+
     pub fn new(policy: Arc<SessionPolicy>, ui: Arc<dyn HostUi>) -> Self {
         Self {
             policy,
             ui,
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
-            timeout: DEFAULT_UI_TIMEOUT,
+            timeout: Self::DEFAULT_APPROVAL_TIMEOUT,
             workspace_roots: Vec::new(),
             tier_hint: TierHint { read_only: false },
         }
@@ -103,7 +106,7 @@ impl PermissionGuardMiddleware {
             policy,
             ui: Arc::new(crate::types::ui::NullHostUi),
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
-            timeout: DEFAULT_UI_TIMEOUT,
+            timeout: Self::DEFAULT_APPROVAL_TIMEOUT,
             tier_hint: TierHint {
                 read_only: tier == Permission::Read,
             },
