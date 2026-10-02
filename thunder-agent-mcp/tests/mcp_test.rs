@@ -125,3 +125,81 @@ async fn test_mcp_manager_discovery() {
         "mcp_database_mock_fetch_data"
     );
 }
+
+/// A server that answers `initialize` but hangs forever on `tools/list` must
+/// not block tool discovery (and therefore the whole run). The per-server
+/// timeout must skip it and still return the healthy servers' tools.
+#[tokio::test]
+async fn hanging_server_is_skipped_by_discovery_timeout() {
+    use async_trait::async_trait;
+    use thunder_agent_mcp::protocol::JsonRpcResponse;
+    use thunder_agent_mcp::protocol::{JsonRpcNotification, JsonRpcRequest};
+
+    /// Answers `initialize`, then never resolves another request.
+    struct HangingServer;
+
+    #[async_trait]
+    impl McpTransport for HangingServer {
+        async fn send_request(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            if request.method == "initialize" {
+                return Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id,
+                    result: Some(serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": { "tools": {} },
+                        "serverInfo": { "name": "hanging", "version": "1.0.0" }
+                    })),
+                    error: None,
+                });
+            }
+            // Simulate a server that accepted the connection but wedged.
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+
+        async fn send_notification(
+            &self,
+            _notification: JsonRpcNotification,
+        ) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        fn is_alive(&self) -> bool {
+            true
+        }
+
+        async fn close(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    let manager = McpManager::new();
+    let hanging = McpClient::from_transport("wedged", Arc::new(HangingServer));
+    hanging
+        .initialize(InitializeParams::default())
+        .await
+        .expect("initialize still answers");
+    manager.register_client(hanging).await;
+
+    let healthy = McpClient::from_transport("healthy", Arc::new(MockTransport::new()));
+    healthy
+        .initialize(InitializeParams::default())
+        .await
+        .expect("healthy initialize");
+    manager.register_client(healthy).await;
+
+    // 200ms discovery budget: the wedged server must be skipped, not awaited.
+    let tools = manager
+        .discover_all_tools_timeout(std::time::Duration::from_millis(200))
+        .await;
+    assert_eq!(
+        tools.len(),
+        1,
+        "only the healthy server's tool is discovered"
+    );
+    assert_eq!(
+        tools[0].definition().function.name,
+        "mcp_healthy_mock_fetch_data"
+    );
+}

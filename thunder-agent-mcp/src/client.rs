@@ -28,8 +28,17 @@ impl McpClient {
         let transport = StdioTransport::spawn(&server_name, config).await?;
         let client = Self::from_transport(server_name, Arc::new(transport));
 
-        // Auto initialize
-        client.initialize(InitializeParams::default()).await?;
+        // Auto initialize with a 10s timeout so an unresponsive server cannot hang the host
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.initialize(InitializeParams::default()),
+        )
+        .await
+        .map_err(|_| {
+            McpError::TransportError(
+                "MCP server initialize handshake timed out after 10s".to_string(),
+            )
+        })??;
 
         Ok(client)
     }

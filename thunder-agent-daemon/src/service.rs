@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -32,6 +32,16 @@ pub struct DaemonService {
     output_tx: mpsc::Sender<String>,
     concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     default_workspace: PathBuf,
+    /// Per-workspace MCP plugin pool.
+    ///
+    /// MCP servers are cheap to keep but expensive to cold-start, and a
+    /// workspace's server set is fixed by its `mcp_servers.json`. Keying by
+    /// the canonical workspace path lets consecutive runs in one project reuse
+    /// the same connections, while a *different* project with a same-named but
+    /// differently-configured server never inherits the first project's
+    /// process. Bounded so a long-lived daemon cannot leak server processes.
+    mcp_plugins:
+        Arc<tokio::sync::Mutex<HashMap<PathBuf, Arc<thunder_agent_root::plugins::McpPlugin>>>>,
     script_plugin: Arc<ScriptPlugin>,
     /// Optional client factory (tests / embedders). `None` = provider registry.
     client_factory: Option<ClientFactory>,
@@ -144,6 +154,7 @@ impl DaemonService {
             output_tx,
             concurrency_semaphore,
             default_workspace,
+            mcp_plugins: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             script_plugin,
             client_factory: None,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
@@ -180,6 +191,43 @@ impl DaemonService {
                 .entry(session_id.to_string())
                 .or_insert_with(|| SessionPolicy::new(Permission::Bash, initial)),
         )
+    }
+
+    /// Get (or lazily create) the pooled MCP plugin for `workspace`.
+    ///
+    /// The pool is keyed by canonical workspace path: consecutive runs of one
+    /// project reuse their MCP server processes, while a different project
+    /// gets its own plugin — so a same-named server configured differently in
+    /// two projects never bleeds across. Bounded, so a daemon that has served
+    /// many workspaces evicts the oldest instead of leaking server processes.
+    async fn mcp_plugin_for(
+        &self,
+        workspace: &Path,
+    ) -> Arc<thunder_agent_root::plugins::McpPlugin> {
+        let key = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let mut pool = self.mcp_plugins.lock().await;
+
+        if let Some(existing) = pool.get(&key) {
+            return Arc::clone(existing);
+        }
+
+        // Capacity guard. Eviction only drops the map's handle; any in-flight
+        // run holds its own `Arc` (and its tool bridges hold `Arc<McpClient>`),
+        // so an evicted-workspace run keeps its processes until it finishes.
+        const MAX_WORKSPACE_MCP: usize = 16;
+        if pool.len() >= MAX_WORKSPACE_MCP {
+            if let Some(oldest) = pool.keys().next().cloned() {
+                if let Some(evicted) = pool.remove(&oldest) {
+                    evicted.manager().close_all().await;
+                }
+            }
+        }
+
+        let plugin = Arc::new(thunder_agent_root::plugins::McpPlugin::new());
+        pool.insert(key, Arc::clone(&plugin));
+        plugin
     }
 
     /// The host UI surface, for handing to plugins and to the (future)
@@ -587,6 +635,14 @@ impl DaemonService {
             DaemonRequest::ReloadPlugins { id, path } => {
                 let p = path.map(PathBuf::from);
                 self.script_plugin.reload(p).await;
+                // Drop and close every pooled MCP connection: the workspace
+                // server set may have changed on disk.
+                {
+                    let mut pool = self.mcp_plugins.lock().await;
+                    for (_, plugin) in pool.drain() {
+                        plugin.manager().close_all().await;
+                    }
+                }
                 // The session-locked plugin selection is now stale: a session
                 // that cached its set before this reload would keep spawning the
                 // old toolset. Clear it so the next run re-selects.
@@ -1017,6 +1073,7 @@ impl DaemonService {
         // A workspace with no plugin files must not pay for a Node sidecar, and
         // one with plugin files must actually get them.
         let workspace_has_ts_plugins = has_ts_plugins(Some(&ws_dir));
+        let mcp_plugin = self.mcp_plugin_for(&ws_dir).await;
         let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
@@ -1057,6 +1114,7 @@ impl DaemonService {
             // Baseline capability set is assembled centrally so every host
             // exposes the same plugins (conversation + skills + mcp + script host).
             let mut root = StandardHostBuilder::new(store.clone())
+                .with_mcp_plugin((*mcp_plugin).clone())
                 .with_script_plugin(script_plugin)
                 .build(root);
 

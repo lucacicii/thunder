@@ -83,22 +83,42 @@ impl McpManager {
         map.keys().cloned().collect()
     }
 
-    /// Discover and bridge all tools exposed across all connected MCP servers.
+    /// Discover and bridge all tools exposed across all connected MCP servers with default 10s timeout per server.
     pub async fn discover_all_tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        self.discover_all_tools_timeout(std::time::Duration::from_secs(10))
+            .await
+    }
+
+    /// Discover tools with a per-server timeout to prevent a hanging server process from blocking the run.
+    pub async fn discover_all_tools_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Vec<Arc<dyn AgentTool>> {
         let mut all_tools: Vec<Arc<dyn AgentTool>> = Vec::new();
         let map = self.clients.read().await;
 
         for (name, client) in map.iter() {
-            match client.list_tools().await {
-                Ok(tools) => {
+            if !client.is_alive() {
+                warn!(server = %name, "Skipping dead MCP server during tool discovery");
+                continue;
+            }
+            match tokio::time::timeout(timeout, client.list_tools()).await {
+                Ok(Ok(tools)) => {
                     info!(server = %name, count = tools.len(), "Discovered MCP tools from server");
                     for tool in tools {
                         let bridge = McpToolBridge::new(name, tool, client.clone());
                         all_tools.push(Arc::new(bridge));
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(server = %name, "Failed to list tools from MCP server: {e}");
+                }
+                Err(_) => {
+                    warn!(
+                        server = %name,
+                        timeout_secs = timeout.as_secs(),
+                        "MCP server tools/list timed out; skipping to prevent run lockup"
+                    );
                 }
             }
         }

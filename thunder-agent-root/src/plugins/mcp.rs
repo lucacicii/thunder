@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 #[cfg(feature = "mcp")]
+#[derive(Clone)]
 pub struct McpPlugin {
     manifest: PluginManifest,
     manager: McpManager,
@@ -210,6 +211,11 @@ impl McpManagerExt for McpManager {
     async fn add_config(&self, config: McpConfig) {
         for (name, server_cfg) in config.mcp_servers {
             if !server_cfg.disabled {
+                if let Some(client) = self.get_client(&name).await {
+                    if client.is_alive() {
+                        continue;
+                    }
+                }
                 let _ = self.add_stdio_server(&name, &server_cfg).await;
             }
         }
