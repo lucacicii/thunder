@@ -8,7 +8,6 @@ pub enum PickerKind {
     SelectMode,
     SelectSkill,
     SelectMcp,
-    SelectRole,
     SelectTrace,
     SlashCommand,
 }
@@ -21,7 +20,6 @@ impl PickerKind {
             Self::SelectMode => "⚡ Select Multi-Agent Execution Mode",
             Self::SelectSkill => "📖 Browse & Load Agent Skill",
             Self::SelectMcp => "🔌 Connected MCP Servers & Tools",
-            Self::SelectRole => "🎭 Select Agent Role",
             Self::SelectTrace => "🧾 Session Task Traces",
             Self::SlashCommand => "⚡ Slash Commands",
         }

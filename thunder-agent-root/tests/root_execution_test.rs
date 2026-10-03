@@ -82,7 +82,6 @@ async fn test_thunder_root_end_to_end_execution() {
         forced_plugins: None,
         register_builtins: true,
         thinking_level: None,
-        role: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
         ui: None,

@@ -1,4 +1,4 @@
-//! End-to-end proof that a role's permission tier gates which built-in tools
+//! End-to-end proof that a run's permission tier gates which built-in tools
 //! the host registers — i.e. the model never even sees a denied tool.
 
 use async_trait::async_trait;
@@ -64,13 +64,12 @@ async fn tools_for(permission: Permission) -> Vec<String> {
     let root = ThunderRoot::new(AgentConfig::new("gpt-4o").with_unlimited_turns());
 
     let options = RootRunOptions {
-        session_id: Some(format!("role_perm_{}", permission.as_str())),
+        session_id: Some(format!("tier_perm_{}", permission.as_str())),
         custom_client: Some(client),
         cancellation_token: None,
         forced_plugins: Some(vec![]),
         register_builtins: true,
         thinking_level: None,
-        role: None,
         permission,
         pause_gate: None,
         ui: None,
@@ -89,7 +88,7 @@ async fn tools_for(permission: Permission) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn read_role_exposes_only_read_file() {
+async fn read_tier_exposes_only_read_file() {
     let tools = tools_for(Permission::Read).await;
     assert!(
         tools.contains(&"read_file".to_string()),
@@ -106,7 +105,7 @@ async fn read_role_exposes_only_read_file() {
 }
 
 #[tokio::test]
-async fn write_role_adds_write_file_but_not_bash() {
+async fn write_tier_adds_write_file_but_not_bash() {
     let tools = tools_for(Permission::Write).await;
     assert!(tools.contains(&"read_file".to_string()), "{tools:?}");
     assert!(tools.contains(&"write_file".to_string()), "{tools:?}");
@@ -117,7 +116,7 @@ async fn write_role_adds_write_file_but_not_bash() {
 }
 
 #[tokio::test]
-async fn bash_role_exposes_all_three() {
+async fn bash_tier_exposes_all_three() {
     let tools = tools_for(Permission::Bash).await;
     for expected in ["read_file", "write_file", "bash"] {
         assert!(

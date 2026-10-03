@@ -14,7 +14,6 @@
 - **Concurrency Semaphore & Backpressured Scheduling**: Employs an internal async task semaphore (tunable via the `THUNDER_MAX_CONCURRENT_TASKS` environment variable, default `8`) to bound parallel reasoning tasks, preventing local compute exhaustion or provider rate-limit spikes.
 - **Asynchronous STDOUT Actor (Zero Line Interleaving)**: All outgoing events are serialized via a dedicated tokio STDOUT actor over a bounded MPSC channel. Under concurrent multi-task streaming, **every NDJSON line is guaranteed atomic and never interleaved**.
 - **Authoritative History Reload & Tiered Trace Retention**: Reloads the latest authoritative conversation from disk before task launch to keep multi-client state consistent. In-memory traces use tiered retention — high-frequency micro-deltas (`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`) are streamed live over stdout but excluded from trace memory, preventing unbounded growth in long-lived daemons.
-- **Role & Permission Hard Isolation**: Loads roles from `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`. A role's permission tier (`Read` ⊂ `Write` ⊂ `Bash`) determines tool registration. Blocked tools are **physically invisible** to the LLM.
 - **Cooperative Pausing & User Question Bubbles**:
   - `pause_task` pauses execution safely at the next tool dispatch boundary without disrupting in-flight disk writes; `resume_task` resumes execution.
   - `ask_user_question` allows agents to pose blocking questions rendered as interactive question bubbles in the desktop UI, resumed via `answer_question`.
@@ -46,8 +45,7 @@ One valid JSON line per command:
 ```json
 {"method":"ping","id":"req-1"}
 {"method":"list_models","id":"req-2"}
-{"method":"list_roles","id":"req-3","workspace_dir":"/path/to/repo"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"Check repo git status","session_id":"sess-001","role":"plan"}
+{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"Check repo git status","session_id":"sess-001"}
 {"method":"cancel_task","id":"req-5","task_id":"task-1"}
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}

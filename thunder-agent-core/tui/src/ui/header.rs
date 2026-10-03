@@ -67,16 +67,6 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         } else {
             Span::raw("")
         },
-        if let Some(role) = &app.active_role {
-            Span::styled(
-                format!("[role:{}] ", role.display_name()),
-                Style::default()
-                    .fg(theme.highlight)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        },
         if let Some(tl) = app.effective_thinking_level() {
             Span::styled(format!("[think:{}] ", tl), theme.muted_style())
         } else {

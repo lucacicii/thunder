@@ -1,6 +1,23 @@
 use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::core::token_estimator::estimate_token_count;
+use thunder_agent_loop::types::config::{AgentConfig, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
 use thunder_agent_loop::types::message::ChatMessage;
+
+#[test]
+fn test_default_autonomous_system_prompt_content() {
+    let cfg = AgentConfig::default();
+    let prompt = cfg
+        .system_prompt
+        .as_deref()
+        .expect("default system prompt must be set");
+    assert!(prompt.starts_with("# Role & Philosophy"));
+    assert!(prompt.contains("<intent_analysis>"));
+    assert!(prompt.contains("Ask（咨询/问答）"));
+    assert!(prompt.contains("Plan（规划/架构）"));
+    assert!(prompt.contains("Write / Edit（文件或内容操作）"));
+    assert!(prompt.contains("运行时硬约束 (Guardrails)"));
+    assert_eq!(prompt, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+}
 
 #[test]
 fn test_context_buffer_token_accounting() {

@@ -134,16 +134,13 @@ pub struct App {
     /// Resolution order mirrors the daemon: manual override → conversation
     /// binding → the model's default level.
     pub thinking_level: Option<String>,
-    /// Active declarative role (persona + permission tier), if any.
-    pub active_role: Option<RoleSpec>,
-    /// Tool capability tier. Mirrors the role when one is active; otherwise the
-    /// manual `/permission` tier (default: full Bash).
+    /// Tool capability tier: the manual `/permission` tier (default: full Bash).
     pub permission: Permission,
     /// Extra workspace roots granted the same read/write standing as the
     /// primary workspace (mirrored into `conversation.shared_roots` on submit).
     pub extra_roots: Vec<PathBuf>,
-    /// Whether the ask_user_question tool is mounted for runs that no role
-    /// pins. Default off, matching the daemon's opt-in policy.
+    /// Whether the ask_user_question tool is mounted. Default on, matching the
+    /// daemon (the Intent Gate asks when a request is ambiguous).
     pub ask_user_enabled: bool,
     /// Cooperative pause gate for the running task, if any.
     pub pause_gate: Option<Arc<PauseGate>>,
@@ -163,7 +160,7 @@ impl App {
         let model = ModelRef::parse(&model_name.into());
         let initial_conv = Conversation::new(format!("sess_{}", now_ms()))
             .with_title("New Conversation")
-            .with_system_prompt("You are a helpful, fast, autonomous AI engineering assistant.");
+            .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
 
         Self {
             mode: ViewMode::Chat,
@@ -201,10 +198,9 @@ impl App {
             active_skill: None,
             pending_raw_transcript: None,
             thinking_level: None,
-            active_role: None,
             permission: Permission::default(),
             extra_roots: Vec::new(),
-            ask_user_enabled: false,
+            ask_user_enabled: true,
             pause_gate: None,
             pending_question: None,
             trace_events: None,
@@ -431,7 +427,7 @@ impl App {
         }
     }
 
-    // ── Thinking level / roles / permission ─────────────────────────────
+    // ── Thinking level / permission ─────────────────────────────
 
     /// Effective thinking level: manual override → conversation binding →
     /// the resolved model's default.
@@ -449,87 +445,6 @@ impl App {
     fn set_thinking_level(&mut self, level: Option<String>) {
         self.thinking_level = level.clone();
         self.conversation.thinking_level = level;
-        self.save_and_refresh();
-    }
-
-    fn spawn_role_picker(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
-        self.set_status_message("Scanning role registries...");
-        let ws = self.workspace_dir.clone();
-        tokio::spawn(async move {
-            let registry = RoleRegistry::load_default(Some(&ws)).await;
-            let items: Vec<PickerItem> = registry
-                .list_enabled()
-                .into_iter()
-                .map(|r| {
-                    PickerItem::new(
-                        &r.id,
-                        r.display_name().to_string(),
-                        r.description.clone().unwrap_or_else(|| r.persona.as_text()),
-                    )
-                    .with_badge(r.permission.describe())
-                })
-                .collect();
-            let _ = event_tx.send(crate::event::AppEvent::OpenPicker {
-                kind: PickerKind::SelectRole,
-                title: "🎭 Select Agent Role (↑/↓ to move, Enter to activate)".to_string(),
-                items,
-                empty_message: Some(
-                    "No roles found. Add ~/.thunder/roles.jsonl or <workspace>/.arp/roles.jsonl."
-                        .to_string(),
-                ),
-            });
-        });
-    }
-
-    /// Resolve `/role <id>` (or a picker selection) asynchronously and deliver
-    /// the result through [`crate::event::AppEvent::RoleResolved`].
-    fn spawn_role_resolution(
-        &mut self,
-        id: &str,
-        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
-    ) {
-        self.set_status_message(format!("Resolving role `{id}`..."));
-        let ws = self.workspace_dir.clone();
-        let id = id.to_string();
-        tokio::spawn(async move {
-            let registry = RoleRegistry::load_default(Some(&ws)).await;
-            // Explicit id: no trigger fallback — a picker selection names the
-            // role, and a miss must surface as "no role", not a substitute.
-            let (role, permission) = registry.resolve_for_run(Some(&id), "");
-            let _ = event_tx.send(crate::event::AppEvent::RoleResolved { role, permission });
-        });
-    }
-
-    pub fn attach_resolved_role(&mut self, role: RoleSpec, permission: Permission) {
-        let out = format!(
-            "✔ Role **{}** active — permission: {}{}",
-            role.display_name(),
-            permission.describe(),
-            if role.ask_user { ", ask_user: on" } else { "" }
-        );
-        if let Some(model) = &role.model {
-            self.model = ModelRef::parse(model);
-        }
-        self.active_role = Some(role.clone());
-        self.permission = permission;
-        self.set_status_message(format!("Role: {}", role.display_name()));
-        self.conversation.add_assistant_message(Some(out), None);
-        self.save_and_refresh();
-    }
-
-    fn detach_role(&mut self) {
-        let msg = match self.active_role.take() {
-            Some(prev) => {
-                self.permission = Permission::default();
-                format!(
-                    "Detached role **{}**; permission reset to full.",
-                    prev.display_name()
-                )
-            }
-            None => "No role is currently active.".to_string(),
-        };
-        self.conversation.add_assistant_message(Some(msg), None);
-        self.set_status_message("Role cleared");
         self.save_and_refresh();
     }
 
@@ -1270,7 +1185,7 @@ impl App {
         let new_id = format!("sess_{}", now_ms());
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
-            .with_system_prompt("You are a helpful, fast, autonomous AI engineering assistant.");
+            .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
         self.streaming_delta.clear();
         self.reasoning_delta.clear();
         self.active_tool_calls.clear();
@@ -1345,11 +1260,6 @@ impl App {
                     None,
                 );
                 self.save_and_refresh();
-            }
-            PickerKind::SelectRole => {
-                self.conversation
-                    .add_user_message(format!("/role {}", item.id));
-                self.spawn_role_resolution(&item.id, event_tx);
             }
             PickerKind::SelectTrace => {
                 self.conversation
@@ -1892,13 +1802,6 @@ impl App {
                         self.workspace_dir.display()
                     ));
                     out.push_str(&format!(
-                        "| `role` | `{}` | Active declarative role |\n",
-                        self.active_role
-                            .as_ref()
-                            .map(|r| r.display_name())
-                            .unwrap_or("—")
-                    ));
-                    out.push_str(&format!(
                         "| `permission` | `{}` | Tool capability tier |\n",
                         self.permission.describe()
                     ));
@@ -2102,28 +2005,7 @@ impl App {
                 true
             }
 
-            // /role [id|off] — declarative persona + permission tier
-            "role" | "roles" => {
-                match args.first().copied() {
-                    Some("off") | Some("none") | Some("clear") => {
-                        self.conversation.add_user_message(raw_cmd);
-                        self.detach_role();
-                    }
-                    Some("list") => {
-                        self.spawn_role_picker(event_tx.clone());
-                    }
-                    Some(id) => {
-                        self.conversation.add_user_message(raw_cmd);
-                        self.spawn_role_resolution(id, event_tx.clone());
-                    }
-                    None => {
-                        self.spawn_role_picker(event_tx.clone());
-                    }
-                }
-                true
-            }
-
-            // /permission [read|write|bash] — manual capability tier (clears any role)
+            // /permission [read|write|bash] — manual capability tier
             "permission" | "perm" => {
                 self.conversation.add_user_message(raw_cmd);
                 let tier = match args.first().map(|a| a.to_lowercase()).as_deref() {
@@ -2141,35 +2023,19 @@ impl App {
                     }
                     None => {
                         let out = format!(
-                            "### 🔐 Permission Tier\n\n- Current: **{}**\n- Source: {}\n\n*Set with `/permission <read|write|bash>` (clears any active role)*",
-                            self.permission.describe(),
-                            if let Some(role) = self.active_role.as_ref() {
-                                format!("role `{}`", role.display_name())
-                            } else {
-                                "manual".to_string()
-                            }
+                            "### 🔐 Permission Tier\n\n- Current: **{}**\n\n*Set with `/permission <read|write|bash>`*",
+                            self.permission.describe()
                         );
                         self.conversation.add_assistant_message(Some(out), None);
                         None
                     }
                 };
                 if let Some(tier) = tier {
-                    if self.active_role.take().is_some() {
-                        self.permission = tier;
-                        self.conversation.add_assistant_message(
-                            Some(format!(
-                                "✔ Permission tier set to **{}** (role detached — a role pins its own tier).",
-                                tier.describe()
-                            )),
-                            None,
-                        );
-                    } else {
-                        self.permission = tier;
-                        self.conversation.add_assistant_message(
-                            Some(format!("✔ Permission tier set to **{}**", tier.describe())),
-                            None,
-                        );
-                    }
+                    self.permission = tier;
+                    self.conversation.add_assistant_message(
+                        Some(format!("✔ Permission tier set to **{}**", tier.describe())),
+                        None,
+                    );
                     self.set_status_message(format!("Permission: {}", tier.describe()));
                 }
                 self.save_and_refresh();
@@ -2294,7 +2160,7 @@ impl App {
                 true
             }
 
-            // /ask [on|off] — mount the ask_user_question tool without a role
+            // /ask [on|off] — mount/unmount the ask_user_question tool
             "ask" | "ask_user" => {
                 self.conversation.add_user_message(raw_cmd);
                 match args.first().map(|a| a.to_lowercase()).as_deref() {
@@ -2308,13 +2174,13 @@ impl App {
                     Some("off" | "false" | "no") => {
                         self.ask_user_enabled = false;
                         self.conversation.add_assistant_message(
-                            Some("✔ `ask_user_question` unmounted (roles with `askUser: true` still mount it).".to_string()),
+                            Some("✔ `ask_user_question` unmounted.".to_string()),
                             None,
                         );
                     }
                     _ => {
                         let out = format!(
-                            "ask_user_question: **{}**\n\n*Toggle with `/ask on` / `/ask off`. Roles declaring `askUser: true` mount it regardless.*",
+                            "ask_user_question: **{}**\n\n*Toggle with `/ask on` / `/ask off`.*",
                             if self.ask_user_enabled { "on" } else { "off" }
                         );
                         self.conversation.add_assistant_message(Some(out), None);
@@ -2451,13 +2317,8 @@ impl App {
                     .with_provider_registry(self.provider_registry.clone()),
             );
 
-        // The ask-user capability is opt-in: a role with `askUser: true` mounts
-        // it, or the user toggles it explicitly with `/ask on`.
-        let ask_enabled = self
-            .active_role
-            .as_ref()
-            .map(|r| r.ask_user)
-            .unwrap_or(self.ask_user_enabled);
+        // The ask-user capability is on by default; `/ask off` unmounts it.
+        let ask_enabled = self.ask_user_enabled;
         let root = if ask_enabled {
             root.with_plugin(AskUserPlugin::new(TuiAskUserTool::new(event_tx.clone())))
         } else {
@@ -2468,7 +2329,6 @@ impl App {
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&base_cfg));
         let workspace_dir = self.workspace_dir.clone();
-        let active_role = self.active_role.clone();
         let permission = self.permission;
         // Captured before the move: a plugin call must be attributable to this
         // run, and the sidecar refuses calls that carry no route.
@@ -2482,7 +2342,7 @@ impl App {
             let workspace_has_mcp_config = workspace_dir.join("mcp_servers.json").exists()
                 || workspace_dir.join(".mcp.json").exists();
 
-            let mut options = RootRunOptions {
+            let options = RootRunOptions {
                 session_id: Some(session_id),
                 custom_client: factory_client,
                 cancellation_token: Some(cancel),
@@ -2491,7 +2351,6 @@ impl App {
                 forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config, false)),
                 register_builtins: true,
                 thinking_level: None,
-                role: None,
                 permission,
                 pause_gate: Some(pause_gate),
                 // Forward terminal-native HostUi so approval dialogs (mode: ask / manual)
@@ -2502,9 +2361,6 @@ impl App {
                 route: Some(run_route),
                 policy: None,
             };
-            if let Some(role) = active_role {
-                options = options.with_role(role);
-            }
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {

@@ -131,19 +131,6 @@ impl TuiRunner {
                 }
                 app.pending_question = crate::ask_user::PendingQuestion::from_incoming(incoming);
             }
-            AppEvent::RoleResolved { role, permission } => match role {
-                Some(role) => app.attach_resolved_role(role, permission),
-                None => {
-                    app.conversation.add_assistant_message(
-                        Some(
-                            "❌ Role not found or disabled. Use `/role` to browse available roles."
-                                .to_string(),
-                        ),
-                        None,
-                    );
-                    app.save_current_conversation().await;
-                }
-            },
             AppEvent::TitleGenerated { session_id, result } => {
                 match result {
                     Ok(title) if session_id == app.conversation.id => {

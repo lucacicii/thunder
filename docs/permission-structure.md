@@ -24,14 +24,10 @@
 ```mermaid
 flowchart TB
     subgraph SRC["① 配置来源（声明式，非代码）"]
-        R1["~/.thunder/roles.jsonl<br/>全局角色"]
-        R2["&lt;workspace&gt;/.arp/roles.jsonl<br/>项目角色（同 id 覆盖全局）"]
-        R3["run_task 请求<br/>role / mode 字段"]
+        R3["宿主 / run_task 请求<br/>permission 档位"]
         R4["面板 SetPermissionMode<br/>/ GetPermissionState"]
     end
 
-    R1 --> REG[RoleRegistry<br/>thunder-agent-root/src/roles.rs]
-    R2 --> REG
     R3 --> POL
     R4 --> POL
 
@@ -293,7 +289,7 @@ classDiagram
 
     class SessionInner {
         -tier        «有效天花板：mode.effective(role_tier)»
-        -role_tier   «角色原始档位，切出 plan 时恢复用»
+        -role_tier   «宿主设定的原始档位»
         -mode
         -rules
     }
@@ -362,16 +358,6 @@ classDiagram
         Plugin(String)
     }
 
-    class RoleSpec {
-        +id
-        +persona
-        +permission Permission  «天花板»
-        +mode Option~PermissionMode~
-        +model / +thinking_level
-        +ask_user / +exit_gate
-        +triggers
-    }
-
     class PermissionGuardMiddleware {
         +NAME
         -policy Arc~SessionPolicy~
@@ -404,8 +390,6 @@ classDiagram
     ToolEffect ..> Permission : required_tier
     PermissionGuardMiddleware --> SessionPolicy : 询问
     PermissionGuardMiddleware --> ApprovalRequest : 弹窗
-    RoleSpec ..> Permission : permission
-    RoleSpec ..> PermissionMode : mode
     PermissionGuardMiddleware --> SecurityGuardMiddleware : onion 内层
 ```
 
@@ -416,14 +400,14 @@ classDiagram
 | # | 不变量 | 实现位置 | 测试 |
 |---|---|---|---|
 | 1 | `decide()` 是**唯一**判定入口，其它层只照做 | `policy.rs` 模块文档 | `permission_layer_test.rs` |
-| 2 | 判定顺序：tier → rules → mode | `policy.rs:484` | `permission_mode_test.rs:156`（"nothing above ever produces a tier the role did not grant"） |
-| 3 | mode 永不抬升 tier；`{"permission":"read","mode":"yolo"}` 仍只读 | `PermissionMode::ceiling()` | `role_permission_test.rs`、`permission_mode_test.rs:163` |
+| 2 | 判定顺序：tier → rules → mode | `policy.rs:484` | `permission_mode_test.rs`（"nothing above ever produces a tier the run did not grant"） |
+| 3 | mode 永不抬升 tier；`{"permission":"read","mode":"yolo"}` 仍只读 | `PermissionMode::ceiling()` | `tool_tier_test.rs`、`permission_mode_test.rs` |
 | 4 | 档位被拒的调用**走不到弹窗**（用户无法批准绕过档位） | Pipeline 中 Guard 最外层 | `permission_layer_test.rs` |
 | 5 | 被拒的调用**不创建临时文件**（拒绝在事务层之外） | Guard 在 Transaction 外层 | `permission_layer_test.rs` |
 | 6 | 审批 fail-closed：无 UI / 超时 / 关闭 / 取消 → 拒绝 | `PermissionGuardMiddleware::prompt` | `policy.rs` 单测 |
 | 7 | `yolo` 不问，但 tier 仍生效 | `needs_ask` 分支 | `policy.rs` 单测："yolo must not lift the tier for a plugin" |
 | 8 | 未知工具按 `Write` 对待（需 `Write` 而非 `Bash`） | `ToolEffect::of` / `required_tier` | `policy.rs` 单测 |
-| 9 | `plan` 出栈恢复角色原档位（保留 `role_tier`） | `SessionPolicy::set_mode` | `permission_mode_test.rs:237` |
+| 9 | 模式切换后恢复原档位（保留 `role_tier`） | `SessionPolicy::set_mode` | `permission_mode_test.rs` |
 | 10 | 弹窗串行，避免并发批叠框批准错对象 | `prompt_lock` | 契约点 5 |
 | 11 | 拒绝回灌为工具结果 + `SystemNotice`，非异常 | `PermissionGuardMiddleware::refuse` | — |
 | 12 | extra_roots 与主工作区**读写同权** | `with_extra_roots` | `multi_root_jail_test.rs` |
@@ -438,5 +422,5 @@ classDiagram
 ### 9.2 TUI 目前不接审批面板
 `thunder-agent-core/tui/src/app.rs:2413-2416` 硬编码 `mode: Some(PermissionMode::Yolo)`、`ui: None`，注释说明：有面板的话 gate 只能拒绝（安全但无用），所以交互式路径交给 daemon。**后果**：TUI 里的 `/permission` 只能压档位，无法开启审批。
 
-### 9.3 Panel 侧只读角色，不做判定
-`agent-resume-panel/packages/core/src/roles/types.ts` 的 `RoleRecord` 镜像同一份 JSONL，但注释明确："The Rust host (`thunder-agent-root`) is the authority that enforces `permission`"。`RoleRecord` 里**还没有** `mode` 字段——Rust 侧 `RoleSpec` 已支持，面板侧类型尚未同步。
+### 9.3 角色层已移除
+`roles.jsonl` / `RoleRegistry` / `RoleSpec`、面板角色编辑器与 `list_roles` / `set_role` RPC 均已删除：daemon 固定以 `Permission::Bash` + `ApprovalMode::Never` 运行，由模型按意图（Ask / Plan / Write-Edit）自行约束。`SessionPolicy` 的档位 / 模式 / 规则机制仍保留，供宿主（如 TUI `/permission`）显式使用。

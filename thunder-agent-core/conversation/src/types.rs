@@ -98,8 +98,6 @@ pub struct Conversation {
     pub shared_roots: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
     pub status: ConversationStatus,
     pub messages: Vec<ChatMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -126,7 +124,6 @@ impl Conversation {
             workspace: None,
             shared_roots: Vec::new(),
             thinking_level: None,
-            role: None,
             status: ConversationStatus::Active,
             messages: Vec::new(),
             stages: Vec::new(),
@@ -382,9 +379,10 @@ impl Conversation {
             return (count_before, count_before);
         }
 
-        let sys_prompt = self.system_prompt.clone().unwrap_or_else(|| {
-            "You are a helpful, fast, autonomous AI engineering assistant.".to_string()
-        });
+        let sys_prompt = self
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT.to_string());
 
         let recent_slice: Vec<_> = self
             .messages

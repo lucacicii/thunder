@@ -31,11 +31,6 @@ pub enum AppEvent {
     },
     /// The agent is asking the user a question and is blocked until answered.
     UserQuestion(crate::ask_user::IncomingQuestion),
-    /// A `/role <id>` lookup finished (role absent/disabled when `None`).
-    RoleResolved {
-        role: Option<thunder_agent_root::roles::RoleSpec>,
-        permission: thunder_agent_loop::types::config::Permission,
-    },
     /// Background title generation finished.
     TitleGenerated {
         session_id: String,

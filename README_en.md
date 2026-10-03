@@ -42,7 +42,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 | **`thunder-agent-plugin`** | [`thunder-agent-plugin`](thunder-agent-plugin) | **TS Plugin Host**: Single-file TypeScript plugin runner with native execution, blue-green reload, and error immunity |
 | **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP Client**: Standard JSON-RPC 2.0 client for discovering and bridging remote Model Context Protocol tools |
 | **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **Microkernel Host**: Dynamic plugin assembler with trigger routing, executing prompts into structured run results |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with role permissions, concurrency semaphores, pause, and ask-user |
+| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with permission tiers, concurrency semaphores, pause, and ask-user |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Conversation Store**: Atomic filesystem and in-memory session persistence, `index.json` fast index, and multi-topology tracking |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Session Store**: Atomic Fs storage with in-memory dual mode, `index.json` fast indexing, and topology stage tracking |
 | **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming and reasoning fold |
