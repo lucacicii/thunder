@@ -167,8 +167,7 @@ impl DaemonService {
     /// The approval policy for a session, created on first use.
     ///
     /// The tier passed to `SessionPolicy::new` is only a seed: every run writes
-    /// its own via `set_tier`, because a role can differ between runs of one
-    /// session. Until then the policy enforces the widest tier, so a request
+    /// its own via `set_tier`. Until then the policy enforces the widest tier, so a request
     /// arriving before any run cannot be judged too narrowly.
     async fn session_policy(
         &self,
@@ -360,7 +359,6 @@ impl DaemonService {
                 workspace_dir,
                 extra_workspace_dirs,
                 thinking_level,
-                role,
                 attachments,
             } => {
                 self.handle_run_task(
@@ -373,43 +371,8 @@ impl DaemonService {
                     workspace_dir,
                     extra_workspace_dirs,
                     thinking_level,
-                    role,
                     attachments,
                 )
-                .await;
-            }
-
-            DaemonRequest::ListRoles { id, workspace_dir } => {
-                let ws = workspace_dir.map(PathBuf::from);
-                let registry = RoleRegistry::load_default(ws.as_deref()).await;
-                let roles: Vec<serde_json::Value> = registry
-                    .list_enabled()
-                    .into_iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "id": r.id,
-                            "name": r.display_name(),
-                            "aliases": r.aliases,
-                            "description": r.description,
-                            "permission": r.permission.as_str(),
-                            "mode": r.mode.map(|m| m.as_str()),
-                            "persona": r.persona.as_text(),
-                            "model": r.model,
-                            "thinking_level": r.thinking_level,
-                            "ask_user": r.ask_user,
-                            "exit_gate": r.exit_gate,
-                            "enabled": r.enabled,
-                            "triggers": r.triggers,
-                        })
-                    })
-                    .collect();
-
-                self.send_response(DaemonResponse::Response {
-                    id,
-                    success: true,
-                    data: Some(serde_json::json!({ "roles": roles })),
-                    error: None,
-                })
                 .await;
             }
 
@@ -524,72 +487,6 @@ impl DaemonService {
                     error: None,
                 })
                 .await;
-            }
-
-            DaemonRequest::SetRole {
-                id,
-                session_id,
-                role,
-            } => {
-                // The role resolves against the conversation's bound workspace
-                // so project-scoped `.arp/roles.jsonl` applies; sessions without
-                // one fall back to the global registry.
-                let workspace = match self.store.load(&session_id).await {
-                    Ok(Some(conv)) => conv.workspace,
-                    _ => None,
-                };
-                let registry =
-                    RoleRegistry::load_default(workspace.as_deref().map(std::path::Path::new))
-                        .await;
-                let (spec, permission) = registry.resolve_for_run(Some(&role), "");
-                match spec {
-                    Some(spec) => {
-                        // Reuse the session's policy when one exists so a switch
-                        // applies to a task that is already running; otherwise
-                        // create it so the next run inherits the choice.
-                        let policy = self
-                            .session_policy(&session_id, PermissionMode::default())
-                            .await;
-                        let mode = spec.mode.unwrap_or_default();
-                        policy.set_tier(permission).await;
-                        policy.set_mode(mode).await;
-                        if let Ok(Some(mut conv)) = self.store.load(&session_id).await {
-                            conv.role = Some(spec.id.clone());
-                            let _ = self.store.save(&conv).await;
-                        }
-                        info!(
-                            session_id = %session_id,
-                            role = %spec.id,
-                            mode = mode.as_str(),
-                            "Active role switched"
-                        );
-                        self.send_response(DaemonResponse::Response {
-                            id,
-                            success: true,
-                            data: Some(serde_json::json!({
-                                "session_id": session_id,
-                                "role": spec.id,
-                                "permission": permission.as_str(),
-                                "mode": mode.as_str(),
-                            })),
-                            error: None,
-                        })
-                        .await;
-                    }
-                    None => {
-                        // Unknown or disabled: list what is available so the
-                        // panel can repopulate its role picker.
-                        let available: Vec<String> =
-                            registry.list_enabled().into_iter().map(|r| r.id).collect();
-                        self.send_response(DaemonResponse::Response {
-                            id,
-                            success: false,
-                            data: Some(serde_json::json!({ "valid_roles": available })),
-                            error: Some(format!("unknown or disabled role: {role}")),
-                        })
-                        .await;
-                    }
-                }
             }
 
             DaemonRequest::GetPermissionState { id, session_id } => {
@@ -828,7 +725,6 @@ impl DaemonService {
         workspace_dir: Option<String>,
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
-        role_id: Option<String>,
         attachments: Option<Vec<crate::protocol::Attachment>>,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
@@ -990,55 +886,21 @@ impl DaemonService {
                     .map(|spec| spec.default_thinking_level.clone())
             });
 
-        // Resolve the requested role against global + workspace scopes.
-        // Permission is the load-bearing part: it decides which built-in tools
-        // (and plugin RPCs) exist at all for this run.
-        let role_registry =
-            RoleRegistry::load_default(Some(std::path::Path::new(&chosen_workspace))).await;
-        // Single-sourced role→permission derivation (see `RoleRegistry::resolve_for_run`).
-        // Precedence: explicit role token -> prompt triggers -> previously bound conversation role -> default unconstrained.
-        let (chosen_role, chosen_permission) = {
-            if let Some(ref explicit_role) = role_id {
-                role_registry.resolve_for_run(Some(explicit_role), &prompt)
-            } else {
-                let triggered = role_registry.select_by_trigger(&prompt);
-                if triggered.is_some() {
-                    let perm = triggered.as_ref().map(|r| r.permission).unwrap_or_default();
-                    (triggered, perm)
-                } else if let Some(ref bound_role) = conversation.role {
-                    role_registry.resolve_for_run(Some(bound_role), &prompt)
-                } else {
-                    role_registry.resolve_for_run(None, &prompt)
-                }
-            }
-        };
-        if role_id.is_some() && chosen_role.is_none() {
-            warn!(role = ?role_id, "Requested role not found or disabled; running unconstrained");
-        }
-        if let Some(role) = &chosen_role {
-            info!(
-                role = %role.display_name(),
-                permission = %chosen_permission.describe(),
-                "Role resolved for task"
-            );
-        }
+        // Unconstrained execution: all tools (read, write, bash) are always
+        // available; the model self-governs through its system prompt.
+        let chosen_permission = Permission::Bash;
 
         // The session policy is reused across runs so remembered "always
-        // allow" rules survive a turn. The mode itself is deliberately *not*
-        // set here: `roles.jsonl` is the single source of truth, and the host
-        // re-applies the role's tier and mode on every run. A mid-session
-        // `set_role` rewrites the same policy from its role, never carried
-        // forward implicitly.
+        // allow" rules survive a turn.
         let policy = self
             .session_policy(&effective_session_id, PermissionMode::default())
             .await;
 
-        // Bind model, workspace, role, and thinking_level permanently to this conversation
+        // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
         conversation.workspace = Some(chosen_workspace.clone());
         conversation.shared_roots = chosen_shared_roots.clone();
         conversation.thinking_level = chosen_thinking.clone();
-        conversation.role = chosen_role.as_ref().map(|r| r.id.clone());
 
         // Resolve image attachments before recording the turn. A bad upload is
         // rejected to the host (never silently downgraded to a text-only turn),
@@ -1185,18 +1047,15 @@ impl DaemonService {
                 .with_script_plugin(script_plugin)
                 .build(root);
 
-            // The ask-user capability is opt-in per role: the plugin is only registered
-            // when the role enables it, and its auto_always trigger activates it whenever registered.
-            let ask_enabled = chosen_role.as_ref().map(|r| r.ask_user).unwrap_or(false);
-            if ask_enabled {
-                let tool = crate::ask_user::AskUserQuestionTool::new(
-                    task_id.clone(),
-                    effective_session_id.clone(),
-                    output_tx.clone(),
-                    pending_questions.clone(),
-                );
-                root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
-            }
+            // Mount ask_user_question tool unconditionally so the LLM can ask clarifying
+            // questions when requirements are ambiguous (Intent Gate / Ambiguous branch).
+            let tool = crate::ask_user::AskUserQuestionTool::new(
+                task_id.clone(),
+                effective_session_id.clone(),
+                output_tx.clone(),
+                pending_questions.clone(),
+            );
+            root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
 
             #[cfg(feature = "testing-mock")]
             let mock = if use_mock {
@@ -1223,7 +1082,6 @@ impl DaemonService {
                 )),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
-                role: chosen_role.clone(),
                 permission: chosen_permission,
                 pause_gate: Some(pause_gate_for_run),
                 // Tag every dialog this run raises with its task/session, so a

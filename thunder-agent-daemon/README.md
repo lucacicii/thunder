@@ -14,7 +14,6 @@
 - **并发控制信号量与背压调度**：内置异步任务信号量（`THUNDER_MAX_CONCURRENT_TASKS` 环境变量可调，默认 `8`），限制并发重度推理任务数量，防止本地资源与模型并发配额耗尽。
 - **异步 STDOUT Actor（消息零交错）**：所有事件流推送统一通过专用 STDOUT Actor 与带缓冲的 MPSC Channel 排队发送。在高并发多任务流式输出时，**确保每一行 NDJSON 绝对完整且不出现字符交错**。
 - **权威历史重载与分层轨迹保留**：任务启动前自动从磁盘存储重载最新权威会话历史，保证多端或重连时消息不错乱；内存轨迹采用分层保留策略——高频微增量（`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`）实时推送至 STDOUT 但不落入内存轨迹，杜绝常驻守护进程内存无限增长。
-- **角色与权限硬隔离（Role / Permission）**：支持从 `~/.thunder/roles.jsonl` 与工作区 `.arp/roles.jsonl` 加载角色。角色的权限档位（`Read` ⊂ `Write` ⊂ `Bash`）决定内置工具是否注册，被禁工具模型在 Prompt 中**物理不可见**。
 - **协作式暂停（Pause）与反问气泡（Ask User）**：
   - `pause_task` 在下一个工具派发边界安全挂起，不中断进行中的写入操作；`resume_task` 恢复运行。
   - `ask_user_question` 允许 Agent 向用户发起阻塞式提问，宿主以气泡卡片渲染并通过 `answer_question` 答复继续任务。
@@ -46,8 +45,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 ```json
 {"method":"ping","id":"req-1"}
 {"method":"list_models","id":"req-2"}
-{"method":"list_roles","id":"req-3","workspace_dir":"/path/to/repo"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001","role":"plan"}
+{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"帮我检查当前目录的 git 状态","session_id":"sess-001"}
 {"method":"cancel_task","id":"req-5","task_id":"task-1"}
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}
@@ -55,7 +53,6 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
 {"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":false}
 {"method":"answer_ui","id":"req-11","request_id":"ui_1234_3_101","cancelled":true}
-{"method":"set_role","id":"req-12","session_id":"sess-001","role":"auto"}
 {"method":"get_permission_state","id":"req-13","session_id":"sess-001"}
 ```
 
@@ -124,7 +121,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 `permission`（能力档位）与 `mode`（审批策略）是**完全正交**的两层：
 
 - **档位 = 能力天花板**。`read` / `write` / `bash`，决定"什么根本不可能"。
-  由宿主注册哪些工具 + `PermissionGuardMiddleware` 强制执行。只读角色通过 `set_role("plan")` 或 `permission: "read"` 表达。
+  由宿主注册哪些工具 + `PermissionGuardMiddleware` 强制执行。daemon 目前固定使用 `bash`（完整能力），不再有角色层来压低档位。
 - **模式 = 什么时候向人类确认**。纯粹关于审批交互策略，绝不篡改或下压档位。
 
 ### 四种纯净模式
@@ -140,7 +137,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 1. **审批模式永远不影响权限天花板。** 模式只决定是否弹窗，不能越权抬升，也不会下压档位。
    `{"permission":"read","mode":"never"}` 依然是绝对只读 —— 物理不可越权。
-2. **`never` 只是"不问"，不是"给权限"。** 要完整权限请用 `permission: bash` 的角色。
+2. **`never` 只是"不问"，不是"给权限"。** daemon 默认即完整权限（`bash`）。
 3. **询问是 fail-closed 的。** 无面板 / 超时 / 用户关闭 → 一律按**拒绝**处理。
    拒绝会作为**工具结果**回灌给模型（附带"什么都没发生"的 ground truth），
    而不是抛异常，避免模型以为成功而反复重试。
@@ -150,7 +147,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 审批门是 **opt-in** 的。原因很实际：门的语义是 fail-closed，
 无面板宿主上每个弹窗都会被判为"取消"＝"拒绝"。若默认 `ask`，
 升级后所有无面板用户的**每一次写文件、每一条 shell、每一个插件工具**都会被静默拒绝。
-所以默认值保持升级前的行为，审批通过 `role.mode` 或 `run_task.mode` 显式开启。
+所以默认值保持不询问；daemon 不再提供角色层来改写模式。
 
 ### 交互弹窗长这样
 
@@ -207,23 +204,11 @@ TypeScript 插件的 `ctx.exec()` / `ctx.fs.*` 不再自己实现 shell 与写�
 （会改文件、不在该表里）在一个只读 run 下被放行。现在未分类的工具按
 "需要写权限"处理，不会仅因为"没人认识"就拿到 shell 权限。
 
-### 中途切换
-
-```json
-{"method":"set_role","session_id":"sess-001","role":"reviewer"}
-```
-
-重新从 `roles.jsonl` 解析角色（项目级 `.arp/roles.jsonl` 优先），并据此重写会话的
-档位与模式 —— `roles.jsonl` 是唯一事实来源，没有独立的模式可设。对**下一个工具调用**
-立即生效，包括已在运行的任务中的调用 —— 模式是每次调用现读的，不是在建管线时
-烤进去的。会话内的"总是允许"规则同样跨轮保留，随会话结束丢弃。
-
-`get_permission_state` 可查看当前模式与已记住的规则；`list_roles` 可列出可选角色
-供面板下拉框使用。
+`get_permission_state` 可查看当前模式与已记住的规则。
 
 ---
 
-## 🔒 角色权限档位
+## 🔒 权限档位
 
 档位与 `mode` 的组合效果见上面的「审批模式」。下面是档位本身：
 

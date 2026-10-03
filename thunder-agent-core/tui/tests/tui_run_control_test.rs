@@ -166,40 +166,17 @@ fn noop_factory() -> thunder_tui::app::ClientFactory {
     Arc::new(|_cfg: &AgentConfig| Some(Arc::new(HangingClient) as Arc<dyn LLMClientTrait>))
 }
 
-// ── /role (resolution + permission derivation) ─────────────────────────────
+// ── /permission (manual capability tier) ───────────────────────────────────
 
 #[tokio::test]
-async fn resolved_roles_derive_the_permission_tier() {
+async fn permission_command_sets_the_tier() {
     let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    // Drain the RoleResolved event that spawn_role_resolution emits.
-    app.execute_slash_command("/role plan", tx.clone());
-
-    // Directly exercise the handler path the runner dispatches to.
-    let role = thunder_agent_root::roles::RoleSpec {
-        id: "plan".to_string(),
-        name: Some("Planner".to_string()),
-        aliases: vec![],
-        description: None,
-        persona: thunder_agent_root::roles::Persona::Text("Plan first.".to_string()),
-        permission: Permission::Read,
-        mode: Some(thunder_agent_loop::types::policy::ApprovalMode::Never),
-        model: None,
-        thinking_level: Some("high".to_string()),
-        ask_user: true,
-        exit_gate: false,
-        enabled: true,
-        triggers: vec![],
-    };
-    app.attach_resolved_role(role, Permission::Read);
-
-    assert_eq!(app.active_role.as_ref().unwrap().id, "plan");
-    assert_eq!(app.permission, Permission::Read, "tier follows the role");
-
-    // Detach restores the permissive default.
-    assert!(app.execute_slash_command("/role off", tx.clone()));
-    assert!(app.active_role.is_none());
+    assert_eq!(app.permission, Permission::Bash, "default is the full tier");
+    assert!(app.execute_slash_command("/permission read", tx.clone()));
+    assert_eq!(app.permission, Permission::Read);
+    assert!(app.execute_slash_command("/permission bash", tx.clone()));
     assert_eq!(app.permission, Permission::Bash);
 }
 

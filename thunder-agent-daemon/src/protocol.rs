@@ -32,21 +32,11 @@ pub enum DaemonRequest {
         #[serde(default)]
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
-        /// Role id to activate for this run (e.g. "plan"). Resolved against
-        /// `~/.thunder/roles.jsonl` and `<workspace>/.arp/roles.jsonl`.
-        /// The role's `permission` (tier) and `mode` are authoritative for this
-        /// run — there is no per-run mode override; switch roles instead.
-        role: Option<String>,
         /// Image attachments for the user turn. Path-based attachments are
         /// preferred (the daemon reads and validates them); inline base64 is
         /// accepted for clipboard paste. Older daemons ignore this field.
         #[serde(default)]
         attachments: Option<Vec<Attachment>>,
-    },
-    /// List all roles visible from global + workspace scopes
-    ListRoles {
-        id: Option<String>,
-        workspace_dir: Option<String>,
     },
     /// Cooperatively pause a running task at the next tool boundary
     PauseTask { id: Option<String>, task_id: String },
@@ -75,19 +65,6 @@ pub enum DaemonRequest {
         confirmed: Option<bool>,
         #[serde(default)]
         cancelled: bool,
-    },
-    /// Switch a session's active role without starting a task.
-    ///
-    /// Re-resolves the role from `roles.jsonl` (project scope first) and
-    /// rewrites the session policy's tier and mode from it — `roles.jsonl` is
-    /// the single source of truth, so there is no mode to set directly.
-    /// Takes effect on the very next tool call, including one already in flight
-    /// in a running task: the gate reads the policy per call rather than baking it
-    /// in at pipeline build time.
-    SetRole {
-        id: Option<String>,
-        session_id: String,
-        role: String,
     },
     /// Report a session's current mode and its remembered "always allow" rules.
     GetPermissionState {

@@ -90,17 +90,10 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Config,
     ),
     SlashCommand::new(
-        "role",
-        &["roles"],
-        "[id | off]",
-        "Activate a declarative role (persona + permission tier) or detach it",
-        CommandCategory::Config,
-    ),
-    SlashCommand::new(
         "permission",
         &["perm"],
         "[read | write | bash]",
-        "View or set the tool capability tier (clears any active role)",
+        "View or set the tool capability tier",
         CommandCategory::Config,
     ),
     SlashCommand::new(
@@ -114,7 +107,7 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         "ask",
         &["ask_user"],
         "[on | off]",
-        "Mount/unmount the ask_user_question tool (roles can force it on)",
+        "Mount/unmount the ask_user_question tool ",
         CommandCategory::Config,
     ),
     SlashCommand::new(

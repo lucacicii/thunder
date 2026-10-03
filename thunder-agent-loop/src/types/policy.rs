@@ -20,13 +20,13 @@
 //! * [`ApprovalMode`] — what still needs human approval (never, shell_only, mutations, always).
 //! * [`AllowRule`]s — what the user has already said yes to this session.
 //!
-//! A read-only role stays read-only in every mode. There is deliberately no
+//! A read-only tier stays read-only in every mode. There is deliberately no
 //! mode that escalates privilege.
 //!
 //! ```
 //! use thunder_agent_loop::prelude::*;
 //!
-//! // A read-only role, even in never/yolo mode, cannot write.
+//! // A read-only tier, even in never/yolo mode, cannot write.
 //! assert_eq!(Permission::Read.min(Permission::Bash), Permission::Read);
 //! ```
 
@@ -40,11 +40,11 @@ use crate::types::message::ToolCall;
 /// How intrusive the agent may be before it stops asking for human approval.
 ///
 /// Pure approval strategy: strictly dictates *when to prompt humans*.
-/// It never alters, lowers, or escalates the role's capability tier (`Permission`).
+/// It never alters, lowers, or escalates the capability tier (`Permission`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalMode {
-    /// Never ask for human approval. Runs all operations permitted by the role tier.
+    /// Never ask for human approval. Runs all operations permitted by the tier.
     #[default]
     #[serde(alias = "yolo", alias = "none", alias = "bypass")]
     Never,
@@ -322,7 +322,7 @@ impl AllowRule {
 
 #[derive(Debug)]
 struct SessionInner {
-    /// The run's capability ceiling. Set from the role's tier.
+    /// The run's capability ceiling. Set by the host.
     tier: Permission,
     role_tier: Permission,
     mode: ApprovalMode,
@@ -377,9 +377,9 @@ impl Default for SessionPolicy {
 }
 
 impl SessionPolicy {
-    /// Build a policy for a role's tier and an approval mode.
+    /// Build a policy for a tier and an approval mode.
     ///
-    /// Capability tier is strictly governed by the role's `tier`.
+    /// Capability tier is strictly governed by `tier`.
     /// Approval modes only decide *when to prompt humans*, never alter capabilities.
     pub fn new(tier: Permission, mode: ApprovalMode) -> Arc<Self> {
         Arc::new(Self {

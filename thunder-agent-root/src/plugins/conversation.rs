@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
 use thunder_agent_loop::types::message::ChatMessage;
-use thunder_agent_loop::AgentRunResult;
+use thunder_agent_loop::{AgentRunResult, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
 use thunder_conversation::prelude::*;
 use tokio::sync::RwLock;
 
@@ -85,9 +85,7 @@ impl ThunderPlugin for ConversationPlugin {
             let conv = loaded.unwrap_or_else(|| {
                 Conversation::new(&ctx.session_id)
                     .with_title("Thunder Root Session")
-                    .with_system_prompt(
-                        "You are a helpful, fast, autonomous AI engineering assistant.",
-                    )
+                    .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
             });
 
             *active = Some(conv);

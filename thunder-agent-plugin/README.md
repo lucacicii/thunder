@@ -13,8 +13,8 @@
 - **原生 TypeScript 执行（零预编译）**：利用 Node.js 20+ 的 `node --experimental-strip-types` 特性，直接加载执行 `.ts` 插件源文件，省去繁琐的构建打包流程。
 - **蓝绿无缝热重载（Blue-Green Hot Reload）**：内置文件变更监听器。当修改 `.arp/plugins/*.ts` 文件时，Sidecar 在后台完成新版本编译验证后无缝热切换，不中断运行中的 Agent 任务。
 - **语法错误免疫（Error Immunity）**：若新保存的 TypeScript 文件存在语法错误或初始化异常，Sidecar 会自动捕获并在日志中告警，同时**继续保留并运行上一个健康的插件版本**，确保宿主系统绝不崩溃。
-- **角色权限对齐（Permission Enforcement）**：插件上下文（`PluginContext`）提供的能力与当前任务的角色权限档位严格绑定：
-  - 在只读角色（`Permission::Read`）下，插件调用 `ctx.fs.writeFile()` 或 `ctx.exec()` 会被直接拦截拒绝，杜绝插件成为越权旁路。
+- **权限档位对齐（Permission Enforcement）**：插件上下文（`PluginContext`）提供的能力与当前任务的权限档位严格绑定：
+  - 在只读档位（`Permission::Read`）下，插件调用 `ctx.fs.writeFile()` 或 `ctx.exec()` 会被直接拦截拒绝，杜绝插件成为越权旁路。
 - **无缝 AgentTool 桥接**：TypeScript 插件中导出的函数自动转换为 Rust 端的 `AgentTool`，无缝供 `thunder-agent-loop` 调度调用。
 - **宿主能力直通**：`ctx.ui`（select / confirm / input / editor / notify / setStatus）向宿主请求弹窗；`ctx.callTool` 调用宿主已注册的工具。二者都**经过宿主代理**，不绕过任何策略层（详见下方「安全边界」）。
 

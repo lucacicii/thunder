@@ -164,16 +164,6 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled(
-                "/role [id|off]            ",
-                Style::default().fg(theme.assistant_bubble),
-            ),
-            Span::styled(
-                "Activate a declarative role (persona + permission tier)",
-                theme.muted_style(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
                 "/permission [read|write|…]",
                 Style::default().fg(theme.assistant_bubble),
             ),

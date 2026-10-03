@@ -42,4 +42,9 @@ async fn test_active_plugin_set_tool_collection_and_prompt_assembly() {
     let prompt = active_set.build_combined_system_prompt(Some("Base Assistant"));
     assert!(prompt.contains("Base Assistant"));
     assert!(prompt.contains("Session history and multi-turn state"));
+
+    let default_prompt = active_set.build_combined_system_prompt(None);
+    assert!(default_prompt.starts_with("# Role & Philosophy"));
+    assert!(default_prompt.contains("<intent_analysis>"));
+    assert!(default_prompt.contains("Session history and multi-turn state"));
 }

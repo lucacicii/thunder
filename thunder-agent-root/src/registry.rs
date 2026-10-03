@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
-use thunder_agent_loop::AgentRunResult;
+use thunder_agent_loop::{AgentRunResult, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
 use tracing::info;
 
 #[derive(Clone, Default)]
@@ -116,7 +116,7 @@ impl ActivePluginSet {
     /// Build a combined system prompt incorporating contributions from all active plugins.
     pub fn build_combined_system_prompt(&self, base_prompt: Option<&str>) -> String {
         let mut prompt = base_prompt
-            .unwrap_or("You are an autonomous engineering assistant powered by Thunder Agent.")
+            .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
             .to_string();
 
         for plugin in &self.plugins {

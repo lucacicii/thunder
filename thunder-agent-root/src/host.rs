@@ -1,7 +1,6 @@
 use crate::error::PluginError;
 use crate::plugin::PluginContext;
 use crate::registry::{ActivePluginSet, PluginRegistry};
-use crate::roles::RoleSpec;
 use crate::selector::{PluginSelection, PluginSelector};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +17,7 @@ use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
+    DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
 };
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
 use tokio::sync::mpsc;
@@ -32,14 +32,8 @@ pub struct RootRunOptions {
     pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
-    /// Active role for this run. `None` keeps the historical behaviour.
-    ///
-    /// The role is the single source of truth for both the tier and the
-    /// approval mode: `role.permission` is the ceiling, `role.mode` decides
-    /// when a human is asked. There is deliberately no per-run mode override
-    /// — a panel that wants a different mode switches roles, not modes.
-    pub role: Option<RoleSpec>,
-    /// Tool capability tier. Derived from `role.permission` when a role is set.
+    /// Tool capability tier (read ⊂ write ⊂ bash). Defaults to the widest tier;
+    /// hosts may narrow it explicitly.
     pub permission: Permission,
     /// Optional cooperative pause gate forwarded to the agent unit, letting the
     /// host freeze the run at a tool boundary and resume it later.
@@ -69,26 +63,12 @@ impl Default for RootRunOptions {
             forced_plugins: None,
             register_builtins: true,
             thinking_level: None,
-            role: None,
             permission: Permission::default(),
             pause_gate: None,
             ui: None,
             route: None,
             policy: None,
         }
-    }
-}
-
-impl RootRunOptions {
-    /// Attach a role, deriving the permission tier from it.
-    ///
-    /// The role's `model` / `thinking_level` are intentionally *not* applied
-    /// here: the caller owns model resolution, so it can honour the
-    /// conversation's already-bound model first.
-    pub fn with_role(mut self, role: RoleSpec) -> Self {
-        self.permission = role.permission;
-        self.role = Some(role);
-        self
     }
 }
 
@@ -360,23 +340,16 @@ impl ThunderRoot {
 
         // 1b. Resolve the approval policy for this run.
         //
-        // `roles.jsonl` is the single source of truth: the role's tier is the
-        // capability ceiling, and its approval mode dictates when humans are asked.
-        let mode = options
-            .role
-            .as_ref()
-            .and_then(|r| r.mode)
-            .unwrap_or_default();
-        let effective_permission = options.permission;
         // A host-supplied policy is reused across the session (so remembered
-        // rules and a mid-session mode switch survive); a fresh one is created
-        // when the host has none.
+        // rules and any host-chosen approval mode survive); a fresh one defaults
+        // to `Never` (no prompting). The tier is this run's capability ceiling.
+        let effective_permission = options.permission;
         let policy = options
             .policy
             .clone()
-            .unwrap_or_else(|| SessionPolicy::new(options.permission, mode));
+            .unwrap_or_else(|| SessionPolicy::new(options.permission, Default::default()));
         policy.set_tier(options.permission).await;
-        policy.set_mode(mode).await;
+        let mode = policy.mode().await;
         let ui = options
             .ui
             .clone()
@@ -384,7 +357,7 @@ impl ThunderRoot {
 
         info!(
             session_id = %session_id,
-            role_tier = ?options.permission,
+            tier = ?options.permission,
             mode = mode.as_str(),
             effective_tier = ?effective_permission,
             "Resolved permission policy"
@@ -413,8 +386,12 @@ impl ThunderRoot {
         active_set.dispatch_init(&ctx).await?;
 
         // 4. Construct Root AgentLoop
-        let mut base_prompt =
-            String::from("You are an autonomous engineering assistant powered by Thunder Agent.");
+        let mut base_prompt = self
+            .config
+            .system_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
+            .to_string();
         if let Some(ws) = &self.workspace_root {
             base_prompt.push_str("\n\n### Workspaces\n");
             base_prompt.push_str(&format!(
@@ -449,20 +426,7 @@ impl ThunderRoot {
         // Tags every tool call, which is how a plugin's reverse RPC finds this
         // run's services instead of another run's.
         agent_cfg.route = Some(route.clone());
-        // A role narrows the capability tier, and the mode may narrow it further
-        // (plan mode). The host is the authority here, never the plugin layer.
         agent_cfg.permission = effective_permission;
-        let mut combined_system_prompt = combined_system_prompt;
-        if let Some(role) = &options.role {
-            if !role.persona.is_empty() {
-                combined_system_prompt.push_str(&format!(
-                    "\n\n### [Role: {}]\n{}\n\n### Role Capability\nThis role is {}.",
-                    role.display_name(),
-                    role.persona.as_text().trim(),
-                    options.permission.describe()
-                ));
-            }
-        }
         agent_cfg.system_prompt = Some(combined_system_prompt);
         if let Some(ref tl) = options.thinking_level {
             agent_cfg.thinking_level = Some(tl.clone());
@@ -557,7 +521,7 @@ impl ThunderRoot {
                 info!(
                     session_id = %session_id,
                     permission = %perm.describe(),
-                    "Built-in tools restricted by role permission"
+                    "Built-in tools restricted by permission tier"
                 );
             }
         }
