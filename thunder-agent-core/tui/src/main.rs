@@ -149,9 +149,10 @@ mod tests {
         assert!(
             resolve_workspace_override(&argv(&["tui", "--workspace", "--session"]), None).is_err()
         );
-        assert!(
-            resolve_workspace_override(&argv(&["tui", "--workspace", "/no/such/dir/xyz"]), None)
-                .is_err()
-        );
+        assert!(resolve_workspace_override(
+            &argv(&["tui", "--workspace", "/no/such/dir/xyz"]),
+            None
+        )
+        .is_err());
     }
 }

@@ -1,4 +1,5 @@
 use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
+use crate::links::{LinkCache, LinkTarget};
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
@@ -63,6 +64,9 @@ impl ExecutionMode {
     }
 }
 
+/// Braille spinner frames for the busy indicator.
+pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStatus {
     Idle,
@@ -100,6 +104,9 @@ pub struct App {
     pub session_list: Vec<ConversationSummary>,
     pub selected_session_idx: usize,
     pub input: String,
+    /// Caret position in the input, as a **character** index (not bytes), so
+    /// multi-byte text never splits. Always clamped to the input's length.
+    pub input_cursor: usize,
     pub input_history: Vec<String>,
     /// Image attachments staged for the next prompt (`/image <path>`).
     pub pending_images: Vec<ContentPart>,
@@ -153,6 +160,29 @@ pub struct App {
     /// Whether the current run is this conversation's first exchange
     /// (triggers background auto-titling once it finishes).
     pub run_is_first_exchange: bool,
+
+    /// Render Markdown in the transcript (the default) instead of raw source.
+    pub markdown_enabled: bool,
+    /// Memoised "is this a real path?" answers; cleared when the roots change.
+    pub link_cache: LinkCache,
+    /// Clickable regions in screen coordinates, rebuilt by every render.
+    pub link_hitboxes: Vec<LinkHitbox>,
+    /// Targets backing the open `/links` picker, indexed by picker item id.
+    pub pending_links: Vec<LinkTarget>,
+    /// Advanced by every tick, so the busy spinner animates while a run is live.
+    pub spinner_frame: usize,
+}
+
+/// A clickable region of the chat pane, in absolute terminal coordinates.
+///
+/// Recomputed on every frame because it depends on wrap width and scroll, so it
+/// is render output rather than state anyone should persist.
+#[derive(Debug, Clone)]
+pub struct LinkHitbox {
+    pub row: u16,
+    pub col_start: u16,
+    pub col_end: u16,
+    pub target: LinkTarget,
 }
 
 impl App {
@@ -170,6 +200,7 @@ impl App {
             session_list: Vec::new(),
             selected_session_idx: 0,
             input: String::new(),
+            input_cursor: 0,
             input_history: Vec::new(),
             pending_images: Vec::new(),
             history_idx: None,
@@ -206,6 +237,11 @@ impl App {
             trace_events: None,
             trace_meta: None,
             run_is_first_exchange: false,
+            markdown_enabled: true,
+            link_cache: LinkCache::new(),
+            link_hitboxes: Vec::new(),
+            pending_links: Vec::new(),
+            spinner_frame: 0,
         }
     }
 
@@ -276,6 +312,7 @@ impl App {
                 self.agent_status = AgentStatus::Idle;
                 self.scroll_offset = 0;
                 self.last_error = None;
+                self.clear_link_cache();
             }
             self.refresh_sessions().await;
             if let Some(pos) = self.session_list.iter().position(|s| s.id == id) {
@@ -288,6 +325,106 @@ impl App {
         self.status_message = Some((msg.into(), std::time::Instant::now()));
     }
 
+    // ── Input line editing ────────────────────────────────────────────────
+
+    /// Number of characters in the input (not bytes).
+    fn input_char_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Byte offset of character index `idx` (clamped past the end).
+    fn input_byte_offset(&self, idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(idx)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Replace the input with `text`, parking the caret at the end. Every
+    /// programmatic write goes through here so the caret can never go stale.
+    pub fn set_input(&mut self, text: String) {
+        self.input = text;
+        self.input_cursor = self.input_char_len();
+    }
+
+    /// Clear the input and park the caret at the start.
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let at = self.input_byte_offset(self.input_cursor);
+        self.input.insert(at, c);
+        self.input_cursor += 1;
+    }
+
+    /// Delete the character before the caret (Backspace).
+    fn backspace(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let end = self.input_byte_offset(self.input_cursor);
+        let start = self.input_byte_offset(self.input_cursor - 1);
+        self.input.replace_range(start..end, "");
+        self.input_cursor -= 1;
+    }
+
+    /// Delete the character after the caret (Delete / forward-delete).
+    fn delete_forward(&mut self) {
+        if self.input_cursor >= self.input_char_len() {
+            return;
+        }
+        let start = self.input_byte_offset(self.input_cursor);
+        let end = self.input_byte_offset(self.input_cursor + 1);
+        self.input.replace_range(start..end, "");
+    }
+
+    pub fn cursor_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    pub fn cursor_end(&mut self) {
+        self.input_cursor = self.input_char_len();
+    }
+
+    pub fn cursor_left(&mut self) {
+        self.input_cursor = self.input_cursor.saturating_sub(1);
+    }
+
+    pub fn cursor_right(&mut self) {
+        if self.input_cursor < self.input_char_len() {
+            self.input_cursor += 1;
+        }
+    }
+
+    /// Start of the previous word: skip spaces back, then the word's characters.
+    pub fn cursor_prev_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut i = self.input_cursor.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.input_cursor = i;
+    }
+
+    /// Start of the next word: skip the word, then the spaces after it.
+    pub fn cursor_next_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut i = self.input_cursor.min(chars.len());
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.input_cursor = i;
+    }
+
     // ── Run control: pause / resume ───────────────────────────────────────
 
     /// Whether a run is currently executing (i.e. pause is meaningful).
@@ -296,6 +433,16 @@ impl App {
             self.agent_status,
             AgentStatus::Thinking | AgentStatus::Streaming | AgentStatus::ExecutingTool { .. }
         )
+    }
+    /// The glyph for the current spinner frame.
+    pub fn spinner(&self) -> &'static str {
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// One animation step. Driven by terminal ticks, so the spinner moves only
+    /// as fast as frames are drawn.
+    pub fn tick(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
     pub fn is_paused(&self) -> bool {
@@ -773,7 +920,7 @@ impl App {
                     let matches = crate::commands::filter_commands(&self.input);
                     if !matches.is_empty() {
                         let selected = matches[self.command_popup_idx % matches.len()];
-                        self.input = format!("/{} ", selected.name);
+                        self.set_input(format!("/{} ", selected.name));
                         return;
                     }
                 }
@@ -786,7 +933,7 @@ impl App {
                 }
                 ViewMode::Chat => {
                     if self.input.starts_with('/') {
-                        self.input.clear();
+                        self.clear_input();
                         self.command_popup_idx = 0;
                     } else if let Some(token) = self.cancel_token.take() {
                         token.cancel();
@@ -830,7 +977,7 @@ impl App {
                         && !matches.is_empty()
                     {
                         let selected = matches[self.command_popup_idx % matches.len()];
-                        self.input = format!("/{} ", selected.name);
+                        self.set_input(format!("/{} ", selected.name));
                         self.command_popup_idx = 0;
                         return;
                     }
@@ -841,6 +988,7 @@ impl App {
                         || matches!(self.agent_status, AgentStatus::Done | AgentStatus::Error(_)))
                 {
                     let prompt = std::mem::take(&mut self.input);
+                    self.input_cursor = 0;
                     self.command_popup_idx = 0;
                     self.input_history.push(prompt.clone());
                     self.history_idx = None;
@@ -853,12 +1001,32 @@ impl App {
                     self.submit_prompt(prompt, event_tx);
                 }
             }
+            // Caret movement. Cmd arrives as `SUPER`; Home/End and Ctrl+A/Ctrl+E
+            // are the fallbacks, since Terminal.app never forwards the Command key.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SUPER) => self.cursor_home(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.cursor_prev_word(),
+            KeyCode::Left => self.cursor_left(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SUPER) => self.cursor_end(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.cursor_next_word(),
+            KeyCode::Right => self.cursor_right(),
+            KeyCode::Home if !self.input.is_empty() => self.cursor_home(),
+            KeyCode::End if !self.input.is_empty() => self.cursor_end(),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_home()
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_end()
+            }
             KeyCode::Char(c) => {
-                self.input.push(c);
+                self.insert_char(c);
                 self.command_popup_idx = 0;
             }
             KeyCode::Backspace => {
-                self.input.pop();
+                self.backspace();
+                self.command_popup_idx = 0;
+            }
+            KeyCode::Delete => {
+                self.delete_forward();
                 self.command_popup_idx = 0;
             }
             KeyCode::PageUp => {
@@ -893,7 +1061,7 @@ impl App {
                         None => self.input_history.len() - 1,
                     };
                     self.history_idx = Some(next_idx);
-                    self.input = self.input_history[next_idx].clone();
+                    self.set_input(self.input_history[next_idx].clone());
                 } else if self.input.is_empty() {
                     self.scroll_up(1);
                 }
@@ -911,10 +1079,10 @@ impl App {
                     if idx + 1 < self.input_history.len() {
                         let next_idx = idx + 1;
                         self.history_idx = Some(next_idx);
-                        self.input = self.input_history[next_idx].clone();
+                        self.set_input(self.input_history[next_idx].clone());
                     } else {
                         self.history_idx = None;
-                        self.input.clear();
+                        self.clear_input();
                     }
                 } else if self.input.is_empty() {
                     self.scroll_down(1);
@@ -926,6 +1094,17 @@ impl App {
 
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         match mouse.kind {
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // The transcript sits behind any open modal; a click belongs to
+                // the modal, so the hitboxes underneath must not fire.
+                if self.picker.is_open
+                    || self.pending_question.is_some()
+                    || self.mode == ViewMode::Help
+                {
+                    return;
+                }
+                self.activate_link_at(mouse.column, mouse.row);
+            }
             crossterm::event::MouseEventKind::ScrollUp => {
                 if self.picker.is_open {
                     self.picker.move_up();
@@ -941,6 +1120,109 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The clickable target under a screen cell, if any.
+    pub fn link_at(&self, column: u16, row: u16) -> Option<LinkTarget> {
+        self.link_hitboxes
+            .iter()
+            .find(|h| h.row == row && column >= h.col_start && column < h.col_end)
+            .map(|h| h.target.clone())
+    }
+
+    /// Act on a click: reveal local files, open web URLs. Reports the outcome,
+    /// because a silent no-op would look like the click was missed.
+    pub fn activate_link_at(&mut self, column: u16, row: u16) {
+        let Some(target) = self.link_at(column, row) else {
+            return;
+        };
+        self.launch_link(&target);
+    }
+
+    /// Directories a relative link path may resolve in: the workspace first,
+    /// then any extra roots.
+    pub fn workspace_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::with_capacity(1 + self.extra_roots.len());
+        roots.push(self.workspace_dir.clone());
+        roots.extend(self.extra_roots.iter().cloned());
+        roots
+    }
+
+    /// Forget memoised path lookups. Call whenever the roots or the session
+    /// change: those are the only inputs that alter the answer.
+    pub fn clear_link_cache(&mut self) {
+        self.link_cache.clear();
+    }
+
+    /// Collect every link and file path mentioned in the session into the
+    /// picker, so they can be acted on without a mouse.
+    pub fn open_links_picker(&mut self) {
+        let roots = self.workspace_roots();
+        // The system prompt is boilerplate full of backticked tokens; only what
+        // the conversation actually said is worth offering to open.
+        let texts: Vec<String> = self
+            .conversation
+            .messages
+            .iter()
+            .filter(|m| {
+                !matches!(
+                    m,
+                    thunder_agent_loop::types::message::ChatMessage::System { .. }
+                )
+            })
+            .filter_map(|m| m.content_str().map(str::to_string))
+            .collect();
+
+        let mut targets: Vec<LinkTarget> = Vec::new();
+        for text in &texts {
+            for target in crate::links::extract_links(text, &roots, &mut self.link_cache) {
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+        }
+
+        if targets.is_empty() {
+            self.conversation.add_assistant_message(
+                Some("No links or file paths found in this session.".to_string()),
+                None,
+            );
+            self.save_and_refresh();
+            return;
+        }
+
+        // The item id is the index into `pending_links`, which keeps the
+        // resolved target intact across the picker round-trip.
+        let items = targets
+            .iter()
+            .enumerate()
+            .map(|(idx, t)| {
+                let action = match t {
+                    LinkTarget::Url(_) => "Open in browser",
+                    LinkTarget::File(_) => "Reveal in Finder",
+                };
+                PickerItem::new(idx.to_string(), t.display(), action).with_badge(t.kind_label())
+            })
+            .collect();
+
+        self.pending_links = targets;
+        self.picker.open(
+            PickerKind::SelectLink,
+            Some(PickerKind::SelectLink.default_title().to_string()),
+            items,
+        );
+    }
+
+    /// Reveal a local file or open a URL, reporting the outcome in the status
+    /// bar (a silent no-op would read as a missed click).
+    fn launch_link(&mut self, target: &LinkTarget) {
+        match crate::links::launch(target) {
+            Ok(()) => self.set_status_message(match target {
+                LinkTarget::Url(url) => format!("Opened {url}"),
+                LinkTarget::File(path) => format!("Revealed {}", path.display()),
+            }),
+            Err(err) => self.set_status_message(format!("Could not open: {err}")),
         }
     }
 
@@ -1193,6 +1475,7 @@ impl App {
         self.scroll_offset = 0;
         self.last_error = None;
         self.active_skill = None;
+        self.clear_link_cache();
         self.set_status_message("Created new session.");
 
         self.save_and_refresh();
@@ -1267,7 +1550,18 @@ impl App {
                 self.spawn_trace_view(Some(&item.id), event_tx);
             }
             PickerKind::SlashCommand => {
-                self.input = format!("/{} ", item.id);
+                self.set_input(format!("/{} ", item.id));
+            }
+            PickerKind::SelectLink => {
+                // The id is the index into `pending_links`.
+                if let Some(target) = item
+                    .id
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|idx| self.pending_links.get(idx).cloned())
+                {
+                    self.launch_link(&target);
+                }
             }
         }
     }
@@ -1868,6 +2162,7 @@ impl App {
                     let pb = PathBuf::from(new_path);
                     if pb.is_dir() {
                         self.workspace_dir = pb.clone();
+                        self.clear_link_cache();
                         let out = format!("✔ Workspace switched to: `{}`", pb.display());
                         self.conversation.add_assistant_message(Some(out), None);
                         self.set_status_message(format!("Workspace: {}", pb.display()));
@@ -1907,6 +2202,35 @@ impl App {
                     self.set_status_message(format!("Exported to {}", target_path.display()));
                 }
                 self.save_and_refresh();
+                true
+            }
+
+            // 11b. /preview [on|off|md|rich] — rendered Markdown vs raw source
+            "preview" | "md" | "rich" => {
+                self.conversation.add_user_message(raw_cmd);
+                let requested = args.first().map(|a| a.to_ascii_lowercase());
+                self.markdown_enabled = match requested.as_deref() {
+                    Some("on" | "true" | "yes") => true,
+                    Some("off" | "false" | "no" | "raw") => false,
+                    // Bare `/preview` toggles.
+                    _ => !self.markdown_enabled,
+                };
+                let state = if self.markdown_enabled {
+                    "✔ Markdown preview on — renders headings, lists, code blocks and clickable links."
+                } else {
+                    "✔ Markdown preview off — showing raw source (links are not clickable)."
+                };
+                self.conversation
+                    .add_assistant_message(Some(state.to_string()), None);
+                self.set_status_message(state.to_string());
+                self.save_and_refresh();
+                true
+            }
+
+            // 11c. /links — every link and file path mentioned in this session
+            "links" | "urls" | "files" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.open_links_picker();
                 true
             }
 
@@ -2052,6 +2376,7 @@ impl App {
                         if pb.is_dir() {
                             if !self.extra_roots.contains(&pb) {
                                 self.extra_roots.push(pb.clone());
+                                self.clear_link_cache();
                             }
                             self.conversation.add_assistant_message(
                                 Some(format!(
@@ -2079,6 +2404,7 @@ impl App {
                             self.extra_roots
                                 .retain(|r| r.display().to_string() != target);
                         }
+                        self.clear_link_cache();
                         let out = if self.extra_roots.len() < before {
                             format!("✔ Root removed ({} remaining).", self.extra_roots.len())
                         } else {
@@ -2089,6 +2415,7 @@ impl App {
                     Some("clear" | "reset") => {
                         let count = self.extra_roots.len();
                         self.extra_roots.clear();
+                        self.clear_link_cache();
                         self.conversation.add_assistant_message(
                             Some(format!("✔ Cleared {count} extra root(s).")),
                             None,

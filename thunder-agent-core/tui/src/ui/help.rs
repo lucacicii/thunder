@@ -96,6 +96,30 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled(
+                "Cmd + ← / →    ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Jump the caret to the start / end of the prompt (Home/End, Ctrl+A/E)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Click          ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "On a link or file path: open it, or reveal it in Finder (/links lists them)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "Ctrl + C / Esc ",
                 Style::default()
                     .fg(theme.highlight)
@@ -279,6 +303,26 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
             ),
             Span::styled(
                 "Export current conversation to a Markdown file",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/preview [on|off]         ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Toggle rendered Markdown preview against the raw source",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/links                    ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "List links & file paths in this session (Enter reveals/opens)",
                 theme.muted_style(),
             ),
         ]),

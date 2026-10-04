@@ -148,6 +148,175 @@ async fn test_app_new_session_and_shortcuts() {
 }
 
 #[tokio::test]
+async fn spinner_advances_on_tick_and_wraps() {
+    let mut app = App::new("gpt-4o");
+    let frames = thunder_tui::app::SPINNER_FRAMES;
+
+    assert_eq!(app.spinner(), frames[0]);
+    app.tick();
+    assert_eq!(app.spinner(), frames[1], "each tick moves the spinner");
+
+    // A full cycle returns to the same frame.
+    for _ in 0..frames.len() {
+        app.tick();
+    }
+    assert_eq!(app.spinner(), frames[1]);
+}
+
+#[tokio::test]
+async fn input_line_shows_a_spinner_and_working_while_running() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("gpt-4o");
+    let theme = Theme::default();
+
+    let screen = |app: &mut App| -> String {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| thunder_tui::ui::draw(f, app, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    // Idle: the prompt, and no busy indicator.
+    let idle = screen(&mut app);
+    assert!(idle.contains('❯'), "idle prompt: {idle:?}");
+    assert!(!idle.contains("working"), "not busy while idle");
+
+    app.agent_status = AgentStatus::Streaming;
+    let busy = screen(&mut app);
+    assert!(busy.contains("working"), "busy hint: {busy:?}");
+    assert!(
+        thunder_tui::app::SPINNER_FRAMES
+            .iter()
+            .any(|f| busy.contains(f)),
+        "spinner glyph: {busy:?}"
+    );
+}
+
+#[tokio::test]
+async fn input_caret_moves_to_home_and_end() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.set_input("hello world".to_string());
+    assert_eq!(
+        app.input_cursor, 11,
+        "programmatic input parks the caret at the end"
+    );
+
+    let press = |app: &mut App, code: KeyCode, mods: KeyModifiers| {
+        app.handle_key(KeyEvent::new(code, mods), tx.clone());
+    };
+
+    // Plain arrows step one character.
+    press(&mut app, KeyCode::Left, KeyModifiers::empty());
+    assert_eq!(app.input_cursor, 10);
+    press(&mut app, KeyCode::Right, KeyModifiers::empty());
+    assert_eq!(app.input_cursor, 11);
+
+    // Cmd+Left / Cmd+Right — macOS reports Command as SUPER.
+    press(&mut app, KeyCode::Left, KeyModifiers::SUPER);
+    assert_eq!(app.input_cursor, 0);
+    press(&mut app, KeyCode::Right, KeyModifiers::SUPER);
+    assert_eq!(app.input_cursor, 11);
+
+    // Home / End do the same while there is text to move through.
+    press(&mut app, KeyCode::Home, KeyModifiers::empty());
+    assert_eq!(app.input_cursor, 0);
+    press(&mut app, KeyCode::End, KeyModifiers::empty());
+    assert_eq!(app.input_cursor, 11);
+
+    // Ctrl+A / Ctrl+E are the fallback for terminals that forward neither
+    // Command nor Home/End.
+    press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(app.input_cursor, 0);
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert_eq!(app.input_cursor, 11);
+
+    // Option/Alt steps by word.
+    press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+    assert_eq!(app.input_cursor, 6);
+    press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+    assert_eq!(app.input_cursor, 0);
+    press(&mut app, KeyCode::Right, KeyModifiers::ALT);
+    assert_eq!(app.input_cursor, 6);
+}
+
+#[tokio::test]
+async fn input_edits_apply_at_the_caret() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let press = |app: &mut App, code: KeyCode| {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::empty()), tx.clone());
+    };
+
+    app.set_input("hello world".to_string());
+    app.cursor_home();
+    app.cursor_right(); // between 'h' and 'e'
+
+    press(&mut app, KeyCode::Char('X'));
+    assert_eq!(app.input, "hXello world");
+    assert_eq!(app.input_cursor, 2);
+
+    // Backspace deletes behind the caret.
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.input, "hello world");
+    assert_eq!(app.input_cursor, 1);
+
+    // Delete removes the character under it.
+    press(&mut app, KeyCode::Delete);
+    assert_eq!(app.input, "hllo world");
+    assert_eq!(app.input_cursor, 1);
+
+    // Multi-byte text is stepped by character, never split mid-byte.
+    app.set_input("你好世界".to_string());
+    app.cursor_home();
+    app.cursor_right();
+    press(&mut app, KeyCode::Char('X'));
+    assert_eq!(app.input, "你X好世界");
+    assert_eq!(app.input_cursor, 2);
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.input, "你好世界");
+    assert_eq!(app.input_cursor, 1);
+}
+
+#[tokio::test]
+async fn caret_does_not_hide_the_character_under_it() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("gpt-4o");
+    app.set_input("abc".to_string());
+    app.cursor_home();
+
+    let backend = TestBackend::new(60, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = Theme::default();
+    terminal
+        .draw(|f| thunder_tui::ui::draw(f, &mut app, &theme))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+
+    // The character under the caret is highlighted, not dropped.
+    assert!(screen.contains("abc"), "input renders in full: {screen:?}");
+}
+
+#[tokio::test]
 async fn test_app_scrolling_and_mouse() {
     let mut app = App::new("gpt-4o");
     app.last_max_scroll = 50;

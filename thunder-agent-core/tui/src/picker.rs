@@ -10,6 +10,7 @@ pub enum PickerKind {
     SelectMcp,
     SelectTrace,
     SlashCommand,
+    SelectLink,
 }
 
 impl PickerKind {
@@ -22,6 +23,7 @@ impl PickerKind {
             Self::SelectMcp => "🔌 Connected MCP Servers & Tools",
             Self::SelectTrace => "🧾 Session Task Traces",
             Self::SlashCommand => "⚡ Slash Commands",
+            Self::SelectLink => "🔗 Links & Files",
         }
     }
 }
