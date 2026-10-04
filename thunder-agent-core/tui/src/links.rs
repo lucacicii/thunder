@@ -118,6 +118,38 @@ const KNOWN_EXTS: &[&str] = &[
     "plist",
     "pbxproj",
     "xcconfig",
+    // images, media, documents and archives: the files an agent saves
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "svg",
+    "ico",
+    "bmp",
+    "tiff",
+    "heic",
+    "avif",
+    "pdf",
+    "mov",
+    "mp4",
+    "m4v",
+    "webm",
+    "mp3",
+    "m4a",
+    "wav",
+    "flac",
+    "zip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+    "zst",
+    "dmg",
+    "whl",
+    "jar",
+    "apk",
 ];
 
 /// Caches "does this token name a real file?" decisions.
@@ -484,6 +516,24 @@ mod tests {
 
     fn roots(dir: &Path) -> Vec<PathBuf> {
         vec![dir.to_path_buf()]
+    }
+
+    #[test]
+    fn image_paths_are_links_even_without_a_slash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), "x").unwrap();
+        let mut cache = LinkCache::new();
+
+        assert_eq!(
+            classify("shot.png", &roots(dir.path()), &mut cache),
+            Some(LinkTarget::File(dir.path().join("shot.png")))
+        );
+        // A temp-dir absolute path, as a clipboard/screenshot file arrives.
+        let abs = dir.path().join("shot.png");
+        assert_eq!(
+            classify(abs.to_str().unwrap(), &roots(dir.path()), &mut cache),
+            Some(LinkTarget::File(abs))
+        );
     }
 
     #[test]

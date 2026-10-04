@@ -22,6 +22,9 @@ pub mod prelude {
     };
     pub use crate::core::pause::PauseGate;
     pub use crate::core::state::LoopStatus;
+    pub use crate::core::steer::{
+        PendingQueue, QueueBehavior, QueueMode, QueueSnapshot, SteerQueues,
+    };
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
     pub use crate::loop_engine::handle::AgentHandle;
     pub use crate::pruning::error_detector::{

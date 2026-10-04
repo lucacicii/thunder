@@ -60,31 +60,84 @@ const WRITE_LAST_OPERAND: &[&str] = &["cp", "mv", "ln", "install", "rsync"];
 /// Commands that take one control operand first (mode / owner), then targets.
 const WRITE_AFTER_FIRST_OPERAND: &[&str] = &["chmod", "chown"];
 /// Commands that run another command: the next word is the real verb.
-const WRAPPERS: &[&str] = &["sudo", "env", "command", "nohup", "time", "exec", "builtin", "xargs"];
+const WRAPPERS: &[&str] = &[
+    "sudo", "env", "command", "nohup", "time", "exec", "builtin", "xargs",
+];
 /// Shell keywords after which a new command starts.
-const SHELL_KEYWORDS: &[&str] = &["then", "do", "else", "elif", "if", "while", "until", "!", "{"];
+const SHELL_KEYWORDS: &[&str] = &[
+    "then", "do", "else", "elif", "if", "while", "until", "!", "{",
+];
 /// Shells whose `-c` operand is a command line.
 const SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "fish"];
 /// Script interpreters (`python*` is matched by prefix as well).
 const INTERPRETERS: &[&str] = &[
-    "node", "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "Rscript", "osascript",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "perl",
+    "ruby",
+    "php",
+    "lua",
+    "Rscript",
+    "osascript",
 ];
 /// Constructs in interpreter source that write files or spawn processes.
 const SCRIPT_WRITE_MARKERS: &[&str] = &[
-    ".write(", "write_text", "write_bytes", "writeFile", "appendFile", "createWriteStream",
-    "writeSync", "File.write", "IO.write", "FileUtils", "shutil.", "os.remove", "os.unlink",
-    "os.rename", "os.replace", "os.makedirs", "os.mkdir", "os.rmdir", ".unlink(", ".mkdir(",
-    ".touch(", ".rmdir(", "unlinkSync", "rmSync", "renameSync", "mkdirSync", "copyFile",
-    "fs.rm", "fs.unlink", "fs.rename", "fs.mkdir", "fs.cp", "subprocess", "os.system",
-    "os.popen", "child_process", "execSync", "spawnSync", "system(", "unlink(", "unlink ",
-    "File.delete", "File.rename", "Deno.write", "Deno.remove", "Bun.write", "file_put_contents",
+    ".write(",
+    "write_text",
+    "write_bytes",
+    "writeFile",
+    "appendFile",
+    "createWriteStream",
+    "writeSync",
+    "File.write",
+    "IO.write",
+    "FileUtils",
+    "shutil.",
+    "os.remove",
+    "os.unlink",
+    "os.rename",
+    "os.replace",
+    "os.makedirs",
+    "os.mkdir",
+    "os.rmdir",
+    ".unlink(",
+    ".mkdir(",
+    ".touch(",
+    ".rmdir(",
+    "unlinkSync",
+    "rmSync",
+    "renameSync",
+    "mkdirSync",
+    "copyFile",
+    "fs.rm",
+    "fs.unlink",
+    "fs.rename",
+    "fs.mkdir",
+    "fs.cp",
+    "subprocess",
+    "os.system",
+    "os.popen",
+    "child_process",
+    "execSync",
+    "spawnSync",
+    "system(",
+    "unlink(",
+    "unlink ",
+    "File.delete",
+    "File.rename",
+    "Deno.write",
+    "Deno.remove",
+    "Bun.write",
+    "file_put_contents",
     "fwrite",
 ];
 /// File modes that make an `open(` call a write.
 const SCRIPT_WRITE_MODES: &[&str] = &[
-    "\"w\"", "'w'", "\"wb\"", "'wb'", "\"w+\"", "'w+'", "\"wt\"", "'wt'", "\"a\"", "'a'",
-    "\"ab\"", "'ab'", "\"a+\"", "'a+'", "\"at\"", "'at'", "\"x\"", "'x'", "\"r+\"", "'r+'",
-    "\"rb+\"", "'rb+'", "\"r+b\"", "'r+b'", "\">", "'>",
+    "\"w\"", "'w'", "\"wb\"", "'wb'", "\"w+\"", "'w+'", "\"wt\"", "'wt'", "\"a\"", "'a'", "\"ab\"",
+    "'ab'", "\"a+\"", "'a+'", "\"at\"", "'at'", "\"x\"", "'x'", "\"r+\"", "'r+'", "\"rb+\"",
+    "'rb+'", "\"r+b\"", "'r+b'", "\">", "'>",
 ];
 
 impl SecurityGuardMiddleware {
@@ -524,7 +577,10 @@ impl SecurityGuardMiddleware {
                     WriteMode::Shell
                 } else if is_interpreter(verb) {
                     scan.interpreters.push((dir.clone(), false));
-                    WriteMode::Interpreter(scan.interpreters.len() - 1, verb == "perl" || verb == "ruby")
+                    WriteMode::Interpreter(
+                        scan.interpreters.len() - 1,
+                        verb == "perl" || verb == "ruby",
+                    )
                 } else {
                     WriteMode::None
                 };
@@ -693,12 +749,7 @@ fn tokenize(command: &str) -> Vec<Tok<'_>> {
     let chars: Vec<(usize, char)> = command.char_indices().collect();
     let mut toks = Vec::new();
     let mut start: Option<usize> = None;
-    fn flush<'a>(
-        command: &'a str,
-        toks: &mut Vec<Tok<'a>>,
-        start: &mut Option<usize>,
-        end: usize,
-    ) {
+    fn flush<'a>(command: &'a str, toks: &mut Vec<Tok<'a>>, start: &mut Option<usize>, end: usize) {
         if let Some(s) = start.take() {
             toks.push(Tok::Word(&command[s..end]));
         }
@@ -767,9 +818,7 @@ fn is_assignment(word: &str) -> bool {
     match word.split_once('=') {
         Some((name, _)) => {
             !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
         }
         None => false,
@@ -1330,11 +1379,7 @@ mod tests {
             &format!("cd {o} && node -e \"require('fs').writeFileSync('f.txt','x')\""),
         )
         .await;
-        blocked(
-            &guard,
-            &format!("cd {o} && perl -pi -e 's/a/b/' f.txt"),
-        )
-        .await;
+        blocked(&guard, &format!("cd {o} && perl -pi -e 's/a/b/' f.txt")).await;
 
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&outside);
@@ -1497,7 +1542,11 @@ mod tests {
                 .to_string(),
         );
         let res = run(&guard, &call, "call_cwd").await;
-        assert!(!res.is_error, "cwd in an extra root is a valid start: {}", res.output);
+        assert!(
+            !res.is_error,
+            "cwd in an extra root is a valid start: {}",
+            res.output
+        );
 
         // `..` out of that cwd leaves every root.
         let call = ToolCall::new_function(
@@ -1521,13 +1570,22 @@ mod tests {
         let (ws, outside) = bypass_dirs("dotdot");
         let guard = SecurityGuardMiddleware::new(&ws);
 
-        for path in ["missing/../../escaped.txt", "src/../../escaped.txt", "a/b/../../../x"] {
+        for path in [
+            "missing/../../escaped.txt",
+            "src/../../escaped.txt",
+            "a/b/../../../x",
+        ] {
             let res = run(&guard, &write_call("call_dd", path), "call_dd").await;
             assert!(res.is_error, "must block write_file to {path:?}");
             assert!(res.output.contains("escapes all allowed workspace roots"));
         }
         // Still fine when the `..` stays inside the jail.
-        let res = run(&guard, &write_call("call_dd2", "missing/../ok.txt"), "call_dd2").await;
+        let res = run(
+            &guard,
+            &write_call("call_dd2", "missing/../ok.txt"),
+            "call_dd2",
+        )
+        .await;
         assert!(!res.is_error, "{}", res.output);
 
         let _ = std::fs::remove_dir_all(&ws);

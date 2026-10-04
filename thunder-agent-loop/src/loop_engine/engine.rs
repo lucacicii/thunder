@@ -1,5 +1,6 @@
 use crate::core::context::ContextBuffer;
 use crate::core::state::{AgentStateTracker, LoopStatus};
+use crate::core::steer::QueueBehavior;
 use crate::loop_engine::guard::LoopGuard;
 use crate::loop_engine::handle::{AgentHandle, RunningGuard};
 use crate::loop_engine::hooks::AgentEventDispatcher;
@@ -55,6 +56,9 @@ pub struct AgentLoop {
     status: Arc<AtomicU8>,
     /// Cooperative pause gate; shared with any handle that wants to pause this unit.
     pause_gate: Arc<crate::core::pause::PauseGate>,
+    /// Steering and follow-up queues; shared with any handle that wants to
+    /// inject user input into a run already in flight.
+    steer_queues: Arc<crate::core::steer::SteerQueues>,
     /// The judge's inputs, threaded into every pipeline rebuild.
     ///
     /// `None` means "no policy adopted": the guard then enforces only the static
@@ -100,6 +104,7 @@ impl AgentLoop {
             running: Arc::new(AtomicBool::new(false)),
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
+            steer_queues: crate::core::steer::SteerQueues::new_shared(),
             policy: None,
             host_ui: None,
         }
@@ -189,6 +194,22 @@ impl AgentLoop {
         self
     }
 
+    /// Adopt externally owned steering / follow-up queues.
+    ///
+    /// A host that holds the `Arc` can queue user input into a run already in
+    /// flight; the loop drains it at turn boundaries. Passing the queues in
+    /// (rather than reading them off the handle) is what lets the host keep
+    /// rendering its pending list while the run holds the handle.
+    pub fn with_steer_queues(mut self, queues: Arc<crate::core::steer::SteerQueues>) -> Self {
+        self.steer_queues = queues;
+        self
+    }
+
+    /// This unit's steering / follow-up queues.
+    pub fn steer_queues(&self) -> &Arc<crate::core::steer::SteerQueues> {
+        &self.steer_queues
+    }
+
     pub fn with_custom_client(mut self, client: Arc<dyn LLMClientTrait>) -> Self {
         self.llm_client = client;
         self
@@ -276,6 +297,7 @@ impl AgentLoop {
         let (result_tx, result_rx) = oneshot::channel();
 
         let pause_gate = Arc::clone(&self.pause_gate);
+        let steer_queues = Arc::clone(&self.steer_queues);
         self.spawn_loop(input.into(), event_tx, result_tx, token.clone());
 
         Ok(AgentHandle::new(
@@ -284,6 +306,7 @@ impl AgentLoop {
             self.running.clone(),
             token,
             pause_gate,
+            steer_queues,
             result_rx,
             event_rx,
         ))
@@ -347,6 +370,7 @@ impl AgentLoop {
         let status = self.status.clone();
         let running = self.running.clone();
         let pause_gate = Arc::clone(&self.pause_gate);
+        let steer_queues = Arc::clone(&self.steer_queues);
         let summarizer = crate::pruning::checkpoint::Summarizer::new(llm_client.clone(), &config);
 
         tokio::spawn(async move {
@@ -380,6 +404,17 @@ impl AgentLoop {
             // a checkpoint compaction rewrites the projection, then kept in sync
             // with durable pushes so hosts can persist the original history.
             let mut raw_log: Option<Vec<ChatMessage>> = None;
+
+            // Input queued before the run started (the user may have typed while
+            // the previous run was finishing) plus anything queued since. Each
+            // entry carries which queue it came from, because that decides when
+            // it is allowed to enter.
+            let mut pending_messages: Vec<(ChatMessage, QueueBehavior)> = steer_queues
+                .steering
+                .drain()
+                .into_iter()
+                .map(|m| (m, QueueBehavior::Steer))
+                .collect();
 
             loop {
                 if let Some(max) = config.max_turns {
@@ -483,6 +518,45 @@ impl AgentLoop {
                         timestamp: now_ts,
                     })
                     .await;
+
+                // Splice queued input into the transcript before the request is
+                // built. It becomes ordinary user messages, so persistence and
+                // compaction treat it exactly like something the user typed.
+                //
+                // Refreshing here (not only at the previous turn's tail) is what
+                // catches input queued while tools were executing, and it is
+                // guarded because `one-at-a-time` must not deliver two messages
+                // in one turn.
+                if pending_messages.is_empty() {
+                    pending_messages.extend(
+                        steer_queues
+                            .steering
+                            .drain()
+                            .into_iter()
+                            .map(|m| (m, QueueBehavior::Steer)),
+                    );
+                }
+                for (message, behavior) in std::mem::take(&mut pending_messages) {
+                    let text = message.content_str().unwrap_or_default().to_string();
+                    info!(
+                        agent_id = %agent_id,
+                        turn = turn,
+                        behavior = behavior.label(),
+                        chars = text.chars().count(),
+                        "Queued message accepted"
+                    );
+                    context.push(message.clone());
+                    if let Some(log) = raw_log.as_mut() {
+                        log.push(message);
+                    }
+                    emitter
+                        .emit(AgentEvent::SteerAccepted {
+                            turn,
+                            behavior: behavior.label().to_string(),
+                            message: text,
+                        })
+                        .await;
+                }
 
                 let max_overflow_retries = 2;
                 let mut retry_count = 0;
@@ -907,16 +981,46 @@ impl AgentLoop {
                     .await;
 
                 if !has_tool_calls {
-                    info!(agent_id = %agent_id, "LLM concluded the task autonomously (no more tool calls)");
-                    final_content = answer_content.or_else(|| {
-                        if !reasoning_content.is_empty() {
-                            Some(reasoning_content.clone())
-                        } else {
-                            None
-                        }
-                    });
-                    loop_finish_reason = FinishReason::Done;
-                    break;
+                    // The model signalled it is finished, but a queued message
+                    // can still keep the run alive for one more turn: steering
+                    // first, then follow-ups. Follow-ups deliberately only get
+                    // their turn once nothing else is left to do.
+                    if pending_messages.is_empty() {
+                        pending_messages.extend(
+                            steer_queues
+                                .steering
+                                .drain()
+                                .into_iter()
+                                .map(|m| (m, QueueBehavior::Steer)),
+                        );
+                    }
+                    if pending_messages.is_empty() {
+                        pending_messages.extend(
+                            steer_queues
+                                .follow_up
+                                .drain()
+                                .into_iter()
+                                .map(|m| (m, QueueBehavior::FollowUp)),
+                        );
+                    }
+                    if pending_messages.is_empty() {
+                        info!(agent_id = %agent_id, "LLM concluded the task autonomously (no more tool calls)");
+                        final_content = answer_content.or_else(|| {
+                            if !reasoning_content.is_empty() {
+                                Some(reasoning_content.clone())
+                            } else {
+                                None
+                            }
+                        });
+                        loop_finish_reason = FinishReason::Done;
+                        break;
+                    }
+                    info!(
+                        agent_id = %agent_id,
+                        queued = pending_messages.len(),
+                        "Continuing the run for a queued message"
+                    );
+                    continue;
                 }
 
                 tracker.set_status(LoopStatus::ExecutingTools);

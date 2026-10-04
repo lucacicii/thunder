@@ -38,6 +38,9 @@ pub struct RootRunOptions {
     /// Optional cooperative pause gate forwarded to the agent unit, letting the
     /// host freeze the run at a tool boundary and resume it later.
     pub pause_gate: Option<Arc<thunder_agent_loop::core::pause::PauseGate>>,
+    /// Optional steering / follow-up queues forwarded to the agent unit, letting
+    /// the host splice user input into a run already in flight.
+    pub steer_queues: Option<Arc<thunder_agent_loop::core::steer::SteerQueues>>,
     /// Per-run override of the host UI. Hosts pass a task-scoped handle so the
     /// panel can attribute a dialog to the run that raised it; `None` falls back
     /// to the root's [`ThunderRoot::with_host_ui`] surface.
@@ -65,6 +68,7 @@ impl Default for RootRunOptions {
             thinking_level: None,
             permission: Permission::default(),
             pause_gate: None,
+            steer_queues: None,
             ui: None,
             route: None,
             policy: None,
@@ -556,6 +560,12 @@ impl ThunderRoot {
         // Forward the host's pause gate so the unit can park at tool boundaries.
         if let Some(gate) = &options.pause_gate {
             agent = agent.with_pause_gate(Arc::clone(gate));
+        }
+
+        // Forward the steering / follow-up queues so the host can inject user
+        // input into this run at turn boundaries.
+        if let Some(queues) = &options.steer_queues {
+            agent = agent.with_steer_queues(Arc::clone(queues));
         }
 
         // 5. Start AgentLoop with full context input

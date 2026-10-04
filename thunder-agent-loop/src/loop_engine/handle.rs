@@ -1,5 +1,6 @@
 use crate::core::pause::PauseGate;
 use crate::core::state::LoopStatus;
+use crate::core::steer::SteerQueues;
 use crate::loop_engine::engine::AgentRunResult;
 use crate::types::error::AgentError;
 use crate::types::event::ObservedEvent;
@@ -19,6 +20,7 @@ pub struct AgentHandle {
     running: Arc<AtomicBool>,
     cancel: CancellationToken,
     pause_gate: Arc<PauseGate>,
+    steer_queues: Arc<SteerQueues>,
     result_rx: oneshot::Receiver<AgentRunResult>,
     event_rx: Option<mpsc::Receiver<ObservedEvent>>,
 }
@@ -30,6 +32,7 @@ impl AgentHandle {
         running: Arc<AtomicBool>,
         cancel: CancellationToken,
         pause_gate: Arc<PauseGate>,
+        steer_queues: Arc<SteerQueues>,
         result_rx: oneshot::Receiver<AgentRunResult>,
         event_rx: mpsc::Receiver<ObservedEvent>,
     ) -> Self {
@@ -39,9 +42,39 @@ impl AgentHandle {
             running,
             cancel,
             pause_gate,
+            steer_queues,
             result_rx,
             event_rx: Some(event_rx),
         }
+    }
+
+    /// Queue a steering message: delivered after the current turn's tool calls,
+    /// before the next model request. It can keep alive a run that would
+    /// otherwise have concluded.
+    pub fn steer(&self, message: crate::types::message::ChatMessage) {
+        self.steer_queues.steering.enqueue(message);
+    }
+
+    /// Queue a follow-up message: delivered only once the run has nothing else
+    /// to do.
+    pub fn follow_up(&self, message: crate::types::message::ChatMessage) {
+        self.steer_queues.follow_up.enqueue(message);
+    }
+
+    /// Both queues, for a host rendering its pending list.
+    pub fn steer_queues(&self) -> &Arc<SteerQueues> {
+        &self.steer_queues
+    }
+
+    /// Drop every queued message and return them, so a cancelled run hands the
+    /// text back to the editor instead of swallowing it.
+    pub fn clear_queue(
+        &self,
+    ) -> (
+        Vec<crate::types::message::ChatMessage>,
+        Vec<crate::types::message::ChatMessage>,
+    ) {
+        self.steer_queues.clear_all()
     }
 
     /// Request a cooperative pause. Takes effect at the next tool boundary, so

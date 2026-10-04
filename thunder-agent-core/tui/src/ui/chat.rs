@@ -1,7 +1,7 @@
 use crate::app::{ActiveToolCall, AgentStatus, App, LinkHitbox};
 use crate::ui::markdown::{self, LinkSpan, RenderCtx, Rendered};
 use crate::ui::theme::Theme;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -301,11 +301,25 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         )
     };
 
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
         .title(title)
         .title_style(theme.title_style())
         .border_style(Style::default().fg(theme.border_normal));
+
+    // The busy indicator sits on the separator directly above the prompt, so it
+    // is always in view without competing with what the user is typing.
+    if app.is_running() {
+        block = block.title_bottom(
+            Line::from(Span::styled(
+                format!("{} working… ", app.spinner()),
+                Style::default()
+                    .fg(theme.tool_bubble)
+                    .add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Right),
+        );
+    }
 
     let paragraph = Paragraph::new(stream.lines)
         .block(block)

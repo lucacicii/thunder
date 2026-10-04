@@ -174,11 +174,22 @@ async fn bash_cannot_write_outside_roots_via_cd_and_interpreter() {
         outside.display()
     );
     let res = run("call_e1", escape).await;
-    assert!(res.is_error, "cd+python write outside must be blocked: {}", res.output);
+    assert!(
+        res.is_error,
+        "cd+python write outside must be blocked: {}",
+        res.output
+    );
     assert!(res.output.contains("Shell write target"), "{}", res.output);
-    assert!(!outside.join("leak.txt").exists(), "nothing may be written outside");
+    assert!(
+        !outside.join("leak.txt").exists(),
+        "nothing may be written outside"
+    );
 
-    let res = run("call_e2", format!("cd {} && touch leak.txt", outside.display())).await;
+    let res = run(
+        "call_e2",
+        format!("cd {} && touch leak.txt", outside.display()),
+    )
+    .await;
     assert!(res.is_error);
     assert!(!outside.join("leak.txt").exists());
 
@@ -188,8 +199,15 @@ async fn bash_cannot_write_outside_roots_via_cd_and_interpreter() {
         "python3 -c \"open('inside.txt','w').write('ok')\"".to_string(),
     )
     .await;
-    assert!(!res.is_error, "in-jail interpreter write must pass: {}", res.output);
-    assert_eq!(std::fs::read_to_string(ws.join("inside.txt")).unwrap(), "ok");
+    assert!(
+        !res.is_error,
+        "in-jail interpreter write must pass: {}",
+        res.output
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("inside.txt")).unwrap(),
+        "ok"
+    );
 
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&outside);
