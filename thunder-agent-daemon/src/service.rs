@@ -27,6 +27,9 @@ pub struct DaemonService {
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Live pause gates per running task.
     active_pauses: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::pause::PauseGate>>>>,
+    /// Steering / follow-up queues per running task, so a client can inject user
+    /// input into a run that is already in flight.
+    active_queues: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::steer::SteerQueues>>>>,
     /// Active running task per session, to prevent concurrent turn races.
     active_sessions: Arc<Mutex<HashMap<String, String>>>,
     output_tx: mpsc::Sender<String>,
@@ -150,6 +153,7 @@ impl DaemonService {
             store: Arc::new(store),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             active_pauses: Arc::new(Mutex::new(HashMap::new())),
+            active_queues: Arc::new(Mutex::new(HashMap::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             output_tx,
             concurrency_semaphore,
@@ -415,6 +419,107 @@ impl DaemonService {
                     id,
                     success: true,
                     data: Some(serde_json::json!({ "task_id": task_id, "resumed": resumed })),
+                    error: None,
+                })
+                .await;
+            }
+
+            DaemonRequest::SteerTask {
+                id,
+                task_id,
+                message,
+                behavior,
+            } => {
+                // `behavior` is required: the two placements are far apart in the
+                // run, and defaulting would silently pick a different point than
+                // the caller asked for.
+                let behavior = match behavior.as_deref().map(str::trim) {
+                    Some("steer") => Some(thunder_agent_loop::core::steer::QueueBehavior::Steer),
+                    Some("follow_up") | Some("followUp") | Some("followup") => {
+                        Some(thunder_agent_loop::core::steer::QueueBehavior::FollowUp)
+                    }
+                    _ => None,
+                };
+                let queues = self.active_queues.lock().await.get(&task_id).cloned();
+                let (success, data, error) = match (behavior, queues) {
+                    (None, _) => (
+                        false,
+                        None,
+                        Some(
+                            "`behavior` must be `steer` or `follow_up`; the daemon will not 
+                             guess where in the run the message belongs."
+                                .to_string(),
+                        ),
+                    ),
+                    (Some(_), None) => (false, None, Some(format!("No running task `{task_id}`"))),
+                    (Some(behavior), Some(queues)) => {
+                        let message =
+                            thunder_agent_loop::types::message::ChatMessage::user(message);
+                        match behavior {
+                            thunder_agent_loop::core::steer::QueueBehavior::Steer => {
+                                queues.steering.enqueue(message)
+                            }
+                            thunder_agent_loop::core::steer::QueueBehavior::FollowUp => {
+                                queues.follow_up.enqueue(message)
+                            }
+                        }
+                        let snapshot = queues.snapshot();
+                        let _ = self
+                            .send_response(DaemonResponse::TaskQueueUpdate {
+                                task_id: task_id.clone(),
+                                session_id: None,
+                                steering: snapshot.steering.clone(),
+                                follow_up: snapshot.follow_up.clone(),
+                            })
+                            .await;
+                        (
+                            true,
+                            Some(serde_json::json!({
+                                "task_id": task_id,
+                                "behavior": behavior.label(),
+                                "queued": snapshot.total(),
+                            })),
+                            None,
+                        )
+                    }
+                };
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success,
+                    data,
+                    error,
+                })
+                .await;
+            }
+
+            DaemonRequest::ClearQueue { id, task_id } => {
+                let queues = self.active_queues.lock().await.get(&task_id).cloned();
+                let (steering, follow_up) = match queues {
+                    Some(queues) => queues.clear_all(),
+                    None => (Vec::new(), Vec::new()),
+                };
+                let texts = |msgs: Vec<thunder_agent_loop::types::message::ChatMessage>| {
+                    msgs.into_iter()
+                        .filter_map(|m| m.content_str().map(str::to_string))
+                        .collect::<Vec<String>>()
+                };
+                let steering_texts = texts(steering);
+                let follow_up_texts = texts(follow_up);
+                self.send_response(DaemonResponse::TaskQueueUpdate {
+                    task_id: task_id.clone(),
+                    session_id: None,
+                    steering: Vec::new(),
+                    follow_up: Vec::new(),
+                })
+                .await;
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "task_id": task_id,
+                        "steering": steering_texts,
+                        "follow_up": follow_up_texts,
+                    })),
                     error: None,
                 })
                 .await;
@@ -786,6 +891,14 @@ impl DaemonService {
             .await
             .insert(task_id.clone(), Arc::clone(&pause_gate));
 
+        // The queues this run will read from. The host keeps the Arc so it can
+        // accept input while the run holds the handle.
+        let steer_queues = thunder_agent_loop::core::steer::SteerQueues::new_shared();
+        self.active_queues
+            .lock()
+            .await
+            .insert(task_id.clone(), Arc::clone(&steer_queues));
+
         let effective_session_id = session_id.unwrap_or_else(|| {
             format!(
                 "sess_{}",
@@ -812,6 +925,7 @@ impl DaemonService {
                 .await;
                 self.active_tasks.lock().await.remove(&task_id);
                 self.active_pauses.lock().await.remove(&task_id);
+                self.active_queues.lock().await.remove(&task_id);
                 return;
             }
             sessions.insert(effective_session_id.clone(), task_id.clone());
@@ -924,6 +1038,7 @@ impl DaemonService {
                 .await;
                 self.active_tasks.lock().await.remove(&task_id);
                 self.active_pauses.lock().await.remove(&task_id);
+                self.active_queues.lock().await.remove(&task_id);
                 self.active_sessions
                     .lock()
                     .await
@@ -952,6 +1067,7 @@ impl DaemonService {
                     .await;
                     self.active_tasks.lock().await.remove(&task_id);
                     self.active_pauses.lock().await.remove(&task_id);
+                    self.active_queues.lock().await.remove(&task_id);
                     self.active_sessions
                         .lock()
                         .await
@@ -990,6 +1106,7 @@ impl DaemonService {
         let store = self.store.clone();
         let active_tasks = self.active_tasks.clone();
         let active_pauses = self.active_pauses.clone();
+        let active_queues = self.active_queues.clone();
         let active_sessions = self.active_sessions.clone();
         let output_tx = self.output_tx.clone();
         let client_factory = self.client_factory.clone();
@@ -1006,6 +1123,8 @@ impl DaemonService {
         let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
+        let steer_queues_for_run = Arc::clone(&steer_queues);
+        let queue_watch = Arc::clone(&steer_queues);
         let host_ui = Arc::clone(&self.host_ui);
         let run_task_id = task_id.clone();
         let run_session_id = effective_session_id.clone();
@@ -1084,6 +1203,7 @@ impl DaemonService {
                 thinking_level: chosen_thinking.clone(),
                 permission: chosen_permission,
                 pause_gate: Some(pause_gate_for_run),
+                steer_queues: Some(steer_queues_for_run),
                 // Tag every dialog this run raises with its task/session, so a
                 // multi-task panel can route the prompt to the right stream.
                 ui: Some(Arc::new(
@@ -1112,8 +1232,13 @@ impl DaemonService {
                     if let Some(mut rx) = handle.take_events() {
                         let tid = task_id.clone();
                         let out = output_tx.clone();
+                        let queues = Arc::clone(&queue_watch);
                         tokio::spawn(async move {
                             while let Some(event) = rx.recv().await {
+                                // The run drained a queued message: tell the client
+                                // so it can move it out of its pending list.
+                                let drained =
+                                    matches!(event.event, AgentEvent::SteerAccepted { .. });
                                 // Tiered trace retention:
                                 // Filter out high-frequency streaming micro-deltas (TokenDelta, ReasoningDelta, ToolCallChunk)
                                 // from in-memory trace storage to prevent unbounded memory growth on long tasks, while
@@ -1136,6 +1261,16 @@ impl DaemonService {
                                     event,
                                 };
                                 write_ndjson(&out, &res).await;
+                                if drained {
+                                    let snapshot = queues.snapshot();
+                                    let res = DaemonResponse::TaskQueueUpdate {
+                                        task_id: tid.clone(),
+                                        session_id: None,
+                                        steering: snapshot.steering,
+                                        follow_up: snapshot.follow_up,
+                                    };
+                                    write_ndjson(&out, &res).await;
+                                }
                             }
                         });
                     }
@@ -1338,6 +1473,7 @@ impl DaemonService {
 
             active_tasks.lock().await.remove(&task_id);
             active_pauses.lock().await.remove(&task_id);
+            active_queues.lock().await.remove(&task_id);
             active_sessions.lock().await.remove(&effective_session_id);
         });
     }

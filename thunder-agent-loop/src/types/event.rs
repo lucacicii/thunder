@@ -132,6 +132,17 @@ pub enum AgentEvent {
         tokens_before: usize,
         tokens_after: usize,
     },
+    /// A queued steering / follow-up message entered the transcript.
+    ///
+    /// Emitted at the turn boundary, at the same moment the message joins the
+    /// context, so a host can move it out of its "pending" display and into the
+    /// transcript without guessing when the loop picked it up.
+    SteerAccepted {
+        turn: usize,
+        /// `steer` or `follow_up`.
+        behavior: String,
+        message: String,
+    },
     Error {
         turn: Option<usize>,
         message: String,

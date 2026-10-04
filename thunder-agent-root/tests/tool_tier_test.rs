@@ -72,6 +72,7 @@ async fn tools_for(permission: Permission) -> Vec<String> {
         thinking_level: None,
         permission,
         pause_gate: None,
+        steer_queues: None,
         ui: None,
         policy: None,
         route: None,

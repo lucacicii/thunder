@@ -42,6 +42,26 @@ pub enum DaemonRequest {
     PauseTask { id: Option<String>, task_id: String },
     /// Resume a paused task
     ResumeTask { id: Option<String>, task_id: String },
+    /// Queue user input into a task that is already running.
+    ///
+    /// `behavior` must be stated, because the two placements are far apart in
+    /// the run and guessing would silently do the wrong one:
+    ///
+    /// * `steer` — enters after the current turn's tool calls, before the next
+    ///   model request. It can keep alive a run that would otherwise have
+    ///   concluded.
+    /// * `follow_up` — enters only once the run has nothing else to do.
+    ///
+    /// Neither interrupts a tool that is executing.
+    SteerTask {
+        id: Option<String>,
+        task_id: String,
+        message: String,
+        behavior: Option<String>,
+    },
+    /// Drop everything queued into a running task and return its text, so a
+    /// client can put it back in its editor when the user aborts.
+    ClearQueue { id: Option<String>, task_id: String },
     /// Answer a pending `ask_user_question` from the agent
     AnswerQuestion {
         id: Option<String>,
@@ -168,6 +188,16 @@ pub enum DaemonResponse {
         task_id: String,
         session_id: Option<String>,
         reason: String,
+    },
+    /// The task's pending steering / follow-up queues changed.
+    ///
+    /// Carries both queues in full, never a delta: a client that missed one
+    /// message would otherwise drift out of sync with the agent forever.
+    TaskQueueUpdate {
+        task_id: String,
+        session_id: Option<String>,
+        steering: Vec<String>,
+        follow_up: Vec<String>,
     },
     /// A dialog the agent (or a plugin) wants answered. Blocks that caller until
     /// `answer_ui` arrives or `timeout_ms` elapses — on expiry the daemon

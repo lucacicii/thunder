@@ -65,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         thinking_level: None,
         permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
+        steer_queues: None,
         ui: None,
         policy: None,
         route: None,

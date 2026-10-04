@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::sync::Arc;
+use thunder_agent_loop::prelude::SteerQueues;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
-use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use thunder_tui::app::ExecutionMode;
 use thunder_tui::prelude::*;
 use tokio::sync::mpsc;
@@ -164,41 +166,64 @@ async fn spinner_advances_on_tick_and_wraps() {
 }
 
 #[tokio::test]
-async fn input_line_shows_a_spinner_and_working_while_running() {
+async fn busy_indicator_sits_above_the_input_not_in_it() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     let mut app = App::new("gpt-4o");
     let theme = Theme::default();
 
-    let screen = |app: &mut App| -> String {
+    // Draws a frame and returns the screen rows.
+    let rows = |app: &mut App| -> Vec<String> {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| thunder_tui::ui::draw(f, app, &theme))
             .unwrap();
-        terminal
-            .backend()
-            .buffer()
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area().width as usize;
+        buffer
             .content()
-            .iter()
-            .map(|c| c.symbol())
+            .chunks(width)
+            .map(|row| row.iter().map(|c| c.symbol()).collect())
             .collect()
     };
 
-    // Idle: the prompt, and no busy indicator.
-    let idle = screen(&mut app);
-    assert!(idle.contains('❯'), "idle prompt: {idle:?}");
-    assert!(!idle.contains("working"), "not busy while idle");
+    let idle = rows(&mut app);
+    let idle_screen = idle.join("\n");
+    assert!(idle_screen.contains('❯'), "idle prompt: {idle_screen:?}");
+    assert!(!idle_screen.contains("working"), "idle shows no busy hint");
 
     app.agent_status = AgentStatus::Streaming;
-    let busy = screen(&mut app);
-    assert!(busy.contains("working"), "busy hint: {busy:?}");
+    let busy = rows(&mut app);
+    let busy_screen = busy.join("\n");
+
+    // The spinner and its label are drawn…
+    assert!(
+        busy_screen.contains("working"),
+        "busy hint: {busy_screen:?}"
+    );
     assert!(
         thunder_tui::app::SPINNER_FRAMES
             .iter()
-            .any(|f| busy.contains(f)),
-        "spinner glyph: {busy:?}"
+            .any(|f| busy_screen.contains(f)),
+        "spinner glyph: {busy_screen:?}"
+    );
+
+    // …on the separator above the prompt, never on the prompt itself.
+    let input_row = busy
+        .iter()
+        .position(|row| row.contains('❯'))
+        .expect("the prompt row");
+    assert!(
+        !busy[input_row].contains("working"),
+        "the input row must stay clean: {:?}",
+        busy[input_row]
+    );
+    assert!(
+        busy[input_row - 1].contains("working"),
+        "the separator above the input carries it: {:?}",
+        busy[input_row - 1]
     );
 }
 
@@ -314,6 +339,126 @@ async fn caret_does_not_hide_the_character_under_it() {
 
     // The character under the caret is highlighted, not dropped.
     assert!(screen.contains("abc"), "input renders in full: {screen:?}");
+}
+
+#[tokio::test]
+async fn enter_while_running_steers_instead_of_submitting() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    app.agent_status = AgentStatus::Streaming;
+    app.set_input("change of plan".to_string());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx);
+
+    assert_eq!(queues.steering.len(), 1, "Enter steers the live run");
+    assert!(queues.follow_up.is_empty());
+    assert!(app.input.is_empty(), "the editor is cleared after queueing");
+    assert_eq!(app.queued.steering, vec!["change of plan".to_string()]);
+    assert!(
+        !app.conversation
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User { .. })),
+        "nothing was submitted as a new turn"
+    );
+}
+
+#[tokio::test]
+async fn alt_enter_while_running_queues_a_follow_up() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    app.agent_status = AgentStatus::Thinking;
+    app.set_input("then summarise".to_string());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), tx);
+
+    assert_eq!(queues.follow_up.len(), 1, "Alt+Enter queues a follow-up");
+    assert!(queues.steering.is_empty());
+    assert_eq!(app.queued.follow_up, vec!["then summarise".to_string()]);
+}
+
+#[tokio::test]
+async fn a_queued_message_enters_the_transcript_when_accepted() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    app.agent_status = AgentStatus::Streaming;
+    queues.steering.enqueue(ChatMessage::user("new direction"));
+    app.queued = queues.snapshot();
+
+    app.handle_agent_event(ObservedEvent {
+        agent_id: "tui_agent".to_string(),
+        event: AgentEvent::SteerAccepted {
+            turn: 2,
+            behavior: "steer".to_string(),
+            message: "new direction".to_string(),
+        },
+    });
+
+    assert!(
+        app.conversation.messages.iter().any(|m| matches!(
+            m,
+            ChatMessage::User { content, .. } if content == "new direction"
+        )),
+        "the accepted message is shown immediately"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_returns_queued_text_to_the_editor() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    app.agent_status = AgentStatus::Streaming;
+    app.cancel_token = Some(tokio_util::sync::CancellationToken::new());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.set_input("do this instead".to_string());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    app.set_input("then summarise".to_string());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), tx.clone());
+    assert_eq!(queues.steering.len() + queues.follow_up.len(), 2);
+
+    // Esc cancels the run — and hands the queued text back rather than dropping it.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), tx);
+
+    assert!(app.input.contains("do this instead"), "got {:?}", app.input);
+    assert!(app.input.contains("then summarise"), "got {:?}", app.input);
+    assert_eq!(app.queued.total(), 0, "the pending list is emptied");
+    assert!(queues.steering.is_empty() && queues.follow_up.is_empty());
+}
+
+#[tokio::test]
+async fn queue_command_reports_and_clears() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    queues.steering.enqueue(ChatMessage::user("queued text"));
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.execute_slash_command("/queue", tx.clone());
+    let listed = app
+        .conversation
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            ChatMessage::Assistant { content, .. } => content.clone(),
+            _ => None,
+        })
+        .expect("a report");
+    assert!(listed.contains("queued text"), "got {listed:?}");
+
+    app.execute_slash_command("/queue clear", tx);
+    assert!(app.input.contains("queued text"), "got {:?}", app.input);
+    assert_eq!(app.queued.total(), 0);
 }
 
 #[tokio::test]

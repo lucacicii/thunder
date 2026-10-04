@@ -171,6 +171,11 @@ pub struct App {
     pub pending_links: Vec<LinkTarget>,
     /// Advanced by every tick, so the busy spinner animates while a run is live.
     pub spinner_frame: usize,
+    /// Steering / follow-up queues the live run reads from.
+    pub steer_queues: Option<Arc<SteerQueues>>,
+    /// Queued-but-not-yet-accepted input, kept for display. Refreshed whenever
+    /// the queues change and when the engine reports one was accepted.
+    pub queued: QueueSnapshot,
 }
 
 /// A clickable region of the chat pane, in absolute terminal coordinates.
@@ -242,6 +247,8 @@ impl App {
             link_hitboxes: Vec::new(),
             pending_links: Vec::new(),
             spinner_frame: 0,
+            steer_queues: None,
+            queued: QueueSnapshot::default(),
         }
     }
 
@@ -423,6 +430,74 @@ impl App {
             i += 1;
         }
         self.input_cursor = i;
+    }
+
+    // ── Steering / follow-up queue ───────────────────────────────────────
+
+    /// Queue the current input into the live run.
+    ///
+    /// The run picks it up at the next turn boundary: steering before the next
+    /// model request (and able to keep a concluding run alive), follow-up only
+    /// once nothing else is left to do. Neither interrupts a running tool.
+    fn enqueue_for_run(&mut self, behavior: QueueBehavior) {
+        let text = self.input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(queues) = self.steer_queues.as_ref() else {
+            return;
+        };
+        let message = ChatMessage::user(text.clone());
+        match behavior {
+            QueueBehavior::Steer => queues.steering.enqueue(message),
+            QueueBehavior::FollowUp => queues.follow_up.enqueue(message),
+        }
+        self.queued = queues.snapshot();
+        self.input_history.push(text);
+        self.history_idx = None;
+        self.clear_input();
+        let label = match behavior {
+            QueueBehavior::Steer => "Steering queued",
+            QueueBehavior::FollowUp => "Follow-up queued",
+        };
+        self.set_status_message(format!("{label} ({} pending)", self.queued.total()));
+    }
+
+    /// Empty both queues and return the text to the editor, so cancelling a run
+    /// never loses what was typed while waiting. Returns how many were restored.
+    pub fn restore_queue_to_input(&mut self) -> usize {
+        let Some(queues) = self.steer_queues.take() else {
+            return 0;
+        };
+        let (steering, follow_up) = queues.clear_all();
+        self.queued = QueueSnapshot::default();
+
+        let queued: Vec<String> = steering
+            .into_iter()
+            .chain(follow_up)
+            .filter_map(|m| m.content_str().map(str::to_string))
+            .collect();
+        if queued.is_empty() {
+            return 0;
+        }
+
+        let existing = std::mem::take(&mut self.input);
+        let combined = if existing.trim().is_empty() {
+            queued.join("\n\n")
+        } else {
+            format!("{}\n\n{existing}", queued.join("\n\n"))
+        };
+        let count = queued.len();
+        self.set_input(combined);
+        count
+    }
+
+    /// Re-read the queues for display. Called after the engine accepts one, and
+    /// whenever the host itself enqueues.
+    pub fn refresh_queue_snapshot(&mut self) {
+        if let Some(queues) = self.steer_queues.as_ref() {
+            self.queued = queues.snapshot();
+        }
     }
 
     // ── Run control: pause / resume ───────────────────────────────────────
@@ -936,8 +1011,15 @@ impl App {
                         self.clear_input();
                         self.command_popup_idx = 0;
                     } else if let Some(token) = self.cancel_token.take() {
+                        // Hand queued input back before cancelling: dropping it
+                        // silently is the one thing a user cannot recover from.
+                        let restored = self.restore_queue_to_input();
                         token.cancel();
-                        self.set_status_message("Cancelled.");
+                        self.set_status_message(if restored > 0 {
+                            format!("Cancelled. {restored} queued message(s) back in the editor.")
+                        } else {
+                            "Cancelled.".to_string()
+                        });
                         self.agent_status = AgentStatus::Idle;
                         self.streaming_delta.clear();
                     }
@@ -983,6 +1065,19 @@ impl App {
                     }
                 }
 
+                // A run is already in flight: Enter steers it, Alt+Enter queues a
+                // follow-up. Neither interrupts a tool that is executing — both are
+                // delivered at the next turn boundary.
+                if self.is_running() && !self.input.trim().is_empty() {
+                    let behavior = if key.modifiers.contains(KeyModifiers::ALT) {
+                        QueueBehavior::FollowUp
+                    } else {
+                        QueueBehavior::Steer
+                    };
+                    self.enqueue_for_run(behavior);
+                    return;
+                }
+
                 if !self.input.trim().is_empty()
                     && (self.agent_status == AgentStatus::Idle
                         || matches!(self.agent_status, AgentStatus::Done | AgentStatus::Error(_)))
@@ -1016,6 +1111,12 @@ impl App {
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cursor_end()
+            }
+            // Ctrl+J inserts a literal newline. Enter submits (or steers), so a
+            // multi-line prompt needs a key of its own.
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.insert_char('\n');
+                self.command_popup_idx = 0;
             }
             KeyCode::Char(c) => {
                 self.insert_char(c);
@@ -2234,6 +2335,64 @@ impl App {
                 true
             }
 
+            // 11d. /queue [clear | all | one] — input queued into a live run
+            "queue" | "queued" | "pending" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.refresh_queue_snapshot();
+                let out = match args.first().copied() {
+                    Some("clear" | "reset") => {
+                        let restored = self.restore_queue_to_input();
+                        if restored == 0 {
+                            "No queued messages.".to_string()
+                        } else {
+                            format!(
+                                "✔ Cleared {restored} queued message(s) and returned them to the editor."
+                            )
+                        }
+                    }
+                    Some(raw) => match QueueMode::parse(raw) {
+                        Some(mode) => {
+                            if let Some(queues) = self.steer_queues.as_ref() {
+                                queues.steering.set_mode(mode);
+                                queues.follow_up.set_mode(mode);
+                            }
+                            format!("✔ Queue mode set to `{}` for this run.", mode.label())
+                        }
+                        None => {
+                            format!("❌ Unknown queue option `{raw}`. Use `clear`, `all` or `one`.")
+                        }
+                    },
+                    None => {
+                        let snap = self.queued.clone();
+                        if snap.is_empty() {
+                            "### 📥 Queued Messages\n\nNothing queued.\n\n*While a run is live: `Enter` steers it, `Alt+Enter` queues a follow-up, `/queue clear` takes them back.*".to_string()
+                        } else {
+                            let mut out = String::from("### 📥 Queued Messages\n\n");
+                            if !snap.steering.is_empty() {
+                                out.push_str("**Steering** — enters at the next turn boundary:\n");
+                                for (i, m) in snap.steering.iter().enumerate() {
+                                    out.push_str(&format!("{}. {}\n", i + 1, m));
+                                }
+                            }
+                            if !snap.follow_up.is_empty() {
+                                if !snap.steering.is_empty() {
+                                    out.push('\n');
+                                }
+                                out.push_str("**Follow-up** — enters after the run finishes:\n");
+                                for (i, m) in snap.follow_up.iter().enumerate() {
+                                    out.push_str(&format!("{}. {}\n", i + 1, m));
+                                }
+                            }
+                            out.push_str("\n*`/queue clear` returns them to the editor.*");
+                            out
+                        }
+                    }
+                };
+                self.conversation.add_assistant_message(Some(out), None);
+                self.save_and_refresh();
+                true
+            }
+
             // 12. /health or /doctor — lightweight local diagnostics (no LLM call)
             "health" | "doctor" => {
                 self.conversation.add_user_message(raw_cmd);
@@ -2588,13 +2747,18 @@ impl App {
         self.cancel_token = Some(cancel.clone());
         let pause_gate = PauseGate::new_shared();
         self.pause_gate = Some(pause_gate.clone());
+        // Steering / follow-up input for this run. The host keeps the Arc so it
+        // can accept input while the run holds the handle.
+        let steer_queues = SteerQueues::new_shared();
+        self.steer_queues = Some(Arc::clone(&steer_queues));
+        self.queued = QueueSnapshot::default();
 
         match mode {
             ExecutionMode::SingleAgent => {
-                self.run_single_agent(prompt, cancel, pause_gate, event_tx);
+                self.run_single_agent(prompt, cancel, pause_gate, steer_queues, event_tx);
             }
             ExecutionMode::AutoRouter => {
-                self.run_root_agent(prompt, cancel, pause_gate, event_tx);
+                self.run_root_agent(prompt, cancel, pause_gate, steer_queues, event_tx);
             }
         }
     }
@@ -2604,6 +2768,7 @@ impl App {
         _prompt: String,
         cancel: CancellationToken,
         pause_gate: Arc<PauseGate>,
+        steer_queues: Arc<SteerQueues>,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         let model = self.model.selection_id();
@@ -2680,6 +2845,7 @@ impl App {
                 thinking_level: None,
                 permission,
                 pause_gate: Some(pause_gate),
+                steer_queues: Some(steer_queues),
                 // Forward terminal-native HostUi so approval dialogs (mode: ask / manual)
                 // and plugin UI requests present interactive modals rather than failing closed.
                 ui: Some(Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()))),
@@ -2761,6 +2927,7 @@ impl App {
         _prompt: String,
         cancel: CancellationToken,
         pause_gate: Arc<PauseGate>,
+        steer_queues: Arc<SteerQueues>,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         let model = self.model.selection_id();
@@ -2849,6 +3016,7 @@ impl App {
                 agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
             }
             agent = agent.with_pause_gate(pause_gate);
+            agent = agent.with_steer_queues(steer_queues);
 
             match agent.start(context_input, Some(cancel)) {
                 Ok(mut handle) => {
@@ -2916,6 +3084,25 @@ impl App {
             AgentEvent::TokenDelta { delta, .. } => {
                 self.agent_status = AgentStatus::Streaming;
                 self.streaming_delta.push_str(&delta);
+            }
+            AgentEvent::SteerAccepted {
+                behavior, message, ..
+            } => {
+                // The queued input has joined the transcript. Show it now rather
+                // than waiting for the run to end, and drop it from the pending
+                // count. A later `authoritative_messages` replaces the whole
+                // list, so this cannot double up.
+                self.conversation.add_user_message(message.clone());
+                self.refresh_queue_snapshot();
+                let label = if behavior == "follow_up" {
+                    "Follow-up"
+                } else {
+                    "Steering"
+                };
+                self.set_status_message(format!(
+                    "{label} accepted ({} still pending)",
+                    self.queued.total()
+                ));
             }
             AgentEvent::ReasoningDelta { delta, .. } => {
                 self.reasoning_delta.push_str(&delta);
@@ -3087,6 +3274,8 @@ impl App {
         self.active_tool_calls.clear();
         self.cancel_token = None;
         self.pause_gate = None;
+        self.steer_queues = None;
+        self.queued = QueueSnapshot::default();
 
         // Lifetime usage bookkeeping (additive, mirroring the daemon):
         // `recalculate_stats` recomputes the working-context estimate, so the
@@ -3240,6 +3429,9 @@ fn format_trace_event(event: &ObservedEvent) -> Option<String> {
             tokens_before, tokens_after
         )),
         AgentEvent::Error { message, .. } => Some(format!("  ✖ error: {message}")),
+        AgentEvent::SteerAccepted {
+            behavior, message, ..
+        } => Some(format!("  📥 {behavior} accepted: {message}")),
         AgentEvent::LoopComplete { .. }
         | AgentEvent::TokenDelta { .. }
         | AgentEvent::ReasoningDelta { .. }

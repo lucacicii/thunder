@@ -2,6 +2,7 @@ pub mod context;
 pub mod images;
 pub mod pause;
 pub mod state;
+pub mod steer;
 pub mod token_estimator;
 pub mod utf8;
 

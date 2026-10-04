@@ -216,6 +216,13 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Session,
     ),
     SlashCommand::new(
+        "queue",
+        &["queued", "pending"],
+        "[clear | all | one]",
+        "Inspect or manage messages queued into the running agent",
+        CommandCategory::General,
+    ),
+    SlashCommand::new(
         "health",
         &["doctor", "status"],
         "",

@@ -484,7 +484,11 @@ fn render_code(lang: &str, lines: &[String], ctx: &mut RenderCtx<'_>, out: &mut 
 
     let code_width = ctx.width.saturating_sub(INDENT.len() + 2).max(1);
     for line in lines {
-        let cells = to_cells(&[Frag::plain(line.clone(), body)]);
+        // A fenced block is where agents usually print the file they just wrote,
+        // so paths in it are resolved like anywhere else (the code colour is
+        // kept, the link just adds the underline).
+        let frags = resolve_frags(vec![Frag::plain(line.clone(), body)], ctx);
+        let cells = to_cells(&frags);
         let (rows, truncated) = wrap_cells(&cells, code_width, CODE_MAX_ROWS);
         for row in rows {
             let mut all = lead();
@@ -1162,6 +1166,35 @@ mod tests {
             .map(|l| l.trim_start().to_string())
             .collect();
         assert_eq!(joined, long);
+    }
+
+    #[test]
+    fn fenced_code_paths_are_clickable() {
+        let theme = Theme::default();
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("out.png"), "x").unwrap();
+        let roots = vec![dir.path().to_path_buf()];
+        let mut cache = LinkCache::new();
+        let mut ctx = RenderCtx {
+            theme: &theme,
+            width: 80,
+            roots: &roots,
+            cache: &mut cache,
+        };
+
+        let out = render("```\nout.png\n```", &mut ctx);
+        assert_eq!(out.links.len(), 1, "{:?}", out.links);
+        assert_eq!(
+            out.links[0].target,
+            LinkTarget::File(dir.path().join("out.png"))
+        );
+        // The code line still renders verbatim.
+        let text: String = out.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("out.png"), "{text:?}");
     }
 
     #[test]
