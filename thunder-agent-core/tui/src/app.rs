@@ -1,6 +1,7 @@
 use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
 use crate::links::{LinkCache, LinkTarget};
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
+use crate::ui::metrics::Metrics;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -182,6 +183,8 @@ pub struct App {
     /// How a link is acted on. Injectable so a test can assert the whole
     /// click path without launching Finder.
     pub link_opener: Option<Arc<dyn Fn(&LinkTarget) -> std::io::Result<()> + Send + Sync>>,
+    /// Token / cache / speed readout held for the metrics bar.
+    pub metrics: Metrics,
 }
 
 /// A clickable region of the chat pane, in absolute terminal coordinates.
@@ -257,6 +260,7 @@ impl App {
             queued: QueueSnapshot::default(),
             queued_turns: Vec::new(),
             link_opener: None,
+            metrics: Metrics::new(),
         }
     }
 
@@ -328,6 +332,7 @@ impl App {
                 self.scroll_offset = 0;
                 self.last_error = None;
                 self.clear_link_cache();
+                self.metrics.reset_for_session();
             }
             self.refresh_sessions().await;
             if let Some(pos) = self.session_list.iter().position(|s| s.id == id) {
@@ -1616,6 +1621,7 @@ impl App {
         self.last_error = None;
         self.active_skill = None;
         self.clear_link_cache();
+        self.metrics.reset_for_session();
         self.set_status_message("Created new session.");
 
         self.save_and_refresh();
@@ -2433,6 +2439,28 @@ impl App {
             }
 
             // 12. /health or /doctor — lightweight local diagnostics (no LLM call)
+            // 11e. /metrics [on|off] — the token / cache / speed bar
+            "metrics" | "meters" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.metrics.enabled = match args.first().map(|a| a.to_ascii_lowercase()).as_deref()
+                {
+                    Some("on" | "true" | "yes" | "show") => true,
+                    Some("off" | "false" | "no" | "hide") => false,
+                    // Bare `/metrics` toggles.
+                    _ => !self.metrics.enabled,
+                };
+                let out = if self.metrics.enabled {
+                    "✔ Metrics bar on."
+                } else {
+                    "✔ Metrics bar off — the row goes back to the transcript."
+                };
+                self.conversation
+                    .add_assistant_message(Some(out.to_string()), None);
+                self.set_status_message(out.to_string());
+                self.save_and_refresh();
+                true
+            }
+
             "health" | "doctor" => {
                 self.conversation.add_user_message(raw_cmd);
                 let model = self.model.selection_id();
@@ -2792,6 +2820,9 @@ impl App {
         self.steer_queues = Some(Arc::clone(&steer_queues));
         self.queued = QueueSnapshot::default();
         self.queued_turns.clear();
+        // The live counters restart here; the previous run's numbers stay on the
+        // bar until this one replaces them.
+        self.metrics.begin_run();
 
         match mode {
             ExecutionMode::SingleAgent => {
@@ -3123,6 +3154,7 @@ impl App {
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 self.agent_status = AgentStatus::Streaming;
+                self.metrics.count_token_delta();
                 self.streaming_delta.push_str(&delta);
             }
             AgentEvent::SteerAccepted {
@@ -3169,6 +3201,7 @@ impl App {
                 ));
             }
             AgentEvent::ReasoningDelta { delta, .. } => {
+                self.metrics.count_reasoning_delta();
                 self.reasoning_delta.push_str(&delta);
             }
             AgentEvent::ToolCallReady { tool_call, .. } => {
@@ -3224,7 +3257,8 @@ impl App {
                 self.active_tool_calls.retain(|c| c.id != tool_call_id);
                 self.agent_status = AgentStatus::Thinking;
             }
-            AgentEvent::TurnEnd { .. } => {
+            AgentEvent::TurnEnd { stats, .. } => {
+                self.metrics.record_turn(&stats);
                 if !self.streaming_delta.is_empty() {
                     let content = std::mem::take(&mut self.streaming_delta);
                     self.conversation.add_assistant_message(Some(content), None);
@@ -3341,6 +3375,7 @@ impl App {
         self.steer_queues = None;
         self.queued = QueueSnapshot::default();
         self.queued_turns.clear();
+        self.metrics.finish_run(run_stats.as_ref());
 
         // Lifetime usage bookkeeping (additive, mirroring the daemon):
         // `recalculate_stats` recomputes the working-context estimate, so the

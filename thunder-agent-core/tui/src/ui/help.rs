@@ -84,6 +84,26 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled(
+                "/metrics [on|off]     ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Toggle the token, cache and speed bar above the prompt",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/queue [clear]        ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Inspect or clear messages queued into the running agent",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "Ctrl + O       ",
                 Style::default()
                     .fg(theme.highlight)
