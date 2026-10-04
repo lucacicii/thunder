@@ -24,6 +24,20 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
+    let frame = f.area();
+    // The editor grows with its content (plus its padding) and the status line
+    // below it only takes a row while it has something to say.
+    let footer = status_bar::footer_height(app);
+    // Rows the transcript is guaranteed: the header plus the stream floor.
+    let reserved = 1 + 4 + u16::from(app.metrics.enabled) + footer;
+    let input_box = status_bar::input_box_height(
+        app,
+        frame.width as usize,
+        // At least the prompt row itself: on a tiny frame the box drops its
+        // padding rather than disappearing.
+        frame.height.saturating_sub(reserved).max(1),
+    );
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -32,10 +46,10 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             // Token / cache / speed readout, above the prompt where the eye
             // already is. Costs a transcript row, so it can be turned off.
             Constraint::Length(u16::from(app.metrics.enabled)),
-            Constraint::Length(1), // Inline prompt line (❯ ...)
-            Constraint::Length(1), // Status footer
+            Constraint::Length(input_box), // Inline prompt box (❯ ..., padded)
+            Constraint::Length(footer),    // Transient status line
         ])
-        .split(f.area());
+        .split(frame);
 
     // 1. Render Header (Top status line)
     render_header(f, app, main_chunks[0], theme);

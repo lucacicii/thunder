@@ -36,6 +36,18 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled(
+                "Shift + Enter  ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "New line in the prompt (Ctrl + J on terminals without the key protocol)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "Tab            ",
                 Style::default()
                     .fg(theme.highlight)

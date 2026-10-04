@@ -37,6 +37,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
 | **`Enter`** | **Send / Submit** | Submit input prompt or execute slash command |
+| **`Shift + Enter`** | **New line** | Start a new line in the input box, which grows with the prompt. Use **`Ctrl + J`** when the terminal cannot report the modifier |
 | **`Tab`** | **Auto-complete / Focus** | Auto-complete slash command; otherwise toggle focus between Input and Chat |
 | **`↑ / ↓`** | **Select / History** | Navigate candidate list in slash popup; browse prompt history in normal state |
 | **`Ctrl + N`** | **New Session** | Clear chat stream and create a fresh blank session |
