@@ -210,7 +210,7 @@ async fn busy_indicator_sits_above_the_input_not_in_it() {
         "spinner glyph: {busy_screen:?}"
     );
 
-    // …on the separator above the prompt, never on the prompt itself.
+    // …on a row above the prompt, never on the prompt itself.
     let input_row = busy
         .iter()
         .position(|row| row.contains('❯'))
@@ -220,10 +220,15 @@ async fn busy_indicator_sits_above_the_input_not_in_it() {
         "the input row must stay clean: {:?}",
         busy[input_row]
     );
+    // Found by searching rather than by offset: the metrics bar also lives
+    // between here and the prompt.
+    let busy_row = busy
+        .iter()
+        .position(|row| row.contains("working"))
+        .expect("the bus row");
     assert!(
-        busy[input_row - 1].contains("working"),
-        "the separator above the input carries it: {:?}",
-        busy[input_row - 1]
+        busy_row < input_row,
+        "the indicator sits above the prompt ({busy_row} < {input_row})"
     );
 }
 

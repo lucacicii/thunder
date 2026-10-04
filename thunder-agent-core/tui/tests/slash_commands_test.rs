@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 fn test_slash_command_autocomplete_filtering() {
     // 1. Slash prefix returns all commands
     let all = filter_commands("/");
-    assert_eq!(all.len(), 26);
+    assert_eq!(all.len(), 27);
 
     // 2. Filter by prefix
     let sk = filter_commands("/sk");

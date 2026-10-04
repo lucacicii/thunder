@@ -223,6 +223,13 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::General,
     ),
     SlashCommand::new(
+        "metrics",
+        &["meters"],
+        "[on | off]",
+        "Show or hide the token, cache and speed bar above the prompt",
+        CommandCategory::General,
+    ),
+    SlashCommand::new(
         "health",
         &["doctor", "status"],
         "",
