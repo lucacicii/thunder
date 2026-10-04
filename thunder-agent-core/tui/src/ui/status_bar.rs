@@ -48,18 +48,9 @@ pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ),
     };
 
-    let input_text = if app.input.is_empty() {
-        if is_focused {
-            Span::styled(
-                "Type a message, or / for commands (e.g. /resume, /model, /skills)...",
-                Style::default().fg(Color::Rgb(100, 116, 139)),
-            )
-        } else {
-            Span::styled("Press Tab to focus input...", theme.muted_style())
-        }
-    } else {
-        Span::styled(&app.input, theme.text_style())
-    };
+    // No placeholder: an empty input stays empty. The status bar already
+    // carries the key hints, and the `❯` prompt marks the input line.
+    let input_text = Span::styled(&app.input, theme.text_style());
 
     let cursor_span = if is_focused && app.agent_status == AgentStatus::Idle {
         Span::styled("█", Style::default().fg(theme.accent_primary))
