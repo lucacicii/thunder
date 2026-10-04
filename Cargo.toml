@@ -60,6 +60,7 @@ ignore = "0.4"
 bytes = "1.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 ratatui = "0.29"
+unicode-width = "0.2"
 crossterm = { version = "0.28", features = ["event-stream"] }
 libc = "0.2"
 

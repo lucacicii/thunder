@@ -170,7 +170,7 @@ impl TuiRunner {
                     app.picker.open(kind, Some(title), items);
                 }
             }
-            AppEvent::Tick => {}
+            AppEvent::Tick => app.tick(),
             _ => {}
         }
     }

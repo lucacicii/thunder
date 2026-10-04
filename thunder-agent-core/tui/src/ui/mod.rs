@@ -2,6 +2,7 @@ pub mod chat;
 pub mod command_popup;
 pub mod header;
 pub mod help;
+pub mod markdown;
 pub mod picker_modal;
 pub mod question_modal;
 pub mod sidebar;

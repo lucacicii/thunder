@@ -21,6 +21,7 @@ workspace = true
 
 [dependencies]
 ratatui.workspace = true
+unicode-width.workspace = true
 crossterm.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true

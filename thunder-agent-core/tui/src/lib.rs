@@ -6,6 +6,7 @@ pub mod app;
 pub mod ask_user;
 pub mod commands;
 pub mod event;
+pub mod links;
 pub mod picker;
 pub mod runner;
 pub mod title;

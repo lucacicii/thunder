@@ -202,6 +202,20 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Session,
     ),
     SlashCommand::new(
+        "preview",
+        &["md", "rich"],
+        "[on | off]",
+        "Toggle the rendered Markdown preview against the raw source",
+        CommandCategory::General,
+    ),
+    SlashCommand::new(
+        "links",
+        &["urls", "files"],
+        "",
+        "List every link and file path in this session; Enter reveals or opens it",
+        CommandCategory::Session,
+    ),
+    SlashCommand::new(
         "health",
         &["doctor", "status"],
         "",
