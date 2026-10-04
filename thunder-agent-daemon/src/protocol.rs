@@ -58,6 +58,11 @@ pub enum DaemonRequest {
         task_id: String,
         message: String,
         behavior: Option<String>,
+        /// Image attachments for the queued turn. Same ingress rules as
+        /// `run_task`: paths are jailed against the *run's* workspace, and every
+        /// payload is magic-byte validated before it can reach the model.
+        #[serde(default)]
+        attachments: Option<Vec<Attachment>>,
     },
     /// Drop everything queued into a running task and return its text, so a
     /// client can put it back in its editor when the user aborts.
@@ -246,4 +251,89 @@ pub struct QuestionOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(value: serde_json::Value) -> Result<DaemonRequest, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
+    /// `steer_task` carries images the same way `run_task` does, so a host can
+    /// steer with a screenshot instead of describing it.
+    #[test]
+    fn steer_task_accepts_attachments() {
+        let req = parse(serde_json::json!({
+            "method": "steer_task",
+            "id": "req-1",
+            "task_id": "task-1",
+            "message": "look at this",
+            "behavior": "steer",
+            "attachments": [
+                { "path": "/tmp/shot.png" },
+                { "data": "aGVsbG8=", "mimeType": "image/png", "name": "pasted.png" }
+            ]
+        }))
+        .expect("parses");
+
+        match req {
+            DaemonRequest::SteerTask {
+                behavior,
+                attachments,
+                ..
+            } => {
+                assert_eq!(behavior.as_deref(), Some("steer"));
+                let attachments = attachments.expect("attachments");
+                assert_eq!(attachments.len(), 2);
+                assert_eq!(attachments[0].path.as_deref(), Some("/tmp/shot.png"));
+                assert_eq!(attachments[1].data.as_deref(), Some("aGVsbG8="));
+                assert_eq!(attachments[1].mime_type.as_deref(), Some("image/png"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Text-only steer stays valid: attachments are optional, and a host that
+    /// has none must not be forced to say so.
+    #[test]
+    fn steer_task_without_attachments_still_parses() {
+        let req = parse(serde_json::json!({
+            "method": "steer_task",
+            "task_id": "task-1",
+            "message": "change direction",
+            "behavior": "follow_up"
+        }))
+        .expect("parses");
+
+        match req {
+            DaemonRequest::SteerTask {
+                behavior,
+                attachments,
+                ..
+            } => {
+                assert_eq!(behavior.as_deref(), Some("follow_up"));
+                assert!(attachments.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Omitting `behavior` parses (so the daemon can answer with a useful
+    /// error) rather than failing as an unknown request.
+    #[test]
+    fn steer_task_without_behavior_parses_so_the_daemon_can_refuse_it() {
+        let req = parse(serde_json::json!({
+            "method": "steer_task",
+            "task_id": "task-1",
+            "message": "which queue?"
+        }))
+        .expect("parses");
+
+        assert!(matches!(
+            req,
+            DaemonRequest::SteerTask { behavior: None, .. }
+        ));
+    }
 }

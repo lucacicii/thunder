@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::SteerQueues;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
-use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
+use thunder_agent_loop::types::message::{ChatMessage, ContentPart, ToolCall};
 use thunder_tui::app::ExecutionMode;
 use thunder_tui::prelude::*;
 use tokio::sync::mpsc;
@@ -396,6 +396,7 @@ async fn a_queued_message_enters_the_transcript_when_accepted() {
             turn: 2,
             behavior: "steer".to_string(),
             message: "new direction".to_string(),
+            image_count: 0,
         },
     });
 
@@ -459,6 +460,49 @@ async fn queue_command_reports_and_clears() {
     app.execute_slash_command("/queue clear", tx);
     assert!(app.input.contains("queued text"), "got {:?}", app.input);
     assert_eq!(app.queued.total(), 0);
+}
+
+#[tokio::test]
+async fn a_steer_carries_staged_images() {
+    let mut app = App::new("gpt-4o");
+    let queues = SteerQueues::new_shared();
+    app.steer_queues = Some(Arc::clone(&queues));
+    app.agent_status = AgentStatus::Streaming;
+    app.pending_images
+        .push(ContentPart::image("image/png", "aGVsbG8="));
+    app.set_input("look at this".to_string());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()), tx);
+
+    assert!(app.pending_images.is_empty(), "the image was consumed");
+    let queued = queues.steering.peek();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].image_count(), 1, "the image rode along");
+
+    // Acceptance puts the same turn — attachments included — in the transcript.
+    app.handle_agent_event(ObservedEvent {
+        agent_id: "tui_agent".to_string(),
+        event: AgentEvent::SteerAccepted {
+            turn: 2,
+            behavior: "steer".to_string(),
+            message: "look at this".to_string(),
+            image_count: 1,
+        },
+    });
+
+    let last_user = app
+        .conversation
+        .messages
+        .iter()
+        .rev()
+        .find(|m| matches!(m, ChatMessage::User { .. }))
+        .expect("the accepted turn");
+    assert_eq!(
+        last_user.image_count(),
+        1,
+        "the transcript shows the attachment, not just its text"
+    );
 }
 
 #[tokio::test]

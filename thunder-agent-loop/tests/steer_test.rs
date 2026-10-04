@@ -36,6 +36,8 @@ struct ScriptedClient {
     calls: AtomicUsize,
     /// User-message texts of each request, in order.
     requests: Mutex<Vec<Vec<String>>>,
+    /// Image counts per user message, parallel to `requests`.
+    request_images: Mutex<Vec<Vec<usize>>>,
     queues: Arc<SteerQueues>,
     /// `(after_call_index, behavior, text)` — enqueued when that call arrives.
     inject: Mutex<Vec<(usize, QueueBehavior, &'static str)>>,
@@ -47,6 +49,7 @@ impl ScriptedClient {
             script,
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            request_images: Mutex::new(Vec::new()),
             queues,
             inject: Mutex::new(Vec::new()),
         })
@@ -59,6 +62,11 @@ impl ScriptedClient {
 
     fn request_texts(&self) -> Vec<Vec<String>> {
         self.requests.lock().clone()
+    }
+
+    /// Image counts per user message, one vec per request.
+    fn request_image_counts(&self) -> Vec<Vec<usize>> {
+        self.request_images.lock().clone()
     }
 
     fn call_count(&self) -> usize {
@@ -82,6 +90,14 @@ impl LLMClientTrait for ScriptedClient {
             .filter_map(|m| m.content_str().map(str::to_string))
             .collect();
         self.requests.lock().push(users);
+        self.request_images.lock().push(
+            options
+                .messages
+                .iter()
+                .filter(|m| matches!(m, ChatMessage::User { .. }))
+                .map(|m| m.image_count())
+                .collect(),
+        );
 
         // Queue anything scheduled for "while this request is in flight".
         let scheduled: Vec<(usize, QueueBehavior, &'static str)> =
@@ -314,6 +330,31 @@ async fn steering_never_interrupts_an_in_flight_tool() {
         requests[1].contains(&"hold on".to_string()),
         "it lands in the turn after the tools: {:?}",
         requests[1]
+    );
+}
+
+#[tokio::test]
+async fn a_steering_message_carries_its_images() {
+    let queues = SteerQueues::new_shared();
+    // Queued before the run, so the very first request carries it.
+    queues.steering.enqueue(ChatMessage::user_multimodal(
+        "look at this instead",
+        vec![ContentPart::image("image/png", "aGVsbG8=")],
+    ));
+
+    let client = ScriptedClient::new(vec![says("ok")], Arc::clone(&queues));
+    let agent = agent_with(Arc::clone(&queues), Arc::clone(&client));
+
+    tokio::time::timeout(Duration::from_secs(5), agent.run("go", None))
+        .await
+        .expect("run finishes")
+        .expect("no error");
+
+    let images = client.request_image_counts();
+    assert_eq!(
+        images[0],
+        vec![0, 1],
+        "`go` carries none; the queued message carries its image"
     );
 }
 

@@ -142,6 +142,11 @@ pub enum AgentEvent {
         /// `steer` or `follow_up`.
         behavior: String,
         message: String,
+        /// How many images rode along. The bytes stay in the engine: an event
+        /// carrier is the wrong place for base64, and the host only needs to
+        /// know there was more than text.
+        #[serde(default)]
+        image_count: usize,
     },
     Error {
         turn: Option<usize>,

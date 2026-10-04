@@ -538,11 +538,13 @@ impl AgentLoop {
                 }
                 for (message, behavior) in std::mem::take(&mut pending_messages) {
                     let text = message.content_str().unwrap_or_default().to_string();
+                    let image_count = message.image_count();
                     info!(
                         agent_id = %agent_id,
                         turn = turn,
                         behavior = behavior.label(),
                         chars = text.chars().count(),
+                        images = image_count,
                         "Queued message accepted"
                     );
                     context.push(message.clone());
@@ -554,6 +556,7 @@ impl AgentLoop {
                             turn,
                             behavior: behavior.label().to_string(),
                             message: text,
+                            image_count,
                         })
                         .await;
                 }
