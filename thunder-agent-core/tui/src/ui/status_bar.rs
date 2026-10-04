@@ -1,6 +1,6 @@
 use crate::app::{AgentStatus, App, FocusPane};
 use crate::ui::theme::Theme;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -12,6 +12,8 @@ const PROMPT_WIDTH: usize = 2;
 /// The input box grows to this many rows and then scrolls internally, so a very
 /// long prompt can never eat the transcript.
 pub const MAX_INPUT_ROWS: usize = 6;
+/// Blank rows above and below the text, so the editor reads as a panel.
+pub const INPUT_VPAD: u16 = 1;
 
 /// The staged-image badge, if any. Shared by the layout maths and the render, so
 /// the two can never disagree about how wide it is.
@@ -71,6 +73,23 @@ pub fn input_height(app: &App, total_width: usize) -> u16 {
         .clamp(1, MAX_INPUT_ROWS) as u16
 }
 
+/// Height of the whole input box: its text rows plus the vertical padding.
+///
+/// `available_height` is what the caller can spare — the box never grows past
+/// it, so a short terminal keeps its transcript instead of being eaten by the
+/// editor. Text that no longer fits scrolls inside the box.
+pub fn input_box_height(app: &App, total_width: usize, available_height: u16) -> u16 {
+    input_height(app, total_width)
+        .saturating_add(2 * INPUT_VPAD)
+        .min(available_height)
+}
+
+/// Height of the status line under the input box. It only exists while it has
+/// something to say, so an idle prompt gives the row back to the transcript.
+pub fn footer_height(app: &App) -> u16 {
+    u16::from(app.fresh_status().is_some() || app.queued.total() > 0 || app.is_paused())
+}
+
 /// The caret as `(row, character offset within that row)`.
 fn input_cursor_position(app: &App, total_width: usize) -> (usize, usize) {
     let ranges = input_row_ranges(app, total_width);
@@ -114,12 +133,21 @@ fn prompt_span(app: &App, theme: &Theme) -> Span<'static> {
 }
 
 pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    // Paint the padded panel first; the text sits inside it.
+    let panel = Style::default().bg(theme.bg);
+    f.render_widget(Paragraph::new("").style(panel), area);
+    let text_area = if area.height > 2 * INPUT_VPAD {
+        area.inner(Margin::new(0, INPUT_VPAD))
+    } else {
+        area
+    };
+
     let show_cursor = app.focus == FocusPane::Input && app.agent_status == AgentStatus::Idle;
 
     let total_width = area.width.max(1) as usize;
     let rows = input_row_ranges(app, total_width);
     let (cursor_row, cursor_offset) = input_cursor_position(app, total_width);
-    let visible = area.height.max(1) as usize;
+    let visible = text_area.height.max(1) as usize;
     // Scroll the box itself so the caret is always on screen.
     let first_row = if cursor_row >= visible {
         cursor_row + 1 - visible
@@ -183,92 +211,96 @@ pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         lines.push(Line::from(spans));
     }
 
-    let paragraph = Paragraph::new(lines).style(Style::default().bg(Color::Rgb(13, 17, 23)));
-    f.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines).style(panel);
+    f.render_widget(paragraph, text_area);
 }
 
 pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let mut hints = vec![
-        Span::styled(
-            " ? ",
-            Style::default()
-                .fg(theme.accent_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("/help", Style::default().fg(theme.text_main)),
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled("/resume", Style::default().fg(theme.assistant_bubble)),
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled("/model", Style::default().fg(theme.text_main)),
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled("/skills", Style::default().fg(theme.text_main)),
-        if let Some(skill) = &app.active_skill {
+    if area.height == 0 {
+        return;
+    }
+
+    // No static command tips: this line only carries transient state, and the
+    // layout collapses it to zero rows when there is none.
+    let hints: Vec<Span> = match app.fresh_status() {
+        Some(msg) => vec![
+            Span::styled(" ⚡ ", Style::default().fg(theme.highlight)),
             Span::styled(
-                format!(" [{}]", skill.name),
-                Style::default().fg(theme.tool_bubble),
-            )
-        } else {
-            Span::raw("")
-        },
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled("/mcp", Style::default().fg(theme.text_main)),
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled("/compact", Style::default().fg(theme.text_main)),
-        Span::styled(" | ", theme.muted_style()),
-        Span::styled(
-            format!("Tokens: ~{}", app.conversation.stats.total_tokens),
-            theme.muted_style(),
-        ),
-        Span::styled(" | ", theme.muted_style()),
-        // Input waiting for the run to reach a turn boundary.
-        if app.queued.total() > 0 {
-            Span::styled(
-                format!("📥 {} queued", app.queued.total()),
+                msg.to_string(),
                 Style::default()
                     .fg(theme.highlight)
                     .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        },
-        if app.queued.total() > 0 {
-            Span::styled(" | ", theme.muted_style())
-        } else {
-            Span::raw("")
-        },
-        if app.is_paused() {
-            Span::styled("/unpause resume", Style::default().fg(theme.highlight))
-        } else if app.is_running() {
-            Span::styled(
-                "/pause hold · Esc cancel",
-                Style::default().fg(theme.text_muted),
-            )
-        } else {
-            Span::styled("Ctrl+C / Esc", Style::default().fg(theme.text_muted))
-        },
-        if app.is_paused() {
-            Span::styled(" ⏸", Style::default().fg(theme.error_color))
-        } else {
-            Span::raw("")
-        },
-    ];
-
-    if let Some((msg, instant)) = &app.status_message {
-        if instant.elapsed().as_secs() < 4 {
-            hints = vec![
-                Span::styled(" ⚡ ", Style::default().fg(theme.highlight)),
-                Span::styled(
-                    msg,
+            ),
+        ],
+        None => {
+            let mut hints: Vec<Span> = Vec::new();
+            if app.queued.total() > 0 {
+                hints.push(Span::styled(
+                    format!(" 📥 {} queued", app.queued.total()),
                     Style::default()
                         .fg(theme.highlight)
                         .add_modifier(Modifier::BOLD),
-                ),
-            ];
+                ));
+            }
+            if app.is_paused() {
+                hints.push(Span::styled(
+                    " ⏸ paused",
+                    Style::default().fg(theme.error_color),
+                ));
+            }
+            hints
         }
-    }
+    };
 
     let paragraph =
         Paragraph::new(Line::from(hints)).style(Style::default().bg(Color::Rgb(10, 14, 20)));
 
     f.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_input(input: &str) -> App {
+        let mut app = App::new("gpt-4o");
+        app.set_input(input.to_string());
+        app
+    }
+
+    #[test]
+    fn input_rows_count_newlines_and_soft_wraps() {
+        assert_eq!(input_height(&app_with_input("one line"), 60), 1);
+        assert_eq!(input_height(&app_with_input("one\ntwo\nthree"), 60), 3);
+        assert!(
+            input_height(&app_with_input(&"x".repeat(200)), 40) > 1,
+            "a line wider than the pane wraps"
+        );
+    }
+
+    #[test]
+    fn the_box_is_capped_and_padded() {
+        let many_lines = "line\n".repeat(20);
+        let tall = app_with_input(many_lines.trim_end_matches('\n'));
+        assert_eq!(input_height(&tall, 60), MAX_INPUT_ROWS as u16);
+        assert_eq!(
+            input_box_height(&tall, 60, 100),
+            MAX_INPUT_ROWS as u16 + 2 * INPUT_VPAD
+        );
+        // A short frame caps the box, so the editor can never eat the screen.
+        assert_eq!(input_box_height(&tall, 60, 4), 4);
+        assert_eq!(input_box_height(&app_with_input("one"), 60, 4), 3);
+    }
+
+    #[test]
+    fn the_footer_only_exists_when_it_has_something_to_say() {
+        let mut app = App::new("gpt-4o");
+        assert_eq!(footer_height(&app), 0, "an idle prompt reclaims the row");
+        app.set_status_message("hello");
+        assert_eq!(
+            footer_height(&app),
+            1,
+            "a fresh status message takes it back"
+        );
+    }
 }

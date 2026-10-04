@@ -2,7 +2,10 @@ use crate::app::App;
 use crate::event::{AppEvent, EventHandler};
 use crate::ui::draw;
 use crate::ui::theme::Theme;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -29,6 +32,16 @@ impl TuiRunner {
         enable_raw_mode()?;
         let mut stdout = stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        // Ask the terminal to report modified keys (Shift+Enter) unambiguously.
+        // Terminals that do not speak the kitty keyboard protocol ignore the
+        // sequence; there, Ctrl+J is the newline key. Pushing unconditionally
+        // avoids the protocol's support query, which can stall startup for up
+        // to two seconds while it waits for an answer that never comes.
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+            EnableBracketedPaste
+        );
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -36,7 +49,13 @@ impl TuiRunner {
         let default_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+            let _ = execute!(
+                io::stdout(),
+                PopKeyboardEnhancementFlags,
+                DisableBracketedPaste,
+                LeaveAlternateScreen,
+                DisableMouseCapture
+            );
             default_hook(info);
         }));
 
@@ -74,6 +93,8 @@ impl TuiRunner {
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
+            PopKeyboardEnhancementFlags,
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             DisableMouseCapture
         )?;
@@ -93,6 +114,9 @@ impl TuiRunner {
             }
             AppEvent::Mouse(mouse) => {
                 app.handle_mouse(mouse);
+            }
+            AppEvent::Paste(text) => {
+                app.handle_paste(text);
             }
             AppEvent::Agent(observed) => {
                 app.handle_agent_event(observed);

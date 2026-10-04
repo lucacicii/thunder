@@ -9,6 +9,8 @@ pub enum AppEvent {
     Key(KeyEvent),
     /// Mouse input
     Mouse(MouseEvent),
+    /// Bracketed paste: a whole block of text arriving as one event.
+    Paste(String),
     /// Terminal resize
     Resize(u16, u16),
     /// Periodic tick for animations and status refresh
@@ -71,6 +73,9 @@ impl EventHandler {
                         }
                         Ok(CtEvent::Mouse(mouse)) => {
                             let _ = event_tx.send(AppEvent::Mouse(mouse));
+                        }
+                        Ok(CtEvent::Paste(text)) => {
+                            let _ = event_tx.send(AppEvent::Paste(text));
                         }
                         Ok(CtEvent::Resize(w, h)) => {
                             let _ = event_tx.send(AppEvent::Resize(w, h));

@@ -352,6 +352,14 @@ impl App {
         self.status_message = Some((msg.into(), std::time::Instant::now()));
     }
 
+    /// The transient status message while it is still worth a screen row.
+    pub fn fresh_status(&self) -> Option<&str> {
+        self.status_message
+            .as_ref()
+            .filter(|(_, at)| at.elapsed().as_secs() < 4)
+            .map(|(msg, _)| msg.as_str())
+    }
+
     // ── Input line editing ────────────────────────────────────────────────
 
     /// Number of characters in the input (not bytes).
@@ -379,6 +387,26 @@ impl App {
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.input_cursor = 0;
+    }
+
+    /// Insert a bracketed paste at the caret.
+    ///
+    /// A paste arrives as one block, so multi-line text lands in the editor
+    /// instead of submitting itself at its first newline.
+    pub fn handle_paste(&mut self, text: String) {
+        if self.picker.is_open || self.pending_question.is_some() || self.mode == ViewMode::Help {
+            return;
+        }
+        // Terminals send CRLF (or a bare CR) for pasted line breaks.
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        let at = self.input_byte_offset(self.input_cursor);
+        self.input_cursor += normalized.chars().count();
+        self.input.insert_str(at, &normalized);
+        self.command_popup_idx = 0;
+        self.history_idx = None;
     }
 
     fn insert_char(&mut self, c: char) {
@@ -1128,6 +1156,13 @@ impl App {
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         match key.code {
+            // Shift+Enter starts a new line; Enter alone still submits. Only
+            // terminals speaking the kitty keyboard protocol can tell the two
+            // apart, so Ctrl+J stays as the universal fallback.
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.insert_char('\n');
+                self.command_popup_idx = 0;
+            }
             KeyCode::Enter => {
                 if self.input.starts_with('/') {
                     let trimmed = self.input.trim();

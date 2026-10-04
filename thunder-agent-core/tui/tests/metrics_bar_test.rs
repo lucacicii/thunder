@@ -51,6 +51,14 @@ fn input_row(rows: &[String]) -> usize {
         .expect("prompt row")
 }
 
+/// The input box pads its text, so the row above the prompt is not the bar.
+const INPUT_VPAD: usize = thunder_tui::ui::status_bar::INPUT_VPAD as usize;
+
+/// Index of the metrics bar: directly above the input box.
+fn bar_row(rows: &[String]) -> usize {
+    input_row(rows) - 1 - INPUT_VPAD
+}
+
 fn app_with_run(workspace: &std::path::Path) -> App {
     let mut app = App::new("gpt-4o");
     app.workspace_dir = workspace.to_path_buf();
@@ -80,7 +88,7 @@ async fn the_bar_sits_on_the_row_above_the_prompt() {
     let mut app = app_with_run(dir.path());
 
     let rows = draw_rows(&mut app, 200, 24);
-    let bar = &rows[input_row(&rows) - 1];
+    let bar = &rows[bar_row(&rows)];
 
     assert!(bar.contains("tok/s"), "speed: {bar:?}");
     assert!(bar.contains("Cache"), "cache: {bar:?}");
@@ -104,7 +112,7 @@ async fn the_bar_reports_the_numbers_the_engine_reported() {
     let mut app = app_with_run(dir.path());
 
     let rows = draw_rows(&mut app, 200, 24);
-    let bar = &rows[input_row(&rows) - 1];
+    let bar = &rows[bar_row(&rows)];
 
     // 12,000 prompt + 1,500 completion, cached 11,000 of 12,000 = 91.67%.
     assert!(bar.contains("41.7"), "avg tps: {bar:?}");
@@ -121,12 +129,12 @@ async fn turning_the_bar_off_returns_the_row_to_the_transcript() {
     let mut app = app_with_run(dir.path());
 
     let on = draw_rows(&mut app, 120, 24);
-    let on_bar = on[input_row(&on) - 1].clone();
+    let on_bar = on[bar_row(&on)].clone();
     assert!(on_bar.contains("上下文"), "bar is drawn: {on_bar:?}");
 
     app.metrics.enabled = false;
     let off = draw_rows(&mut app, 120, 24);
-    let off_above = off[input_row(&off) - 1].clone();
+    let off_above = off[bar_row(&off)].clone();
     assert!(
         !off_above.contains("上下文"),
         "the bar is gone: {off_above:?}"
@@ -142,7 +150,7 @@ async fn a_narrow_bar_keeps_the_workspace() {
 
     for width in [24u16, 30, 40] {
         let rows = draw_rows(&mut app, width, 24);
-        let bar = &rows[input_row(&rows) - 1];
+        let bar = &rows[bar_row(&rows)];
         assert!(
             bar.contains("📁"),
             "width {width}: the workspace outranks the telemetry: {bar:?}"
