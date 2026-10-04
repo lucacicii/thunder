@@ -176,6 +176,9 @@ pub struct App {
     /// Queued-but-not-yet-accepted input, kept for display. Refreshed whenever
     /// the queues change and when the engine reports one was accepted.
     pub queued: QueueSnapshot,
+    /// Exact copies of what this host queued. The engine's acceptance event
+    /// carries only text, so the attachments have to come from here.
+    pub queued_turns: Vec<ChatMessage>,
 }
 
 /// A clickable region of the chat pane, in absolute terminal coordinates.
@@ -249,6 +252,7 @@ impl App {
             spinner_frame: 0,
             steer_queues: None,
             queued: QueueSnapshot::default(),
+            queued_turns: Vec::new(),
         }
     }
 
@@ -447,11 +451,16 @@ impl App {
         let Some(queues) = self.steer_queues.as_ref() else {
             return;
         };
-        let message = ChatMessage::user(text.clone());
+        // Staged images ride along, exactly as they would with a normally
+        // submitted turn: a steer about a screenshot is the common case.
+        let images = std::mem::take(&mut self.pending_images);
+        let image_count = images.len();
+        let message = ChatMessage::user_multimodal(text.clone(), images);
         match behavior {
-            QueueBehavior::Steer => queues.steering.enqueue(message),
-            QueueBehavior::FollowUp => queues.follow_up.enqueue(message),
+            QueueBehavior::Steer => queues.steering.enqueue(message.clone()),
+            QueueBehavior::FollowUp => queues.follow_up.enqueue(message.clone()),
         }
+        self.queued_turns.push(message);
         self.queued = queues.snapshot();
         self.input_history.push(text);
         self.history_idx = None;
@@ -460,7 +469,15 @@ impl App {
             QueueBehavior::Steer => "Steering queued",
             QueueBehavior::FollowUp => "Follow-up queued",
         };
-        self.set_status_message(format!("{label} ({} pending)", self.queued.total()));
+        let with_images = if image_count > 0 {
+            format!(" with {image_count} image(s)")
+        } else {
+            String::new()
+        };
+        self.set_status_message(format!(
+            "{label}{with_images} ({} pending)",
+            self.queued.total()
+        ));
     }
 
     /// Empty both queues and return the text to the editor, so cancelling a run
@@ -471,6 +488,7 @@ impl App {
         };
         let (steering, follow_up) = queues.clear_all();
         self.queued = QueueSnapshot::default();
+        self.queued_turns.clear();
 
         let queued: Vec<String> = steering
             .into_iter()
@@ -2752,6 +2770,7 @@ impl App {
         let steer_queues = SteerQueues::new_shared();
         self.steer_queues = Some(Arc::clone(&steer_queues));
         self.queued = QueueSnapshot::default();
+        self.queued_turns.clear();
 
         match mode {
             ExecutionMode::SingleAgent => {
@@ -3086,21 +3105,45 @@ impl App {
                 self.streaming_delta.push_str(&delta);
             }
             AgentEvent::SteerAccepted {
-                behavior, message, ..
+                behavior,
+                message,
+                image_count,
+                ..
             } => {
                 // The queued input has joined the transcript. Show it now rather
                 // than waiting for the run to end, and drop it from the pending
                 // count. A later `authoritative_messages` replaces the whole
                 // list, so this cannot double up.
-                self.conversation.add_user_message(message.clone());
+                //
+                // The event carries text only, so the turn we actually queued is
+                // the one to replay — that is where the attachments are.
+                let queued_turn = self
+                    .queued_turns
+                    .iter()
+                    .position(|m| m.content_str() == Some(message.as_str()))
+                    .map(|idx| self.queued_turns.remove(idx));
+                match queued_turn {
+                    Some(ChatMessage::User { content, parts, .. }) => match parts {
+                        Some(parts) => self
+                            .conversation
+                            .add_user_message_with_parts(content, parts),
+                        None => self.conversation.add_user_message(content),
+                    },
+                    _ => self.conversation.add_user_message(message.clone()),
+                }
                 self.refresh_queue_snapshot();
                 let label = if behavior == "follow_up" {
                     "Follow-up"
                 } else {
                     "Steering"
                 };
+                let with_images = if image_count > 0 {
+                    format!(" + {image_count} image(s)")
+                } else {
+                    String::new()
+                };
                 self.set_status_message(format!(
-                    "{label} accepted ({} still pending)",
+                    "{label}{with_images} accepted ({} still pending)",
                     self.queued.total()
                 ));
             }
@@ -3276,6 +3319,7 @@ impl App {
         self.pause_gate = None;
         self.steer_queues = None;
         self.queued = QueueSnapshot::default();
+        self.queued_turns.clear();
 
         // Lifetime usage bookkeeping (additive, mirroring the daemon):
         // `recalculate_stats` recomputes the working-context estimate, so the

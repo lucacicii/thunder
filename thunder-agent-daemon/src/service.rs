@@ -21,15 +21,27 @@ use crate::protocol::{DaemonRequest, DaemonResponse};
 /// instead of driving mock behaviour through the wire protocol.
 pub type ClientFactory = Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTrait>> + Send + Sync>;
 
+/// What a host needs to inject input into one live run.
+///
+/// The workspace and roots travel with the queues because an injected
+/// attachment's path must be jailed against the run's own workspace, not
+/// whatever directory the daemon happens to be sitting in.
+#[derive(Clone)]
+struct LiveQueue {
+    queues: Arc<thunder_agent_loop::core::steer::SteerQueues>,
+    workspace: PathBuf,
+    extra_roots: Vec<String>,
+}
+
 pub struct DaemonService {
     provider_registry: Arc<tokio::sync::RwLock<ProviderRegistry>>,
     store: Arc<FsConversationStore>,
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Live pause gates per running task.
     active_pauses: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::pause::PauseGate>>>>,
-    /// Steering / follow-up queues per running task, so a client can inject user
-    /// input into a run that is already in flight.
-    active_queues: Arc<Mutex<HashMap<String, Arc<thunder_agent_loop::core::steer::SteerQueues>>>>,
+    /// Live steering state per running task, so a client can inject user input
+    /// (text and images) into a run that is already in flight.
+    active_queues: Arc<Mutex<HashMap<String, LiveQueue>>>,
     /// Active running task per session, to prevent concurrent turn races.
     active_sessions: Arc<Mutex<HashMap<String, String>>>,
     output_tx: mpsc::Sender<String>,
@@ -429,6 +441,7 @@ impl DaemonService {
                 task_id,
                 message,
                 behavior,
+                attachments,
             } => {
                 // `behavior` is required: the two placements are far apart in the
                 // run, and defaulting would silently pick a different point than
@@ -440,30 +453,59 @@ impl DaemonService {
                     }
                     _ => None,
                 };
-                let queues = self.active_queues.lock().await.get(&task_id).cloned();
-                let (success, data, error) = match (behavior, queues) {
-                    (None, _) => (
-                        false,
-                        None,
-                        Some(
-                            "`behavior` must be `steer` or `follow_up`; the daemon will not 
-                             guess where in the run the message belongs."
-                                .to_string(),
-                        ),
+                let live = self.active_queues.lock().await.get(&task_id).cloned();
+
+                // An injected attachment is held to the same ingress rules as a
+                // normally submitted turn: magic bytes are sniffed and a path is
+                // jailed against the *run's* workspace, not the daemon's cwd.
+                let outcome = match (behavior, &live) {
+                    (None, _) => Err(
+                        "`behavior` must be `steer` or `follow_up`; the daemon will not guess \
+                         where in the run the message belongs."
+                            .to_string(),
                     ),
-                    (Some(_), None) => (false, None, Some(format!("No running task `{task_id}`"))),
-                    (Some(behavior), Some(queues)) => {
-                        let message =
-                            thunder_agent_loop::types::message::ChatMessage::user(message);
-                        match behavior {
-                            thunder_agent_loop::core::steer::QueueBehavior::Steer => {
-                                queues.steering.enqueue(message)
-                            }
-                            thunder_agent_loop::core::steer::QueueBehavior::FollowUp => {
-                                queues.follow_up.enqueue(message)
+                    (Some(_), None) => Err(format!("No running task `{task_id}`")),
+                    (Some(behavior), Some(live)) => {
+                        match crate::attachments::resolve_attachments(
+                            attachments.as_deref().unwrap_or(&[]),
+                            &live.workspace,
+                            &live.extra_roots,
+                        )
+                        .await
+                        {
+                            // A bad upload is reported to the host, never silently
+                            // downgraded to a text-only steer.
+                            Err(err) => Err(err),
+                            Ok(parts) => {
+                                let message =
+                                    thunder_agent_loop::types::message::ChatMessage::user_multimodal(
+                                        message, parts,
+                                    );
+                                match behavior {
+                                    thunder_agent_loop::core::steer::QueueBehavior::Steer => {
+                                        live.queues.steering.enqueue(message)
+                                    }
+                                    thunder_agent_loop::core::steer::QueueBehavior::FollowUp => {
+                                        live.queues.follow_up.enqueue(message)
+                                    }
+                                }
+                                Ok(live.queues.snapshot())
                             }
                         }
-                        let snapshot = queues.snapshot();
+                    }
+                };
+
+                match outcome {
+                    Err(error) => {
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: false,
+                            data: None,
+                            error: Some(error),
+                        })
+                        .await;
+                    }
+                    Ok(snapshot) => {
                         let _ = self
                             .send_response(DaemonResponse::TaskQueueUpdate {
                                 task_id: task_id.clone(),
@@ -472,30 +514,27 @@ impl DaemonService {
                                 follow_up: snapshot.follow_up.clone(),
                             })
                             .await;
-                        (
-                            true,
-                            Some(serde_json::json!({
-                                "task_id": task_id,
-                                "behavior": behavior.label(),
-                                "queued": snapshot.total(),
-                            })),
-                            None,
-                        )
+                        let behavior_label = behavior.map(|b| b.label()).unwrap_or("steer");
+                        let _ = self
+                            .send_response(DaemonResponse::Response {
+                                id,
+                                success: true,
+                                data: Some(serde_json::json!({
+                                    "task_id": task_id,
+                                    "behavior": behavior_label,
+                                    "queued": snapshot.total(),
+                                })),
+                                error: None,
+                            })
+                            .await;
                     }
-                };
-                self.send_response(DaemonResponse::Response {
-                    id,
-                    success,
-                    data,
-                    error,
-                })
-                .await;
+                }
             }
 
             DaemonRequest::ClearQueue { id, task_id } => {
-                let queues = self.active_queues.lock().await.get(&task_id).cloned();
-                let (steering, follow_up) = match queues {
-                    Some(queues) => queues.clear_all(),
+                let live = self.active_queues.lock().await.get(&task_id).cloned();
+                let (steering, follow_up) = match live {
+                    Some(live) => live.queues.clear_all(),
                     None => (Vec::new(), Vec::new()),
                 };
                 let texts = |msgs: Vec<thunder_agent_loop::types::message::ChatMessage>| {
@@ -891,14 +930,6 @@ impl DaemonService {
             .await
             .insert(task_id.clone(), Arc::clone(&pause_gate));
 
-        // The queues this run will read from. The host keeps the Arc so it can
-        // accept input while the run holds the handle.
-        let steer_queues = thunder_agent_loop::core::steer::SteerQueues::new_shared();
-        self.active_queues
-            .lock()
-            .await
-            .insert(task_id.clone(), Arc::clone(&steer_queues));
-
         let effective_session_id = session_id.unwrap_or_else(|| {
             format!(
                 "sess_{}",
@@ -1015,6 +1046,19 @@ impl DaemonService {
         conversation.workspace = Some(chosen_workspace.clone());
         conversation.shared_roots = chosen_shared_roots.clone();
         conversation.thinking_level = chosen_thinking.clone();
+
+        // The queues this run reads from, plus the jail an injected attachment's
+        // path is validated against. Registered here rather than earlier so the
+        // workspace and shared roots are already final.
+        let steer_queues = thunder_agent_loop::core::steer::SteerQueues::new_shared();
+        self.active_queues.lock().await.insert(
+            task_id.clone(),
+            LiveQueue {
+                queues: Arc::clone(&steer_queues),
+                workspace: PathBuf::from(&chosen_workspace),
+                extra_roots: chosen_shared_roots.clone(),
+            },
+        );
 
         // Resolve image attachments before recording the turn. A bad upload is
         // rejected to the host (never silently downgraded to a text-only turn),
