@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -44,6 +44,11 @@ pub struct DaemonService {
     active_queues: Arc<Mutex<HashMap<String, LiveQueue>>>,
     /// Active running task per session, to prevent concurrent turn races.
     active_sessions: Arc<Mutex<HashMap<String, String>>>,
+    /// Task ids whose cancellation has been requested but whose run has not yet
+    /// unwound. The session stays claimed until it does: releasing it early
+    /// would let a second run start on the same conversation, and both would
+    /// write the same store.
+    stopping: Arc<Mutex<HashSet<String>>>,
     output_tx: mpsc::Sender<String>,
     concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     default_workspace: PathBuf,
@@ -167,6 +172,7 @@ impl DaemonService {
             active_pauses: Arc::new(Mutex::new(HashMap::new())),
             active_queues: Arc::new(Mutex::new(HashMap::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            stopping: Arc::new(Mutex::new(HashSet::new())),
             output_tx,
             concurrency_semaphore,
             default_workspace,
@@ -659,10 +665,14 @@ impl DaemonService {
                 } else {
                     false
                 };
-                self.active_sessions
-                    .lock()
-                    .await
-                    .retain(|_, tid| tid != &task_id);
+                drop(tasks);
+
+                if cancelled {
+                    // The session stays claimed while the run unwinds; the run's own
+                    // cleanup releases it. Handing it back here would let a second
+                    // run start before the first stopped writing to the same store.
+                    self.stopping.lock().await.insert(task_id.clone());
+                }
 
                 self.send_response(DaemonResponse::Response {
                     id,
@@ -940,18 +950,32 @@ impl DaemonService {
             )
         });
 
-        // Reject concurrent execution within the same conversation session
-        // to prevent race conditions and history clobbering.
+        // Claim the session for this run, or refuse with a message that says which
+        // of the two waits it is.
         {
             let mut sessions = self.active_sessions.lock().await;
-            if let Some(running_task) = sessions.get(&effective_session_id) {
+            let running_task = sessions.get(&effective_session_id).cloned();
+            if running_task.is_none() {
+                sessions.insert(effective_session_id.clone(), task_id.clone());
+            }
+            drop(sessions);
+
+            if let Some(running_task) = running_task {
+                let error = if self.stopping.lock().await.contains(&running_task) {
+                    format!(
+                        "Session '{effective_session_id}' is still stopping: task '{running_task}' was cancelled \
+                         but has not finished unwinding. Try again in a moment."
+                    )
+                } else {
+                    format!(
+                        "Session '{effective_session_id}' is busy: task '{running_task}' is currently executing. Wait for it to complete or cancel it."
+                    )
+                };
                 self.send_response(DaemonResponse::Response {
                     id,
                     success: false,
                     data: None,
-                    error: Some(format!(
-                        "Session '{effective_session_id}' is busy: task '{running_task}' is currently executing. Wait for it to complete or cancel it."
-                    )),
+                    error: Some(error),
                 })
                 .await;
                 self.active_tasks.lock().await.remove(&task_id);
@@ -959,7 +983,6 @@ impl DaemonService {
                 self.active_queues.lock().await.remove(&task_id);
                 return;
             }
-            sessions.insert(effective_session_id.clone(), task_id.clone());
         }
 
         // Load or create conversation
@@ -1152,6 +1175,7 @@ impl DaemonService {
         let active_pauses = self.active_pauses.clone();
         let active_queues = self.active_queues.clone();
         let active_sessions = self.active_sessions.clone();
+        let stopping = self.stopping.clone();
         let output_tx = self.output_tx.clone();
         let client_factory = self.client_factory.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
@@ -1474,6 +1498,7 @@ impl DaemonService {
                                     task_id: task_id.clone(),
                                     session_id: Some(effective_session_id.clone()),
                                     error: err_msg,
+                                    finish_reason: Some(finish_reason.clone()),
                                 };
                                 write_ndjson(&output_tx, &msg).await;
                             } else {
@@ -1499,6 +1524,7 @@ impl DaemonService {
                                 task_id: task_id.clone(),
                                 session_id: Some(effective_session_id.clone()),
                                 error: err.to_string(),
+                                finish_reason: None,
                             };
                             write_ndjson(&output_tx, &msg).await;
                         }
@@ -1510,6 +1536,8 @@ impl DaemonService {
                         task_id: task_id.clone(),
                         session_id: Some(effective_session_id.clone()),
                         error: e.to_string(),
+                        // The root never started, so there is no run reason.
+                        finish_reason: None,
                     };
                     write_ndjson(&output_tx, &msg).await;
                 }
@@ -1519,6 +1547,7 @@ impl DaemonService {
             active_pauses.lock().await.remove(&task_id);
             active_queues.lock().await.remove(&task_id);
             active_sessions.lock().await.remove(&effective_session_id);
+            stopping.lock().await.remove(&task_id);
         });
     }
 }
