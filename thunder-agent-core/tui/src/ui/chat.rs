@@ -10,27 +10,68 @@ use thunder_agent_loop::types::message::ChatMessage;
 
 /// The transcript being assembled: rendered lines plus the link hitboxes found
 /// while building them, with line indices kept global across messages.
-#[derive(Default)]
+///
+/// A line is not a screen row: lines pushed verbatim (tool output, system
+/// notices, tool-call args) can be wider than the pane and get word-wrapped by
+/// `Paragraph` into several rows. `row_end` is the cumulative screen-row map
+/// that keeps click hitboxes on the row the pane actually paints.
 struct Stream {
+    width: u16,
     lines: Vec<Line<'static>>,
     links: Vec<LinkSpan>,
+    /// Screen rows occupied by `lines[..=i]`, one entry per line.
+    row_end: Vec<usize>,
 }
 
 impl Stream {
+    fn new(width: u16) -> Self {
+        Self {
+            width,
+            lines: Vec::new(),
+            links: Vec::new(),
+            row_end: Vec::new(),
+        }
+    }
+
+    /// Screen rows the pane paints a single line on. Measured with the very
+    /// wrapper `Paragraph` renders with, so the two can never disagree.
+    fn rows(line: &Line<'static>, width: u16) -> usize {
+        Paragraph::new(vec![line.clone()])
+            .wrap(Wrap { trim: false })
+            .line_count(width.max(1))
+    }
+
+    fn push(&mut self, line: Line<'static>) {
+        let rows = Self::rows(&line, self.width);
+        let end = self.row_end.last().copied().unwrap_or(0) + rows;
+        self.row_end.push(end);
+        self.lines.push(line);
+    }
+
     /// A line that carries no links (headers, tool output, system notices).
     fn raw(&mut self, line: Line<'static>) {
-        self.lines.push(line);
+        self.push(line);
     }
 
     /// Appends a rendered block, rebasing its link line indices.
     fn append(&mut self, rendered: Rendered) {
         let offset = self.lines.len();
-        self.lines.extend(rendered.lines);
+        for line in rendered.lines {
+            self.push(line);
+        }
         for mut link in rendered.links {
             link.line += offset;
             self.links.push(link);
         }
     }
+}
+
+/// Screen row the line at `index` starts on, from [`Stream`]'s cumulative map.
+fn rows_before(row_end: &[usize], index: usize) -> usize {
+    index
+        .checked_sub(1)
+        .and_then(|prev| row_end.get(prev).copied())
+        .unwrap_or(0)
 }
 
 pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -39,7 +80,7 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let roots = app.workspace_roots();
     let raw_style = Style::default().fg(theme.text_main);
 
-    let mut stream = Stream::default();
+    let mut stream = Stream::new(area.width.max(1));
     {
         let mut ctx = RenderCtx {
             theme,
@@ -231,19 +272,22 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     // 4. In-progress active tool calls for the current turn.
     for tc in &app.active_tool_calls {
-        render_active_tool_call(&mut stream.lines, tc, theme);
+        render_active_tool_call(&mut stream, tc, theme);
         stream.raw(Line::raw(""));
     }
 
-    // Some lines are pushed verbatim (tool output, system notices, tool-call
-    // args), so they can be wider than the pane and get word-wrapped into
-    // several rows by `Paragraph` below. Counting them one row each would pin
-    // auto-scroll short of the true bottom, so the row count comes from the
-    // same renderer that draws them. The `u16` width is the pane's, because the
-    // block only draws top/bottom borders and so costs no horizontal space.
+    // A logical line can be several screen rows once `Paragraph` wraps it, so
+    // both the scroll bound and the click hitboxes below are expressed in the
+    // screen rows the stream measured as it was built.
     let links = std::mem::take(&mut stream.links);
+    let row_end = std::mem::take(&mut stream.row_end);
     let paragraph = Paragraph::new(stream.lines).wrap(Wrap { trim: false });
-    let total_rendered_lines = paragraph.line_count(area.width);
+    let total_rendered_lines = row_end.last().copied().unwrap_or(0);
+    debug_assert_eq!(
+        total_rendered_lines,
+        paragraph.line_count(area.width),
+        "the stream's row map must agree with the renderer's own wrapping"
+    );
 
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_rendered_lines.saturating_sub(visible_height);
@@ -260,12 +304,13 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         links
             .iter()
             .filter_map(|link| {
-                if link.line < scroll_y || link.line >= scroll_y + visible_height {
+                let first_row = rows_before(&row_end, link.line);
+                if first_row < scroll_y || first_row >= scroll_y + visible_height {
                     return None;
                 }
                 Some(LinkHitbox {
                     // The `Block` draws a top border, so content starts one row in.
-                    row: area.y + 1 + (link.line - scroll_y) as u16,
+                    row: area.y + 1 + (first_row - scroll_y) as u16,
                     col_start: area.x + link.col_start,
                     col_end: area.x + link.col_end,
                     target: link.target.clone(),
@@ -337,7 +382,7 @@ fn push_body(
     }
 }
 
-fn render_active_tool_call(lines: &mut Vec<Line>, tc: &ActiveToolCall, theme: &Theme) {
+fn render_active_tool_call(stream: &mut Stream, tc: &ActiveToolCall, theme: &Theme) {
     let status_str = if tc.result.is_some() {
         if tc.is_error {
             "✖ Failed"
@@ -348,7 +393,7 @@ fn render_active_tool_call(lines: &mut Vec<Line>, tc: &ActiveToolCall, theme: &T
         "⏳ Running..."
     };
 
-    lines.push(Line::from(vec![
+    stream.raw(Line::from(vec![
         Span::raw("  "),
         Span::styled(
             format!("⚙ Executing Tool `{}`: ", tc.name),
@@ -373,9 +418,47 @@ fn render_active_tool_call(lines: &mut Vec<Line>, tc: &ActiveToolCall, theme: &T
         } else {
             res.clone()
         };
-        lines.push(Line::from(vec![
+        stream.raw(Line::from(vec![
             Span::raw("    └─ "),
             Span::styled(short_res, theme.muted_style()),
         ]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The row map is built one line at a time; the pane wraps the whole
+    /// transcript in one pass. If those ever disagree, click hitboxes drift.
+    #[test]
+    fn per_line_rows_sum_to_the_whole_paragraph() {
+        let width = 80u16;
+        let lines: Vec<Line<'static>> = vec![
+            Line::raw(""),
+            Line::raw("short"),
+            Line::raw(" ".repeat(80)),
+            Line::raw("a".repeat(80)),
+            Line::raw("a".repeat(81)),
+            Line::raw("中".repeat(41)),
+            Line::raw("wrapped words ".repeat(30)),
+            Line::raw(format!("{}   ", "t".repeat(78))),
+            Line::from(vec![Span::raw("x".repeat(40)), Span::raw("y".repeat(40))]),
+        ];
+
+        let mut stream = Stream::new(width);
+        for line in lines.iter().cloned() {
+            stream.raw(line);
+        }
+
+        let whole = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        assert_eq!(stream.row_end.len(), stream.lines.len());
+        assert_eq!(stream.row_end.last().copied().unwrap_or(0), whole);
+        // The map is strictly increasing, and line 0 starts at row 0.
+        assert!(stream.row_end.windows(2).all(|w| w[1] > w[0]));
+        assert_eq!(rows_before(&stream.row_end, 0), 0);
+        assert_eq!(rows_before(&stream.row_end, 1), stream.row_end[0]);
     }
 }
