@@ -73,7 +73,14 @@ pub enum AgentStatus {
     Idle,
     Thinking,
     Streaming,
-    ExecutingTool { name: String, duration_ms: u64 },
+    ExecutingTool {
+        name: String,
+        duration_ms: u64,
+    },
+    /// A stop was requested and the run is unwinding. Distinct from `Idle` on
+    /// purpose: the engine is still finishing its current step, and starting a
+    /// second run on the same conversation in that window would race it.
+    Stopping,
     Done,
     Error(String),
 }
@@ -527,13 +534,52 @@ impl App {
         }
     }
 
+    /// Stop the running agent, keeping the session usable.
+    ///
+    /// The partial answer is deliberately not discarded here: the engine hands it
+    /// back when the run settles and the transcript is rebuilt from that, so
+    /// clearing it would be the one thing the user cannot undo. The status stays
+    /// `Stopping` until then, because a second run started while the first is
+    /// still unwinding would race it for the same conversation.
+    ///
+    /// Returns `false` when there was nothing to stop.
+    pub fn stop_run(&mut self) -> bool {
+        let Some(token) = self.cancel_token.take() else {
+            return false;
+        };
+        // Hand queued input back: dropping it silently is the other thing a user
+        // cannot recover from.
+        let restored = self.restore_queue_to_input();
+        token.cancel();
+        self.agent_status = AgentStatus::Stopping;
+        self.set_status_message(if restored > 0 {
+            format!("Stopping… {restored} queued message(s) back in the editor.")
+        } else {
+            "Stopping…".to_string()
+        });
+        true
+    }
+
+    /// Whether the transcript already carries a result for this tool call.
+    ///
+    /// Lets a result that arrives *after* the run reported itself finished still
+    /// land, without a second copy landing with it.
+    fn has_tool_result(&self, tool_call_id: &str) -> bool {
+        self.conversation.messages.iter().any(|message| {
+            matches!(message, ChatMessage::Tool { tool_call_id: id, .. } if id == tool_call_id)
+        })
+    }
+
     // ── Run control: pause / resume ───────────────────────────────────────
 
     /// Whether a run is currently executing (i.e. pause is meaningful).
     pub fn is_running(&self) -> bool {
         matches!(
             self.agent_status,
-            AgentStatus::Thinking | AgentStatus::Streaming | AgentStatus::ExecutingTool { .. }
+            AgentStatus::Thinking
+                | AgentStatus::Streaming
+                | AgentStatus::ExecutingTool { .. }
+                | AgentStatus::Stopping
         )
     }
     /// The glyph for the current spinner frame.
@@ -961,12 +1007,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(token) = self.cancel_token.take() {
-                    token.cancel();
-                    self.set_status_message("Agent execution cancelled.");
-                    self.agent_status = AgentStatus::Idle;
-                    self.streaming_delta.clear();
-                } else {
+                if !self.stop_run() {
                     self.should_quit = true;
                 }
             }
@@ -1042,18 +1083,8 @@ impl App {
                     if self.input.starts_with('/') {
                         self.clear_input();
                         self.command_popup_idx = 0;
-                    } else if let Some(token) = self.cancel_token.take() {
-                        // Hand queued input back before cancelling: dropping it
-                        // silently is the one thing a user cannot recover from.
-                        let restored = self.restore_queue_to_input();
-                        token.cancel();
-                        self.set_status_message(if restored > 0 {
-                            format!("Cancelled. {restored} queued message(s) back in the editor.")
-                        } else {
-                            "Cancelled.".to_string()
-                        });
-                        self.agent_status = AgentStatus::Idle;
-                        self.streaming_delta.clear();
+                    } else {
+                        self.stop_run();
                     }
                 }
             },
@@ -3252,10 +3283,19 @@ impl App {
                     tc.duration_ms = result.duration_ms;
                 }
 
-                self.conversation
-                    .add_tool_message(&tool_call_id, result.output, Some(name));
+                // A cancelled run has its unanswered calls answered by the engine
+                // while it unwinds, and those events can arrive after the run has
+                // already reported itself finished. Land the result either way —
+                // the transcript needs it — but do not resurrect a status for a
+                // run that is over.
+                if !self.has_tool_result(&tool_call_id) {
+                    self.conversation
+                        .add_tool_message(&tool_call_id, result.output, Some(name));
+                }
                 self.active_tool_calls.retain(|c| c.id != tool_call_id);
-                self.agent_status = AgentStatus::Thinking;
+                if self.cancel_token.is_some() {
+                    self.agent_status = AgentStatus::Thinking;
+                }
             }
             AgentEvent::TurnEnd { stats, .. } => {
                 self.metrics.record_turn(&stats);
@@ -3304,7 +3344,30 @@ impl App {
         // fired) so the working history can be a checkpoint projection while the
         // original history stays auditable on disk.
         self.pending_raw_transcript = raw_messages;
-        if success {
+
+        // A deliberate stop is an outcome, not a failure: no error banner, and the
+        // answer the user already read stays put. The engine has closed out every
+        // tool call it never ran, so its transcript is valid for the next turn and
+        // is the one to keep — the host's own event-driven view may be missing
+        // results that arrived after the run reported itself finished.
+        let cancelled = finish_reason.as_deref() == Some("Cancelled");
+        if cancelled {
+            self.agent_status = AgentStatus::Idle;
+            match authoritative_messages {
+                Some(messages) if !messages.is_empty() => {
+                    self.conversation.messages = messages;
+                    self.conversation.recalculate_stats();
+                }
+                _ => {
+                    let partial = std::mem::take(&mut self.streaming_delta);
+                    if !partial.trim().is_empty() {
+                        self.conversation.add_assistant_message(Some(partial), None);
+                    }
+                }
+            }
+            self.last_error = None;
+            self.set_status_message("Stopped. Ready for your next message.");
+        } else if success {
             self.agent_status = AgentStatus::Idle;
             if let Some(messages) = authoritative_messages {
                 if !messages.is_empty() {

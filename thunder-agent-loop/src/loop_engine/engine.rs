@@ -15,7 +15,7 @@ use crate::types::config::AgentConfig;
 use crate::types::error::AgentError;
 use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
 use crate::types::message::{ChatMessage, Role};
-use crate::types::tool::AgentTool;
+use crate::types::tool::{AgentTool, ToolExecutionResult};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -416,6 +416,11 @@ impl AgentLoop {
                 .map(|m| (m, QueueBehavior::Steer))
                 .collect();
 
+            // Set when a run is cancelled mid-stream. The partial answer lives in
+            // the turn's locals, which die with the turn, so it is lifted out here
+            // to survive into the transcript.
+            let mut cancelled_partial: Option<String> = None;
+
             loop {
                 if let Some(max) = config.max_turns {
                     if tracker.current_turn() >= max {
@@ -811,6 +816,7 @@ impl AgentLoop {
                 }
 
                 if cancel_token.is_cancelled() {
+                    cancelled_partial = partial_answer(&assistant_content, &reasoning_content);
                     loop_finish_reason = FinishReason::Cancelled;
                     break;
                 }
@@ -828,6 +834,8 @@ impl AgentLoop {
                     Some(c) => c,
                     None => {
                         loop_finish_reason = if cancel_token.is_cancelled() {
+                            cancelled_partial =
+                                partial_answer(&assistant_content, &reasoning_content);
                             FinishReason::Cancelled
                         } else {
                             error!(agent_id = %agent_id, turn = turn, "Turn terminated without completion payload");
@@ -1222,6 +1230,64 @@ impl AgentLoop {
                 status.store(LoopStatus::Running.as_u8(), Ordering::Release);
             }
 
+            // ── Settle the transcript ────────────────────────────────────────
+            // A stopped run stops *between* protocol steps: the model may have
+            // asked for tools that never ran, or streamed an answer that never
+            // became a message. Both leave history that the next request either
+            // rejects outright (a tool call with no result) or silently loses (an
+            // answer the user already read). Close it out here, before anything
+            // observes the result, so the TUI, the daemon and every plugin see
+            // the same valid transcript.
+            if !matches!(loop_finish_reason, FinishReason::Done) {
+                for (tool_call_id, name) in dangling_tool_calls(&context.get_messages()) {
+                    warn!(
+                        agent_id = %agent_id,
+                        tool = %name,
+                        "Answering a tool call the run never executed"
+                    );
+                    let message = ChatMessage::Tool {
+                        tool_call_id: tool_call_id.clone(),
+                        content: CANCELLED_TOOL_RESULT.to_string(),
+                        name: Some(name.clone()),
+                    };
+                    context.push(message.clone());
+                    if let Some(log) = raw_log.as_mut() {
+                        log.push(message);
+                    }
+                    // Emitting matters as much as recording: hosts build their
+                    // own history from the event stream, and an unanswered call
+                    // there is exactly what would lock the user out next turn.
+                    emitter
+                        .emit(AgentEvent::ToolExecResult {
+                            turn: tracker.current_turn(),
+                            tool_call_id,
+                            name,
+                            result: ToolExecutionResult {
+                                output: CANCELLED_TOOL_RESULT.to_string(),
+                                is_error: true,
+                                truncated: false,
+                                original_bytes: CANCELLED_TOOL_RESULT.len(),
+                                duration_ms: 0,
+                                telemetry: None,
+                            },
+                        })
+                        .await;
+                }
+
+                if loop_finish_reason == FinishReason::Cancelled {
+                    if let Some(partial) = cancelled_partial.take() {
+                        if final_content.is_none() {
+                            final_content = Some(partial.clone());
+                        }
+                        let message = ChatMessage::assistant_text(&partial);
+                        context.push(message.clone());
+                        if let Some(log) = raw_log.as_mut() {
+                            log.push(message);
+                        }
+                    }
+                }
+            }
+
             let terminal = match loop_finish_reason {
                 FinishReason::Done => LoopStatus::Completed,
                 FinishReason::Cancelled => LoopStatus::Aborted,
@@ -1375,5 +1441,142 @@ async fn detect_git_status_snapshot(
                 .collect()
         }
         _ => std::collections::HashSet::new(),
+    }
+}
+
+/// What the model is told about a tool call a cancel abandoned.
+///
+/// The model reads this as the tool's output, so it has to *answer* the call
+/// rather than read as a crash: the point is that the call did not run, which
+/// makes re-issuing it a reasonable next move and retrying the same call an
+/// unreasonable one.
+const CANCELLED_TOOL_RESULT: &str = "[cancelled by user before execution — the tool did not run]";
+
+/// The best available answer text for a turn that was cut short.
+///
+/// Mirrors the preference a completed turn uses: the visible answer wins, and
+/// reasoning is only the fallback for a turn that never produced one.
+fn partial_answer(assistant: &str, reasoning: &str) -> Option<String> {
+    if !assistant.trim().is_empty() {
+        Some(assistant.to_string())
+    } else if !reasoning.trim().is_empty() {
+        Some(reasoning.to_string())
+    } else {
+        None
+    }
+}
+
+/// Tool calls in the last assistant message that have no matching result.
+///
+/// Tools run as a batch, so a turn either appends every result or none: the only
+/// place an unanswered call can be is the final assistant message. Scanned
+/// rather than assumed, so this stays correct if a batch ever becomes partial.
+fn dangling_tool_calls(messages: &[ChatMessage]) -> Vec<(String, String)> {
+    let Some(index) = messages
+        .iter()
+        .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+    else {
+        return Vec::new();
+    };
+    let answered: std::collections::HashSet<String> = messages[index + 1..]
+        .iter()
+        .filter_map(|m| match m {
+            ChatMessage::Tool { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    match &messages[index] {
+        ChatMessage::Assistant {
+            tool_calls: Some(calls),
+            ..
+        } => calls
+            .iter()
+            .filter(|call| !answered.contains(&call.id))
+            .map(|call| (call.id.clone(), call.function.name.clone()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod cancel_repair_tests {
+    use super::*;
+    use crate::types::message::ToolCall;
+
+    fn assistant_with_calls(ids: &[&str]) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some("let me look".to_string()),
+            tool_calls: Some(
+                ids.iter()
+                    .map(|id| ToolCall::new_function(*id, "read_file", "{}"))
+                    .collect(),
+            ),
+            refusal: None,
+            name: None,
+        }
+    }
+
+    fn tool(call_id: &str) -> ChatMessage {
+        ChatMessage::Tool {
+            tool_call_id: call_id.to_string(),
+            content: "ok".to_string(),
+            name: Some("read_file".to_string()),
+        }
+    }
+
+    #[test]
+    fn unanswered_calls_are_reported() {
+        let messages = vec![ChatMessage::user("hi"), assistant_with_calls(&["a", "b"])];
+        assert_eq!(
+            dangling_tool_calls(&messages),
+            vec![
+                ("a".to_string(), "read_file".to_string()),
+                ("b".to_string(), "read_file".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn answered_calls_are_left_alone() {
+        let messages = vec![
+            ChatMessage::user("hi"),
+            assistant_with_calls(&["a", "b"]),
+            tool("a"),
+            tool("b"),
+        ];
+        assert!(dangling_tool_calls(&messages).is_empty());
+    }
+
+    /// A partial batch must not re-answer the calls that did run.
+    #[test]
+    fn only_the_missing_half_is_reported() {
+        let messages = vec![assistant_with_calls(&["a", "b"]), tool("a")];
+        assert_eq!(
+            dangling_tool_calls(&messages),
+            vec![("b".to_string(), "read_file".to_string())]
+        );
+    }
+
+    /// Results from an earlier turn do not answer a later call with the same shape.
+    #[test]
+    fn a_plain_answer_has_nothing_to_repair() {
+        let messages = vec![
+            assistant_with_calls(&["a"]),
+            tool("a"),
+            ChatMessage::user("and now?"),
+            ChatMessage::assistant_text("done"),
+        ];
+        assert!(dangling_tool_calls(&messages).is_empty());
+    }
+
+    #[test]
+    fn partial_answer_prefers_the_visible_text() {
+        assert_eq!(partial_answer("hi", ""), Some("hi".to_string()));
+        assert_eq!(
+            partial_answer("  ", "thinking"),
+            Some("thinking".to_string())
+        );
+        assert_eq!(partial_answer("", ""), None);
+        assert_eq!(partial_answer("hi", "thinking"), Some("hi".to_string()));
     }
 }

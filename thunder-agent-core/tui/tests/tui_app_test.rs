@@ -3,6 +3,7 @@ use std::sync::Arc;
 use thunder_agent_loop::prelude::SteerQueues;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
 use thunder_agent_loop::types::message::{ChatMessage, ContentPart, ToolCall};
+use thunder_agent_loop::types::tool::ToolExecutionResult;
 use thunder_tui::app::ExecutionMode;
 use thunder_tui::prelude::*;
 use tokio::sync::mpsc;
@@ -507,6 +508,138 @@ async fn a_steer_carries_staged_images() {
         last_user.image_count(),
         1,
         "the transcript shows the attachment, not just its text"
+    );
+}
+
+#[tokio::test]
+async fn stopping_keeps_the_partial_answer_and_reports_no_error() {
+    let mut app = App::new("gpt-4o");
+    app.conversation.messages.clear();
+    app.cancel_token = Some(tokio_util::sync::CancellationToken::new());
+    app.agent_status = AgentStatus::Streaming;
+    app.streaming_delta = "half an answer".to_string();
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), tx);
+
+    assert_eq!(
+        app.agent_status,
+        AgentStatus::Stopping,
+        "the run is still unwinding, so a second one must not start yet"
+    );
+    assert_eq!(
+        app.streaming_delta, "half an answer",
+        "what the user already read is not discarded"
+    );
+
+    // The engine settles and reports the run as cancelled.
+    app.handle_agent_finished(
+        "tui_agent".to_string(),
+        false,
+        Some(String::new()),
+        Some(vec![
+            ChatMessage::user("go"),
+            ChatMessage::assistant_text("half an answer"),
+        ]),
+        None,
+        None,
+        Some("Cancelled".to_string()),
+    );
+
+    assert_eq!(
+        app.agent_status,
+        AgentStatus::Idle,
+        "ready for the next message"
+    );
+    assert!(
+        !app.conversation.messages.iter().any(|m| matches!(
+            m,
+            ChatMessage::Assistant { content: Some(c), .. } if c.starts_with('❌')
+        )),
+        "a deliberate stop is not an error: {:?}",
+        app.conversation.messages
+    );
+    assert!(
+        app.conversation.messages.iter().any(|m| matches!(
+            m,
+            ChatMessage::Assistant { content: Some(c), .. } if c == "half an answer"
+        )),
+        "the partial answer is in the transcript"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_result_that_arrives_after_the_stop_still_lands() {
+    fn result() -> ObservedEvent {
+        ObservedEvent {
+            agent_id: "tui_agent".to_string(),
+            event: AgentEvent::ToolExecResult {
+                turn: 1,
+                tool_call_id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                result: ToolExecutionResult {
+                    output: "[cancelled by user before execution — the tool did not run]"
+                        .to_string(),
+                    is_error: true,
+                    truncated: false,
+                    original_bytes: 0,
+                    duration_ms: 0,
+                    telemetry: None,
+                },
+            },
+        }
+    }
+
+    let mut app = App::new("gpt-4o");
+    app.conversation.messages.clear();
+    // A run that asked for a tool and was stopped before it ran.
+    app.conversation.messages.push(ChatMessage::Assistant {
+        content: Some("let me look".to_string()),
+        tool_calls: Some(vec![ToolCall::new_function("call_1", "read_file", "{}")]),
+        refusal: None,
+        name: None,
+    });
+    app.active_tool_calls.push(ActiveToolCall {
+        id: "call_1".to_string(),
+        name: "read_file".to_string(),
+        arguments: "{}".to_string(),
+        result: None,
+        is_error: false,
+        duration_ms: 0,
+    });
+    // The run has already settled: cancel token taken, status back to idle.
+    app.cancel_token = None;
+    app.agent_status = AgentStatus::Idle;
+
+    app.handle_agent_event(result());
+
+    let tool_messages = app
+        .conversation
+        .messages
+        .iter()
+        .filter(|m| matches!(m, ChatMessage::Tool { .. }))
+        .count();
+    assert_eq!(tool_messages, 1, "the call the run never made is answered");
+    assert!(
+        app.active_tool_calls.is_empty(),
+        "and nothing is left running"
+    );
+    assert_eq!(
+        app.agent_status,
+        AgentStatus::Idle,
+        "a finished run is not resurrected by a late event"
+    );
+
+    // A duplicate delivery must not add a second copy.
+    app.handle_agent_event(result());
+    assert_eq!(
+        app.conversation
+            .messages
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::Tool { .. }))
+            .count(),
+        1,
+        "results arriving twice are recorded once"
     );
 }
 

@@ -28,6 +28,12 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         AgentStatus::Done => Span::styled(" ✔ DONE ", Style::default().fg(theme.assistant_bubble)),
+        AgentStatus::Stopping => Span::styled(
+            " ⏹ STOPPING ",
+            Style::default()
+                .fg(theme.error_color)
+                .add_modifier(Modifier::BOLD),
+        ),
         AgentStatus::Error(_) => Span::styled(
             " ✖ ERROR ",
             Style::default()
