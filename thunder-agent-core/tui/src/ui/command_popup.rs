@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::commands::filter_commands;
+use crate::commands::{arg_candidates, arg_context, arg_highlight, filter_commands, SlashCommand};
 use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -10,6 +10,17 @@ use ratatui::Frame;
 const MAX_VISIBLE_COMMANDS: usize = 8;
 
 pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
+    // Once the command name is complete and it takes a fixed first argument,
+    // the popup switches from commands to that argument's values.
+    if let Some(ctx) = arg_context(&app.input) {
+        let candidates = arg_candidates(ctx.command, ctx.token);
+        if !candidates.is_empty() {
+            let selected = arg_highlight(ctx.command, ctx.token);
+            render_arg_popup(f, ctx.command, &candidates, selected, input_area, theme);
+            return;
+        }
+    }
+
     if !app.input.starts_with('/') {
         return;
     }
@@ -18,27 +29,22 @@ pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &
     if matches.is_empty() {
         return;
     }
+    render_command_list(f, &matches, app.command_popup_idx, input_area, theme);
+}
 
+fn render_command_list(
+    f: &mut Frame,
+    matches: &[&'static SlashCommand],
+    selected_raw: usize,
+    input_area: Rect,
+    theme: &Theme,
+) {
     let visible = matches.len().min(MAX_VISIBLE_COMMANDS);
-    let popup_height = (visible as u16) + 2;
-    let popup_width = input_area
-        .width
-        .max(50)
-        .min(f.area().width.saturating_sub(4));
-
-    let x = input_area.x;
-    let y = input_area.y.saturating_sub(popup_height);
-
-    let popup_area = Rect {
-        x,
-        y,
-        width: popup_width,
-        height: popup_height,
-    };
+    let popup_area = popup_rect(f.area(), input_area, visible);
 
     f.render_widget(Clear, popup_area);
 
-    let selected_idx = app.command_popup_idx % matches.len();
+    let selected_idx = selected_raw % matches.len();
     let start_idx = scroll_offset(selected_idx, matches.len(), visible);
     let end_idx = (start_idx + visible).min(matches.len());
 
@@ -110,6 +116,99 @@ pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, popup_area);
+}
+
+/// The argument values of `/think`, `/mode`, … The highlighted row is always the
+/// value the input currently holds, so the popup never disagrees with `Enter`.
+fn render_arg_popup(
+    f: &mut Frame,
+    command: &'static SlashCommand,
+    candidates: &[&'static str],
+    selected_idx: usize,
+    input_area: Rect,
+    theme: &Theme,
+) {
+    let visible = candidates.len().min(MAX_VISIBLE_COMMANDS);
+    let popup_area = popup_rect(f.area(), input_area, visible);
+
+    f.render_widget(Clear, popup_area);
+
+    let start_idx = scroll_offset(selected_idx, candidates.len(), visible);
+    let end_idx = (start_idx + visible).min(candidates.len());
+
+    let mut lines = Vec::new();
+    for (idx, value) in candidates[start_idx..end_idx].iter().enumerate() {
+        let actual_idx = start_idx + idx;
+        let is_selected = actual_idx == selected_idx;
+
+        let cursor_span = if is_selected {
+            Span::styled(
+                " ▶ ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("   ")
+        };
+
+        let value_span = Span::styled(
+            (*value).to_string(),
+            if is_selected {
+                Style::default()
+                    .fg(Color::Rgb(255, 255, 255))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.accent_primary)
+            },
+        );
+
+        let hint_span = Span::styled(
+            format!("  — /{} {}", command.name, value),
+            theme.muted_style(),
+        );
+
+        let line_style = if is_selected {
+            Style::default().bg(Color::Rgb(30, 58, 95))
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(vec![cursor_span, value_span, hint_span]).style(line_style));
+    }
+
+    let more = if candidates.len() > visible {
+        format!(" [{}/{}] ", selected_idx + 1, candidates.len())
+    } else {
+        String::new()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_primary))
+        .title(format!(
+            " ⚡ /{} — first argument{more}(Tab/↑/↓ change, Enter run) ",
+            command.name
+        ))
+        .title_style(theme.title_style())
+        .style(Style::default().bg(Color::Rgb(15, 20, 28)));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, popup_area);
+}
+
+fn popup_rect(frame_area: Rect, input_area: Rect, visible_rows: usize) -> Rect {
+    let popup_height = (visible_rows as u16) + 2;
+    let popup_width = input_area
+        .width
+        .max(50)
+        .min(frame_area.width.saturating_sub(4));
+    Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(popup_height),
+        width: popup_width,
+        height: popup_height,
+    }
 }
 
 fn scroll_offset(selected_idx: usize, total: usize, visible_rows: usize) -> usize {

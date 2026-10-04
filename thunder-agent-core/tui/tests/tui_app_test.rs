@@ -672,3 +672,78 @@ async fn test_app_scrolling_and_mouse() {
     assert_eq!(app.scroll_offset, 50);
     assert!(app.auto_scroll);
 }
+
+#[tokio::test]
+async fn test_slash_argument_completion_through_key_handling() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    for ch in "/thinking ".chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()),
+            tx.clone(),
+        );
+    }
+    assert_eq!(app.input, "/thinking ");
+
+    // Tab writes the value in place…
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking off");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking low");
+
+    // …Shift+Tab walks back…
+    app.handle_key(
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking off");
+
+    // …and ↑/↓ are peers of Tab inside the argument slot.
+    app.handle_key(
+        KeyEvent::new(KeyCode::Up, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking high");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking off");
+
+    // Tab still completes a half-typed command name, then cycles its values.
+    app.set_input("/thi".to_string());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/think ");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/think off");
+
+    // Free-text arguments are left alone rather than being clobbered.
+    app.set_input("/model gpt-4o".to_string());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/model gpt-4o");
+
+    // Outside the input pane, Tab keeps switching focus.
+    app.set_input(String::new());
+    app.focus = FocusPane::Chat;
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.focus, FocusPane::Input);
+}

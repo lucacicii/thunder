@@ -42,7 +42,7 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Autocomplete slash command / Switch focus pane",
+                "Autocomplete slash command or its argument / Switch focus pane",
                 theme.text_style(),
             ),
         ]),

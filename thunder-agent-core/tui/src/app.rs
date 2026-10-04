@@ -1064,15 +1064,40 @@ impl App {
                 self.scroll_down(1);
             }
             KeyCode::Tab => {
-                if self.focus == FocusPane::Input && self.input.starts_with('/') {
-                    let matches = crate::commands::filter_commands(&self.input);
-                    if !matches.is_empty() {
-                        let selected = matches[self.command_popup_idx % matches.len()];
-                        self.set_input(format!("/{} ", selected.name));
+                if self.focus == FocusPane::Input {
+                    // Inside a command's argument slot, Tab changes the value
+                    // in place; only once there is no value to change does it
+                    // fall back to completing the command name.
+                    if let Some(next) =
+                        crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Forward)
+                    {
+                        self.set_input(next);
                         return;
+                    }
+                    // Complete the command name only while it is still being
+                    // typed: rewriting a line that already carries free-text
+                    // arguments would silently discard them.
+                    if self.input.starts_with('/') && !self.input.contains(char::is_whitespace) {
+                        let matches = crate::commands::filter_commands(&self.input);
+                        if !matches.is_empty() {
+                            let selected = matches[self.command_popup_idx % matches.len()];
+                            self.set_input(format!("/{} ", selected.name));
+                            return;
+                        }
                     }
                 }
                 self.cycle_focus();
+            }
+            // Shift+Tab walks argument values backwards. It has no other
+            // binding in the input pane, so it stays inert elsewhere.
+            KeyCode::BackTab => {
+                if self.focus == FocusPane::Input {
+                    if let Some(next) =
+                        crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Backward)
+                    {
+                        self.set_input(next);
+                    }
+                }
             }
             KeyCode::Esc => match self.mode {
                 ViewMode::Help | ViewMode::SessionList => {
@@ -1206,6 +1231,15 @@ impl App {
                 self.scroll_to_bottom();
             }
             KeyCode::Up => {
+                // Argument cycling wins over the command list and over history:
+                // in this slot the arrows mean "change the value", matching Tab.
+                if let Some(next) =
+                    crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Backward)
+                {
+                    self.set_input(next);
+                    return;
+                }
+
                 if self.input.starts_with('/') {
                     let matches = crate::commands::filter_commands(&self.input);
                     if !matches.is_empty() {
@@ -1231,6 +1265,13 @@ impl App {
                 }
             }
             KeyCode::Down => {
+                if let Some(next) =
+                    crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Forward)
+                {
+                    self.set_input(next);
+                    return;
+                }
+
                 if self.input.starts_with('/') {
                     let matches = crate::commands::filter_commands(&self.input);
                     if !matches.is_empty() {

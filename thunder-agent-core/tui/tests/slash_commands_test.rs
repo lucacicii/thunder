@@ -2,7 +2,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tempfile::tempdir;
 use thunder_conversation::prelude::*;
 use thunder_tui::app::{App, ExecutionMode};
-use thunder_tui::commands::filter_commands;
+use thunder_tui::commands::{
+    arg_candidates, arg_cycle, arg_highlight, filter_commands, lookup_command, CycleDir,
+};
 use tokio::sync::mpsc;
 
 #[test]
@@ -225,4 +227,107 @@ async fn test_image_command_stages_and_folds_into_user_turn() {
     assert!(last_user.has_images());
     assert_eq!(last_user.image_count(), 1);
     assert_eq!(last_user.content_str(), Some("what is this?"));
+}
+
+#[test]
+fn test_argument_cycle_walks_fixed_value_commands() {
+    // Aliases resolve, and the typed token itself is left untouched.
+    assert_eq!(
+        arg_cycle("/thinking ", CycleDir::Forward).as_deref(),
+        Some("/thinking off")
+    );
+    assert_eq!(
+        arg_cycle("/thinking off", CycleDir::Forward).as_deref(),
+        Some("/thinking low")
+    );
+    assert_eq!(
+        arg_cycle("/thinking medium", CycleDir::Forward).as_deref(),
+        Some("/thinking high")
+    );
+    // Wraps around at the end…
+    assert_eq!(
+        arg_cycle("/thinking high", CycleDir::Forward).as_deref(),
+        Some("/thinking off")
+    );
+    // …and backwards at the start.
+    assert_eq!(
+        arg_cycle("/think off", CycleDir::Backward).as_deref(),
+        Some("/think high")
+    );
+    // Empty argument: forward starts at the first value, backward at the last.
+    assert_eq!(
+        arg_cycle("/mode ", CycleDir::Forward).as_deref(),
+        Some("/mode auto")
+    );
+    assert_eq!(
+        arg_cycle("/mode ", CycleDir::Backward).as_deref(),
+        Some("/mode single")
+    );
+
+    // A partial prefix fills the matching value; the next press then steps from
+    // that value through the full list instead of stalling on one match.
+    assert_eq!(
+        arg_cycle("/think h", CycleDir::Forward).as_deref(),
+        Some("/think high")
+    );
+    assert_eq!(
+        arg_cycle("/think high", CycleDir::Forward).as_deref(),
+        Some("/think off")
+    );
+    assert_eq!(
+        arg_cycle("/permission r", CycleDir::Forward).as_deref(),
+        Some("/permission read")
+    );
+    assert_eq!(
+        arg_cycle("/queue c", CycleDir::Forward).as_deref(),
+        Some("/queue clear")
+    );
+
+    // Trailing text after the first argument survives the rewrite.
+    assert_eq!(
+        arg_cycle("/skills lo extra", CycleDir::Forward).as_deref(),
+        Some("/skills load extra")
+    );
+}
+
+#[test]
+fn test_argument_cycle_declines_outside_a_fixed_argument_slot() {
+    // Command name still being typed.
+    assert_eq!(arg_cycle("/think", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/thi", CycleDir::Forward), None);
+    // Free-text first arguments.
+    assert_eq!(arg_cycle("/model ", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/model gpt-4o", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/image ", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/title hello", CycleDir::Forward), None);
+    // Unknown command, unknown value, and non-slash input.
+    assert_eq!(arg_cycle("/nope ", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/think foo", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("hello", CycleDir::Forward), None);
+}
+
+#[test]
+fn test_argument_candidates_and_highlight() {
+    let think = lookup_command("thinking").expect("alias resolves");
+    assert_eq!(think.name, "think");
+    assert_eq!(
+        arg_candidates(think, ""),
+        vec!["off", "low", "medium", "high"]
+    );
+    assert_eq!(arg_candidates(think, "m"), vec!["medium"]);
+    assert_eq!(arg_candidates(think, "off"), vec!["off"]);
+    assert!(arg_candidates(think, "zzz").is_empty());
+
+    // The highlight matches the value already in the input, so Tab and Enter
+    // never disagree.
+    assert_eq!(arg_highlight(think, ""), 0);
+    assert_eq!(arg_highlight(think, "m"), 0);
+    assert_eq!(arg_highlight(think, "medium"), 0);
+
+    let permission = lookup_command("perm").expect("alias resolves");
+    assert_eq!(
+        arg_candidates(permission, ""),
+        vec!["read", "write", "bash"]
+    );
+    assert_eq!(lookup_command("model").unwrap().arg_options, &[] as &[&str]);
 }
