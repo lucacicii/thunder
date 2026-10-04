@@ -179,6 +179,9 @@ pub struct App {
     /// Exact copies of what this host queued. The engine's acceptance event
     /// carries only text, so the attachments have to come from here.
     pub queued_turns: Vec<ChatMessage>,
+    /// How a link is acted on. Injectable so a test can assert the whole
+    /// click path without launching Finder.
+    pub link_opener: Option<Arc<dyn Fn(&LinkTarget) -> std::io::Result<()> + Send + Sync>>,
 }
 
 /// A clickable region of the chat pane, in absolute terminal coordinates.
@@ -253,6 +256,7 @@ impl App {
             steer_queues: None,
             queued: QueueSnapshot::default(),
             queued_turns: Vec::new(),
+            link_opener: None,
         }
     }
 
@@ -974,6 +978,11 @@ impl App {
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
             }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Fast path to every link in the session, for when the mouse is
+                // not delivering clicks (or is busy being a terminal gesture).
+                self.open_links_picker();
+            }
             KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mode = match self.mode {
                     ViewMode::Help => ViewMode::Chat,
@@ -1250,13 +1259,21 @@ impl App {
             .map(|h| h.target.clone())
     }
 
-    /// Act on a click: reveal local files, open web URLs. Reports the outcome,
-    /// because a silent no-op would look like the click was missed.
+    /// Act on a click: reveal local files, open web URLs.
     pub fn activate_link_at(&mut self, column: u16, row: u16) {
-        let Some(target) = self.link_at(column, row) else {
+        if let Some(target) = self.link_at(column, row) {
+            self.launch_link(&target);
             return;
-        };
-        self.launch_link(&target);
+        }
+        // A click that lands on a link's row but beside the text is the most
+        // likely way to miss, and silence there is indistinguishable from the
+        // feature being broken. Say so instead of doing nothing.
+        if let Some(near) = self.link_hitboxes.iter().find(|h| h.row == row) {
+            self.set_status_message(format!(
+                "No link at that column — the one on this line starts at column {}. Or use /links.",
+                near.col_start + 1
+            ));
+        }
     }
 
     /// Directories a relative link path may resolve in: the workspace first,
@@ -1336,7 +1353,11 @@ impl App {
     /// Reveal a local file or open a URL, reporting the outcome in the status
     /// bar (a silent no-op would read as a missed click).
     fn launch_link(&mut self, target: &LinkTarget) {
-        match crate::links::launch(target) {
+        let outcome = match &self.link_opener {
+            Some(opener) => opener(target),
+            None => crate::links::launch(target),
+        };
+        match outcome {
             Ok(()) => self.set_status_message(match target {
                 LinkTarget::Url(url) => format!("Opened {url}"),
                 LinkTarget::File(path) => format!("Revealed {}", path.display()),
