@@ -235,30 +235,15 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         stream.raw(Line::raw(""));
     }
 
-    // Scroll bounds. In Markdown mode every rendered line is exactly one screen
-    // row, so the count is exact; the raw path still relies on `Paragraph`'s
-    // wrapping, which has to be estimated.
-    let inner_width = (area.width.saturating_sub(2) as usize).max(1);
-    let total_rendered_lines = if markdown_on {
-        stream.lines.len()
-    } else {
-        stream
-            .lines
-            .iter()
-            .map(|line| {
-                let line_len: usize = line
-                    .spans
-                    .iter()
-                    .map(|s| str_display_width(&s.content))
-                    .sum();
-                if line_len == 0 {
-                    1
-                } else {
-                    line_len.div_ceil(inner_width)
-                }
-            })
-            .sum()
-    };
+    // Some lines are pushed verbatim (tool output, system notices, tool-call
+    // args), so they can be wider than the pane and get word-wrapped into
+    // several rows by `Paragraph` below. Counting them one row each would pin
+    // auto-scroll short of the true bottom, so the row count comes from the
+    // same renderer that draws them. The `u16` width is the pane's, because the
+    // block only draws top/bottom borders and so costs no horizontal space.
+    let links = std::mem::take(&mut stream.links);
+    let paragraph = Paragraph::new(stream.lines).wrap(Wrap { trim: false });
+    let total_rendered_lines = paragraph.line_count(area.width);
 
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_rendered_lines.saturating_sub(visible_height);
@@ -272,8 +257,7 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     // Project link hitboxes into screen coordinates for this frame's viewport.
     app.link_hitboxes = if markdown_on {
-        stream
-            .links
+        links
             .iter()
             .filter_map(|link| {
                 if link.line < scroll_y || link.line >= scroll_y + visible_height {
@@ -326,12 +310,11 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         );
     }
 
-    let paragraph = Paragraph::new(stream.lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_y as u16, 0));
+    // `Paragraph::scroll` takes a `u16`; a transcript taller than that cannot be
+    // addressed exactly, so clamp instead of wrapping around to the top.
+    let scroll_row = scroll_y.min(u16::MAX as usize) as u16;
 
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph.block(block).scroll((scroll_row, 0)), area);
 }
 
 /// Renders message body text, or the raw source when preview is off.
@@ -352,11 +335,6 @@ fn push_body(
             ]));
         }
     }
-}
-
-fn str_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
 }
 
 fn render_active_tool_call(lines: &mut Vec<Line>, tc: &ActiveToolCall, theme: &Theme) {
