@@ -137,3 +137,60 @@ async fn agent_loop_rebuilds_pipeline_with_extra_roots() {
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// End to end through the real pipeline and the real `bash` tool: the escape
+/// seen in a live session (`cd <outside> && python3 - <<PY … open(p,"w") … PY`)
+/// must not reach the filesystem, while the same work inside a root succeeds.
+#[tokio::test]
+async fn bash_cannot_write_outside_roots_via_cd_and_interpreter() {
+    use thunder_agent_loop::tools::builtin::BashTool;
+
+    let ws = temp_dir("thunder_bashjail_ws");
+    let outside = temp_dir("thunder_bashjail_outside");
+    let _ = std::fs::remove_file(outside.join("leak.txt"));
+
+    let mut registry = ToolRegistry::default();
+    // Same wiring as the TUI / host: bash runs in the workspace root.
+    registry.register(Arc::new(BashTool::default().with_default_cwd(ws.clone())));
+    let pipeline = ToolPipeline::configured(
+        ws.clone(),
+        &[],
+        registry,
+        None,
+        &MiddlewareConfig::default(),
+        Permission::Bash,
+        None,
+        None,
+    );
+
+    let run = |id: &'static str, command: String| {
+        let call = ToolCall::new_function(id, "bash", json!({ "command": command }).to_string());
+        let pipeline = &pipeline;
+        async move { pipeline.execute(&call, &ctx(id), None).await }
+    };
+
+    let escape = format!(
+        "cd {} && python3 - <<'PY'\nimport io\nio.open(\"leak.txt\",\"w\").write(\"leaked\")\nPY",
+        outside.display()
+    );
+    let res = run("call_e1", escape).await;
+    assert!(res.is_error, "cd+python write outside must be blocked: {}", res.output);
+    assert!(res.output.contains("Shell write target"), "{}", res.output);
+    assert!(!outside.join("leak.txt").exists(), "nothing may be written outside");
+
+    let res = run("call_e2", format!("cd {} && touch leak.txt", outside.display())).await;
+    assert!(res.is_error);
+    assert!(!outside.join("leak.txt").exists());
+
+    // The same interpreter write inside the workspace is fine and really lands.
+    let res = run(
+        "call_ok",
+        "python3 -c \"open('inside.txt','w').write('ok')\"".to_string(),
+    )
+    .await;
+    assert!(!res.is_error, "in-jail interpreter write must pass: {}", res.output);
+    assert_eq!(std::fs::read_to_string(ws.join("inside.txt")).unwrap(), "ok");
+
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&outside);
+}
