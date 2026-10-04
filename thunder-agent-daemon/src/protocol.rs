@@ -179,6 +179,12 @@ pub enum DaemonResponse {
         task_id: String,
         session_id: Option<String>,
         error: String,
+        /// The run's terminal reason (`Cancelled`, `Error`, ...) when a run got far
+        /// enough to have one. Absent when the daemon failed before the run
+        /// existed, so a client can tell "the agent failed" from "we could not
+        /// start it".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
     },
     /// The agent is asking the user a question and is blocked until answered.
     /// The panel renders this as a question bubble.
@@ -335,5 +341,32 @@ mod tests {
             req,
             DaemonRequest::SteerTask { behavior: None, .. }
         ));
+    }
+
+    /// A failure that happened before a run existed must not look like one that
+    /// ran and failed: a client deciding whether to retry needs the difference.
+    #[test]
+    fn task_failed_carries_the_run_reason_only_when_there_is_one() {
+        let with_reason = serde_json::to_value(DaemonResponse::TaskFailed {
+            task_id: "t1".to_string(),
+            session_id: Some("s1".to_string()),
+            error: "boom".to_string(),
+            finish_reason: Some("Error".to_string()),
+        })
+        .expect("serializes");
+        assert_eq!(with_reason["type"], "task_failed");
+        assert_eq!(with_reason["finish_reason"], "Error");
+
+        let without = serde_json::to_value(DaemonResponse::TaskFailed {
+            task_id: "t1".to_string(),
+            session_id: None,
+            error: "could not start".to_string(),
+            finish_reason: None,
+        })
+        .expect("serializes");
+        assert!(
+            without.get("finish_reason").is_none(),
+            "omitted rather than null so old clients are unaffected"
+        );
     }
 }
