@@ -233,7 +233,18 @@ async fn test_agent_loop_mid_stream_cancellation_classified_correctly() {
 
     // Verify it is classified as Cancelled and NOT Error
     assert_eq!(result.finish_reason, FinishReason::Cancelled);
-    assert_eq!(result.final_content, None);
+    // The token the user already saw is kept, not thrown away: cancelling stops
+    // the run, it does not un-say what was on screen. It also has to be in the
+    // transcript, because that is what the next turn is built from.
+    assert_eq!(result.final_content.as_deref(), Some("Processing..."));
+    assert!(
+        result.messages.iter().any(|m| matches!(
+            m,
+            ChatMessage::Assistant { content: Some(c), .. } if c == "Processing..."
+        )),
+        "partial answer survives into the transcript: {:?}",
+        result.messages
+    );
 }
 
 #[tokio::test]

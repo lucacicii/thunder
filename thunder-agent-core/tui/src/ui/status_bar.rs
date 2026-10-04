@@ -91,6 +91,7 @@ fn prompt_span(app: &App, theme: &Theme) -> Span<'static> {
         AgentStatus::Idle
         | AgentStatus::Thinking
         | AgentStatus::Streaming
+        | AgentStatus::Stopping
         | AgentStatus::ExecutingTool { .. } => Span::styled(
             "❯ ",
             Style::default()

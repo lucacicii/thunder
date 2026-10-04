@@ -310,9 +310,14 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // The busy indicator sits on the separator directly above the prompt, so it
     // is always in view without competing with what the user is typing.
     if app.is_running() {
+        let label = if app.agent_status == AgentStatus::Stopping {
+            "stopping…"
+        } else {
+            "working…"
+        };
         block = block.title_bottom(
             Line::from(Span::styled(
-                format!("{} working… ", app.spinner()),
+                format!("{} {label} ", app.spinner()),
                 Style::default()
                     .fg(theme.tool_bubble)
                     .add_modifier(Modifier::ITALIC),
