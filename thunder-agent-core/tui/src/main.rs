@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_conversation::prelude::FsConversationStore;
 use thunder_tui::prelude::*;
@@ -48,8 +49,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_store(store)
         .with_provider_registry(registry);
 
+    // Workspace root (also the security jail root): `--workspace <path>` beats
+    // `THUNDER_WORKSPACE`, which beats the current directory.
+    match resolve_workspace_override(&args, env::var("THUNDER_WORKSPACE").ok().as_deref()) {
+        Ok(Some(dir)) => app.workspace_dir = dir,
+        Ok(None) => {}
+        Err(msg) => {
+            eprintln!("✖ {msg}");
+            std::process::exit(2);
+        }
+    }
+
     // Persist initial session so it is immediately registered in the sidebar
     app.save_current_conversation().await;
+    // Make the jail root visible: it is the cwd unless overridden, and writes
+    // outside it (and `/roots add` grants) are refused.
+    app.set_status_message(format!("Workspace: {}", app.workspace_dir.display()));
 
     // Optional specific session arg: --session <id>
     if let Some(pos) = args.iter().position(|a| a == "--session") {
@@ -62,4 +77,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.run(app).await?;
 
     Ok(())
+}
+
+/// Resolve an explicit workspace override.
+///
+/// `Ok(None)` means "no override, keep the current directory". An override that
+/// is not an existing directory is an error: silently falling back to the cwd
+/// would put the jail somewhere the operator did not choose.
+fn resolve_workspace_override(
+    args: &[String],
+    env_value: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let (raw, source) = match args.iter().position(|a| a == "--workspace") {
+        Some(pos) => match args.get(pos + 1) {
+            Some(v) if !v.starts_with("--") => (v.as_str(), "--workspace"),
+            _ => return Err("`--workspace` requires a directory path.".to_string()),
+        },
+        None => match env_value.filter(|v| !v.trim().is_empty()) {
+            Some(v) => (v, "THUNDER_WORKSPACE"),
+            None => return Ok(None),
+        },
+    };
+    let path = PathBuf::from(raw);
+    path.canonicalize()
+        .ok()
+        .filter(|p| p.is_dir())
+        .map(Some)
+        .ok_or_else(|| format!("{source}: `{raw}` is not an existing directory."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_override_keeps_cwd() {
+        assert_eq!(resolve_workspace_override(&argv(&["tui"]), None), Ok(None));
+        assert_eq!(
+            resolve_workspace_override(&argv(&["tui"]), Some("  ")),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn flag_beats_env() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let got = resolve_workspace_override(
+            &argv(&["tui", "--workspace", a.path().to_str().unwrap()]),
+            Some(b.path().to_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(got, Some(a.path().canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn env_used_when_no_flag() {
+        let b = tempfile::tempdir().unwrap();
+        let got =
+            resolve_workspace_override(&argv(&["tui"]), Some(b.path().to_str().unwrap())).unwrap();
+        assert_eq!(got, Some(b.path().canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn missing_dir_or_value_is_an_error() {
+        assert!(resolve_workspace_override(&argv(&["tui", "--workspace"]), None).is_err());
+        assert!(
+            resolve_workspace_override(&argv(&["tui", "--workspace", "--session"]), None).is_err()
+        );
+        assert!(
+            resolve_workspace_override(&argv(&["tui", "--workspace", "/no/such/dir/xyz"]), None)
+                .is_err()
+        );
+    }
 }
