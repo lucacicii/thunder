@@ -84,6 +84,18 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         Line::from(vec![
             Span::styled(
+                "Ctrl + O       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Every link and file path in this session (Enter reveals/opens)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "Up / Down      ",
                 Style::default()
                     .fg(theme.highlight)

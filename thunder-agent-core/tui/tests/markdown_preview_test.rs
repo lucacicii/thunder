@@ -2,6 +2,7 @@
 
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use thunder_agent_loop::types::message::ChatMessage;
 use thunder_tui::links::LinkTarget;
@@ -150,6 +151,112 @@ async fn rendered_paths_are_clickable_at_their_screen_cell() {
     // …and a cell past it does not.
     assert_eq!(app.link_at(hitbox.col_end + 3, hitbox.row), None);
     assert_eq!(app.link_at(hitbox.col_start, hitbox.row + 7), None);
+}
+
+#[tokio::test]
+async fn clicking_a_rendered_path_reveals_it() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("neon-memory.md"), "x").unwrap();
+
+    let mut app = bare_app(dir.path());
+    app.conversation
+        .add_assistant_message(Some("wrote `neon-memory.md`".to_string()), None);
+
+    // Record the action instead of launching Finder.
+    let opened: Arc<Mutex<Vec<LinkTarget>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&opened);
+    app.link_opener = Some(Arc::new(move |target: &LinkTarget| {
+        sink.lock().unwrap().push(target.clone());
+        Ok(())
+    }));
+
+    draw_frame(&mut app, 80, 24);
+    let hitbox = app
+        .link_hitboxes
+        .iter()
+        .find(|h| h.target == LinkTarget::File(dir.path().join("neon-memory.md")))
+        .expect("the path should be a link")
+        .clone();
+
+    let click = |modifiers| crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: hitbox.col_start + 1,
+        row: hitbox.row,
+        modifiers,
+    };
+
+    // A plain left click: what the terminal sends for an unmodified click.
+    app.handle_mouse(click(crossterm::event::KeyModifiers::empty()));
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        &[LinkTarget::File(dir.path().join("neon-memory.md"))],
+        "a plain left click acts on the link under it"
+    );
+
+    // …and the same click with Command held, for terminals that forward it.
+    // Cmd+click is the gesture users reach for, so it must not be rejected
+    // just because a modifier came along.
+    app.handle_mouse(click(crossterm::event::KeyModifiers::SUPER));
+    assert_eq!(opened.lock().unwrap().len(), 2, "Cmd+click works too");
+
+    // A click away from the link does nothing.
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: hitbox.col_end + 20,
+        row: hitbox.row,
+        modifiers: crossterm::event::KeyModifiers::empty(),
+    });
+    assert_eq!(opened.lock().unwrap().len(), 2, "a miss stays a miss");
+}
+
+#[tokio::test]
+async fn ctrl_o_opens_the_links_picker() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("neon-memory.md"), "x").unwrap();
+
+    let mut app = bare_app(dir.path());
+    app.conversation
+        .add_assistant_message(Some("wrote `neon-memory.md`".to_string()), None);
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        tx,
+    );
+
+    assert!(app.picker.is_open, "Ctrl+O is the keyboard way in");
+    assert_eq!(app.picker.kind, PickerKind::SelectLink);
+}
+
+#[tokio::test]
+async fn a_near_miss_click_says_so_instead_of_nothing() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("neon-memory.md"), "x").unwrap();
+
+    let mut app = bare_app(dir.path());
+    app.conversation
+        .add_assistant_message(Some("wrote `neon-memory.md`".to_string()), None);
+    app.link_opener = Some(Arc::new(|_: &LinkTarget| Ok(())));
+
+    draw_frame(&mut app, 80, 24);
+    let hitbox = app.link_hitboxes.first().expect("a link").clone();
+
+    // Click on the link's row but to the left of the text.
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: hitbox.col_start.saturating_sub(3),
+        row: hitbox.row,
+        modifiers: crossterm::event::KeyModifiers::empty(),
+    });
+
+    let (message, _) = app.status_message.expect("a hint");
+    assert!(
+        message.contains("No link at that column"),
+        "got {message:?}"
+    );
 }
 
 #[tokio::test]
