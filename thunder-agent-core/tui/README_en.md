@@ -24,7 +24,7 @@
   - `Tab`: Auto-complete slash command / switch focus.
   - `Ctrl + N`: Create clean new session.
   - `Ctrl + P`: Fast cycle execution modes (`Auto` ➔ `Single`).
-  - `Ctrl + H`: Toggle keyboard shortcut help popup.
+  - `Ctrl + H`: Toggle the shortcut reference popup (scroll with `↑ / ↓` or `PageUp / PageDown`).
   - `Ctrl + A`: Select the whole prompt (pair with `Ctrl + C` to copy it).
   - `Ctrl + C`: Copy the selection, else clear the prompt, else cancel the run, else exit.
   - `Esc`: Drop the selection first, else dismiss the overlay or cancel the run.

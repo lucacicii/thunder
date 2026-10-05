@@ -2,13 +2,16 @@ use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
-    let help_area = centered_rect(75, 75, area);
+/// Rows the border takes off the modal, top and bottom.
+const BORDER_ROWS: u16 = 2;
 
-    let shortcuts = vec![
+/// The reference itself, one entry per line. Kept apart from the render so the
+/// scroll bounds can be measured against exactly what gets painted.
+fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
+    vec![
         Line::styled(
             "⚡ THUNDER TUI — INTERACTIVE COMMANDS & SHORTCUTS",
             Style::default()
@@ -418,25 +421,63 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
             ),
             Span::styled("Exit Thunder TUI", theme.muted_style()),
         ]),
-        Line::raw(""),
-        Line::styled(
-            "Press Esc or Ctrl+H to close this window",
-            theme.muted_style(),
-        ),
-    ];
+    ]
+}
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" 📖 Help & Command Reference ")
-        .title_style(theme.title_style())
-        .border_style(Style::default().fg(theme.border_focus));
+/// A bottom title carrying the scroll hint and the position, so the reference
+/// never has to spend a content row saying either.
+fn scroll_hint(offset: usize, limit: usize) -> Line<'static> {
+    let text = if limit > 0 {
+        format!(" ↑/↓ or j/k scroll · {offset}/{limit} · Esc to close ")
+    } else {
+        " Esc or Ctrl+H to close ".to_string()
+    };
+    Line::from(text)
+        .alignment(Alignment::Right)
+        .style(Style::default().add_modifier(Modifier::DIM))
+}
 
-    let paragraph = Paragraph::new(shortcuts)
-        .block(block)
-        .alignment(Alignment::Left);
+fn help_paragraph(
+    lines: Vec<Line<'static>>,
+    theme: &Theme,
+    hint: Line<'static>,
+) -> Paragraph<'static> {
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" 📖 Help & Command Reference ")
+                .title_bottom(hint)
+                .title_style(theme.title_style())
+                .border_style(Style::default().fg(theme.border_focus)),
+        )
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: false })
+}
+
+/// How far the reference can scroll at this frame size. The frame is the only
+/// thing that knows the modal's dimensions, so the key handler asks for this
+/// rather than tracking them itself.
+pub fn help_max_scroll(area: Rect, theme: &Theme) -> usize {
+    let help_area = centered_rect(75, 75, area);
+    let text_width = help_area.width.saturating_sub(BORDER_ROWS).max(1);
+    let visible = help_area.height.saturating_sub(BORDER_ROWS) as usize;
+    // `line_count` counts the border rows as well, hence the subtraction.
+    help_paragraph(help_lines(theme), theme, scroll_hint(0, 0))
+        .line_count(text_width)
+        .saturating_sub(BORDER_ROWS as usize)
+        .saturating_sub(visible)
+}
+
+pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme, scroll: usize) {
+    let help_area = centered_rect(75, 75, area);
+    let limit = help_max_scroll(area, theme);
+    let offset = scroll.min(limit);
+
+    let paragraph = help_paragraph(help_lines(theme), theme, scroll_hint(offset, limit));
 
     f.render_widget(Clear, help_area);
-    f.render_widget(paragraph, help_area);
+    f.render_widget(paragraph.scroll((offset as u16, 0)), help_area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

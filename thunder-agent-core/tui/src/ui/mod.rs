@@ -83,6 +83,10 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
 
     // 8. Render Help Modal Overlay if active
     if app.mode == ViewMode::Help {
-        render_help_modal(f, f.area(), theme);
+        // The frame is the only place the modal's size is known, so the scroll
+        // bounds are measured here and handed back to the key handler.
+        app.help_max_scroll = help::help_max_scroll(f.area(), theme);
+        app.help_scroll = app.help_scroll.min(app.help_max_scroll);
+        render_help_modal(f, f.area(), theme, app.help_scroll);
     }
 }

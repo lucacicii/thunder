@@ -42,7 +42,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`↑ / ↓`** | **Select / History** | Navigate candidate list in slash popup; browse prompt history in normal state |
 | **`Ctrl + N`** | **New Session** | Clear chat stream and create a fresh blank session |
 | **`Ctrl + P`** | **Cycle Mode** | Fast-cycle execution mode: `Auto ➔ Single` |
-| **`Ctrl + H`** | **Help Modal** | Toggle keyboard shortcut help card overlay |
+| **`Ctrl + H`** | **Help Modal** | Toggle the shortcut reference overlay (scroll it with `↑ / ↓`, `PageUp / PageDown`, `g / G`; `Esc` closes) |
 | **`Ctrl + A`** | **Select all** | Select the whole prompt; pair with `Ctrl + C` to copy it to the system clipboard |
 | **`Ctrl + C`** | **Copy / Clear / Cancel / Exit** | Copy the selection if any; else clear a non-empty prompt; else cancel the running task; exit when idle |
 | **`Esc`** | **Close / Dismiss** | Drop the selection first; otherwise dismiss the palette / help modal, or cancel the running task |

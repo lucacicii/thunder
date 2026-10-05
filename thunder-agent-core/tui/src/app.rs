@@ -146,6 +146,11 @@ pub struct App {
     pub status_message: Option<(String, std::time::Instant)>,
     pub last_error: Option<String>,
     pub last_max_scroll: usize,
+    /// First line of the help reference on screen, and the furthest it can go
+    /// at the current frame size. The renderer owns the bound because only it
+    /// knows the modal's dimensions; the key handler only has to respect it.
+    pub help_scroll: usize,
+    pub help_max_scroll: usize,
     pub active_skill: Option<thunder_agent_skills::SkillHandle>,
     /// Raw pre-compaction transcript pending a sidecar write (checkpoint mode).
     pub pending_raw_transcript: Option<Vec<ChatMessage>>,
@@ -255,6 +260,8 @@ impl App {
             status_message: None,
             last_error: None,
             last_max_scroll: 0,
+            help_scroll: 0,
+            help_max_scroll: 0,
             active_skill: None,
             pending_raw_transcript: None,
             thinking_level: None,
@@ -1191,6 +1198,42 @@ impl App {
             return;
         }
 
+        // 2. The help overlay owns the frame while it is open: its own scroll
+        // keys are handled here, and nothing else reaches the prompt hidden
+        // underneath. Only the global shortcuts and Esc still fall through.
+        if self.mode == ViewMode::Help {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.scroll_help_up(1);
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.scroll_help_down(1);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.scroll_help_up(10);
+                    return;
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.scroll_help_down(10);
+                    return;
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    self.scroll_help_to_top();
+                    return;
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    self.scroll_help_to_bottom();
+                    return;
+                }
+                KeyCode::Esc => {}
+                KeyCode::Char('c' | 'q' | 'n' | 'p' | 'b' | 'o' | 'h') if ctrl => {}
+                _ => return,
+            }
+        }
+
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.handle_interrupt();
@@ -1216,7 +1259,11 @@ impl App {
             KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mode = match self.mode {
                     ViewMode::Help => ViewMode::Chat,
-                    _ => ViewMode::Help,
+                    _ => {
+                        // A reference is read from the top.
+                        self.help_scroll = 0;
+                        ViewMode::Help
+                    }
                 };
             }
             KeyCode::PageUp => {
@@ -1679,6 +1726,27 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.auto_scroll = true;
         self.scroll_offset = self.last_max_scroll;
+    }
+
+    // ── Help overlay scrolling ────────────────────────────────────────────
+    //
+    // The reference is much taller than any frame, so it scrolls instead of
+    // being silently clipped at the bottom border.
+
+    pub fn scroll_help_up(&mut self, lines: usize) {
+        self.help_scroll = self.help_scroll.saturating_sub(lines);
+    }
+
+    pub fn scroll_help_down(&mut self, lines: usize) {
+        self.help_scroll = (self.help_scroll + lines).min(self.help_max_scroll);
+    }
+
+    pub fn scroll_help_to_top(&mut self) {
+        self.help_scroll = 0;
+    }
+
+    pub fn scroll_help_to_bottom(&mut self) {
+        self.help_scroll = self.help_max_scroll;
     }
 
     fn handle_chat_scroll(&mut self, key: KeyEvent) {
