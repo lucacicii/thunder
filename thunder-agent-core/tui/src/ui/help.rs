@@ -340,11 +340,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled(
-                "/title [text|force]       ",
+                "/rename [name | --auto]   ",
                 Style::default().fg(theme.assistant_bubble),
             ),
             Span::styled(
-                "Set the conversation title manually or (re)generate it",
+                "Rename this session, or regenerate its name with `--auto`",
                 theme.muted_style(),
             ),
         ]),

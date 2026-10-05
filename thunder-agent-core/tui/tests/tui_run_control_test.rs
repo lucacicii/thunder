@@ -279,23 +279,100 @@ async fn question_modal_escape_dismisses() {
     assert!(res_rx.await.unwrap().is_null(), "dismissal sends Null");
 }
 
-// ── /title ────────────────────────────────────────────────────────────────
+// ── /rename ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn manual_title_is_set_and_locked() {
     let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    assert!(app.execute_slash_command("/title Rust workspace audit", tx.clone()));
+    assert!(app.execute_slash_command("/rename Rust workspace audit", tx.clone()));
     assert_eq!(
         app.conversation.title.as_deref(),
         Some("Rust workspace audit")
     );
     assert!(app.conversation.is_title_manual());
 
-    // A manual title blocks plain /title (regeneration); force path still runs.
+    // A manual title blocks background regeneration.
     assert!(!app.should_autogenerate_title());
     assert!(!app.conversation.is_title_placeholder());
+}
+
+/// A bare `/rename` collects the name in the input box: Enter saves it, Esc
+/// backs out, and an empty submission never wipes the title.
+#[tokio::test]
+async fn a_bare_rename_asks_for_a_name_in_the_input_box() {
+    let mut app = App::new("gpt-4o");
+    app.conversation.title = Some("Old name".to_string());
+    app.conversation.title_source = Some("manual".to_string());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    assert!(app.execute_slash_command("/rename", tx.clone()));
+    assert!(app.rename_mode, "the box is now collecting a name");
+    assert!(
+        app.input.is_empty(),
+        "the command itself is not left behind"
+    );
+    let turns_before = app.conversation.stats.turn_count;
+
+    // Esc leaves the title alone and records nothing.
+    app.handle_key(key(KeyCode::Esc), tx.clone());
+    assert!(!app.rename_mode);
+    assert_eq!(app.conversation.title.as_deref(), Some("Old name"));
+    assert_eq!(app.conversation.stats.turn_count, turns_before);
+
+    // Enter on an empty box refuses rather than clearing the name.
+    assert!(app.execute_slash_command("/rename", tx.clone()));
+    app.handle_key(key(KeyCode::Enter), tx.clone());
+    assert!(app.rename_mode, "an empty name keeps the box open");
+    assert_eq!(app.conversation.title.as_deref(), Some("Old name"));
+
+    // The next Enter saves what was typed, newlines and spacing folded.
+    for ch in "Rust   workspace\n audit".chars() {
+        app.handle_key(char_key(ch), tx.clone());
+    }
+    app.handle_key(key(KeyCode::Enter), tx.clone());
+    assert!(!app.rename_mode);
+    assert!(app.input.is_empty());
+    assert_eq!(
+        app.conversation.title.as_deref(),
+        Some("Rust workspace audit")
+    );
+    assert!(app.conversation.is_title_manual());
+}
+
+/// The session rail renders a cached list; a rename has to update it in place
+/// or the sidebar keeps the stale name.
+#[tokio::test]
+async fn a_rename_refreshes_the_session_list_row() {
+    let mut app = App::new("gpt-4o");
+    let id = app.conversation.id.clone();
+    app.session_list = vec![ConversationSummary {
+        id: id.clone(),
+        title: Some("Old name".to_string()),
+        parent_id: None,
+        status: ConversationStatus::Active,
+        message_count: 1,
+        turn_count: 1,
+        total_tokens: 10,
+        total_used_tokens: 10,
+        tags: vec![],
+        model: None,
+        workspace: None,
+        thinking_level: None,
+        created_at_ms: 1000,
+        updated_at_ms: 1000,
+    }];
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    assert!(app.execute_slash_command("/rename New name", tx.clone()));
+
+    let row = app
+        .session_list
+        .iter()
+        .find(|s| s.id == id)
+        .expect("the row is still there");
+    assert_eq!(row.title.as_deref(), Some("New name"));
 }
 
 #[tokio::test]

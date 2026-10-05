@@ -174,10 +174,10 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
     )
     .with_args(&["list"]),
     SlashCommand::new(
-        "title",
-        &["rename"],
-        "[text | force]",
-        "Set the conversation title manually or (re)generate it",
+        "rename",
+        &[],
+        "[name | --auto]",
+        "Rename this session, or regenerate its name with `--auto`",
         CommandCategory::Session,
     ),
     SlashCommand::new(

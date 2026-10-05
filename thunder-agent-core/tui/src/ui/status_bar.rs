@@ -190,6 +190,16 @@ fn row_spans(
 /// above the input box (`chat.rs`), so it never competes with what is being
 /// typed.
 fn prompt_span(app: &App, theme: &Theme) -> Span<'static> {
+    // Renaming is not a run: the pencil replaces the status glyph so the mode
+    // is visible where the eye already is.
+    if app.rename_mode {
+        return Span::styled(
+            "✎ ",
+            Style::default()
+                .fg(theme.highlight)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
     match app.agent_status {
         AgentStatus::Idle
         | AgentStatus::Thinking
@@ -254,6 +264,12 @@ pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                     Style::default()
                         .fg(theme.tool_bubble)
                         .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if app.rename_mode && app.input.is_empty() {
+                spans.push(Span::styled(
+                    "Enter a new session name...",
+                    theme.muted_style(),
                 ));
             }
         } else {
