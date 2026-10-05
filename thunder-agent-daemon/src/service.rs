@@ -326,7 +326,14 @@ impl DaemonService {
             }
 
             DaemonRequest::ListConversations { id } => {
-                match self.store.list(&ConversationFilter::default()).await {
+                // Never hand a host an empty session: the store already refuses
+                // to write one, and `min_turns(1)` keeps rows that predate that
+                // rule out of the list as well.
+                match self
+                    .store
+                    .list(&ConversationFilter::new().with_min_turns(1))
+                    .await
+                {
                     Ok(list) => {
                         self.send_response(DaemonResponse::Response {
                             id,
@@ -1173,8 +1180,9 @@ impl DaemonService {
         // MCP tools must stay reachable for natural-language prompts (the keyword
         // heuristic would never match them), but only when the workspace actually
         // configures servers — otherwise forcing the plugin is pure overhead.
-        let workspace_has_mcp_config =
-            ws_dir.join("mcp_servers.json").exists() || ws_dir.join(".mcp.json").exists();
+        let workspace_has_mcp_config = ws_dir.join(".thunder").join("mcp.json").exists()
+            || ws_dir.join("mcp_servers.json").exists()
+            || ws_dir.join(".mcp.json").exists();
         // A workspace with no plugin files must not pay for a Node sidecar, and
         // one with plugin files must actually get them.
         let workspace_has_ts_plugins = has_ts_plugins(Some(&ws_dir));

@@ -204,6 +204,20 @@ impl Conversation {
         self
     }
 
+    /// True once the conversation carries at least one user turn.
+    ///
+    /// This is the durability gate: a host always writes a system prompt and
+    /// may attach an assistant greeting, but a conversation nobody has spoken
+    /// to yet is not a session, and stores refuse to persist it (see
+    /// [`ConversationStore::save`](crate::store::ConversationStore::save)).
+    /// Derived from the message list rather than `stats.turn_count`, because the
+    /// counter is only refreshed by `touch()` and can lag behind a mutation.
+    pub fn has_user_turns(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User { .. }))
+    }
+
     pub fn add_user_message(&mut self, content: impl Into<String>) {
         let content_str = content.into();
         if self.title.is_none() {
@@ -535,6 +549,13 @@ pub struct ConversationFilter {
     pub keyword: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    /// Drop summaries whose `turn_count` is below this floor.
+    ///
+    /// `None` (the default) keeps every row, including ones written before the
+    /// store stopped persisting conversations with no user turn. Listing
+    /// surfaces that should never show an empty session pass `Some(1)` — which
+    /// also filters rows other processes already wrote.
+    pub min_turns: Option<usize>,
 }
 
 impl ConversationFilter {
@@ -567,7 +588,17 @@ impl ConversationFilter {
         self
     }
 
+    pub fn with_min_turns(mut self, min_turns: usize) -> Self {
+        self.min_turns = Some(min_turns);
+        self
+    }
+
     pub fn matches(&self, summary: &ConversationSummary) -> bool {
+        if let Some(min) = self.min_turns {
+            if summary.turn_count < min {
+                return false;
+            }
+        }
         if let Some(st) = self.status {
             if summary.status != st {
                 return false;

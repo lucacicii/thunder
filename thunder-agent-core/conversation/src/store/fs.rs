@@ -288,6 +288,13 @@ impl FsConversationStore {
 #[async_trait]
 impl ConversationStore for FsConversationStore {
     async fn save(&self, conversation: &Conversation) -> Result<(), ConversationError> {
+        // A conversation nobody has spoken to yet is not a session: no directory
+        // and no index row (see `ConversationStore::save`). The in-memory index
+        // keeps the last durable view, so an empty conversation cannot shadow a
+        // persisted one either.
+        if !conversation.has_user_turns() {
+            return Ok(());
+        }
         let dir = self.conv_dir(&conversation.id);
         fs::create_dir_all(&dir).await?;
 

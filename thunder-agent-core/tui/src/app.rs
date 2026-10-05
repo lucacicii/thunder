@@ -424,7 +424,13 @@ impl App {
 
     pub async fn refresh_sessions(&mut self) {
         if let Some(store) = &self.store {
-            if let Ok(list) = store.list(&ConversationFilter::new()).await {
+            // `min_turns(1)` hides conversations that existed before the store
+            // started refusing to persist empty sessions — a fresh `/new`
+            // session lives in memory only and is not in here at all.
+            if let Ok(list) = store
+                .list(&ConversationFilter::new().with_min_turns(1))
+                .await
+            {
                 self.session_list = list;
                 if self.selected_session_idx >= self.session_list.len()
                     && !self.session_list.is_empty()
@@ -436,6 +442,12 @@ impl App {
     }
 
     pub async fn save_current_conversation(&mut self) {
+        // The store drops empty conversations too; bailing out here also keeps
+        // the raw-transcript sidecar from being written for a session that has
+        // no user turn yet.
+        if !self.conversation.has_user_turns() {
+            return;
+        }
         if let Some(store) = &self.store {
             let _ = store.save(&self.conversation).await;
             // Flush any raw pre-compaction transcript captured this run
@@ -451,6 +463,9 @@ impl App {
     }
 
     pub fn save_and_refresh(&mut self) {
+        if !self.conversation.has_user_turns() {
+            return;
+        }
         if let Some(store) = self.store.clone() {
             let conv = self.conversation.clone();
             tokio::spawn(async move {
@@ -2467,8 +2482,6 @@ impl App {
         self.metrics.reset_for_session();
         self.reset_timeline();
         self.set_status_message("Created new session.");
-
-        self.save_and_refresh();
     }
 
     pub fn handle_picker_selection(
@@ -3821,7 +3834,11 @@ impl App {
             // - conversation: one-line prompt cost, keeps session semantics alive
             // - skills: catalog is compact one-liners; keeps `load_skill` reachable
             // - mcp: only when this workspace actually configures MCP servers
-            let workspace_has_mcp_config = workspace_dir.join("mcp_servers.json").exists()
+            let workspace_has_mcp_config = workspace_dir
+                .join(".thunder")
+                .join("mcp.json")
+                .exists()
+                || workspace_dir.join("mcp_servers.json").exists()
                 || workspace_dir.join(".mcp.json").exists();
 
             let options = RootRunOptions {

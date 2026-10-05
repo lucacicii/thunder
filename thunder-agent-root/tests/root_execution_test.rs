@@ -128,4 +128,8 @@ async fn test_thunder_root_end_to_end_execution() {
     let conv = loaded.unwrap();
     assert_eq!(conv.id, session_id);
     assert!(!conv.messages.is_empty());
+    // The user's turn is what makes the record a session: the plugin reads it
+    // from the run context, since it never shows up in the event stream.
+    assert!(conv.has_user_turns());
+    assert_eq!(conv.stats.turn_count, 1);
 }

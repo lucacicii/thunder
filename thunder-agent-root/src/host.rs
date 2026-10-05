@@ -2,6 +2,7 @@ use crate::error::PluginError;
 use crate::plugin::PluginContext;
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
+use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
@@ -300,6 +301,11 @@ impl ThunderRoot {
                 .unwrap_or_else(|| "General task".to_string()),
         };
 
+        // Project/user agent configuration (`.thunder/config.json`). Merged here
+        // so the appended prompt file and the turn budget reflect the workspace
+        // this run is bound to.
+        let thunder_cfg = ThunderConfig::load(self.workspace_root.as_deref()).await;
+
         let session_id = options.session_id.unwrap_or_else(|| {
             format!(
                 "sess_{}",
@@ -380,6 +386,7 @@ impl ThunderRoot {
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
             .with_policy(Arc::clone(&policy))
+            .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
             ctx = ctx.with_workspace(ws.clone());
@@ -396,6 +403,24 @@ impl ThunderRoot {
             .as_deref()
             .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
             .to_string();
+        // Appended (not replacing) project instructions, per the config contract.
+        if let Some(rel) = thunder_cfg.system_prompt_file() {
+            if let Some(ws) = &self.workspace_root {
+                let path = ws.join(".thunder").join(rel);
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(text) if !text.trim().is_empty() => {
+                        base_prompt.push_str("\n\n");
+                        base_prompt.push_str(text.trim_end());
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "Configured system_prompt_file could not be read"
+                    ),
+                }
+            }
+        }
         if let Some(ws) = &self.workspace_root {
             base_prompt.push_str("\n\n### Workspaces\n");
             base_prompt.push_str(&format!(
@@ -427,6 +452,7 @@ impl ThunderRoot {
             agent_cfg.workspace_dir = Some(ws.clone());
         }
         agent_cfg.extra_workspace_roots = self.extra_roots.clone();
+        thunder_cfg.apply_to(&mut agent_cfg);
         // Tags every tool call, which is how a plugin's reverse RPC finds this
         // run's services instead of another run's.
         agent_cfg.route = Some(route.clone());

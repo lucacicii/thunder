@@ -21,17 +21,25 @@ impl<S: ConversationStore> ConversationManager<S> {
         &self.store
     }
 
+    /// Build a new conversation with the given id.
+    ///
+    /// The result is a draft the caller owns: a conversation with no user turn
+    /// is never persisted (see [`ConversationStore::save`]), so this does not
+    /// write anything. Stage the first user turn on the returned value and
+    /// [`Self::save`] it to make the session durable.
     pub async fn create(&self, id: impl Into<String>) -> Result<Conversation, ConversationError> {
         let id_str = id.into();
         if self.store.exists(&id_str).await? {
             return Err(ConversationError::AlreadyExists(id_str));
         }
 
-        let conv = Conversation::new(id_str);
-        self.store.save(&conv).await?;
-        Ok(conv)
+        Ok(Conversation::new(id_str))
     }
 
+    /// Build a new, pre-titled conversation.
+    ///
+    /// Like [`Self::create`], the result is a draft and becomes durable on the
+    /// first save that carries a user turn.
     pub async fn create_with_prompt(
         &self,
         id: impl Into<String>,
@@ -51,7 +59,6 @@ impl<S: ConversationStore> ConversationManager<S> {
             conv = conv.with_system_prompt(p);
         }
 
-        self.store.save(&conv).await?;
         Ok(conv)
     }
 
@@ -59,14 +66,13 @@ impl<S: ConversationStore> ConversationManager<S> {
         self.store.load(id).await
     }
 
+    /// Load a conversation, or build an unsaved draft when the id is unknown.
+    ///
+    /// The draft is not durable until it has a user turn and is saved.
     pub async fn get_or_create(&self, id: &str) -> Result<Conversation, ConversationError> {
         match self.store.load(id).await? {
             Some(conv) => Ok(conv),
-            None => {
-                let conv = Conversation::new(id);
-                self.store.save(&conv).await?;
-                Ok(conv)
-            }
+            None => Ok(Conversation::new(id)),
         }
     }
 
@@ -209,7 +215,9 @@ impl<S: ConversationStore> ConversationManager<S> {
 
     /// Format all saved conversations into a Markdown session catalog for `/resume` command.
     pub async fn format_session_catalog(&self) -> Result<String, ConversationError> {
-        let summaries = self.list(&ConversationFilter::new()).await?;
+        let summaries = self
+            .list(&ConversationFilter::new().with_min_turns(1))
+            .await?;
         Ok(Self::format_catalog_markdown(&summaries))
     }
 
@@ -251,10 +259,14 @@ impl<S: ConversationStore> ConversationManager<S> {
     ) -> Result<Option<Conversation>, ConversationError> {
         let trimmed = id_or_index.trim();
 
-        // 1. Try parsing as 1-based index from recent list
+        // 1. Try parsing as 1-based index from recent list. Same filter as
+        // `format_session_catalog`, so a number the user read off the catalog
+        // resolves to the row it was printed next to.
         if let Ok(idx) = trimmed.parse::<usize>() {
             if idx > 0 {
-                let list = self.list(&ConversationFilter::new()).await?;
+                let list = self
+                    .list(&ConversationFilter::new().with_min_turns(1))
+                    .await?;
                 if let Some(summary) = list.get(idx - 1) {
                     return self.get(&summary.id).await;
                 }
