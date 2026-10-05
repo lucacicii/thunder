@@ -929,3 +929,91 @@ async fn a_selection_paints_a_highlight_behind_the_text() {
         "exactly the selected text carries the selection background"
     );
 }
+
+#[tokio::test]
+async fn the_help_overlay_scrolls_to_its_tail() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        tx.clone(),
+    );
+    assert_eq!(app.mode, ViewMode::Help);
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = Theme::default();
+    let screen = |terminal: &Terminal<TestBackend>| -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    };
+
+    terminal
+        .draw(|f| thunder_tui::ui::draw(f, &mut app, &theme))
+        .unwrap();
+    assert!(
+        app.help_max_scroll > 0,
+        "the reference is taller than the modal, so it must scroll"
+    );
+    let top = screen(&terminal);
+    assert!(top.contains("THUNDER TUI"), "it opens at the top");
+    assert!(
+        !top.contains("/quit"),
+        "and the tail is genuinely below the fold: {top:?}"
+    );
+
+    // End walks to the tail; the whole reference is now reachable.
+    app.handle_key(
+        KeyEvent::new(KeyCode::End, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.help_scroll, app.help_max_scroll);
+    terminal
+        .draw(|f| thunder_tui::ui::draw(f, &mut app, &theme))
+        .unwrap();
+    let bottom = screen(&terminal);
+    assert!(
+        bottom.contains("/quit"),
+        "the tail of the reference is on screen: {bottom:?}"
+    );
+    assert_ne!(top, bottom);
+}
+
+#[tokio::test]
+async fn help_keys_do_not_reach_the_prompt_underneath() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.help_max_scroll = 5;
+    app.mode = ViewMode::Help;
+    app.set_input("draft".to_string());
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "draft", "the hidden prompt takes no edits");
+
+    let press = |app: &mut App, code: KeyCode| {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::empty()), tx.clone());
+    };
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.help_scroll, 1);
+    for _ in 0..20 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.help_scroll, 5, "scrolling stops at the bottom");
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.help_scroll, 0, "g returns to the top");
+    press(&mut app, KeyCode::PageDown);
+    assert_eq!(app.help_scroll, 5, "a page clamps too");
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.help_scroll, 0);
+}
