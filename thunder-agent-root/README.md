@@ -13,6 +13,7 @@
 1. **一切皆插件（Microkernel Architecture）**：
    - 宿主仅持有最小运行时调度能力，所有高级业务均以 `ThunderPlugin` 规范动态装配：
      - **`ConversationPlugin`**：多轮会话追踪、Turn 归纳与 Fs 原子持久化。
+     - **`MemoryPlugin`**：分层加载 `.thunder` 长期记忆（`THUNDER.md` / `memory/*.md`），追加进系统提示。
      - **`SkillsPlugin`**：Playbook 技能库发现、Prompt 注入与动态加载工具。
      - **`McpPlugin`**：Model Context Protocol 远程服务连接与工具桥接。
      - **`ScriptPlugin`**：TypeScript 单文件无编译插件执行与热重载。

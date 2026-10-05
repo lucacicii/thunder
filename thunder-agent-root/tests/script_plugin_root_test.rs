@@ -66,7 +66,7 @@ impl LLMClientTrait for TsPluginMockClient {
 async fn test_script_plugin_integrated_with_thunder_root_and_onion_middleware() {
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
 
     // Create a dynamic TypeScript plugin in the workspace

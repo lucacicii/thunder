@@ -12,6 +12,7 @@
 //! The baseline set is:
 //!
 //! - `conversation` — always (caller supplies the store: memory or FS)
+//! - `memory`       — always (no-ops when no `THUNDER.md` / `memory/*.md`)
 //! - `skills`       — always, unless the caller supplies a preloaded one
 //! - `mcp`          — always (no-ops when the workspace configures no servers)
 //! - `script_plugin` — **opt-in**, because it spawns a Node sidecar; a host
@@ -25,6 +26,8 @@
 use crate::host::ThunderRoot;
 #[cfg(feature = "conversation")]
 use crate::plugins::ConversationPlugin;
+#[cfg(feature = "conversation")]
+use crate::plugins::MemoryPlugin;
 #[cfg(feature = "script-plugin")]
 use crate::plugins::ScriptPlugin;
 #[cfg(feature = "skills")]
@@ -94,6 +97,10 @@ impl StandardHostBuilder {
     /// Register the assembled set onto `root`.
     pub fn build(self, mut root: ThunderRoot) -> ThunderRoot {
         root = root.with_plugin(ConversationPlugin::new(self.store));
+
+        // Long-term memory rides the baseline set: it contributes nothing when
+        // no `THUNDER.md` exists, so every host gets it for free.
+        root = root.with_plugin(MemoryPlugin::new());
 
         #[cfg(feature = "skills")]
         {
@@ -170,5 +177,5 @@ pub fn has_ts_plugins(workspace_dir: Option<&std::path::Path>) -> bool {
             return true;
         }
     }
-    workspace_dir.is_some_and(|ws| any_plugin(ws.join(".arp").join("plugins")))
+    workspace_dir.is_some_and(|ws| any_plugin(ws.join(".thunder").join("plugins")))
 }

@@ -16,7 +16,7 @@
    - 动态工具发现（`tools/list`）。
    - 远程工具异步调用（`tools/call`）。
 2. **多源配置解析器**：
-   - 兼容解析标准 `mcpServers` JSON 格式配置文件（如 `mcp_servers.json`、`claude_desktop_config.json`、`.arp/mcp.json` 等）。
+   - 兼容解析标准 `mcpServers` JSON 格式配置文件（如 `mcp_servers.json`、`claude_desktop_config.json`、`.thunder/mcp.json` 等）。
 3. **Stdio 传输 + 测试替身**：
    - 工业级异步 Stdio 子进程通信，支持管道独立隔离。
    - `MockTransport` 仅作为**测试替身**（纯内存、仅供单元与集成测试），不是运行时模式。

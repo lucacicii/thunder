@@ -19,7 +19,7 @@ export interface ToolContext {
   };
   /**
    * Safe file system operations delegated to Rust's Onion Middleware:
-   * Uses `.arp/tmp/` atomic shadow staging, hardware fsync, and Path Jail verification.
+   * Uses `.thunder/tmp/` atomic shadow staging, hardware fsync, and Path Jail verification.
    */
   fs: {
     writeFile(relPath: string, content: string): Promise<{ success: boolean; path: string; bytesWritten: number }>;

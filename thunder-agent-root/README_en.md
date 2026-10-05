@@ -13,6 +13,7 @@
 1. **Microkernel Architecture (Everything is a Plugin)**:
    - The host maintains only minimal execution scheduling; all capabilities are implemented through the `ThunderPlugin` contract:
      - **`ConversationPlugin`**: Multi-turn session tracking, Turn grouping, and atomic filesystem persistence.
+     - **`MemoryPlugin`**: Layers `.thunder` long-term memory (`THUNDER.md` / `memory/*.md`) into the system prompt.
      - **`SkillsPlugin`**: Playbook directory discovery, prompt injection, and dynamic skill inspection tools.
      - **`McpPlugin`**: Model Context Protocol connections and remote tool bridging.
      - **`ScriptPlugin`**: Native TypeScript single-file plugin execution with blue-green hot reload.

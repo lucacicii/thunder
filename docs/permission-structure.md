@@ -266,7 +266,7 @@ flowchart TB
     style DLG fill:#fef7e0,stroke:#f9ab00
 ```
 
-> 代价：插件的写入现在也走事务层（产生 `.arp/tmp` 影子文件、保留原文件权限）——比之前手写版本更严格，与模型的 `write_file` 行为一致。
+> 代价：插件的写入现在也走事务层（产生 `.thunder/tmp` 影子文件、保留原文件权限）——比之前手写版本更严格，与模型的 `write_file` 行为一致。
 
 ---
 

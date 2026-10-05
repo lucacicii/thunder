@@ -119,6 +119,7 @@ impl McpConfig {
     /// Automatically find and load MCP config file from standard workspace and user locations.
     pub async fn find_and_load_from_workspace(workspace: &Path) -> Option<(PathBuf, Self)> {
         let mut candidates = vec![
+            workspace.join(".thunder").join("mcp.json"),
             workspace.join("mcp_servers.json"),
             workspace.join(".mcp.json"),
             workspace.join("claude_desktop_config.json"),
@@ -128,6 +129,7 @@ impl McpConfig {
 
         if let Ok(home) = std::env::var("HOME") {
             let home_path = PathBuf::from(home);
+            candidates.push(home_path.join(".thunder").join("mcp.json"));
             candidates.push(home_path.join(".mcp.json"));
             candidates.push(home_path.join("mcp_servers.json"));
             candidates.push(home_path.join(".cursor/mcp.json"));

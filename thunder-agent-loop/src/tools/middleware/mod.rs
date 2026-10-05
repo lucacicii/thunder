@@ -122,7 +122,7 @@ impl ToolPipeline {
     /// Layer order:
     ///   1. SecurityGuardMiddleware (Path Jail, forbidden commands)
     ///   2. ResourceGuardMiddleware (ReadFile OOM defense, cancellation telemetry)
-    ///   3. TransactionMiddleware (.arp/tmp atomic shadow write, permissions, cleanup)
+    ///   3. TransactionMiddleware (.thunder/tmp atomic shadow write, permissions, cleanup)
     ///   4. OutputPostProcessorMiddleware (Scratchpad lossless persistence, truncation)
     ///   5. RegistryTerminalHandler (Core tool invocation)
     pub fn standard(

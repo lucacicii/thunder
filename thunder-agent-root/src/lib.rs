@@ -4,6 +4,7 @@ pub mod plugin;
 pub mod plugins;
 pub mod registry;
 pub mod selector;
+pub mod thunder_config;
 
 pub mod prelude {
     pub use crate::error::PluginError;
@@ -22,12 +23,13 @@ pub mod prelude {
         baseline_forced_plugins, has_ts_plugins, StandardHostBuilder,
     };
     #[cfg(feature = "conversation")]
-    pub use crate::plugins::ConversationPlugin;
+    pub use crate::plugins::{ConversationPlugin, MemoryPlugin};
     pub use crate::registry::{ActivePluginSet, PluginRegistry};
     pub use crate::selector::{
         default_selection_cache, invalidate_all_session_selections, invalidate_session_selection,
         PluginSelection, PluginSelector, SelectionCache,
     };
+    pub use crate::thunder_config::{AgentSection, MemorySection, ThunderConfig};
 }
 
 pub use prelude::*;

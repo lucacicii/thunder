@@ -98,7 +98,7 @@ fn baseline_forced_plugins_track_registration() {
 fn ts_plugin_detection_looks_in_both_scopes() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let plugins = ws.join(".arp").join("plugins");
+    let plugins = ws.join(".thunder").join("plugins");
     assert!(!has_ts_plugins(Some(ws)), "no directory yet");
 
     std::fs::create_dir_all(&plugins).unwrap();
