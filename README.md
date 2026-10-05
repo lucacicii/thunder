@@ -26,7 +26,10 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
    - 进程内全局物理路径排队锁，确保多个并发 Agent 或工具在并发写入同一文件时排队串行化执行，杜绝竞态覆盖。
 5. **确定性极速插件路由**：
    - `thunder-agent-root` 采用确定性基线（会话与技能常驻）结合关键词意图触发，杜绝死板或昂贵的二次 LLM 路由，消除额外时延。
-6. **企业级 STDIO Sidecar 守护进程（`thunder-agent-daemon`）**：
+6. **项目级配置与长期记忆（`.thunder/`）**：
+   - Thunder 读取自身 `.thunder/` 下的项目配置，与 `.arp`（面板所有）完全隔离：`config.json` 分层合并（用户级 / 项目级 / 本机），可追加系统提示文件、限制轮数；`THUNDER.md` 与 `memory/*.md` 作为长期记忆注入系统提示；`mcp.json` 自动接入 MCP servers。
+   - 记忆块位于请求前缀，按 host 初始化只读取一次，保证供应商侧 Prompt Cache 前缀稳定。
+7. **企业级 STDIO Sidecar 守护进程（`thunder-agent-daemon`）**：
    - 零端口冲突、生命周期天然随父进程绑定，支持并发任务信号量调度、背压 STDOUT 有序推送、协作式暂停（Pause）与反问气泡（Ask User）。
 
 ---

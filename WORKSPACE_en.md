@@ -41,6 +41,7 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── run.sh                        # Launch TUI terminal
 ├── daemon.sh                     # Launch STDIO Sidecar daemon
 ├── test.sh                       # Workspace-wide test suite script
+├── .thunder/                       # Thunder's own config (user-level ~/.thunder/ mirrors it)
 ├── thunder-agent-loop/           # Agent A: Single-agent atomic loop engine
 ├── thunder-pi-bridge/            # pi-ai Node Sidecar transport (@earendil-works/pi-ai)
 ├── thunder-agent-providers/      # LLM catalog & config parsing
@@ -99,7 +100,10 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 3. **Concurrent Mutation Safety**:
    - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` using process-wide physical path mutexes, preventing silent overwrites.
 4. **Deterministic Lightweight Host**:
-   - `thunder-agent-root` maintains standard baseline plugins (conversation + skills) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
+   - `thunder-agent-root` maintains standard baseline plugins (conversation, skills and long-term memory) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
+5. **Config lives in .thunder/, never .arp**:
+   - `.arp/` belongs to `agent-resume-panel` (panel config + shared artifacts); Thunder reads none of it.
+   - Thunder's own project state lives under `.thunder/`: `config.json` (agent config), `mcp.json` (MCP servers), `THUNDER.md` + `memory/*.md` (long-term memory), `plugins/`, `tmp/`. The user-level `~/.thunder/` supplies same-named defaults, overridden by user -> project -> `*.local.*`.
 
 ---
 
