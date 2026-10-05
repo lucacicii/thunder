@@ -133,3 +133,101 @@ async fn overwrite_replaces_rather_than_appends() {
         "overwrite left the old content: {body}"
     );
 }
+
+// ── end-to-end: the route must flow from the run into the tool ──────────────
+
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use thunder_agent_loop::prelude::*;
+use tokio_util::sync::CancellationToken;
+
+/// Asks for `memory_write` on turn 0, then finishes.
+struct WriteRequestingClient {
+    turn: AtomicUsize,
+}
+
+#[async_trait]
+impl LLMClientTrait for WriteRequestingClient {
+    async fn stream_chat(
+        &self,
+        _options: ChatRequestOptions,
+        _cancel: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            let msg = if turn == 0 {
+                LLMStreamChunk::Completed {
+                    content: Some("Recording a note.".to_string()),
+                    tool_calls: vec![ToolCall::new_function(
+                        "c1",
+                        MEMORY_WRITE_TOOL,
+                        r#"{"content":"Remember: prefer write_file over shell redirection."}"#,
+                    )],
+                    finish_reason: "tool_calls".to_string(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }
+            } else {
+                LLMStreamChunk::Completed {
+                    content: Some("done".to_string()),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }
+            };
+            let _ = tx.send(Ok(msg)).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// The whole point of the route key: a real run must reach the tool with the
+/// workspace bound, and the write must land under `<ws>/.thunder/`.
+#[tokio::test]
+async fn memory_write_is_reachable_from_a_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path();
+    std::fs::create_dir_all(ws.join(".thunder")).unwrap();
+
+    let root = StandardHostBuilder::new(Arc::new(
+        thunder_conversation::prelude::MemoryConversationStore::new(),
+    ))
+    .build(
+        ThunderRoot::new(thunder_agent_loop::prelude::AgentConfig::new("test/model"))
+            .with_workspace(ws.to_path_buf()),
+    );
+
+    let mut handle = root
+        .execute(
+            "remember something",
+            RootRunOptions {
+                session_id: Some("mem_sess".to_string()),
+                custom_client: Some(Arc::new(WriteRequestingClient {
+                    turn: AtomicUsize::new(0),
+                })),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    if let Some(mut rx) = handle.take_events() {
+        while rx.recv().await.is_some() {}
+    }
+    let _ = handle.join().await.unwrap();
+
+    let path = ws.join(".thunder").join("THUNDER.md");
+    assert!(path.exists(), "memory_write did not reach the file system");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        body.contains("prefer write_file over shell redirection"),
+        "note not persisted: {body}"
+    );
+}
