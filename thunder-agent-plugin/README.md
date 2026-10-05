@@ -11,7 +11,7 @@
 ## 🚀 核心架构与特性
 
 - **原生 TypeScript 执行（零预编译）**：利用 Node.js 20+ 的 `node --experimental-strip-types` 特性，直接加载执行 `.ts` 插件源文件，省去繁琐的构建打包流程。
-- **蓝绿无缝热重载（Blue-Green Hot Reload）**：内置文件变更监听器。当修改 `.arp/plugins/*.ts` 文件时，Sidecar 在后台完成新版本编译验证后无缝热切换，不中断运行中的 Agent 任务。
+- **蓝绿无缝热重载（Blue-Green Hot Reload）**：内置文件变更监听器。当修改 `.thunder/plugins/*.ts` 文件时，Sidecar 在后台完成新版本编译验证后无缝热切换，不中断运行中的 Agent 任务。
 - **语法错误免疫（Error Immunity）**：若新保存的 TypeScript 文件存在语法错误或初始化异常，Sidecar 会自动捕获并在日志中告警，同时**继续保留并运行上一个健康的插件版本**，确保宿主系统绝不崩溃。
 - **权限档位对齐（Permission Enforcement）**：插件上下文（`PluginContext`）提供的能力与当前任务的权限档位严格绑定：
   - 在只读档位（`Permission::Read`）下，插件调用 `ctx.fs.writeFile()` 或 `ctx.exec()` 会被直接拦截拒绝，杜绝插件成为越权旁路。
@@ -22,7 +22,7 @@
 
 ## 🛠️ TypeScript 插件编写范例
 
-在工作区目录的 `.arp/plugins/calc_plugin.ts` 中创建插件：
+在工作区目录的 `.thunder/plugins/calc_plugin.ts` 中创建插件：
 
 ```typescript
 export default {

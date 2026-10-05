@@ -163,11 +163,17 @@ impl ThunderPlugin for McpPlugin {
     }
 
     async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // Auto-check for mcp_servers.json or claude_desktop_config.json in workspace if available
+        // Auto-check workspace MCP config. Project convention (`.thunder/mcp.json`)
+        // takes precedence over the generic `.mcp.json` / `mcp_servers.json`.
         if let Some(ws) = &ctx.workspace_dir {
+            let project_mcp = ws.join(".thunder").join("mcp.json");
             let mcp_cfg_path = ws.join("mcp_servers.json");
             let mcp_dot_json = ws.join(".mcp.json");
-            if mcp_cfg_path.exists() {
+            if project_mcp.exists() {
+                if let Ok(cfg) = McpConfig::from_file(&project_mcp).await {
+                    let _ = self.manager.add_config(cfg).await;
+                }
+            } else if mcp_cfg_path.exists() {
                 if let Ok(cfg) = McpConfig::from_file(&mcp_cfg_path).await {
                     let _ = self.manager.add_config(cfg).await;
                 }

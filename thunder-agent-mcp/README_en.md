@@ -16,7 +16,7 @@
    - Dynamic tool discovery (`tools/list`).
    - Asynchronous remote tool invocation (`tools/call`).
 2. **Multi-Source Configuration Parser**:
-   - Parses standard `mcpServers` JSON configuration formats (e.g. `mcp_servers.json`, `claude_desktop_config.json`, `.arp/mcp.json`).
+   - Parses standard `mcpServers` JSON configuration formats (e.g. `mcp_servers.json`, `claude_desktop_config.json`, `.thunder/mcp.json`).
 3. **Stdio Transport + Test Double**:
    - Production-grade asynchronous stdio process communication with isolated pipes.
    - `MockTransport` is a **test double only** (in-memory, used by unit and integration tests), not a runtime mode.

@@ -129,8 +129,8 @@ impl ThunderPlugin for ScriptPlugin {
                 *lock = Some(engine);
             }
         } else if !self.scanned_workspaces.read().await.contains(&ws) {
-            // Dynamic workspace discovery: rescan if this workspace's .arp/plugins exists
-            let ws_plugin_dir = ws.join(".arp").join("plugins");
+            // Dynamic workspace discovery: rescan if this workspace's .thunder/plugins exists
+            let ws_plugin_dir = ws.join(".thunder").join("plugins");
             if ws_plugin_dir.exists() {
                 if let Some(engine) = lock.as_ref() {
                     engine.add_plugin_dir(ws_plugin_dir).await;

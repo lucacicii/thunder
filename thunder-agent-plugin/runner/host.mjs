@@ -200,7 +200,7 @@ function createPluginContext(pluginId, turnCtx = {}, callChain = []) {
       warn: (...args) => process.stderr.write(`[${pluginId}:warn] ${args.join(" ")}\n`),
       error: (...args) => process.stderr.write(`[${pluginId}:error] ${args.join(" ")}\n`)
     },
-    // Safe FS delegated to Rust's Onion Middleware (.arp/tmp atomic write + Path Jail)
+    // Safe FS delegated to Rust's Onion Middleware (.thunder/tmp atomic write + Path Jail)
     fs: {
       writeFile: async (relPath, content) => {
         return rpc("fs_write_file", { path: relPath, content });

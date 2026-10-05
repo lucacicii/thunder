@@ -11,10 +11,22 @@ node_modules/
 **/.DS_Store
 
 # Local agent / env
-.thunder/
-**/.thunder/
-.arp/tmp/
-**/.arp/tmp/
+# The user-level thunder home lives outside the repo and is unaffected by this file.
+# Project-level thunder dir: commit config/memory, ignore runtime artifacts + secrets.
+.thunder/auth.json
+.thunder/conversations/
+.thunder/scratchpad/
+.thunder/bridge/
+.thunder/tmp/
+.thunder/*.local.json
+.thunder/THUNDER.local.md
+**/.thunder/auth.json
+**/.thunder/conversations/
+**/.thunder/scratchpad/
+**/.thunder/bridge/
+**/.thunder/tmp/
+**/.thunder/*.local.json
+**/.thunder/THUNDER.local.md
 .env
 .env.*
 !.env.example

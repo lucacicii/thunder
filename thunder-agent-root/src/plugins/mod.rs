@@ -2,6 +2,8 @@
 pub mod conversation;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "conversation")]
+pub mod memory;
 #[cfg(feature = "script-plugin")]
 pub mod script_plugin;
 #[cfg(feature = "skills")]
@@ -13,6 +15,8 @@ pub mod standard;
 pub use conversation::ConversationPlugin;
 #[cfg(feature = "mcp")]
 pub use mcp::McpPlugin;
+#[cfg(feature = "conversation")]
+pub use memory::MemoryPlugin;
 #[cfg(feature = "script-plugin")]
 pub use script_plugin::ScriptPlugin;
 #[cfg(feature = "skills")]

@@ -11,7 +11,7 @@
 ## 🚀 Key Features
 
 - **Native TypeScript Execution (Zero Pre-compilation)**: Leverages Node.js 20+ `node --experimental-strip-types` to execute `.ts` plugin files directly without requiring a separate compilation step.
-- **Blue-Green Hot Reloading**: Watches `.arp/plugins/*.ts` for file updates. The sidecar compiles and validates the updated module in background before swapping active instances seamlessly without interrupting in-flight tasks.
+- **Blue-Green Hot Reloading**: Watches `.thunder/plugins/*.ts` for file updates. The sidecar compiles and validates the updated module in background before swapping active instances seamlessly without interrupting in-flight tasks.
 - **Syntax Error Immunity**: If a newly saved TypeScript file contains syntax errors or runtime exceptions on initialization, the sidecar catches the error, logs a diagnostic warning, and **retains the previous healthy version of the plugin**, preventing host crashes.
 - **Role Permission Enforcement**: Plugin capabilities in `PluginContext` are strictly bound to the active role's permission tier:
   - In read-only mode (`Permission::Read`), calls to `ctx.fs.writeFile()` or `ctx.exec()` are rejected immediately, preventing plugins from acting as permission bypasses.
@@ -21,7 +21,7 @@
 
 ## 🛠️ Writing a TypeScript Plugin
 
-Create a plugin at `.arp/plugins/calc_plugin.ts` in your workspace:
+Create a plugin at `.thunder/plugins/calc_plugin.ts` in your workspace:
 
 ```typescript
 export default {

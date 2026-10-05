@@ -126,7 +126,7 @@ async fn test_ts_plugin_lifecycle_and_hot_reload() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
 
     let runner_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -291,7 +291,7 @@ async fn read_only_permission_blocks_plugin_write_and_exec_rpc() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
 
     let config = config_for_test(&ws_dir, &plugins_dir, Permission::Read, None, None).await;
@@ -347,7 +347,7 @@ async fn permission_slot_narrows_a_running_sidecar() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
 
     // Boot wide open, exactly as the old fixed-tier sidecar did.
@@ -434,7 +434,7 @@ async fn plugin_ui_reaches_the_host_labelled_as_plugin() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
     tokio::fs::write(
         plugins_dir.join("asker.ts"),
@@ -522,7 +522,7 @@ async fn plugin_ui_without_a_panel_fails_closed() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
     tokio::fs::write(
         plugins_dir.join("silent.ts"),
@@ -588,7 +588,7 @@ async fn plugin_call_tool_reaches_a_registered_tool() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
     tokio::fs::write(
         plugins_dir.join("writer.ts"),
@@ -688,7 +688,7 @@ async fn ts_plugin_calling_sibling_ts_plugin_routes_through_pipeline() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
 
     // Plugin A calls Plugin B's tool
@@ -930,7 +930,7 @@ async fn an_unattributed_call_is_refused() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
     tokio::fs::write(
         plugins_dir.join("writer.ts"),
@@ -1017,7 +1017,7 @@ async fn plugin_cannot_run_a_command_the_guard_forbids() {
 
     let temp = tempdir().unwrap();
     let ws_dir = temp.path().to_path_buf();
-    let plugins_dir = ws_dir.join(".arp").join("plugins");
+    let plugins_dir = ws_dir.join(".thunder").join("plugins");
     tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
     tokio::fs::write(
         plugins_dir.join("execer.ts"),

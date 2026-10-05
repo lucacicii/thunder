@@ -103,7 +103,7 @@ impl Drop for TempFileGuard {
 /// Transaction & Atomic I/O Middleware.
 ///
 /// Ensures all file write operations are routed through a shadow temporary file
-/// in `.arp/tmp/`, physically flushed to disk, and atomically renamed onto the target.
+/// in `.thunder/tmp/`, physically flushed to disk, and atomically renamed onto the target.
 /// In case of error, timeout, or cancellation, uncommitted temporary files are cleanly discarded
 /// and the LLM receives an omniscient telemetry report confirming target file integrity.
 #[derive(Clone)]
@@ -115,7 +115,7 @@ pub struct TransactionMiddleware {
 impl TransactionMiddleware {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
         let ws = workspace_root.into();
-        let temp_dir = ws.join(".arp").join("tmp");
+        let temp_dir = ws.join(".thunder").join("tmp");
         Self {
             workspace_root: ws,
             temp_dir,
@@ -132,11 +132,11 @@ impl TransactionMiddleware {
         &self.temp_dir
     }
 
-    /// Initializes `.arp/tmp/` directory, writes `.gitignore`, and purges stale temp files older than `max_age`.
+    /// Initializes `.thunder/tmp/` directory, writes `.gitignore`, and purges stale temp files older than `max_age`.
     pub async fn init_and_clean_stale(&self, max_age: Duration) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.temp_dir).await?;
 
-        // Ensure .arp/tmp/.gitignore exists to keep git trees clean
+        // Ensure .thunder/tmp/.gitignore exists to keep git trees clean
         let gitignore_path = self.temp_dir.join(".gitignore");
         if !gitignore_path.exists() {
             let _ = tokio::fs::write(&gitignore_path, "*\n!.gitignore\n").await;
@@ -146,7 +146,7 @@ impl TransactionMiddleware {
         Ok(())
     }
 
-    /// Scans `.arp/tmp/` and purges any `.tmp` files older than `max_age`.
+    /// Scans `.thunder/tmp/` and purges any `.tmp` files older than `max_age`.
     pub async fn clean_stale_temp_files(&self, max_age: Duration) -> std::io::Result<()> {
         if !self.temp_dir.exists() {
             return Ok(());
