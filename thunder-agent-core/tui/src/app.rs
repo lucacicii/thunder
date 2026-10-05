@@ -204,6 +204,21 @@ pub struct App {
     pub clipboard: Option<Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>>,
     /// Token / cache / speed readout held for the metrics bar.
     pub metrics: Metrics,
+    /// Whether the floating turn rail is drawn (Ctrl+T / `/timeline`).
+    pub timeline_visible: bool,
+    /// Turn the keyboard is sitting on, while the rail holds focus.
+    pub timeline_selected: Option<usize>,
+    /// Turn under the mouse pointer, if any.
+    pub timeline_hover: Option<usize>,
+    /// One entry per user turn, rebuilt by every chat render.
+    pub timeline_marks: Vec<TimelineMark>,
+    /// Clickable rail rows in screen coordinates, rebuilt by every render.
+    pub timeline_hitboxes: Vec<TimelineHitbox>,
+    /// Wall-clock duration of each completed turn, indexed by `turn - 1`.
+    pub turn_durations: Vec<Option<u64>>,
+    /// User turn the live run belongs to, captured at submit time so steering
+    /// messages arriving mid-run cannot renumber it.
+    pub active_turn: Option<usize>,
 }
 
 /// A clickable region of the chat pane, in absolute terminal coordinates.
@@ -216,6 +231,36 @@ pub struct LinkHitbox {
     pub col_start: u16,
     pub col_end: u16,
     pub target: LinkTarget,
+}
+
+/// One user turn as the timeline rail needs it.
+///
+/// `row` is the content row the turn's first line is painted on, which depends
+/// on the wrap width — so the rail is rebuilt by every render rather than kept
+/// as conversation state.
+#[derive(Debug, Clone)]
+pub struct TimelineMark {
+    /// 1-based turn number, matching what the rail prints.
+    pub index: usize,
+    pub row: usize,
+    /// First non-empty line of the prompt, already truncated for display.
+    pub prompt: String,
+    /// Tool calls the turn issued, counted from the committed transcript.
+    pub tools: usize,
+    /// Wall clock for turns completed in this session; `None` after a resume.
+    pub duration_ms: Option<u64>,
+}
+
+/// A clickable row of the timeline rail, in absolute terminal coordinates.
+///
+/// Sibling of [`LinkHitbox`]: rebuilt every frame, consumed by the mouse
+/// handler of the next one.
+#[derive(Debug, Clone, Copy)]
+pub struct TimelineHitbox {
+    pub row: u16,
+    pub col_start: u16,
+    pub col_end: u16,
+    pub index: usize,
 }
 
 impl App {
@@ -284,6 +329,13 @@ impl App {
             link_opener: None,
             clipboard: None,
             metrics: Metrics::new(),
+            timeline_visible: true,
+            timeline_selected: None,
+            timeline_hover: None,
+            timeline_marks: Vec::new(),
+            timeline_hitboxes: Vec::new(),
+            turn_durations: Vec::new(),
+            active_turn: None,
         }
     }
 
@@ -356,6 +408,7 @@ impl App {
                 self.last_error = None;
                 self.clear_link_cache();
                 self.metrics.reset_for_session();
+                self.reset_timeline();
             }
             self.refresh_sessions().await;
             if let Some(pos) = self.session_list.iter().position(|s| s.id == id) {
@@ -1229,7 +1282,7 @@ impl App {
                     return;
                 }
                 KeyCode::Esc => {}
-                KeyCode::Char('c' | 'q' | 'n' | 'p' | 'b' | 'o' | 'h') if ctrl => {}
+                KeyCode::Char('c' | 'q' | 'n' | 'p' | 'b' | 'o' | 'h' | 't') if ctrl => {}
                 _ => return,
             }
         }
@@ -1265,6 +1318,9 @@ impl App {
                         ViewMode::Help
                     }
                 };
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_timeline();
             }
             KeyCode::PageUp => {
                 self.scroll_up(10);
@@ -1336,7 +1392,11 @@ impl App {
                     self.focus = FocusPane::Input;
                 }
                 ViewMode::Chat => {
-                    if self.has_selection() {
+                    if self.focus == FocusPane::Monitor {
+                        // Escaping the rail is a focus change, not a cancel: the
+                        // run the user is watching must keep running.
+                        self.focus = FocusPane::Input;
+                    } else if self.has_selection() {
                         self.clear_selection();
                     } else if self.input.starts_with('/') {
                         self.clear_input();
@@ -1563,7 +1623,24 @@ impl App {
                 {
                     return;
                 }
+                // The rail floats over the transcript, so it gets first refusal
+                // on the click; anything else falls through to the links.
+                if let Some(index) = self.timeline_at(mouse.column, mouse.row) {
+                    self.jump_to_turn(index);
+                    return;
+                }
                 self.activate_link_at(mouse.column, mouse.row);
+            }
+            crossterm::event::MouseEventKind::Moved => {
+                if self.picker.is_open
+                    || self.pending_question.is_some()
+                    || self.mode == ViewMode::Help
+                {
+                    self.timeline_hover = None;
+                    return;
+                }
+                let hovered = self.timeline_at(mouse.column, mouse.row);
+                self.timeline_hover = hovered;
             }
             crossterm::event::MouseEventKind::ScrollUp => {
                 if self.picker.is_open {
@@ -1728,6 +1805,121 @@ impl App {
         self.scroll_offset = self.last_max_scroll;
     }
 
+    // ── Timeline rail ─────────────────────────────────────────────────────
+    //
+    // A floating column of the conversation's user turns, pinned to the right
+    // edge of the transcript. Clicking a turn scrolls the transcript to it; the
+    // keyboard reaches the same places through `j`/`k` and Enter.
+
+    /// First content row the transcript currently shows.
+    pub fn chat_scroll_row(&self) -> usize {
+        if self.auto_scroll {
+            self.last_max_scroll
+        } else {
+            self.scroll_offset.min(self.last_max_scroll)
+        }
+    }
+
+    /// The turn the rail window follows: the keyboard's turn while the rail has
+    /// focus, otherwise whatever sits at the top of the transcript viewport.
+    pub fn timeline_anchor(&self) -> Option<usize> {
+        if self.focus == FocusPane::Monitor {
+            if let Some(selected) = self.timeline_selected {
+                return Some(selected);
+            }
+        }
+        let row = self.chat_scroll_row();
+        self.timeline_marks
+            .iter()
+            .rev()
+            .find(|mark| mark.row <= row)
+            .or_else(|| self.timeline_marks.first())
+            .map(|mark| mark.index)
+    }
+
+    /// Move focus onto the rail, parking the keyboard on the turn the reader is
+    /// looking at so Enter is immediately useful.
+    pub fn focus_timeline(&mut self) {
+        if self.timeline_selected.is_none() {
+            self.timeline_selected = self.timeline_anchor();
+        }
+    }
+
+    /// Scroll the transcript so a turn's first line becomes the top visible row.
+    pub fn jump_to_turn(&mut self, index: usize) {
+        let Some((row, prompt)) = self
+            .timeline_marks
+            .iter()
+            .find(|mark| mark.index == index)
+            .map(|mark| (mark.row, mark.prompt.clone()))
+        else {
+            return;
+        };
+        self.auto_scroll = false;
+        self.scroll_offset = row.min(self.last_max_scroll);
+        self.timeline_selected = Some(index);
+        self.set_status_message(format!("Jumped to turn #{index}: {prompt}"));
+    }
+
+    /// The turn under a screen cell of the rail, if any.
+    pub fn timeline_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.timeline_hitboxes
+            .iter()
+            .find(|h| h.row == row && column >= h.col_start && column < h.col_end)
+            .map(|h| h.index)
+    }
+
+    /// Show or hide the rail. Hiding it never leaves focus stranded on a pane
+    /// that is no longer drawn.
+    pub fn set_timeline_visible(&mut self, visible: bool) {
+        self.timeline_visible = visible;
+        if !visible {
+            self.timeline_selected = None;
+            self.timeline_hover = None;
+            if self.focus == FocusPane::Monitor {
+                self.focus = FocusPane::Input;
+            }
+        }
+    }
+
+    pub fn toggle_timeline(&mut self) {
+        self.set_timeline_visible(!self.timeline_visible);
+        let state = if self.timeline_visible { "on" } else { "off" };
+        self.set_status_message(format!("Timeline rail {state}."));
+    }
+
+    fn move_timeline_selection(&mut self, delta: i64) {
+        let turns = self.timeline_marks.len();
+        if turns == 0 {
+            return;
+        }
+        let current = self
+            .timeline_selected
+            .or_else(|| self.timeline_anchor())
+            .unwrap_or(1);
+        let next = (current as i64 + delta).clamp(1, turns as i64) as usize;
+        self.timeline_selected = Some(next);
+    }
+
+    /// A different conversation: the rail is rebuilt from its messages, and no
+    /// duration this host never measured survives the switch.
+    fn reset_timeline(&mut self) {
+        self.timeline_marks.clear();
+        self.timeline_hitboxes.clear();
+        self.timeline_selected = None;
+        self.timeline_hover = None;
+        self.turn_durations.clear();
+        self.active_turn = None;
+    }
+
+    fn select_timeline_edge(&mut self, last: bool) {
+        self.timeline_selected = if last {
+            self.timeline_marks.last().map(|mark| mark.index)
+        } else {
+            self.timeline_marks.first().map(|mark| mark.index)
+        };
+    }
+
     // ── Help overlay scrolling ────────────────────────────────────────────
     //
     // The reference is much taller than any frame, so it scrolls instead of
@@ -1812,7 +2004,23 @@ impl App {
         }
     }
 
-    fn handle_monitor_key(&mut self, _key: KeyEvent) {}
+    /// Keys for the timeline rail, reached with Tab (or Ctrl+T when it parks
+    /// focus there). `j`/`k` move the selection without moving the transcript;
+    /// Enter is what actually jumps.
+    fn handle_monitor_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_timeline_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_timeline_selection(1),
+            KeyCode::Home | KeyCode::Char('g') => self.select_timeline_edge(false),
+            KeyCode::End | KeyCode::Char('G') => self.select_timeline_edge(true),
+            KeyCode::Enter => {
+                if let Some(index) = self.timeline_selected {
+                    self.jump_to_turn(index);
+                }
+            }
+            _ => {}
+        }
+    }
 
     pub fn cycle_focus(&mut self) {
         self.focus = match self.focus {
@@ -1820,6 +2028,10 @@ impl App {
             FocusPane::Chat => {
                 if self.show_sidebar {
                     FocusPane::Sidebar
+                } else if self.timeline_visible {
+                    // The rail is the pane after the transcript while it is on
+                    // screen; Tab still walks Input ➔ Chat ➔ rail ➔ Input.
+                    FocusPane::Monitor
                 } else {
                     FocusPane::Input
                 }
@@ -1827,6 +2039,9 @@ impl App {
             FocusPane::Sidebar => FocusPane::Input,
             FocusPane::Monitor => FocusPane::Input,
         };
+        if self.focus == FocusPane::Monitor {
+            self.focus_timeline();
+        }
     }
 
     fn spawn_skills_picker(&mut self, event_tx: mpsc::UnboundedSender<crate::event::AppEvent>) {
@@ -1970,6 +2185,7 @@ impl App {
         self.active_skill = None;
         self.clear_link_cache();
         self.metrics.reset_for_session();
+        self.reset_timeline();
         self.set_status_message("Created new session.");
 
         self.save_and_refresh();
@@ -2812,6 +3028,27 @@ impl App {
                 true
             }
 
+            "timeline" => {
+                self.conversation.add_user_message(raw_cmd);
+                let visible = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
+                    Some("on" | "true" | "yes" | "show") => true,
+                    Some("off" | "false" | "no" | "hide") => false,
+                    // Bare `/timeline` toggles, like `/metrics`.
+                    _ => !self.timeline_visible,
+                };
+                self.set_timeline_visible(visible);
+                let out = if visible {
+                    "✔ Timeline rail on."
+                } else {
+                    "✔ Timeline rail off."
+                };
+                self.conversation
+                    .add_assistant_message(Some(out.to_string()), None);
+                self.set_status_message(out.to_string());
+                self.save_and_refresh();
+                true
+            }
+
             "health" | "doctor" => {
                 self.conversation.add_user_message(raw_cmd);
                 let model = self.model.selection_id();
@@ -3156,6 +3393,16 @@ impl App {
             .filter(|m| matches!(m, ChatMessage::User { .. }))
             .count()
             <= 1;
+
+        // The rail numbers user messages, so the live run belongs to whichever
+        // one it just appended (steering can add more before it finishes).
+        self.active_turn = Some(
+            self.conversation
+                .messages
+                .iter()
+                .filter(|m| matches!(m, ChatMessage::User { .. }))
+                .count(),
+        );
 
         self.begin_trace(&prompt);
 
@@ -3759,6 +4006,23 @@ impl App {
         self.queued = QueueSnapshot::default();
         self.queued_turns.clear();
         self.metrics.finish_run(run_stats.as_ref());
+
+        // The rail's hover hint can only report a duration for turns this host
+        // watched run; a resumed session keeps `—` for the rest.
+        if let Some(turn) = self.active_turn.take() {
+            let wall = self
+                .metrics
+                .last_run_wall_ms
+                .or_else(|| run_stats.as_ref().map(|stats| stats.total_duration_ms));
+            if let Some(ms) = wall {
+                if turn > 0 {
+                    if self.turn_durations.len() < turn {
+                        self.turn_durations.resize(turn, None);
+                    }
+                    self.turn_durations[turn - 1] = Some(ms);
+                }
+            }
+        }
 
         // Lifetime usage bookkeeping (additive, mirroring the daemon):
         // `recalculate_stats` recomputes the working-context estimate, so the

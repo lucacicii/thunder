@@ -9,6 +9,7 @@ pub mod question_modal;
 pub mod sidebar;
 pub mod status_bar;
 pub mod theme;
+pub mod timeline;
 
 use crate::app::{App, ViewMode};
 use crate::ui::chat::render_chat;
@@ -20,6 +21,7 @@ use crate::ui::picker_modal::render_picker_modal;
 use crate::ui::question_modal::render_question_modal;
 use crate::ui::status_bar::{render_input, render_status_bar};
 use crate::ui::theme::Theme;
+use crate::ui::timeline::render_timeline;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
 
@@ -67,6 +69,14 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
 
     // 5. Render Slash Command Autocomplete Popover (floating above the prompt line)
     render_command_popup(f, app, main_chunks[3], theme);
+
+    // 5b. The turn rail, floating over the transcript's right edge. Modals are
+    // drawn over it (and take the clicks), so it steps aside while one is open.
+    if !app.picker.is_open && app.pending_question.is_none() && app.mode != ViewMode::Help {
+        render_timeline(f, app, main_chunks[1], theme);
+    } else {
+        app.timeline_hitboxes.clear();
+    }
 
     // 6. Render Minimal Status Footer
     render_status_bar(f, app, main_chunks[4], theme);

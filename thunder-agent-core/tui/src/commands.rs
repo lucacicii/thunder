@@ -254,6 +254,14 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
     )
     .with_args(&["on", "off"]),
     SlashCommand::new(
+        "timeline",
+        &["rail"],
+        "[on | off]",
+        "Show or hide the turn rail floating on the right of the transcript",
+        CommandCategory::General,
+    )
+    .with_args(&["on", "off"]),
+    SlashCommand::new(
         "health",
         &["doctor", "status"],
         "",
