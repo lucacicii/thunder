@@ -84,10 +84,34 @@ pub fn input_box_height(app: &App, total_width: usize, available_height: u16) ->
         .min(available_height)
 }
 
-/// Height of the status line under the input box. It only exists while it has
-/// something to say, so an idle prompt gives the row back to the transcript.
+/// Height of the footer under the input box: the session line always, plus one
+/// row while there is transient state to report above it.
 pub fn footer_height(app: &App) -> u16 {
-    u16::from(app.fresh_status().is_some() || app.queued.total() > 0 || app.is_paused())
+    1 + u16::from(app.fresh_status().is_some() || app.queued.total() > 0 || app.is_paused())
+}
+
+/// Background of the footer strip, shared by the session line and the transient
+/// status above it so the two read as one band.
+const FOOTER_BG: Color = Color::Rgb(10, 14, 20);
+
+/// Cut text to `max` display cells, ending in an ellipsis when it did not fit.
+fn truncate_to_width(text: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_string();
+    }
+    let budget = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push('…');
+    out
 }
 
 /// The caret as `(row, character offset within that row)`.
@@ -258,8 +282,36 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         return;
     }
 
-    // No static command tips: this line only carries transient state, and the
-    // layout collapses it to zero rows when there is none.
+    // The session line is the floor; a transient message stacks on top of it
+    // rather than replacing it, so the name never blinks away mid-run.
+    let session_area = Rect {
+        y: area.bottom() - 1,
+        height: 1,
+        ..area
+    };
+    let status_area = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+
+    if status_area.height > 0 {
+        render_transient_status(f, app, status_area, theme);
+    }
+
+    let label = truncate_to_width(
+        app.session_label(),
+        (session_area.width as usize).saturating_sub(2),
+    );
+    let session = Paragraph::new(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(label, theme.muted_style()),
+    ]))
+    .style(Style::default().bg(FOOTER_BG));
+    f.render_widget(session, session_area);
+}
+
+/// No static command tips: this row only carries transient state.
+fn render_transient_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let hints: Vec<Span> = match app.fresh_status() {
         Some(msg) => vec![
             Span::styled(" ⚡ ", Style::default().fg(theme.highlight)),
@@ -290,8 +342,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
     };
 
-    let paragraph =
-        Paragraph::new(Line::from(hints)).style(Style::default().bg(Color::Rgb(10, 14, 20)));
+    let paragraph = Paragraph::new(Line::from(hints)).style(Style::default().bg(FOOTER_BG));
 
     f.render_widget(paragraph, area);
 }
@@ -331,14 +382,19 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_only_exists_when_it_has_something_to_say() {
+    fn the_footer_keeps_the_session_line_and_adds_a_row_for_status() {
         let mut app = App::new("gpt-4o");
-        assert_eq!(footer_height(&app), 0, "an idle prompt reclaims the row");
+        assert_eq!(footer_height(&app), 1, "the session line is permanent");
         app.set_status_message("hello");
-        assert_eq!(
-            footer_height(&app),
-            1,
-            "a fresh status message takes it back"
-        );
+        assert_eq!(footer_height(&app), 2, "a status message stacks above it");
+    }
+
+    #[test]
+    fn a_long_session_name_is_cut_to_the_pane() {
+        let mut app = App::new("gpt-4o");
+        app.conversation.title = Some("a".repeat(200));
+        let cut = truncate_to_width(app.session_label(), 20);
+        assert!(UnicodeWidthStr::width(cut.as_str()) <= 20);
+        assert!(cut.ends_with('…'));
     }
 }

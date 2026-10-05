@@ -49,7 +49,10 @@ fn the_header_row_names_the_model_and_its_thinking_level() {
     assert!(header.contains("THUNDER"), "brand: {header:?}");
     assert!(header.contains("openai/gpt-4o"), "model: {header:?}");
     assert!(header.contains("think:high"), "thinking level: {header:?}");
-    assert!(header.contains("Session:"), "session title: {header:?}");
+    assert!(
+        !header.contains("Session:"),
+        "the session name moved to the footer: {header:?}"
+    );
     assert!(
         !header.contains("Tokens: ~"),
         "the metrics bar owns the counts: {header:?}"

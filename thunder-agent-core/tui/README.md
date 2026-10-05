@@ -11,7 +11,8 @@
 ## 🚀 核心特性
 
 - **Claude Code 风格无框全宽布局**：
-  - **顶部状态栏 (Header)**：实时显示连接模型、运行状态（Idle / Thinking / Streaming / Tool）、估算 Token 消耗与当前会话 ID。
+  - **顶部状态栏 (Header)**：实时显示连接模型、执行模式、思考档位与运行状态（Idle / Thinking / Streaming / Tool）。
+  - **底部会话栏 (Footer)**：输入框正下方常驻一行显示当前会话标题（标题还是占位符时显示 session id，自动生成标题后立即更新）；临时状态消息（`✔`、队列、暂停）临时叠在它上方一行。
   - **全宽对话流 (Chat Stream)**：
     - Markdown 格式化排版渲染与打字机效果（`TokenDelta`）。
     - 深度思考链折叠展示（`ReasoningDelta`，支持 DeepSeek-R1、o1 等模型）。

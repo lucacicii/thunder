@@ -1205,6 +1205,17 @@ impl App {
         self.conversation.is_title_placeholder() || self.run_is_first_exchange
     }
 
+    /// What the footer calls this conversation: its title, or the session id
+    /// while the title is still one of the placeholders a fresh session carries
+    /// (the id is what `/resume` takes, so it is the more useful label then).
+    pub fn session_label(&self) -> &str {
+        let title = self.conversation.title.as_deref().map(str::trim);
+        match title {
+            Some(title) if !title.is_empty() && !is_placeholder_title(title) => title,
+            _ => &self.conversation.id,
+        }
+    }
+
     /// Kick off background title generation (never blocks the UI loop).
     pub fn spawn_title_generation(
         &mut self,
@@ -4138,6 +4149,14 @@ async fn list_session_traces(store_root: &Path, session_id: &str) -> Vec<serde_j
         tb.cmp(&ta)
     });
     results
+}
+
+/// Titles a session carries before anyone has named it. They say nothing about
+/// the conversation, so the footer prefers the session id while one is in place
+/// (`Conversation::is_title_placeholder` is a different question: whether the
+/// title is worth regenerating, which also covers truncated auto-titles).
+fn is_placeholder_title(title: &str) -> bool {
+    title.eq_ignore_ascii_case("new conversation") || title.eq_ignore_ascii_case("untitled")
 }
 
 /// One timeline line per retained event, best-effort formatted.
