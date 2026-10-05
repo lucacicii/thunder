@@ -30,6 +30,11 @@ impl MemoryConversationStore {
 #[async_trait]
 impl ConversationStore for MemoryConversationStore {
     async fn save(&self, conversation: &Conversation) -> Result<(), ConversationError> {
+        // A conversation nobody has spoken to yet is not a session: it never
+        // gains a row (see `ConversationStore::save`).
+        if !conversation.has_user_turns() {
+            return Ok(());
+        }
         let mut lock = self.conversations.write().await;
         lock.insert(conversation.id.clone(), conversation.clone());
         Ok(())

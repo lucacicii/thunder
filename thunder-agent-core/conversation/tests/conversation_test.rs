@@ -3,12 +3,22 @@ use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use thunder_agent_loop::AgentRunResult;
 use thunder_conversation::prelude::*;
 
+/// A conversation that has been spoken to at least once.
+///
+/// The store refuses to persist a conversation with no user turn, so every
+/// fixture that must be durable has to seed one.
+fn spoken(id: &str) -> Conversation {
+    let mut conv = Conversation::new(id);
+    conv.add_user_message("hello");
+    conv
+}
+
 #[tokio::test]
 async fn test_conversation_memory_crud() {
     let store = MemoryConversationStore::new();
     let manager = ConversationManager::new(store);
 
-    let conv = manager
+    let mut conv = manager
         .create_with_prompt(
             "conv_001",
             Some("My First Chat".to_string()),
@@ -22,11 +32,19 @@ async fn test_conversation_memory_crud() {
     assert_eq!(conv.messages.len(), 1);
     assert_eq!(conv.messages[0].role(), thunder_agent_loop::Role::System);
 
-    // Append user message
-    let updated = manager
-        .append_user_message("conv_001", "Hello assistant!")
+    // A titled conversation nobody has spoken to yet is still a draft: it must
+    // neither land in the store nor show up in a listing.
+    assert!(manager
+        .list(&ConversationFilter::new())
         .await
-        .unwrap();
+        .unwrap()
+        .is_empty());
+    assert!(manager.get("conv_001").await.unwrap().is_none());
+
+    // The first user turn is what makes it a session.
+    conv.add_user_message("Hello assistant!");
+    manager.save(&conv).await.unwrap();
+    let updated = manager.get("conv_001").await.unwrap().unwrap();
     assert_eq!(updated.messages.len(), 2);
     assert_eq!(updated.stats.turn_count, 1);
     assert!(updated.stats.total_tokens > 0);
@@ -197,12 +215,12 @@ async fn fs_store_shared_root_saves_do_not_clobber_each_other() {
     let store_a = FsConversationStore::new(dir.path()).await.unwrap();
     let store_b = FsConversationStore::new(dir.path()).await.unwrap();
 
-    let conv_a = Conversation::new("shared_a");
+    let conv_a = spoken("shared_a");
     store_a.save(&conv_a).await.unwrap();
 
     // B's in-memory index predates A's save; B saving must merge, not
     // overwrite the on-disk index with its (conv_a-less) map.
-    let conv_b = Conversation::new("shared_b");
+    let conv_b = spoken("shared_b");
     store_b.save(&conv_b).await.unwrap();
 
     let listed_by_a = store_a.list(&ConversationFilter::new()).await.unwrap();
@@ -234,7 +252,7 @@ async fn fs_store_shared_root_delete_is_not_resurrected() {
     let store_a = FsConversationStore::new(dir.path()).await.unwrap();
     let store_b = FsConversationStore::new(dir.path()).await.unwrap();
 
-    let conv = Conversation::new("doomed");
+    let conv = spoken("doomed");
     store_a.save(&conv).await.unwrap();
     // B loads the row into its in-memory index (same as a daemon that listed
     // conversations at startup).
@@ -246,7 +264,7 @@ async fn fs_store_shared_root_delete_is_not_resurrected() {
     // B still carries "doomed" in memory and saves an unrelated conversation.
     // The persist path must prune the vanished directory's row instead of
     // resurrecting it in the shared index.
-    let unrelated = Conversation::new("unrelated");
+    let unrelated = spoken("unrelated");
     store_b.save(&unrelated).await.unwrap();
 
     let rows = store_a.list(&ConversationFilter::new()).await.unwrap();

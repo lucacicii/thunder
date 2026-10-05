@@ -90,6 +90,21 @@ impl ThunderPlugin for ConversationPlugin {
 
             *active = Some(conv);
         }
+
+        // The user's turn is never in the event stream, so seed it from the run
+        // context: a conversation with no user turn is not a session and is not
+        // persisted at all. Re-running the same prompt on the same session must
+        // not duplicate its trailing user turn.
+        let prompt = ctx.prompt().map(str::trim).filter(|p| !p.is_empty());
+        if let (Some(prompt), Some(conv)) = (prompt, active.as_mut()) {
+            let already_recorded = matches!(
+                conv.messages.last(),
+                Some(ChatMessage::User { content, .. }) if content == prompt
+            );
+            if !already_recorded {
+                conv.add_user_message(prompt);
+            }
+        }
         Ok(())
     }
 

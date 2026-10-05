@@ -137,6 +137,13 @@ pub struct PluginContext {
     /// tier alone would leave `ctx.exec` outside the mode and the remembered
     /// rules, which is the split this refactor exists to close.
     pub policy: Option<Arc<SessionPolicy>>,
+    /// The user input this run was started with, flattened to text.
+    ///
+    /// The user's turn never appears in the event stream, so a plugin that
+    /// mirrors the session (the conversation store above all) has no other way
+    /// to record what the user actually asked. `None` when the host started the
+    /// run without a user turn.
+    pub prompt: Option<String>,
 
     /// The run's tool invoker, for `ctx.callTool`.
     ///
@@ -171,6 +178,7 @@ impl PluginContext {
             ui: HostUiHandle(Arc::new(thunder_agent_loop::types::ui::NullHostUi)),
             route: None,
             policy: None,
+            prompt: None,
             tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
         }
     }
@@ -227,6 +235,17 @@ impl PluginContext {
     pub fn with_route(mut self, route: impl Into<String>) -> Self {
         self.route = Some(route.into());
         self
+    }
+
+    /// Attach the user input this run was started with.
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
+        self
+    }
+
+    /// The run's user input, if it had one.
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
     }
 
     /// The tool-invoker slot, for handing to a plugin host.
