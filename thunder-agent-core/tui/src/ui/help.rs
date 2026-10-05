@@ -146,9 +146,27 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Jump the caret to the start / end of the prompt (Home/End, Ctrl+A/E)",
+                "Jump the caret to the start / end of the prompt (Home/End, Ctrl+E)",
                 theme.text_style(),
             ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Ctrl + A       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Select the whole prompt", theme.text_style()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Shift + ← / →  ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Extend the selection in the prompt", theme.text_style()),
         ]),
         Line::from(vec![
             Span::styled(
@@ -169,7 +187,10 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, theme: &Theme) {
                     .fg(theme.highlight)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Cancel running agent or dismiss popup", theme.text_style()),
+            Span::styled(
+                "Copy / clear the prompt, then cancel the run or exit (Esc drops a selection)",
+                theme.text_style(),
+            ),
         ]),
         Line::from(vec![
             Span::styled(

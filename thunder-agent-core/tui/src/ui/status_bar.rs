@@ -102,6 +102,66 @@ fn input_cursor_position(app: &App, total_width: usize) -> (usize, usize) {
     (ranges.len().saturating_sub(1), 0)
 }
 
+/// Background of a selected run. Matches the picker's highlight so selection
+/// reads the same wherever it appears.
+const SELECTION_BG: Color = Color::Rgb(30, 58, 95);
+
+/// One display row as spans, tinting the selected characters and drawing the
+/// caret as a reverse-video block over the character it sits on.
+///
+/// `row_start` is the row's first character index within the whole input, which
+/// is what lets a selection spanning several rows be sliced per row.
+fn row_spans(
+    row_chars: &[char],
+    row_start: usize,
+    selection: Option<std::ops::Range<usize>>,
+    caret: Option<usize>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let selected = |i: usize| {
+        selection
+            .as_ref()
+            .is_some_and(|range| range.contains(&(row_start + i)))
+    };
+
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < row_chars.len() {
+        if Some(i) == caret {
+            // Nothing shifts as the caret moves: the cell keeps its width and
+            // only swaps colours.
+            spans.push(Span::styled(
+                row_chars[i].to_string(),
+                Style::default()
+                    .fg(theme.bg)
+                    .bg(theme.accent_primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            i += 1;
+            continue;
+        }
+
+        let run_selected = selected(i);
+        let start = i;
+        while i < row_chars.len() && Some(i) != caret && selected(i) == run_selected {
+            i += 1;
+        }
+        let text: String = row_chars[start..i].iter().collect();
+        let style = if run_selected {
+            theme.text_style().bg(SELECTION_BG)
+        } else {
+            theme.text_style()
+        };
+        spans.push(Span::styled(text, style));
+    }
+
+    if caret == Some(row_chars.len()) {
+        spans.push(Span::styled("█", Style::default().fg(theme.accent_primary)));
+    }
+
+    spans
+}
+
 /// The prompt glyph. The busy spinner is *not* here: it lives on the separator
 /// above the input box (`chat.rs`), so it never competes with what is being
 /// typed.
@@ -177,36 +237,14 @@ pub fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             spans.push(Span::raw(" ".repeat(PROMPT_WIDTH)));
         }
 
-        if show_cursor && row == cursor_row {
-            let offset = cursor_offset.min(row_chars.len());
-            spans.push(Span::styled(
-                row_chars[..offset].iter().collect::<String>(),
-                theme.text_style(),
-            ));
-            match row_chars.get(offset).copied() {
-                // The character under the caret is drawn in reverse video, so
-                // nothing shifts as the caret moves.
-                Some(c) => {
-                    spans.push(Span::styled(
-                        c.to_string(),
-                        Style::default()
-                            .fg(theme.bg)
-                            .bg(theme.accent_primary)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        row_chars[offset + 1..].iter().collect::<String>(),
-                        theme.text_style(),
-                    ));
-                }
-                None => spans.push(Span::styled("█", Style::default().fg(theme.accent_primary))),
-            }
-        } else {
-            spans.push(Span::styled(
-                row_chars.iter().collect::<String>(),
-                theme.text_style(),
-            ));
-        }
+        let caret = (show_cursor && row == cursor_row).then(|| cursor_offset.min(row_chars.len()));
+        spans.extend(row_spans(
+            row_chars,
+            *start,
+            app.selection_range(),
+            caret,
+            theme,
+        ));
 
         lines.push(Line::from(spans));
     }

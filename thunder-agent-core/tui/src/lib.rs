@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod ask_user;
+pub mod clipboard;
 pub mod commands;
 pub mod event;
 pub mod links;

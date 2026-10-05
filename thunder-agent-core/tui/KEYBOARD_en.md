@@ -43,7 +43,9 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`Ctrl + N`** | **New Session** | Clear chat stream and create a fresh blank session |
 | **`Ctrl + P`** | **Cycle Mode** | Fast-cycle execution mode: `Auto ➔ Single` |
 | **`Ctrl + H`** | **Help Modal** | Toggle keyboard shortcut help card overlay |
-| **`Ctrl + C`** | **Cancel / Exit** | Cancel active agent task if running; cleanly exit if idle |
-| **`Esc`** | **Close / Dismiss** | Dismiss command palette, close help modal, or cancel running task |
+| **`Ctrl + A`** | **Select all** | Select the whole prompt; pair with `Ctrl + C` to copy it to the system clipboard |
+| **`Ctrl + C`** | **Copy / Clear / Cancel / Exit** | Copy the selection if any; else clear a non-empty prompt; else cancel the running task; exit when idle |
+| **`Esc`** | **Close / Dismiss** | Drop the selection first; otherwise dismiss the palette / help modal, or cancel the running task |
+| **`Shift + ← / →`** | **Extend selection** | Hold Shift while moving the caret to grow or shrink the prompt selection (`Shift + Home / End` too) |
 | **`PageUp / PageDown`** | **Scroll Page** | Scroll chat stream up or down by 10 lines |
 | **`Home / End`** | **Top / Bottom** | `Home` scrolls to top of chat; `End` jumps to bottom and resumes **auto-follow** |
