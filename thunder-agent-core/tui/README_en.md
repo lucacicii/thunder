@@ -78,3 +78,31 @@ cargo run -p thunder-tui --bin thunder-tui -- --session sess_1790253029573
 # Run TUI tests
 cargo test -p thunder-tui
 ```
+
+---
+
+## ⚡ Performance & Render Architecture
+
+Scrolling or typing in a long session (hundreds of turns, a `conversation.json` of several
+hundred KB) must not peg the CPU. `thunder-tui` guarantees this with three layers:
+
+- **Redraw on demand**: the main loop no longer calls `draw` unconditionally every 50 ms.
+  A new frame is requested only for events, cache invalidation, or active animation
+  (running / paused / queued / transient status), so an idle TUI costs almost no CPU.
+- **Transcript cache**: before rendering, the frame checks a `TranscriptCache` keyed on
+  terminal width, the raw/markdown toggle, message and streaming counts, spinner frame, and
+  more. On a hit it reuses the laid-out lines and repaints only the **visible viewport**;
+  the full transcript is rebuilt only on a miss.
+- **Event debouncing**: queued mouse `Moved` events are coalesced and only repaint when the
+  timeline hover target actually changes; terminal events are read blocking on a dedicated
+  thread instead of being polled.
+
+### Build Profiles
+
+`./run.sh` builds **release** by default (the debug render path is roughly an order of
+magnitude slower, which makes long sessions run hot). For debugging or fast iteration:
+
+```bash
+THUNDER_TUI_PROFILE=tui-dev ./run.sh   # optimized, but links in seconds
+THUNDER_TUI_PROFILE=dev     ./run.sh   # unoptimized, for a debugger
+```

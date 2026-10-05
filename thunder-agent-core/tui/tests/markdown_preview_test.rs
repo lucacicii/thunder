@@ -210,7 +210,7 @@ async fn clicking_a_rendered_path_reveals_it() {
 }
 
 #[tokio::test]
-async fn ctrl_o_opens_the_links_picker() {
+async fn ctrl_l_opens_the_links_picker() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("neon-memory.md"), "x").unwrap();
 
@@ -221,14 +221,44 @@ async fn ctrl_o_opens_the_links_picker() {
 
     app.handle_key(
         crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyCode::Char('l'),
             crossterm::event::KeyModifiers::CONTROL,
         ),
         tx,
     );
 
-    assert!(app.picker.is_open, "Ctrl+O is the keyboard way in");
+    assert!(app.picker.is_open, "Ctrl+L is the keyboard way in");
     assert_eq!(app.picker.kind, PickerKind::SelectLink);
+}
+
+#[tokio::test]
+async fn ctrl_o_toggles_expanded_details() {
+    let dir = tempdir().unwrap();
+    let mut app = bare_app(dir.path());
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    assert!(!app.details_expanded(), "details start collapsed");
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        tx.clone(),
+    );
+    assert!(app.details_expanded(), "Ctrl+O expands");
+    assert!(
+        !app.picker.is_open,
+        "Ctrl+O no longer opens the links picker"
+    );
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        tx,
+    );
+    assert!(!app.details_expanded(), "Ctrl+O toggles back");
 }
 
 #[tokio::test]

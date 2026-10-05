@@ -78,3 +78,28 @@ cargo run -p thunder-tui --bin thunder-tui -- --session sess_1790253029573
 # 运行 TUI 单元与集成测试
 cargo test -p thunder-tui
 ```
+
+---
+
+## ⚡ 性能与渲染架构
+
+长会话（数百分支、数百 KB 的 `conversation.json`）中滚动或输入不应引起 CPU 飙高。
+`thunder-tui` 通过三层机制保证这一点：
+
+- **按需重绘**：主循环不再每 50ms 无条件 `draw`。仅当有事件、缓存失效或处于动画状态
+  （运行中 / 暂停 / 有排队 / 有瞬时状态）时才请求新帧，空闲时 CPU 占用接近 0。
+- **转录缓存 (Transcript Cache)**：渲染前先命中 `TranscriptCache`（键覆盖终端宽度、
+  raw/markdown 开关、消息与流式片段数量、spinner 帧等）。命中时复用已排版的行，
+  仅重新绘制**可见视口**内的行；未命中时才整篇重建。
+- **事件去抖**：鼠标 `Moved` 事件在队列中合并，仅当时间轴悬停目标真正变化时才触发重绘；
+  终端事件在专用线程阻塞读取，不再轮询。
+
+### 构建档位
+
+`./run.sh` 默认使用 **release** 构建（debug 版渲染路径慢约一个数量级，长会话下会明显发烫）。
+需要调试或快速迭代时可用：
+
+```bash
+THUNDER_TUI_PROFILE=tui-dev ./run.sh   # 已优化，但链接只需数秒
+THUNDER_TUI_PROFILE=dev     ./run.sh   # 未优化，便于调试
+```

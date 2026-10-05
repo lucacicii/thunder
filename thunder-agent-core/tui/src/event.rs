@@ -1,4 +1,5 @@
 use crossterm::event::{self as ct_event, Event as CtEvent, KeyEvent, MouseEvent};
+use std::io;
 use std::time::Duration;
 use thunder_agent_loop::types::event::ObservedEvent;
 use tokio::sync::mpsc;
@@ -61,30 +62,44 @@ impl EventHandler {
         let (tx, rx) = mpsc::unbounded_channel();
         let event_tx = tx.clone();
 
-        // Terminal event listener task
-        tokio::spawn(async move {
+        // Terminal event listener: a dedicated thread parked in a blocking
+        // `read`, so a keystroke is picked up the moment it lands instead of on
+        // the next poll, and no tokio worker is held by a blocking call.
+        std::thread::spawn(move || {
+            // Any-event mouse tracking reports every pointer move. The host only
+            // needs the latest position, so a move that arrives while another is
+            // still queued is dropped rather than piling up frames of work.
+            let mut move_queued = false;
             loop {
-                if ct_event::poll(Duration::from_millis(20)).unwrap_or(false) {
-                    match ct_event::read() {
-                        Ok(CtEvent::Key(key)) => {
-                            if event_tx.send(AppEvent::Key(key)).is_err() {
-                                break;
-                            }
+                match ct_event::read() {
+                    Ok(CtEvent::Key(key)) => {
+                        move_queued = false;
+                        if event_tx.send(AppEvent::Key(key)).is_err() {
+                            break;
                         }
-                        Ok(CtEvent::Mouse(mouse)) => {
-                            let _ = event_tx.send(AppEvent::Mouse(mouse));
-                        }
-                        Ok(CtEvent::Paste(text)) => {
-                            let _ = event_tx.send(AppEvent::Paste(text));
-                        }
-                        Ok(CtEvent::Resize(w, h)) => {
-                            let _ = event_tx.send(AppEvent::Resize(w, h));
-                        }
-                        _ => {}
                     }
+                    Ok(CtEvent::Mouse(mouse)) => {
+                        let is_move = matches!(mouse.kind, crossterm::event::MouseEventKind::Moved);
+                        if is_move && move_queued {
+                            continue;
+                        }
+                        move_queued = is_move;
+                        let _ = event_tx.send(AppEvent::Mouse(mouse));
+                    }
+                    Ok(CtEvent::Paste(text)) => {
+                        move_queued = false;
+                        let _ = event_tx.send(AppEvent::Paste(text));
+                    }
+                    Ok(CtEvent::Resize(w, h)) => {
+                        move_queued = false;
+                        let _ = event_tx.send(AppEvent::Resize(w, h));
+                    }
+                    Ok(_) => {}
+                    // A signal that interrupted the read is not the end of the
+                    // terminal; anything else is.
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 }
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
 

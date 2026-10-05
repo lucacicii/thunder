@@ -64,6 +64,8 @@ cd thunder
 
 # 2. Launch interactive TUI
 ./run.sh
+#    Release build by default (the render path is an order of magnitude faster);
+#    for a fast edit-build loop use THUNDER_TUI_PROFILE=tui-dev ./run.sh
 
 # 3. Launch STDIO Sidecar daemon (for desktop / Electron integration)
 ./daemon.sh

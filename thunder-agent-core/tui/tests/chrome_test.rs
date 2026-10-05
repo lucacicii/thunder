@@ -72,6 +72,10 @@ fn a_fresh_frame_is_written_in_english() {
         cjk.is_empty(),
         "no Chinese anywhere in a fresh frame, found {cjk:?}"
     );
-    // The system prompt is part of the transcript, so it is part of this too.
-    assert!(screen.contains("Role & Philosophy"), "prompt is rendered");
+    // The system prompt is engine plumbing, not transcript: it must never be
+    // painted, even though `App::new` seeds the conversation with it.
+    assert!(
+        !screen.contains("Role & Philosophy"),
+        "the system prompt must stay out of the frame"
+    );
 }

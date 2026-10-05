@@ -63,6 +63,8 @@ cd thunder
 
 # 2. 启动交互式 TUI 终端
 ./run.sh
+#    默认 release 构建（渲染路径快一个数量级）；
+#    需要快速迭代时用 THUNDER_TUI_PROFILE=tui-dev ./run.sh
 
 # 3. 启动 STDIO Sidecar 守护进程（供 Electron / 桌面面板调用）
 ./daemon.sh

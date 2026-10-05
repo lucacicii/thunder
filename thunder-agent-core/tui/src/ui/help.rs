@@ -141,7 +141,29 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled(
+                "/details [on|off]     ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Expand or collapse thinking and tool output (Ctrl + O)",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "Ctrl + O       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Expand or collapse thinking and tool output (summaries by default)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Ctrl + L       ",
                 Style::default()
                     .fg(theme.highlight)
                     .add_modifier(Modifier::BOLD),
@@ -412,7 +434,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
                 Style::default().fg(theme.assistant_bubble),
             ),
             Span::styled(
-                "List links & file paths in this session (Enter reveals/opens)",
+                "List links & file paths in this session (Ctrl + L; Enter reveals/opens)",
                 theme.muted_style(),
             ),
         ]),
