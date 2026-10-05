@@ -41,6 +41,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 ├── run.sh                        # 启动 TUI 终端
 ├── daemon.sh                     # 启动 STDIO Sidecar 守护进程
 ├── test.sh                       # 全工作区测试套件脚本
+├── .thunder/                       # Thunder 自身配置（用户级 ~/.thunder/ 与项目级同构）
 ├── thunder-agent-loop/           # Agent A：单 Agent 闭环执行引擎
 ├── thunder-pi-bridge/            # pi-ai Node Sidecar 传输底座（打包 @earendil-works/pi-ai）
 ├── thunder-agent-providers/      # LLM Catalog 与配置解析
@@ -99,7 +100,10 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 3. **并发写安全保护**：
    - 无论宿主并发多任务还是单 Agent 内多工具并发，写文件操作统一通过 `FILE_MUTATION_LOCKS` 按物理路径互斥排队，杜绝竞态破坏。
 4. **确定性轻量宿主**：
-   - `thunder-agent-root` 默认加载通用基线插件（会话与技能），并通过关键字意图动态触发高级插件，杜绝昂贵的二次 LLM 分类时延。
+   - `thunder-agent-root` 默认加载通用基线插件（会话、技能与长期记忆），并通过关键字意图动态触发高级插件，杜绝昂贵的二次 LLM 分类时延。
+5. **配置归 .thunder/，不碰 .arp**：
+   - `.arp/` 属于 `agent-resume-panel`（面板配置 + 共享产物），Thunder 不读取其任何内容。
+   - Thunder 自身的项目状态统一在 `.thunder/`：`config.json`（agent 配置）、`mcp.json`（MCP servers）、`THUNDER.md` + `memory/*.md`（长期记忆）、`plugins/`、`tmp/`。用户级 `~/.thunder/` 提供同名默认值，按 用户级 → 项目级 → `*.local.*` 覆盖。
 
 ---
 

@@ -26,7 +26,10 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
    - Process-wide path-based queue mutex in `thunder-agent-loop`. Serializes concurrent write operations to the same physical file across parallel agents or simultaneous tool calls, preventing race conditions and silent overwrites.
 5. **Deterministic Zero-Latency Plugin Activation**:
    - `thunder-agent-root` uses a deterministic baseline (session conversation and skills permanently active) paired with keyword intent triggers, eliminating secondary LLM classification latency and token costs.
-6. **Production-Grade STDIO Sidecar Daemon (`thunder-agent-daemon`)**:
+6. **Project Config & Long-Term Memory (`.thunder/`)**:
+   - Thunder reads its own `.thunder/` project config, fully isolated from `.arp` (owned by the panel): `config.json` is merged by layer (user / project / local) and can append a system-prompt file and cap turns; `THUNDER.md` and `memory/*.md` are injected as long-term memory; `mcp.json` auto-registers MCP servers.
+   - The memory block sits in the request prefix and is read once per host init, keeping the provider-side prompt cache prefix stable.
+7. **Production-Grade STDIO Sidecar Daemon (`thunder-agent-daemon`)**:
    - Zero port conflicts and lifecycle naturally bound to the parent process (Electron/desktop UI). Features concurrency semaphore scheduling, backpressured ordered STDOUT streaming, cooperative pausing, and human-in-the-loop question bubbles (`ask_user_question`).
 
 ---
