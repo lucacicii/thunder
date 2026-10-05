@@ -30,6 +30,9 @@ const SEPARATOR_WIDTH: usize = 3;
 const WORKSPACE_MAX: usize = 40;
 /// Context occupancy at or above this is drawn as a warning.
 const CONTEXT_WARN_PERCENT: f64 = 80.0;
+/// Background of the bar, shared by every wrapped row so the block reads as
+/// one strip whether it is one row tall or three.
+const BAR_BG: Color = Color::Rgb(10, 14, 20);
 
 // ── Formatters (same arithmetic as the panel's) ─────────────────────────────
 
@@ -283,20 +286,46 @@ pub fn render_metrics_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if !app.metrics.enabled || area.height == 0 {
         return;
     }
-    let segments = build_segments(app, theme, area.width as usize);
-    let kept = fit(segments, area.width as usize);
+    let lines = pack(
+        build_segments(app, theme, area.width as usize),
+        area.width as usize,
+        area.height as usize,
+    )
+    .into_iter()
+    .map(|line| Line::from(join_segments(line, theme)))
+    .collect::<Vec<_>>();
 
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(BAR_BG));
+    f.render_widget(paragraph, area);
+}
+
+/// Rows the bar needs at this width, capped by what the layout can spare.
+///
+/// Mirrors [`crate::ui::status_bar::input_box_height`]: the renderer measures
+/// its own content and the layout reserves exactly that, so the two can never
+/// disagree about how tall the bar is.
+pub fn bar_height(app: &App, theme: &Theme, width: usize, max_height: u16) -> u16 {
+    if !app.metrics.enabled || max_height == 0 {
+        return 0;
+    }
+    let lines = pack(
+        build_segments(app, theme, width),
+        width,
+        max_height as usize,
+    );
+    lines.len().min(max_height as usize) as u16
+}
+
+/// One line's spans: the segments of that row, separated by [`SEPARATOR`].
+fn join_segments(segments: Vec<Segment>, theme: &Theme) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for (idx, segment) in kept.into_iter().enumerate() {
+    for (idx, segment) in segments.into_iter().enumerate() {
         if idx > 0 {
             spans.push(Span::styled(SEPARATOR, theme.muted_style()));
         }
         spans.extend(segment.spans);
     }
-
-    let paragraph =
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(10, 14, 20)));
-    f.render_widget(paragraph, area);
+    spans
 }
 
 /// Everything the bar can say, in display order.
@@ -492,32 +521,105 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
     segments
 }
 
-/// Keeps the longest leading run of segments that fits `width`.
+/// Greedily wraps segments into lines no wider than `width`, keeping at most
+/// `max_lines` of them.
 ///
-/// Deliberately a strict prefix. A greedy scan that skipped an over-wide
-/// segment could keep a *less* important one instead — showing `Elapsed` while
-/// dropping `Total` — which reads as a bug rather than as degradation.
-fn fit(segments: Vec<Segment>, width: usize) -> Vec<Segment> {
+/// A segment is never split across lines: on a narrow window the bar grows
+/// downwards rather than losing telemetry. A segment that cannot fit a line on
+/// its own gets one anyway and is clipped by the renderer, which is the least
+/// bad option left; the build order still decides who is dropped once the
+/// layout runs out of rows.
+fn pack(segments: Vec<Segment>, width: usize, max_lines: usize) -> Vec<Vec<Segment>> {
+    let mut lines: Vec<Vec<Segment>> = Vec::new();
+    let mut current: Vec<Segment> = Vec::new();
     let mut used = 0usize;
-    let mut kept = Vec::new();
+
     for segment in segments {
-        let extra = if kept.is_empty() {
+        if lines.len() >= max_lines {
+            break;
+        }
+        let extra = if current.is_empty() {
             segment.width
         } else {
             segment.width + SEPARATOR_WIDTH
         };
-        if used + extra > width {
-            break;
+        if !current.is_empty() && used + extra > width {
+            lines.push(std::mem::take(&mut current));
+            if lines.len() >= max_lines {
+                break;
+            }
+            used = segment.width;
+        } else {
+            used += extra;
         }
-        used += extra;
-        kept.push(segment);
+        current.push(segment);
     }
-    kept
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn segment(text: &str) -> Segment {
+        Segment::new(vec![Span::raw(text.to_string())])
+    }
+
+    fn line_width(line: &[Segment]) -> usize {
+        line.iter().map(|s| s.width).sum::<usize>() + SEPARATOR_WIDTH * line.len().saturating_sub(1)
+    }
+
+    #[test]
+    fn packing_never_splits_a_segment_across_lines() {
+        let lines = pack(vec![segment("aaaa"), segment("bbbb"), segment("cc")], 12, 9);
+
+        assert_eq!(lines.len(), 2, "aaaa · bbbb fits 12, cc does not");
+        let texts: Vec<Vec<String>> = lines
+            .iter()
+            .map(|line| line.iter().map(|s| s.text()).collect())
+            .collect();
+        assert_eq!(texts, vec![vec!["aaaa", "bbbb"], vec!["cc"]]);
+        assert!(lines.iter().all(|line| line_width(line) <= 12));
+    }
+
+    #[test]
+    fn a_segment_too_wide_for_the_pane_gets_a_line_of_its_own() {
+        let lines = pack(vec![segment("wide-wide-wide"), segment("ok")], 6, 4);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0][0].text(), "wide-wide-wide");
+        assert_eq!(lines[1][0].text(), "ok");
+    }
+
+    #[test]
+    fn packing_keeps_only_the_lines_the_layout_can_afford() {
+        let lines = pack(vec![segment("aa"), segment("bb"), segment("cc")], 3, 1);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].text(), "aa");
+
+        // No rows at all means nothing is measured.
+        assert!(pack(vec![segment("aa")], 3, 0).is_empty());
+    }
+
+    #[test]
+    fn the_bar_height_follows_the_width() {
+        let mut app = App::new("gpt-4o");
+        let theme = Theme::default();
+
+        assert_eq!(bar_height(&app, &theme, 200, 20), 1, "one wide row");
+        assert!(
+            bar_height(&app, &theme, 30, 20) > 1,
+            "a narrow pane wraps instead of dropping"
+        );
+        assert_eq!(bar_height(&app, &theme, 30, 2), 2, "capped by the layout");
+        assert_eq!(bar_height(&app, &theme, 30, 0), 0, "no room, no bar");
+
+        app.metrics.enabled = false;
+        assert_eq!(bar_height(&app, &theme, 200, 20), 0, "off means gone");
+    }
 
     #[test]
     fn compact_tokens_matches_the_panel() {
@@ -653,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn segments_drop_the_least_important_when_narrow() {
+    fn segments_lead_with_the_identity_pair_and_wrap_in_order() {
         let mut app = App::new("gpt-4o");
         app.thinking_level = Some("high".to_string());
         app.conversation.messages.clear();
@@ -677,48 +779,49 @@ mod tests {
         let all = build_segments(&app, &theme, 200);
         assert_eq!(all.len(), 9, "every item has something to report");
 
-        // The identity pair leads, so a narrow bar can still say who is
-        // answering for as long as it can say anything at all.
+        // The identity pair leads: it is what survives when even the wrapped bar
+        // runs out of rows.
         assert!(all[0].text().contains('📁'));
         assert_eq!(all[1].text(), "🤖 openai/gpt-4o");
         assert_eq!(all[2].text(), "🧠 think:high");
 
         // Wide: everything fits.
-        assert_eq!(fit(build_segments(&app, &theme, 300), 300).len(), all.len());
+        let wide = pack(build_segments(&app, &theme, 300), 300, 9);
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[0].len(), all.len());
 
-        // Narrow: a leading run survives, and it really is the leading run —
-        // compare item by item, not just sizes.
-        let narrow = fit(build_segments(&app, &theme, 24), 24);
-        assert!(!narrow.is_empty(), "something must remain");
-        assert!(
-            narrow.len() < all.len(),
-            "a 24-cell bar cannot hold everything"
-        );
-        for (kept, built) in narrow.iter().zip(build_segments(&app, &theme, 24).iter()) {
-            assert_eq!(
-                kept.text(),
-                built.text(),
-                "kept items are the leading ones, in order"
-            );
-        }
-        assert!(
-            narrow[0].text().contains('📁'),
-            "the workspace outranks everything"
-        );
+        // Narrow: it grows downwards instead of throwing the tail away, and the
+        // reading order survives the wrap.
+        let narrow = pack(build_segments(&app, &theme, 24), 24, 9);
+        assert!(narrow.len() > 1, "a 24-cell bar has to wrap");
+        let wrapped: Vec<String> = narrow.iter().flatten().map(|s| s.text()).collect();
+        let built: Vec<String> = build_segments(&app, &theme, 24)
+            .iter()
+            .map(|s| s.text())
+            .collect();
+        assert_eq!(wrapped, built, "nothing dropped, order kept");
     }
 
     #[test]
-    fn chosen_segments_always_fit_the_width() {
+    fn every_packed_line_fits_the_width() {
         let mut app = App::new("gpt-4o");
         app.conversation.add_user_message("x".repeat(400));
         app.metrics.enabled = true;
         let theme = Theme::default();
 
         for width in [10usize, 20, 40, 60, 80, 120, 200] {
-            let kept = fit(build_segments(&app, &theme, width), width);
-            let total: usize = kept.iter().map(|s| s.width).sum::<usize>()
-                + SEPARATOR_WIDTH * kept.len().saturating_sub(1);
-            assert!(total <= width, "width {width}: {total} cells requested");
+            let lines = pack(build_segments(&app, &theme, width), width, 50);
+            assert!(!lines.is_empty(), "width {width} lost everything");
+            for line in &lines {
+                let total = line.iter().map(|s| s.width).sum::<usize>()
+                    + SEPARATOR_WIDTH * line.len().saturating_sub(1);
+                // A single segment too wide for the pane gets a line to itself
+                // and is clipped; segments are never wrapped in pairs.
+                assert!(
+                    total <= width || line.len() == 1,
+                    "width {width}: {total} cells on one line"
+                );
+            }
         }
     }
 

@@ -30,8 +30,9 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     // The editor grows with its content (plus its padding) and the status line
     // below it only takes a row while it has something to say.
     let footer = status_bar::footer_height(app);
+    let metrics = metrics_height(app, theme, frame.width, frame.height);
     // Rows the transcript is guaranteed: the header plus the stream floor.
-    let reserved = 1 + 4 + u16::from(app.metrics.enabled) + footer;
+    let reserved = 1 + 4 + metrics + footer;
     let input_box = status_bar::input_box_height(
         app,
         frame.width as usize,
@@ -46,8 +47,8 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             Constraint::Length(1), // Header status line
             Constraint::Min(4),    // Full-width dialogue stream
             // Token / cache / speed readout, above the prompt where the eye
-            // already is. Costs a transcript row, so it can be turned off.
-            Constraint::Length(u16::from(app.metrics.enabled)),
+            // already is. Costs transcript rows, so it can be turned off.
+            Constraint::Length(metrics),
             Constraint::Length(input_box), // Inline prompt box (❯ ..., padded)
             Constraint::Length(footer),    // Transient status line
         ])
@@ -99,4 +100,16 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         app.help_scroll = app.help_scroll.min(app.help_max_scroll);
         render_help_modal(f, f.area(), theme, app.help_scroll);
     }
+}
+
+/// Rows the metrics bar occupies on a frame of this size.
+///
+/// The bar wraps when the pane is too narrow for everything it has to say, so
+/// its height is measured (like the editor's) before the layout is cut. It may
+/// claim whatever is left once the fixed rows — header, the transcript's floor,
+/// the editor's one minimum row and the footer — have been paid for.
+pub fn metrics_height(app: &App, theme: &Theme, width: u16, height: u16) -> u16 {
+    let footer = status_bar::footer_height(app);
+    let cap = height.saturating_sub(1 + 4 + 1 + footer);
+    metrics::bar_height(app, theme, width as usize, cap)
 }

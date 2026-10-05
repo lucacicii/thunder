@@ -54,9 +54,14 @@ fn input_row(rows: &[String]) -> usize {
 /// The input box pads its text, so the row above the prompt is not the bar.
 const INPUT_VPAD: usize = thunder_tui::ui::status_bar::INPUT_VPAD as usize;
 
-/// Index of the metrics bar: directly above the input box.
-fn bar_row(rows: &[String]) -> usize {
-    input_row(rows) - 1 - INPUT_VPAD
+/// Every row the bar paints, joined. The layout reserves exactly the height
+/// [`thunder_tui::ui::metrics::bar_height`] reports, so the rows can be located
+/// without guessing or scanning for a background colour (the footer shares it).
+fn bar_text(app: &App, rows: &[String], width: u16) -> String {
+    let end = input_row(rows) - INPUT_VPAD;
+    let height =
+        thunder_tui::ui::metrics_height(app, &Theme::default(), width, rows.len() as u16) as usize;
+    rows[end - height..end].join("\n")
 }
 
 fn app_with_run(workspace: &std::path::Path) -> App {
@@ -89,7 +94,7 @@ async fn the_bar_sits_on_the_row_above_the_prompt() {
     let mut app = app_with_run(dir.path());
 
     let rows = draw_rows(&mut app, 200, 24);
-    let bar = &rows[bar_row(&rows)];
+    let bar = bar_text(&app, &rows, 200);
 
     assert!(bar.contains("tok/s"), "speed: {bar:?}");
     assert!(bar.contains("Cache"), "cache: {bar:?}");
@@ -127,7 +132,7 @@ async fn the_bar_reports_the_numbers_the_engine_reported() {
     let mut app = app_with_run(dir.path());
 
     let rows = draw_rows(&mut app, 200, 24);
-    let bar = &rows[bar_row(&rows)];
+    let bar = bar_text(&app, &rows, 200);
 
     // 12,000 prompt + 1,500 completion, cached 11,000 of 12,000 = 91.67%.
     assert!(bar.contains("41.7"), "avg tps: {bar:?}");
@@ -144,12 +149,12 @@ async fn turning_the_bar_off_returns_the_row_to_the_transcript() {
     let mut app = app_with_run(dir.path());
 
     let on = draw_rows(&mut app, 120, 24);
-    let on_bar = on[bar_row(&on)].clone();
+    let on_bar = bar_text(&app, &on, 120);
     assert!(on_bar.contains("Total"), "bar is drawn: {on_bar:?}");
 
     app.metrics.enabled = false;
     let off = draw_rows(&mut app, 120, 24);
-    let off_above = off[bar_row(&off)].clone();
+    let off_above = off[input_row(&off) - 1 - INPUT_VPAD].clone();
     assert!(
         !off_above.contains("Total"),
         "the bar is gone: {off_above:?}"
@@ -159,17 +164,46 @@ async fn turning_the_bar_off_returns_the_row_to_the_transcript() {
 }
 
 #[tokio::test]
-async fn a_narrow_bar_keeps_the_workspace() {
+async fn a_narrow_bar_wraps_instead_of_dropping_telemetry() {
     let dir = tempdir().unwrap();
     let mut app = app_with_run(dir.path());
 
-    for width in [24u16, 30, 40] {
+    for width in [24u16, 30, 40, 60] {
         let rows = draw_rows(&mut app, width, 24);
-        let bar = &rows[bar_row(&rows)];
-        assert!(
-            bar.contains("📁"),
-            "width {width}: the workspace outranks the telemetry: {bar:?}"
-        );
+        let bar = bar_text(&app, &rows, width);
+
+        // Everything the wide bar says survives the wrap, not just the items
+        // that happened to fit on the first row.
+        for marker in [
+            "📁", "🤖", "🧠", "13,500", "Cache", "Total", "Turn", "Elapsed",
+        ] {
+            assert!(
+                bar.contains(marker),
+                "width {width}: {marker} went missing: {bar:?}"
+            );
+        }
+        // ...and no line spills past the pane.
+        for line in bar.lines() {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line) <= width as usize,
+                "width {width}: {line:?} overflows"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_bar_yields_rows_to_the_transcript_on_a_short_frame() {
+    let dir = tempdir().unwrap();
+    let mut app = app_with_run(dir.path());
+
+    // 40 columns want five rows; a ten-row frame can only spare three once the
+    // header, the transcript's floor, the editor and the footer are paid for.
+    let rows = draw_rows(&mut app, 40, 10);
+    let bar_rows = bar_text(&app, &rows, 40).lines().count();
+    assert_eq!(bar_rows, 3, "capped by the frame: {:?}", rows);
+    for line in bar_text(&app, &rows, 40).lines() {
+        assert!(unicode_width::UnicodeWidthStr::width(line) <= 40);
     }
 }
 
