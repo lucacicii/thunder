@@ -115,3 +115,39 @@ async fn single_agent_mode_uses_injected_client_factory() {
     let last = app.conversation.messages.last().expect("assistant message");
     assert_eq!(last.content_str(), Some(FAKE_REPLY));
 }
+
+// ── Auto-titling ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_finished_first_exchange_asks_for_a_title() {
+    let mut app = App::new("fake-model").with_client_factory(fake_factory());
+
+    drive_one_prompt(&mut app, "say hello").await;
+
+    // The run is over, so the flag `handle_agent_finished` used to clear is what
+    // the runner reads next to decide whether to name the session.
+    assert!(app.should_autogenerate_title());
+}
+
+#[tokio::test]
+async fn a_second_exchange_no_longer_asks_for_a_title() {
+    let mut app = App::new("fake-model").with_client_factory(fake_factory());
+
+    drive_one_prompt(&mut app, "say hello").await;
+    drive_one_prompt(&mut app, "and again").await;
+
+    assert!(!app.should_autogenerate_title());
+}
+
+#[tokio::test]
+async fn the_first_prompt_names_the_session_before_the_model_does() {
+    let mut app = App::new("fake-model").with_client_factory(fake_factory());
+
+    drive_one_prompt(&mut app, "Please refactor the prompt box so that it grows").await;
+
+    assert_eq!(
+        app.conversation.title.as_deref(),
+        Some("Please refactor the prompt box...")
+    );
+    assert_eq!(app.conversation.title_source.as_deref(), Some("auto"));
+}

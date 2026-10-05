@@ -221,6 +221,11 @@ pub struct App {
     /// Whether the current run is this conversation's first exchange
     /// (triggers background auto-titling once it finishes).
     pub run_is_first_exchange: bool,
+    /// Whether auto-titling has already been kicked off for the loaded
+    /// conversation. A failed generation leaves a placeholder title behind, and
+    /// without this the next run would retry — and re-print the failure — on
+    /// every completed turn.
+    pub title_attempted: bool,
 
     /// Render Markdown in the transcript (the default) instead of raw source.
     pub markdown_enabled: bool,
@@ -376,6 +381,7 @@ impl App {
             trace_events: None,
             trace_meta: None,
             run_is_first_exchange: false,
+            title_attempted: false,
             markdown_enabled: true,
             needs_redraw: true,
             transcript: None,
@@ -460,6 +466,7 @@ impl App {
 
             if let Ok(Some(loaded)) = store.load(id).await {
                 self.conversation = loaded;
+                self.title_attempted = false;
                 self.clear_run_state();
                 self.clear_session_details();
                 self.agent_status = AgentStatus::Idle;
@@ -1435,10 +1442,19 @@ impl App {
         self.save_and_refresh();
     }
 
-    /// Whether a finished run should trigger background auto-titling: the
-    /// conversation is still untitled, or this was its first exchange.
+    /// Whether a finished run should trigger background auto-titling: the run
+    /// was this conversation's first exchange, or the title is still one a host
+    /// may replace (self-healing a session that never got named, e.g. one
+    /// carried over from before this feature existed).
+    ///
+    /// One attempt per loaded conversation: a generation that fails leaves the
+    /// placeholder in place, and retrying on every run would only re-print the
+    /// failure. A manual title is never overwritten here (`/title force` is the
+    /// deliberate way past it).
     pub fn should_autogenerate_title(&self) -> bool {
-        self.conversation.is_title_placeholder() || self.run_is_first_exchange
+        !self.title_attempted
+            && !self.conversation.is_title_manual()
+            && (self.conversation.is_title_placeholder() || self.run_is_first_exchange)
     }
 
     /// What the footer calls this conversation: its title, or the session id
@@ -1464,6 +1480,7 @@ impl App {
         let registry = self.provider_registry.clone();
         let session_id = self.conversation.id.clone();
         self.set_status_message("Generating title...");
+        self.title_attempted = true;
         tokio::spawn(async move {
             let result =
                 crate::title::generate_conversation_title(&store, &registry, &session_id, force)
@@ -2439,6 +2456,7 @@ impl App {
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
             .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+        self.title_attempted = false;
         self.clear_run_state();
         self.clear_session_details();
         self.agent_status = AgentStatus::Idle;
@@ -3681,6 +3699,22 @@ impl App {
             .count()
             <= 1;
 
+        // Name the session from its first prompt, so the footer and the session
+        // list say something readable immediately — and so the model-generated
+        // title that replaces it is only ever a refinement. Never touches a
+        // title that is already real.
+        if self.run_is_first_exchange
+            && self
+                .conversation
+                .title
+                .as_deref()
+                .map(|t| t.trim().is_empty() || is_placeholder_title(t))
+                .unwrap_or(true)
+        {
+            self.conversation.title = Some(provisional_title(&prompt));
+            self.conversation.title_source = Some("auto".to_string());
+        }
+
         // The rail numbers user messages, so the live run belongs to whichever
         // one it just appended (steering can add more before it finishes).
         self.active_turn = Some(
@@ -4361,10 +4395,12 @@ impl App {
                     .unwrap_or(true);
             let trace_text = final_text.clone();
             self.finalize_trace(trace_ok, trace_text.as_deref(), run_stats.as_ref());
-            self.run_is_first_exchange = false;
         }
         self.trace_events = None;
         self.trace_meta = None;
+        // `run_is_first_exchange` deliberately survives the run: the auto-title
+        // check reads it right after this handler returns, and the next
+        // `submit_prompt` recomputes it.
     }
 }
 

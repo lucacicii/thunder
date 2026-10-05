@@ -298,6 +298,47 @@ async fn manual_title_is_set_and_locked() {
     assert!(!app.conversation.is_title_placeholder());
 }
 
+#[tokio::test]
+async fn a_session_still_carrying_a_seed_title_self_heals() {
+    let mut app = App::new("gpt-4o");
+
+    // A conversation created before auto-titling existed: no run has happened in
+    // this session, so only the placeholder half of the predicate can match.
+    assert!(!app.run_is_first_exchange);
+    assert!(app.should_autogenerate_title());
+
+    app.conversation.title = Some("Untitled".to_string());
+    assert!(app.should_autogenerate_title());
+}
+
+#[tokio::test]
+async fn auto_titling_is_attempted_once_per_conversation() {
+    let mut app = App::new("gpt-4o");
+
+    // A generation that failed leaves the placeholder behind; retrying after
+    // every run would only re-print the failure.
+    app.title_attempted = true;
+    assert!(!app.should_autogenerate_title());
+
+    // A different conversation gets its own attempt.
+    app.new_session();
+    assert!(app.should_autogenerate_title());
+}
+
+#[tokio::test]
+async fn submit_prompt_keeps_a_real_title() {
+    let mut app = App::new("gpt-4o").with_client_factory(noop_factory());
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.conversation.title = Some("Rust workspace audit".to_string());
+
+    app.submit_prompt("say hello".to_string(), tx);
+
+    assert_eq!(
+        app.conversation.title.as_deref(),
+        Some("Rust workspace audit")
+    );
+}
+
 // ── traces ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
