@@ -40,13 +40,17 @@ async fn memory_files_are_rendered_into_the_prompt() {
     let ws = temp.path();
     let dir = ws.join(".thunder");
     std::fs::create_dir_all(dir.join("memory")).unwrap();
-    std::fs::write(dir.join("THUNDER.md"), "# Project\n\nUse tabs, not spaces.\n").unwrap();
-    std::fs::write(dir.join("memory").join("build.md"), "Build with `./test.sh`.\n").unwrap();
     std::fs::write(
-        dir.join("THUNDER.local.md"),
-        "Local: my editor is vim.\n",
+        dir.join("THUNDER.md"),
+        "# Project\n\nUse tabs, not spaces.\n",
     )
     .unwrap();
+    std::fs::write(
+        dir.join("memory").join("build.md"),
+        "Build with `./test.sh`.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("THUNDER.local.md"), "Local: my editor is vim.\n").unwrap();
 
     let root = root_with_ws(ws);
     let handle = root
@@ -54,9 +58,7 @@ async fn memory_files_are_rendered_into_the_prompt() {
         .await
         .unwrap();
 
-    let prompt = handle
-        .active_set
-        .build_combined_system_prompt(Some("BASE"));
+    let prompt = handle.active_set.build_combined_system_prompt(Some("BASE"));
     assert!(
         prompt.contains("Use tabs, not spaces."),
         "project memory missing:\n{prompt}"
@@ -87,15 +89,15 @@ async fn memory_import_is_jailed_to_the_workspace() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("THUNDER.md"),
-        format!("# Notes\n\n@/{}\n", secret.display().to_string().trim_start_matches('/')),
+        format!(
+            "# Notes\n\n@/{}\n",
+            secret.display().to_string().trim_start_matches('/')
+        ),
     )
     .unwrap();
 
     let root = root_with_ws(ws);
-    let handle = root
-        .execute("hi", RootRunOptions::default())
-        .await
-        .unwrap();
+    let handle = root.execute("hi", RootRunOptions::default()).await.unwrap();
     let prompt = handle.active_set.build_combined_system_prompt(Some("BASE"));
     assert!(
         !prompt.contains("TOP_SECRET_PAYLOAD"),

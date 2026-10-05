@@ -18,6 +18,11 @@
 //! the thunder home, and bounded by depth (see [`MAX_IMPORT_DEPTH`]) and total
 //! size so a stray `@` cannot read the filesystem or loop forever.
 //!
+//! The plugin also contributes a `memory_write` tool, so the agent can record a
+//! durable note mid-task. The write targets `<ws>/.thunder/` only and is gated
+//! by the run's permission tier like any other mutation (it classifies as
+//! [`ToolEffect::Other`](thunder_agent_loop::types::policy::ToolEffect)).
+//!
 //! ## Prompt-cache stability
 //!
 //! The memory block sits at position 0 of every request, exactly the region a
@@ -29,12 +34,13 @@
 
 use crate::error::PluginError;
 use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
-use crate::thunder_config::{ThunderConfig, THUNDER_DIR};
+use crate::thunder_config::{MemorySection, ThunderConfig, THUNDER_DIR};
 use async_trait::async_trait;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::sync::RwLock;
 
 /// Conventional memory file name, at the user and project scope.
@@ -43,18 +49,30 @@ pub const MEMORY_FILE: &str = "THUNDER.md";
 pub const MEMORY_LOCAL_FILE: &str = "THUNDER.local.md";
 /// Sub-directory holding topic-split memory notes.
 pub const MEMORY_SUBDIR: &str = "memory";
+/// Name of the tool the agent uses to record a durable note.
+pub const MEMORY_WRITE_TOOL: &str = "memory_write";
 
 /// Maximum `@import` nesting depth.
 pub const MAX_IMPORT_DEPTH: usize = 5;
 /// Maximum total bytes of memory rendered into the prompt.
 pub const MAX_TOTAL_BYTES: usize = 256 * 1024;
+/// Maximum bytes a single `memory_write` call may persist.
+pub const MAX_WRITE_BYTES: usize = 64 * 1024;
 
-/// A plugin that appends layered `.thunder` memory to the system prompt.
+/// A plugin that appends layered `.thunder` memory to the system prompt and
+/// exposes a `memory_write` tool.
 pub struct MemoryPlugin {
     manifest: PluginManifest,
     /// Rendered memory block. `None` before the first init, or when there is
     /// nothing to inject. Shared via `Arc` so clones observe one cache.
     cache: Arc<RwLock<Option<String>>>,
+    /// Workspace per run `route`, captured at init.
+    ///
+    /// The tool pipeline hands a tool only a [`ToolExecutionContext`], which
+    /// carries the route but not the workspace; keying by route is how a shared
+    /// tool resolves *its* run's workspace instead of another run's — the same
+    /// pattern the TypeScript sidecar uses.
+    workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
 }
 
 /// Mutable accumulator threaded through the recursive file walk.
@@ -71,10 +89,11 @@ impl MemoryPlugin {
         let manifest = PluginManifest::new(
             "memory",
             "Thunder Long-Term Memory",
-            "Loads layered THUNDER.md / memory notes from the user and project scopes and injects them into the system prompt.",
+            "Loads layered THUNDER.md / memory notes from the user and project scopes, and exposes a `memory_write` tool.",
             "0.1.0",
         )
         .with_capability(PluginCapability::MemoryPersistence)
+        .with_capability(PluginCapability::ToolProvider)
         // Baseline plugin: stays active so the prompt block is stable across
         // turns, whether or not any memory file currently exists.
         .with_triggers(TriggerSpec::always());
@@ -82,7 +101,14 @@ impl MemoryPlugin {
         Self {
             manifest,
             cache: Arc::new(RwLock::new(None)),
+            workspaces: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The workspace this run is bound to, for the write tool.
+    pub async fn workspace_for_route(&self, route: Option<&str>) -> Option<PathBuf> {
+        let route = route?;
+        self.workspaces.read().await.get(route).cloned()
     }
 
     /// Render the memory block for `workspace`, honouring `agent.memory`.
@@ -95,10 +121,41 @@ impl MemoryPlugin {
         }
 
         let ws = workspace?;
-        let thunder_dir = ws.join(THUNDER_DIR);
+        let sources = Self::source_files(ws, &mem).await;
 
-        // Ordered sources. Later ones read as "more specific", matching how a
-        // reader expects overrides to appear.
+        let mut state = RenderState {
+            out: String::new(),
+            budget: MAX_TOTAL_BYTES,
+            roots: Self::allowed_roots(ws),
+            seen: HashSet::new(),
+        };
+
+        for src in sources {
+            // A fresh `visited` per top-level source: cycle detection is only
+            // meaningful within one import chain, while `seen` dedupes globally.
+            let mut visited = HashSet::new();
+            Self::append_file(src, 0, &mut state, &mut visited).await;
+        }
+
+        let trimmed = state.out.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "The following notes describe this project and the user's standing \
+             preferences. Treat them as established context; follow them unless \
+             the user's current request says otherwise.\n\n{trimmed}"
+        ))
+    }
+
+    /// The ordered memory files, lowest precedence first. Shared by the prompt
+    /// renderer and the `memory_write` tool so both agree on what counts as a
+    /// memory file.
+    async fn source_files(ws: &Path, mem: &MemorySection) -> Vec<PathBuf> {
+        let thunder_dir = ws.join(THUNDER_DIR);
+        // Later entries read as "more specific", matching how a reader expects
+        // overrides to appear.
         let mut sources: Vec<PathBuf> = Vec::new();
         if let Some(home) = std::env::var_os("HOME") {
             sources.push(PathBuf::from(home).join(THUNDER_DIR).join(MEMORY_FILE));
@@ -127,31 +184,7 @@ impl MemoryPlugin {
                 sources.push(thunder_dir.join(rel));
             }
         }
-
-        let mut state = RenderState {
-            out: String::new(),
-            budget: MAX_TOTAL_BYTES,
-            roots: Self::allowed_roots(ws),
-            seen: HashSet::new(),
-        };
-
-        for src in sources {
-            // A fresh `visited` per top-level source: cycle detection is only
-            // meaningful within one import chain, while `seen` dedupes globally.
-            let mut visited = HashSet::new();
-            Self::append_file(src, 0, &mut state, &mut visited).await;
-        }
-
-        let trimmed = state.out.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        Some(format!(
-            "The following notes describe this project and the user's standing \
-             preferences. Treat them as established context; follow them unless \
-             the user's current request says otherwise.\n\n{trimmed}"
-        ))
+        sources
     }
 
     /// Roots an import may resolve inside: the workspace and the thunder home.
@@ -171,6 +204,44 @@ impl MemoryPlugin {
             Ok(canonical) => roots.iter().any(|root| canonical.starts_with(root)),
             Err(_) => false,
         }
+    }
+
+    /// Resolve a `file` argument to an absolute path inside `<ws>/.thunder/`.
+    ///
+    /// Rejects absolute paths and any component that would climb back out, so
+    /// the write tool can never target a file outside the memory directory.
+    fn resolve_write_target(ws: &Path, file: Option<&str>) -> Result<PathBuf, String> {
+        let thunder_dir = ws.join(THUNDER_DIR);
+        let rel = file.unwrap_or(MEMORY_FILE).trim();
+        if rel.is_empty() {
+            return Err("file must not be empty".to_string());
+        }
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute() {
+            return Err(format!(
+                "file must be relative to `{THUNDER_DIR}/`, got an absolute path"
+            ));
+        }
+        // Reject `..` anywhere: the write must stay under the memory directory.
+        if rel_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("file must not contain `..`".to_string());
+        }
+        if rel_path.extension().and_then(|e| e.to_str()) != Some("md") {
+            return Err("memory files must end in `.md`".to_string());
+        }
+
+        let target = thunder_dir.join(rel_path);
+        // Defence in depth: compare the *normalized* path against the dir even
+        // though the component check above already rejects escapes.
+        let normalized = normalize_lexically(&target);
+        let dir_norm = normalize_lexically(&thunder_dir);
+        if !normalized.starts_with(&dir_norm) {
+            return Err(format!("file must stay within `{THUNDER_DIR}/`"));
+        }
+        Ok(target)
     }
 
     fn append_file<'a>(
@@ -269,6 +340,12 @@ impl ThunderPlugin for MemoryPlugin {
         &self.manifest
     }
 
+    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        vec![Arc::new(MemoryWriteTool {
+            workspaces: Arc::clone(&self.workspaces),
+        })]
+    }
+
     fn system_prompt_contribution(&self) -> Option<String> {
         // Sync by contract: read whatever `on_init` staged. `try_read` keeps a
         // contended lock from blocking prompt assembly; a miss simply yields no
@@ -277,8 +354,166 @@ impl ThunderPlugin for MemoryPlugin {
     }
 
     async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
+        // Remember this run's workspace so the write tool can resolve it later.
+        if let (Some(route), Some(ws)) = (ctx.route.as_ref(), ctx.workspace_dir.as_ref()) {
+            self.workspaces
+                .write()
+                .await
+                .insert(route.clone(), ws.clone());
+        }
+
         let rendered = Self::render(ctx.workspace_dir.as_deref()).await;
         *self.cache.write().await = rendered;
         Ok(())
+    }
+}
+
+/// The agent-facing tool that appends to a `.thunder` memory file.
+struct MemoryWriteTool {
+    workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
+}
+
+#[async_trait]
+impl AgentTool for MemoryWriteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new_function(
+            MEMORY_WRITE_TOOL,
+            "Record a durable note in this project's long-term memory. Use it to \
+             save a fact worth remembering in future sessions (a convention, a \
+             gotcha, a decision). Writes a markdown file under the project's \
+             `.thunder/` directory, defaulting to `THUNDER.md`. Prefer appending.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown text to record."
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Target file, relative to `.thunder/`. Must end in `.md`. Defaults to `THUNDER.md`. Use `memory/<topic>.md` for a focused note."
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Append to the file (default true). Set false to overwrite."
+                    }
+                },
+                "required": ["content"]
+            }),
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing required argument: content".to_string())?;
+        if content.trim().is_empty() {
+            return Err("content must not be empty".to_string());
+        }
+        if content.len() > MAX_WRITE_BYTES {
+            return Err(format!(
+                "content is {} bytes, exceeding the {MAX_WRITE_BYTES}-byte limit",
+                content.len()
+            ));
+        }
+        let file = args.get("file").and_then(|v| v.as_str());
+        let append = args.get("append").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        let ws = self
+            .workspace_for_route(ctx.route.as_deref())
+            .await
+            .ok_or_else(|| {
+                "memory_write is unavailable: this run has no workspace bound".to_string()
+            })?;
+
+        let target = MemoryPlugin::resolve_write_target(&ws, file)?;
+
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        }
+
+        if append {
+            let mut existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            existing.push_str(content);
+            if !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            tokio::fs::write(&target, existing)
+                .await
+                .map_err(|e| format!("failed to write {}: {e}", target.display()))?;
+        } else {
+            tokio::fs::write(&target, content)
+                .await
+                .map_err(|e| format!("failed to write {}: {e}", target.display()))?;
+        }
+
+        let rel = target
+            .strip_prefix(&ws)
+            .unwrap_or(&target)
+            .display()
+            .to_string();
+        Ok(format!(
+            "Recorded {} bytes to `{rel}` ({}). It will be loaded into the system \
+             prompt on the next session.",
+            content.len(),
+            if append { "appended" } else { "overwritten" }
+        ))
+    }
+}
+
+impl MemoryWriteTool {
+    async fn workspace_for_route(&self, route: Option<&str>) -> Option<PathBuf> {
+        let route = route?;
+        self.workspaces.read().await.get(route).cloned()
+    }
+}
+
+/// Collapse `.` and `..` without touching the filesystem, so a not-yet-created
+/// path can still be compared against its jail.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_target_rejects_escapes() {
+        let ws = Path::new("/tmp/ws");
+        assert!(MemoryPlugin::resolve_write_target(ws, None).is_ok());
+        assert!(MemoryPlugin::resolve_write_target(ws, Some("memory/topic.md")).is_ok());
+        assert!(MemoryPlugin::resolve_write_target(ws, Some("../escape.md")).is_err());
+        assert!(MemoryPlugin::resolve_write_target(ws, Some("/etc/passwd")).is_err());
+        assert!(MemoryPlugin::resolve_write_target(ws, Some("notes.txt")).is_err());
+        assert!(MemoryPlugin::resolve_write_target(ws, Some("")).is_err());
+    }
+
+    #[test]
+    fn normalize_removes_dot_segments() {
+        assert_eq!(
+            normalize_lexically(Path::new("/a/b/../c/./d")),
+            PathBuf::from("/a/c/d")
+        );
     }
 }
