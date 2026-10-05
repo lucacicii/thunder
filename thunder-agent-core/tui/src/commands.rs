@@ -262,6 +262,14 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
     )
     .with_args(&["on", "off"]),
     SlashCommand::new(
+        "details",
+        &["verbose"],
+        "[on | off]",
+        "Expand or collapse thinking and tool details in the transcript",
+        CommandCategory::General,
+    )
+    .with_args(&["on", "off"]),
+    SlashCommand::new(
         "health",
         &["doctor", "status"],
         "",

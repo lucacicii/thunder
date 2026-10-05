@@ -1,8 +1,10 @@
 use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
 use crate::links::{LinkCache, LinkTarget};
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
+use crate::ui::chat::TranscriptCache;
 use crate::ui::metrics::Metrics;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
@@ -95,6 +97,25 @@ pub struct ActiveToolCall {
     pub duration_ms: u64,
 }
 
+/// Which accumulator a slice of the in-flight turn's deltas came from.
+///
+/// The transcript is a single ordered stream, so reasoning and the answer are
+/// recorded in the order they actually arrive rather than being regrouped into
+/// one "thinking" lane above one "answer" lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveKind {
+    Reasoning,
+    Text,
+}
+
+/// How a finished tool call ended, kept after it leaves `active_tool_calls` so
+/// the collapsed tool line can still show a status glyph and its duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolOutcome {
+    pub duration_ms: u64,
+    pub is_error: bool,
+}
+
 /// Metadata snapshot for the run whose trace is being recorded.
 #[derive(Debug, Clone)]
 pub struct TraceRunMeta {
@@ -135,6 +156,29 @@ pub struct App {
     pub streaming_delta: String,
     pub reasoning_delta: String,
     pub active_tool_calls: Vec<ActiveToolCall>,
+    /// The in-flight turn's delta stream as ordered slices of
+    /// `reasoning_delta` / `streaming_delta`: `(kind, bytes)` for each run of
+    /// deltas that arrived contiguously. Cleared with the deltas at `TurnEnd`.
+    pub live_segments: Vec<(LiveKind, usize)>,
+    /// Thinking text of finished turns, keyed by the assistant message it
+    /// preceded: the message's first tool-call id, or its answer text when the
+    /// turn called no tools. Lives outside the transcript because the engine's
+    /// authoritative message list carries no reasoning.
+    pub thinking: HashMap<String, String>,
+    /// Outcome of every finished tool call in this session, by tool-call id.
+    pub tool_outcomes: HashMap<String, ToolOutcome>,
+    /// Whether thinking and tool output are shown in full (`Ctrl + O`) or as a
+    /// one-line summary with a short preview (the default).
+    pub details_expanded: bool,
+    /// The assistant message this turn's tool calls are attached to, if the
+    /// turn is still announcing them.
+    open_assistant: Option<usize>,
+    /// Thinking of the turn whose assistant message has no body and is waiting
+    /// for its first tool call to be created.
+    pending_thinking: Option<String>,
+    /// Thinking of every turn this run produced, in turn order. Consulted when
+    /// the engine's authoritative transcript replaces the host's own.
+    run_thinking: Vec<Option<String>>,
     pub model: ModelRef,
     pub provider_registry: ProviderRegistry,
     pub show_sidebar: bool,
@@ -180,6 +224,13 @@ pub struct App {
 
     /// Render Markdown in the transcript (the default) instead of raw source.
     pub markdown_enabled: bool,
+    /// Whether the next loop iteration owes the terminal a frame. Redrawing is
+    /// driven by this flag rather than by the tick, so an idle TUI costs
+    /// nothing: ticks only mark it dirty while something is actually animating.
+    pub needs_redraw: bool,
+    /// The last rendered transcript, reused across frames until one of its
+    /// inputs moves (see [`crate::ui::chat::TranscriptKey`]).
+    pub transcript: Option<TranscriptCache>,
     /// Memoised "is this a real path?" answers; cleared when the roots change.
     pub link_cache: LinkCache,
     /// Clickable regions in screen coordinates, rebuilt by every render.
@@ -295,6 +346,13 @@ impl App {
             streaming_delta: String::new(),
             reasoning_delta: String::new(),
             active_tool_calls: Vec::new(),
+            live_segments: Vec::new(),
+            thinking: HashMap::new(),
+            tool_outcomes: HashMap::new(),
+            details_expanded: false,
+            open_assistant: None,
+            pending_thinking: None,
+            run_thinking: Vec::new(),
             model,
             provider_registry: ProviderRegistry::default(),
             show_sidebar: false,
@@ -319,6 +377,8 @@ impl App {
             trace_meta: None,
             run_is_first_exchange: false,
             markdown_enabled: true,
+            needs_redraw: true,
+            transcript: None,
             link_cache: LinkCache::new(),
             link_hitboxes: Vec::new(),
             pending_links: Vec::new(),
@@ -400,9 +460,8 @@ impl App {
 
             if let Ok(Some(loaded)) = store.load(id).await {
                 self.conversation = loaded;
-                self.streaming_delta.clear();
-                self.reasoning_delta.clear();
-                self.active_tool_calls.clear();
+                self.clear_run_state();
+                self.clear_session_details();
                 self.agent_status = AgentStatus::Idle;
                 self.scroll_offset = 0;
                 self.last_error = None;
@@ -531,6 +590,7 @@ impl App {
         if normalized.is_empty() {
             return;
         }
+        self.mark_dirty();
         self.take_selection();
         let at = self.input_byte_offset(self.input_cursor);
         self.input_cursor += normalized.chars().count();
@@ -760,6 +820,7 @@ impl App {
         let restored = self.restore_queue_to_input();
         token.cancel();
         self.agent_status = AgentStatus::Stopping;
+        self.invalidate_transcript();
         self.set_status_message(if restored > 0 {
             format!("Stopping… {restored} queued message(s) back in the editor.")
         } else {
@@ -777,6 +838,7 @@ impl App {
     /// has focus: anywhere else the key stays the reliable cancel/quit it has
     /// always been.
     pub fn handle_interrupt(&mut self) {
+        self.mark_dirty();
         if self.mode == ViewMode::Chat && self.focus == FocusPane::Input {
             if let Some(text) = self.selection_text() {
                 let result = match self.clipboard.as_ref() {
@@ -816,6 +878,148 @@ impl App {
         })
     }
 
+    /// Drops everything that belongs to a single run: the in-flight deltas,
+    /// the tool calls still executing, and the turn the transcript is still
+    /// assembling. Thinking and tool outcomes are *not* touched — they belong
+    /// to the session so a finished turn stays expandable across runs.
+    fn clear_run_state(&mut self) {
+        self.streaming_delta.clear();
+        self.reasoning_delta.clear();
+        self.active_tool_calls.clear();
+        self.live_segments.clear();
+        self.open_assistant = None;
+        self.pending_thinking = None;
+        self.run_thinking.clear();
+        self.invalidate_transcript();
+    }
+
+    /// Drops the per-session display side tables. Called when the transcript
+    /// they annotate is replaced wholesale (new / cleared / resumed session).
+    fn clear_session_details(&mut self) {
+        self.thinking.clear();
+        self.tool_outcomes.clear();
+        self.invalidate_transcript();
+    }
+
+    /// Whether thinking and tool output are expanded rather than summarised.
+    pub fn details_expanded(&self) -> bool {
+        self.details_expanded
+    }
+
+    pub fn set_details(&mut self, expanded: bool) {
+        self.details_expanded = expanded;
+        self.invalidate_transcript();
+        let state = if expanded { "expanded" } else { "collapsed" };
+        self.set_status_message(format!(
+            "Thinking and tool details {state} (Ctrl+O toggles)."
+        ));
+    }
+
+    pub fn toggle_details(&mut self) {
+        self.set_details(!self.details_expanded);
+    }
+
+    /// The key the renderer will recompute for the assistant message at `idx`.
+    fn message_thinking_key(&self, idx: usize) -> Option<String> {
+        self.conversation
+            .messages
+            .get(idx)
+            .and_then(thinking_key_of)
+    }
+
+    /// Re-attaches this run's thinking after the engine's authoritative
+    /// transcript replaced the host's own. The engine rebuilds the answer text
+    /// from its own completion payload, so the identity key can drift by a byte
+    /// or two; the last turns always line up, so they are paired positionally
+    /// from the end.
+    fn reattach_run_thinking(&mut self) {
+        let assistants: Vec<usize> = self
+            .conversation
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| matches!(message, ChatMessage::Assistant { .. }))
+            .map(|(idx, _)| idx)
+            .collect();
+        let paired = self.run_thinking.len().min(assistants.len());
+        for (offset, blob) in self.run_thinking[self.run_thinking.len() - paired..]
+            .iter()
+            .enumerate()
+        {
+            let Some(blob) = blob else { continue };
+            let idx = assistants[assistants.len() - paired + offset];
+            if let Some(key) = self.message_thinking_key(idx) {
+                self.thinking.insert(key, blob.clone());
+            }
+        }
+        self.run_thinking.clear();
+    }
+
+    /// Records the thinking of a finished turn under the key the renderer will
+    /// recompute for its assistant message.
+    fn remember_thinking_at(&mut self, idx: usize, thinking: String) {
+        if thinking.trim().is_empty() {
+            return;
+        }
+        if let Some(key) = self.message_thinking_key(idx) {
+            self.thinking.insert(key, thinking);
+        }
+    }
+
+    /// Folds a tool call into the turn's assistant message. One turn stays one
+    /// transcript block: the body and the calls it emitted live in the same
+    /// message, which is also the shape the engine hands back at the end of the
+    /// run — so the transcript does not reflow when it does.
+    fn attach_tool_call(&mut self, tool_call: ToolCall) {
+        let call_id = tool_call.id.clone();
+        let already_committed = self.conversation.messages.iter().rev().any(|message| {
+            matches!(
+                message,
+                ChatMessage::Assistant {
+                    tool_calls: Some(calls),
+                    ..
+                } if calls.iter().any(|call| call.id == call_id)
+            )
+        });
+        if already_committed {
+            return;
+        }
+
+        let idx = match self
+            .open_assistant
+            .filter(|idx| *idx < self.conversation.messages.len())
+        {
+            Some(idx) => idx,
+            None => {
+                self.conversation.add_assistant_message(None, None);
+                self.conversation.messages.len() - 1
+            }
+        };
+
+        // Attaching the first call changes the message's identity key from its
+        // (empty) body to the call id, so anything remembered under the old key
+        // moves with it.
+        let before = self.message_thinking_key(idx);
+        if let ChatMessage::Assistant { tool_calls, .. } = &mut self.conversation.messages[idx] {
+            tool_calls.get_or_insert_with(Vec::new).push(tool_call);
+        }
+        let after = self.message_thinking_key(idx);
+        if let (Some(before), Some(after)) = (before, after) {
+            if before != after {
+                if let Some(blob) = self.thinking.remove(&before) {
+                    self.thinking.insert(after, blob);
+                }
+            }
+        }
+
+        if let Some(blob) = self.pending_thinking.take() {
+            if let Some(key) = self.message_thinking_key(idx) {
+                self.thinking.insert(key, blob);
+            }
+        }
+        self.open_assistant = Some(idx);
+    }
+
     // ── Run control: pause / resume ───────────────────────────────────────
 
     /// Whether a run is currently executing (i.e. pause is meaningful).
@@ -834,9 +1038,41 @@ impl App {
     }
 
     /// One animation step. Driven by terminal ticks, so the spinner moves only
-    /// as fast as frames are drawn.
+    /// as fast as frames are drawn and only while something is moving.
     pub fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        if self.is_running() {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        }
+        if self.is_animating() {
+            self.mark_dirty();
+        }
+    }
+
+    // ── Frame scheduling ──────────────────────────────────────────────────
+
+    /// Whether anything on screen changes with time right now: the spinner and
+    /// telemetry of a live run, the queue and pause indicators, or a transient
+    /// status message that is still inside its display window. While this is
+    /// false the tick must not keep redrawing the terminal.
+    pub fn is_animating(&self) -> bool {
+        self.is_running()
+            || self.is_paused()
+            || self.queued.total() > 0
+            || self.fresh_status().is_some()
+    }
+
+    /// Notes that the next frame has something new to show.
+    pub fn mark_dirty(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Drops the cached transcript and asks for a frame. Called by every
+    /// mutation that can change what the transcript says — including an
+    /// in-place rewrite of an existing message, which the cache's length
+    /// signature cannot detect on its own.
+    pub fn invalidate_transcript(&mut self) {
+        self.transcript = None;
+        self.mark_dirty();
     }
 
     pub fn is_paused(&self) -> bool {
@@ -1242,6 +1478,9 @@ impl App {
         key: KeyEvent,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
+        // A keystroke always moves something: the caret, a modal, the picker.
+        self.mark_dirty();
+
         // 0. The question modal outranks everything: the agent is blocked on it.
         if self.pending_question.is_some() {
             self.handle_question_key(key);
@@ -1293,7 +1532,7 @@ impl App {
                     return;
                 }
                 KeyCode::Esc => {}
-                KeyCode::Char('c' | 'q' | 'n' | 'p' | 'b' | 'o' | 'h' | 't') if ctrl => {}
+                KeyCode::Char('c' | 'q' | 'n' | 'p' | 'b' | 'o' | 'l' | 'h' | 't') if ctrl => {}
                 _ => return,
             }
         }
@@ -1316,6 +1555,9 @@ impl App {
                 self.show_sidebar = !self.show_sidebar;
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_details();
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Fast path to every link in the session, for when the mouse is
                 // not delivering clicks (or is busy being a terminal gesture).
                 self.open_links_picker();
@@ -1626,6 +1868,7 @@ impl App {
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         match mouse.kind {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                self.mark_dirty();
                 // The transcript sits behind any open modal; a click belongs to
                 // the modal, so the hitboxes underneath must not fire.
                 if self.picker.is_open
@@ -1643,17 +1886,25 @@ impl App {
                 self.activate_link_at(mouse.column, mouse.row);
             }
             crossterm::event::MouseEventKind::Moved => {
-                if self.picker.is_open
+                // Motion is only worth a frame when it changes what is hovered:
+                // with any-event tracking on, the terminal reports every
+                // pointer move, and redrawing the transcript on each of those
+                // is what pinned a core while the mouse sat over the pane.
+                let next = if self.picker.is_open
                     || self.pending_question.is_some()
                     || self.mode == ViewMode::Help
                 {
-                    self.timeline_hover = None;
-                    return;
+                    None
+                } else {
+                    self.timeline_at(mouse.column, mouse.row)
+                };
+                if self.timeline_hover != next {
+                    self.timeline_hover = next;
+                    self.mark_dirty();
                 }
-                let hovered = self.timeline_at(mouse.column, mouse.row);
-                self.timeline_hover = hovered;
             }
             crossterm::event::MouseEventKind::ScrollUp => {
+                self.mark_dirty();
                 if self.picker.is_open {
                     self.picker.move_up();
                 } else {
@@ -1661,6 +1912,7 @@ impl App {
                 }
             }
             crossterm::event::MouseEventKind::ScrollDown => {
+                self.mark_dirty();
                 if self.picker.is_open {
                     self.picker.move_down();
                 } else {
@@ -2187,9 +2439,8 @@ impl App {
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
             .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
-        self.streaming_delta.clear();
-        self.reasoning_delta.clear();
-        self.active_tool_calls.clear();
+        self.clear_run_state();
+        self.clear_session_details();
         self.agent_status = AgentStatus::Idle;
         self.scroll_offset = 0;
         self.last_error = None;
@@ -2366,6 +2617,10 @@ impl App {
         if !trimmed.starts_with('/') {
             return false;
         }
+
+        // Every slash command either rewrites the transcript, re-renders it
+        // (details / markdown / roots) or replaces the session.
+        self.invalidate_transcript();
 
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.is_empty() {
@@ -3060,6 +3315,28 @@ impl App {
                 true
             }
 
+            // /details [on | off] — expand or collapse thinking and tool output
+            "details" | "verbose" => {
+                self.conversation.add_user_message(raw_cmd);
+                let expanded = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
+                    Some("on" | "true" | "yes" | "show" | "expand") => true,
+                    Some("off" | "false" | "no" | "hide" | "collapse") => false,
+                    // Bare `/details` toggles, like `/metrics`.
+                    _ => !self.details_expanded,
+                };
+                self.set_details(expanded);
+                let out = if expanded {
+                    "✔ Thinking and tool details expanded."
+                } else {
+                    "✔ Thinking and tool details collapsed."
+                };
+                self.conversation
+                    .add_assistant_message(Some(out.to_string()), None);
+                self.set_status_message(out.to_string());
+                self.save_and_refresh();
+                true
+            }
+
             "health" | "doctor" => {
                 self.conversation.add_user_message(raw_cmd);
                 let model = self.model.selection_id();
@@ -3357,6 +3634,7 @@ impl App {
         raw_prompt: String,
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
+        self.invalidate_transcript();
         let trimmed = raw_prompt.trim();
 
         let (mode, prompt) = if let Some(p) = trimmed.strip_prefix("/single ") {
@@ -3377,9 +3655,7 @@ impl App {
                 .add_user_message_with_parts(prompt.clone(), images);
         }
         self.agent_status = AgentStatus::Thinking;
-        self.streaming_delta.clear();
-        self.reasoning_delta.clear();
-        self.active_tool_calls.clear();
+        self.clear_run_state();
         self.last_error = None;
         self.auto_scroll = true;
 
@@ -3755,16 +4031,22 @@ impl App {
     }
 
     pub fn handle_agent_event(&mut self, event: ObservedEvent) {
+        // Every observed event either rewrites the live tail or the transcript.
+        self.invalidate_transcript();
         self.record_trace_event(event.clone());
         match event.event {
             AgentEvent::TurnStart { turn, .. } => {
                 self.agent_status = AgentStatus::Thinking;
+                // A new turn never adopts the previous turn's assistant message.
+                self.open_assistant = None;
+                self.pending_thinking = None;
                 info!("[{}] Turn {} started", event.agent_id, turn);
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 self.agent_status = AgentStatus::Streaming;
                 self.metrics.count_token_delta();
                 self.streaming_delta.push_str(&delta);
+                push_live_segment(&mut self.live_segments, LiveKind::Text, delta.len());
             }
             AgentEvent::SteerAccepted {
                 behavior,
@@ -3793,6 +4075,9 @@ impl App {
                     },
                     _ => self.conversation.add_user_message(message.clone()),
                 }
+                // A user message ends the assistant block tool calls attach to.
+                self.open_assistant = None;
+                self.pending_thinking = None;
                 self.refresh_queue_snapshot();
                 let label = if behavior == "follow_up" {
                     "Follow-up"
@@ -3812,24 +4097,10 @@ impl App {
             AgentEvent::ReasoningDelta { delta, .. } => {
                 self.metrics.count_reasoning_delta();
                 self.reasoning_delta.push_str(&delta);
+                push_live_segment(&mut self.live_segments, LiveKind::Reasoning, delta.len());
             }
             AgentEvent::ToolCallReady { tool_call, .. } => {
-                let call_id = tool_call.id.clone();
-                let already_committed = self.conversation.messages.iter().rev().any(|message| {
-                    matches!(
-                        message,
-                        ChatMessage::Assistant {
-                            tool_calls: Some(calls),
-                            ..
-                        } if calls.iter().any(|call| call.id == call_id)
-                    )
-                });
-
-                if !already_committed {
-                    self.conversation
-                        .add_assistant_message(None, Some(vec![tool_call.clone()]));
-                }
-
+                self.attach_tool_call(tool_call.clone());
                 self.active_tool_calls.push(ActiveToolCall {
                     id: tool_call.id.clone(),
                     name: tool_call.function.name.clone(),
@@ -3870,20 +4141,47 @@ impl App {
                     self.conversation
                         .add_tool_message(&tool_call_id, result.output, Some(name));
                 }
+                self.tool_outcomes.insert(
+                    tool_call_id.clone(),
+                    ToolOutcome {
+                        duration_ms: result.duration_ms,
+                        is_error: result.is_error,
+                    },
+                );
                 self.active_tool_calls.retain(|c| c.id != tool_call_id);
+                // Every call of this turn has been announced by now, so the
+                // turn's assistant block is closed to further attachments.
+                self.open_assistant = None;
                 if self.cancel_token.is_some() {
                     self.agent_status = AgentStatus::Thinking;
                 }
             }
             AgentEvent::TurnEnd { stats, .. } => {
                 self.metrics.record_turn(&stats);
-                if !self.streaming_delta.is_empty() {
-                    let content = std::mem::take(&mut self.streaming_delta);
-                    self.conversation.add_assistant_message(Some(content), None);
-                }
+                let thinking = std::mem::take(&mut self.reasoning_delta);
+                let content = std::mem::take(&mut self.streaming_delta);
+                self.live_segments.clear();
+                // One entry per turn keeps the positional pairing with the
+                // engine's transcript exact, thinking or not.
+                let has_thinking = !thinking.trim().is_empty();
+                self.run_thinking
+                    .push(has_thinking.then(|| thinking.clone()));
 
-                self.reasoning_delta.clear();
-                self.streaming_delta.clear();
+                if content.is_empty() {
+                    // The turn called tools without saying anything; hold the
+                    // thinking until the first call creates the message it
+                    // belongs to.
+                    self.pending_thinking = has_thinking.then_some(thinking);
+                    self.open_assistant = None;
+                } else {
+                    self.conversation.add_assistant_message(Some(content), None);
+                    let idx = self.conversation.messages.len() - 1;
+                    self.remember_thinking_at(idx, thinking);
+                    // The turn's tool calls (announced next) belong in this same
+                    // assistant message, so the transcript keeps one block per
+                    // turn exactly like the engine's own message list.
+                    self.open_assistant = Some(idx);
+                }
             }
             AgentEvent::Error { message, .. } => {
                 self.last_error = Some(message.clone());
@@ -3918,6 +4216,9 @@ impl App {
         run_stats: Option<AgentStats>,
         finish_reason: Option<String>,
     ) {
+        // The engine's authoritative transcript replaces the host's own, often
+        // with the same message count but different bodies.
+        self.invalidate_transcript();
         // Preserve the raw pre-compaction transcript (if a checkpoint compaction
         // fired) so the working history can be a checkpoint projection while the
         // original history stays auditable on disk.
@@ -3935,6 +4236,7 @@ impl App {
                 Some(messages) if !messages.is_empty() => {
                     self.conversation.messages = messages;
                     self.conversation.recalculate_stats();
+                    self.reattach_run_thinking();
                 }
                 _ => {
                     let partial = std::mem::take(&mut self.streaming_delta);
@@ -3951,45 +4253,46 @@ impl App {
                 if !messages.is_empty() {
                     self.conversation.messages = messages;
                     self.conversation.recalculate_stats();
+                    self.reattach_run_thinking();
                 }
-            } else if !self.streaming_delta.is_empty() {
-                let content = std::mem::take(&mut self.streaming_delta);
-                let tool_calls: Option<Vec<ToolCall>> = if !self.active_tool_calls.is_empty() {
-                    Some(
-                        self.active_tool_calls
-                            .iter()
-                            .map(|c| ToolCall::new_function(&c.id, &c.name, &c.arguments))
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-
-                self.conversation
-                    .add_assistant_message(Some(content), tool_calls);
-
+            } else {
+                // No authoritative transcript came back: keep the one the host
+                // assembled. Each finished turn already landed as one assistant
+                // message, so only a stream cut off mid-flight is still
+                // uncommitted, plus any tool result that never reached the
+                // transcript.
+                if !self.streaming_delta.is_empty() {
+                    let content = std::mem::take(&mut self.streaming_delta);
+                    self.conversation.add_assistant_message(Some(content), None);
+                }
                 for tc in &self.active_tool_calls {
                     if let Some(res) = &tc.result {
-                        self.conversation
-                            .add_tool_message(&tc.id, res, Some(tc.name.clone()));
+                        if !self.has_tool_result(&tc.id) {
+                            self.conversation.add_tool_message(
+                                &tc.id,
+                                res.clone(),
+                                Some(tc.name.clone()),
+                            );
+                        }
                     }
                 }
-            } else if let Some(final_content) = final_text.clone() {
-                let already_present = self
-                    .conversation
-                    .messages
-                    .last()
-                    .map(|m| match m {
-                        ChatMessage::Assistant {
-                            content: Some(c), ..
-                        } => c == &final_content,
-                        _ => false,
-                    })
-                    .unwrap_or(false);
+                if let Some(final_content) = final_text.clone() {
+                    let already_present = self
+                        .conversation
+                        .messages
+                        .last()
+                        .map(|m| match m {
+                            ChatMessage::Assistant {
+                                content: Some(c), ..
+                            } => c == &final_content,
+                            _ => false,
+                        })
+                        .unwrap_or(false);
 
-                if !already_present && !final_content.is_empty() {
-                    self.conversation
-                        .add_assistant_message(Some(final_content), None);
+                    if !already_present && !final_content.is_empty() {
+                        self.conversation
+                            .add_assistant_message(Some(final_content), None);
+                    }
                 }
             }
             self.last_error = None;
@@ -4008,9 +4311,7 @@ impl App {
             self.set_status_message(format!("Error: {}", err_msg));
         }
 
-        self.streaming_delta.clear();
-        self.reasoning_delta.clear();
-        self.active_tool_calls.clear();
+        self.clear_run_state();
         self.cancel_token = None;
         self.pause_gate = None;
         self.steer_queues = None;
@@ -4157,6 +4458,44 @@ async fn list_session_traces(store_root: &Path, session_id: &str) -> Vec<serde_j
 /// title is worth regenerating, which also covers truncated auto-titles).
 fn is_placeholder_title(title: &str) -> bool {
     title.eq_ignore_ascii_case("new conversation") || title.eq_ignore_ascii_case("untitled")
+}
+
+/// Stable key tying a finished turn's thinking to its assistant message.
+///
+/// The engine's authoritative transcript carries no reasoning, so thinking is
+/// kept TUI-side and re-attached by matching the message it preceded: the first
+/// tool-call id when the turn called tools, else the answer text (a turn that
+/// only emitted a tool call has no body to key on).
+pub fn thinking_key(content: Option<&str>, tool_calls: Option<&[ToolCall]>) -> String {
+    match tool_calls.and_then(|calls| calls.first()) {
+        Some(call) => format!("call:{}", call.id),
+        None => format!("text:{}", content.unwrap_or_default()),
+    }
+}
+
+/// [`thinking_key`] of a committed message; `None` for anything but an answer.
+pub fn thinking_key_of(message: &ChatMessage) -> Option<String> {
+    match message {
+        ChatMessage::Assistant {
+            content,
+            tool_calls,
+            ..
+        } => Some(thinking_key(content.as_deref(), tool_calls.as_deref())),
+        _ => None,
+    }
+}
+
+/// Extends the in-flight turn's ordered delta log, merging into the tail when
+/// the new delta continues the same lane. The log is a list of byte lengths so
+/// the renderer can slice the two accumulators without copying.
+fn push_live_segment(segments: &mut Vec<(LiveKind, usize)>, kind: LiveKind, bytes: usize) {
+    if bytes == 0 {
+        return;
+    }
+    match segments.last_mut() {
+        Some((tail_kind, tail_bytes)) if *tail_kind == kind => *tail_bytes += bytes,
+        _ => segments.push((kind, bytes)),
+    }
 }
 
 /// One timeline line per retained event, best-effort formatted.

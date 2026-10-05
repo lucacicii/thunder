@@ -16,6 +16,9 @@ const MARKER: &str = "END-OF-ANSWER-MARKER";
 /// answer ends in `MARKER` so a test can tell whether the tail is visible.
 fn app_with_wrapping_transcript() -> App {
     let mut app = App::new("gpt-4o");
+    // The collapsed preview would cut the transcript down to a couple of rows;
+    // this fixture is about wrapped output, so keep it in full.
+    app.details_expanded = true;
     app.conversation.messages.clear();
     app.conversation
         .add_user_message("run the thing".to_string());

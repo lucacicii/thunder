@@ -26,6 +26,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`/clear`** | `/new`, `/reset` | | Clear current chat stream and initialize a blank session |
 | **`/health`** | `/doctor`, `/status` | | Execute multi-agent and environment health check probes |
 | **`/timeline`** | `/rail` | `[on \| off]` | Show or hide the turn rail on the right of the transcript (bare = toggle) |
+| **`/details`** | `/verbose` | `[on \| off]` | Expand or collapse thinking and tool details (summaries by default; bare = toggle) |
 | **`/pipeline`** | `/seq` | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
 | **`/parallel`** | `/par`, `/council` | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
 | **`/fanout`** | `/decompose` | `<task>` | Run task directly in decomposed subtask fan-out mode |
@@ -45,6 +46,8 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`Ctrl + P`** | **Cycle Mode** | Fast-cycle execution mode: `Auto ➔ Single` |
 | **`Ctrl + H`** | **Help Modal** | Toggle the shortcut reference overlay (scroll it with `↑ / ↓`, `PageUp / PageDown`, `g / G`; `Esc` closes) |
 | **`Ctrl + T`** | **Turn rail** | Show or hide the turn rail floating on the transcript's right edge (`Tab` focuses it, `↑ / ↓` or `j / k` select, `Enter` jumps; hover for details, click to jump) |
+| **`Ctrl + O`** | **Expand details** | Expand or collapse thinking and tool output: collapsed shows a line count plus first-line excerpt and a 2-row tool preview; expanded shows the full text (tool output capped at 200 rows) |
+| **`Ctrl + L`** | **Link picker** | List every link and file path in this session (`Enter` opens / reveals it); same as `/links` |
 | **`Ctrl + A`** | **Select all** | Select the whole prompt; pair with `Ctrl + C` to copy it to the system clipboard |
 | **`Ctrl + C`** | **Copy / Clear / Cancel / Exit** | Copy the selection if any; else clear a non-empty prompt; else cancel the running task; exit when idle |
 | **`Esc`** | **Close / Dismiss** | Leaves the turn rail first (without cancelling the run); otherwise drops the selection, dismisses the palette / help modal, and only then cancels the running task |

@@ -18,6 +18,9 @@ const URL_LINK: &str = "https://example.com/thunder";
 /// A transcript whose link sits under many wrapped rows of tool output.
 fn app_with_wrapped_tool_output(answer: &str) -> App {
     let mut app = App::new("gpt-4o");
+    // Expanded so the long tool output still wraps into many rows and pushes the
+    // link below the fold, which is what these tests are about.
+    app.details_expanded = true;
     app.conversation.messages.clear();
     app.conversation
         .add_user_message("do the thing".to_string());

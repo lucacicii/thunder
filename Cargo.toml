@@ -83,6 +83,19 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+# The interactive TUI is relaunched constantly while it is being worked on, and
+# a fat-LTO relink of the whole workspace per edit is minutes of waiting. This
+# keeps the optimization that matters at runtime (everything the render path
+# touches is opt-level 3) and drops the link-time cost; `run.sh` uses it when
+# THUNDER_TUI_PROFILE=tui-dev.
+[profile.tui-dev]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = 1
+strip = "none"
+
 [profile.bench]
 opt-level = 3
 lto = "fat"

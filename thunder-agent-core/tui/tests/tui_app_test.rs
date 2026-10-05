@@ -162,11 +162,17 @@ async fn test_app_new_session_and_shortcuts() {
 }
 
 #[tokio::test]
-async fn spinner_advances_on_tick_and_wraps() {
+async fn spinner_advances_on_tick_while_live_and_wraps() {
     let mut app = App::new("gpt-4o");
     let frames = thunder_tui::app::SPINNER_FRAMES;
 
+    // An idle tick must move nothing: with nothing animating, the loop does not
+    // even draw a frame, so advancing the spinner would be invisible work.
     assert_eq!(app.spinner(), frames[0]);
+    app.tick();
+    assert_eq!(app.spinner(), frames[0], "an idle tick animates nothing");
+
+    app.agent_status = AgentStatus::Thinking;
     app.tick();
     assert_eq!(app.spinner(), frames[1], "each tick moves the spinner");
 
@@ -241,6 +247,11 @@ async fn busy_indicator_sits_above_the_input_not_in_it() {
     assert!(
         busy_row < input_row,
         "the indicator sits above the prompt ({busy_row} < {input_row})"
+    );
+    assert!(
+        !busy[busy_row].starts_with(' '),
+        "the busy hint starts at the line's first column: {:?}",
+        busy[busy_row]
     );
 }
 

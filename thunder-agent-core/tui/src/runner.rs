@@ -65,21 +65,30 @@ impl TuiRunner {
         app.refresh_sessions().await;
 
         loop {
-            terminal.draw(|f| draw(f, &mut app, &theme))?;
+            // Frames are drawn when something has actually changed. A terminal
+            // that is idle — no run, no queue, no fresh status — costs nothing
+            // instead of rebuilding the transcript twenty times a second.
+            if app.needs_redraw {
+                app.needs_redraw = false;
+                terminal.draw(|f| draw(f, &mut app, &theme))?;
+            }
 
-            if let Some(event) = events.next().await {
-                let sender = events.sender();
-                Self::dispatch_event(&mut app, event, &sender).await;
+            // `None` means every sender is gone: no input can ever arrive
+            // again, so stop instead of spinning on a frame nobody asked for.
+            let Some(event) = events.next().await else {
+                break;
+            };
+            let sender = events.sender();
+            Self::dispatch_event(&mut app, event, &sender).await;
 
-                // Batch drain immediate streaming tokens before expensive terminal redraw
-                let mut drained = 0;
-                while drained < 32 {
-                    if let Ok(more) = events.try_next() {
-                        Self::dispatch_event(&mut app, more, &sender).await;
-                        drained += 1;
-                    } else {
-                        break;
-                    }
+            // Batch drain immediate streaming tokens before expensive terminal redraw
+            let mut drained = 0;
+            while drained < 32 {
+                if let Ok(more) = events.try_next() {
+                    Self::dispatch_event(&mut app, more, &sender).await;
+                    drained += 1;
+                } else {
+                    break;
                 }
             }
 
@@ -148,6 +157,7 @@ impl TuiRunner {
                 }
             }
             AppEvent::UserQuestion(incoming) => {
+                app.mark_dirty();
                 if let Some(existing) = app.pending_question.take() {
                     // Only one question can be pending at a time; the agent loop
                     // is single-threaded per run, so this is defensive only.
@@ -156,6 +166,7 @@ impl TuiRunner {
                 app.pending_question = crate::ask_user::PendingQuestion::from_incoming(incoming);
             }
             AppEvent::TitleGenerated { session_id, result } => {
+                app.mark_dirty();
                 match result {
                     Ok(title) if session_id == app.conversation.id => {
                         app.conversation.title = Some(title.clone());
@@ -172,11 +183,15 @@ impl TuiRunner {
                 }
             }
             AppEvent::LoadSession(id) => {
+                // `load_conversation` invalidates the transcript itself; this
+                // only covers the caret and status line that move with it.
+                app.mark_dirty();
                 app.load_conversation(&id).await;
                 app.focus = crate::app::FocusPane::Input;
                 app.set_status_message(format!("Loaded session: {}", id));
             }
             AppEvent::SessionDeleted(id) => {
+                app.mark_dirty();
                 app.set_status_message(format!("Deleted session: {}", id));
                 app.refresh_sessions().await;
             }
@@ -186,6 +201,7 @@ impl TuiRunner {
                 items,
                 empty_message,
             } => {
+                app.mark_dirty();
                 if items.is_empty() {
                     let msg = empty_message.unwrap_or_else(|| "No items found.".to_string());
                     app.conversation.add_assistant_message(Some(msg), None);
@@ -195,7 +211,9 @@ impl TuiRunner {
                 }
             }
             AppEvent::Tick => app.tick(),
-            _ => {}
+            // A resize reflows every pane, and it is the one event with no App
+            // state of its own to notice it.
+            AppEvent::Resize(..) => app.mark_dirty(),
         }
     }
 }
