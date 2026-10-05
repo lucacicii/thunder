@@ -115,6 +115,10 @@ pub struct App {
     /// Caret position in the input, as a **character** index (not bytes), so
     /// multi-byte text never splits. Always clamped to the input's length.
     pub input_cursor: usize,
+    /// Where a selection in the input was anchored, if one is active. The
+    /// selection runs from here to `input_cursor`, so shift-movement extends it
+    /// without a second field to keep in sync.
+    pub input_selection: Option<usize>,
     pub input_history: Vec<String>,
     /// Image attachments staged for the next prompt (`/image <path>`).
     pub pending_images: Vec<ContentPart>,
@@ -190,6 +194,9 @@ pub struct App {
     /// How a link is acted on. Injectable so a test can assert the whole
     /// click path without launching Finder.
     pub link_opener: Option<Arc<dyn Fn(&LinkTarget) -> std::io::Result<()> + Send + Sync>>,
+    /// How selected text reaches the system clipboard. Injectable for the same
+    /// reason: tests must not touch the real clipboard.
+    pub clipboard: Option<Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>>,
     /// Token / cache / speed readout held for the metrics bar.
     pub metrics: Metrics,
 }
@@ -222,6 +229,7 @@ impl App {
             selected_session_idx: 0,
             input: String::new(),
             input_cursor: 0,
+            input_selection: None,
             input_history: Vec::new(),
             pending_images: Vec::new(),
             history_idx: None,
@@ -267,6 +275,7 @@ impl App {
             queued: QueueSnapshot::default(),
             queued_turns: Vec::new(),
             link_opener: None,
+            clipboard: None,
             metrics: Metrics::new(),
         }
     }
@@ -376,17 +385,77 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
+    /// The selected character range, normalised and clamped to the input.
+    ///
+    /// An empty range is not a selection, so `Ctrl+C` on a caret-only "select
+    /// all" of an empty prompt falls through to its other jobs.
+    pub fn selection_range(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.input_selection?;
+        let len = self.input_char_len();
+        let anchor = anchor.min(len);
+        let cursor = self.input_cursor.min(len);
+        let (start, end) = (anchor.min(cursor), anchor.max(cursor));
+        (start != end).then_some(start..end)
+    }
+
+    /// The selected text, if anything is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        let range = self.selection_range()?;
+        let start = self.input_byte_offset(range.start);
+        let end = self.input_byte_offset(range.end);
+        Some(self.input[start..end].to_string())
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.selection_range().is_some()
+    }
+
+    /// Select the whole prompt, leaving the caret at the end.
+    pub fn select_all(&mut self) {
+        self.input_cursor = self.input_char_len();
+        self.input_selection = Some(0);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.input_selection = None;
+    }
+
+    /// Anchor a selection at the caret, unless one is already running, so
+    /// shift-movement can extend it.
+    fn anchor_selection(&mut self) {
+        if self.input_selection.is_none() {
+            self.input_selection = Some(self.input_cursor);
+        }
+    }
+
+    /// Remove the selected characters, parking the caret where they started.
+    /// Reports whether anything was selected.
+    fn take_selection(&mut self) -> bool {
+        let Some(range) = self.selection_range() else {
+            self.input_selection = None;
+            return false;
+        };
+        let start = self.input_byte_offset(range.start);
+        let end = self.input_byte_offset(range.end);
+        self.input.replace_range(start..end, "");
+        self.input_cursor = range.start;
+        self.input_selection = None;
+        true
+    }
+
     /// Replace the input with `text`, parking the caret at the end. Every
     /// programmatic write goes through here so the caret can never go stale.
     pub fn set_input(&mut self, text: String) {
         self.input = text;
         self.input_cursor = self.input_char_len();
+        self.input_selection = None;
     }
 
     /// Clear the input and park the caret at the start.
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.input_cursor = 0;
+        self.input_selection = None;
     }
 
     /// Insert a bracketed paste at the caret.
@@ -402,6 +471,7 @@ impl App {
         if normalized.is_empty() {
             return;
         }
+        self.take_selection();
         let at = self.input_byte_offset(self.input_cursor);
         self.input_cursor += normalized.chars().count();
         self.input.insert_str(at, &normalized);
@@ -410,13 +480,17 @@ impl App {
     }
 
     fn insert_char(&mut self, c: char) {
+        self.take_selection();
         let at = self.input_byte_offset(self.input_cursor);
         self.input.insert(at, c);
         self.input_cursor += 1;
     }
 
-    /// Delete the character before the caret (Backspace).
+    /// Delete the character before the caret (Backspace), or the selection.
     fn backspace(&mut self) {
+        if self.take_selection() {
+            return;
+        }
         if self.input_cursor == 0 {
             return;
         }
@@ -426,8 +500,11 @@ impl App {
         self.input_cursor -= 1;
     }
 
-    /// Delete the character after the caret (Delete / forward-delete).
+    /// Delete the character after the caret (Delete), or the selection.
     fn delete_forward(&mut self) {
+        if self.take_selection() {
+            return;
+        }
         if self.input_cursor >= self.input_char_len() {
             return;
         }
@@ -437,18 +514,59 @@ impl App {
     }
 
     pub fn cursor_home(&mut self) {
-        self.input_cursor = 0;
+        self.clear_selection();
+        self.move_home();
     }
 
     pub fn cursor_end(&mut self) {
-        self.input_cursor = self.input_char_len();
+        self.clear_selection();
+        self.move_end();
     }
 
     pub fn cursor_left(&mut self) {
-        self.input_cursor = self.input_cursor.saturating_sub(1);
+        self.clear_selection();
+        self.move_left();
     }
 
     pub fn cursor_right(&mut self) {
+        self.clear_selection();
+        self.move_right();
+    }
+
+    /// Shift+movement: grow the selection instead of dropping it.
+    pub fn extend_home(&mut self) {
+        self.anchor_selection();
+        self.move_home();
+    }
+
+    pub fn extend_end(&mut self) {
+        self.anchor_selection();
+        self.move_end();
+    }
+
+    pub fn extend_left(&mut self) {
+        self.anchor_selection();
+        self.move_left();
+    }
+
+    pub fn extend_right(&mut self) {
+        self.anchor_selection();
+        self.move_right();
+    }
+
+    fn move_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.input_cursor = self.input_char_len();
+    }
+
+    fn move_left(&mut self) {
+        self.input_cursor = self.input_cursor.saturating_sub(1);
+    }
+
+    fn move_right(&mut self) {
         if self.input_cursor < self.input_char_len() {
             self.input_cursor += 1;
         }
@@ -456,6 +574,7 @@ impl App {
 
     /// Start of the previous word: skip spaces back, then the word's characters.
     pub fn cursor_prev_word(&mut self) {
+        self.clear_selection();
         let chars: Vec<char> = self.input.chars().collect();
         let mut i = self.input_cursor.min(chars.len());
         while i > 0 && chars[i - 1].is_whitespace() {
@@ -469,6 +588,7 @@ impl App {
 
     /// Start of the next word: skip the word, then the spaces after it.
     pub fn cursor_next_word(&mut self) {
+        self.clear_selection();
         let chars: Vec<char> = self.input.chars().collect();
         let mut i = self.input_cursor.min(chars.len());
         while i < chars.len() && !chars[i].is_whitespace() {
@@ -586,6 +706,44 @@ impl App {
             "Stopping…".to_string()
         });
         true
+    }
+
+    /// Ctrl+C, in the order a terminal user expects: copy a selection, else
+    /// clear a half-typed prompt, else stop the run, else quit. Each step is
+    /// only skipped when there is nothing for it to act on, so the key never
+    /// destroys work a previous step could have saved.
+    ///
+    /// The first two steps belong to the editor, so they only apply while it
+    /// has focus: anywhere else the key stays the reliable cancel/quit it has
+    /// always been.
+    pub fn handle_interrupt(&mut self) {
+        if self.mode == ViewMode::Chat && self.focus == FocusPane::Input {
+            if let Some(text) = self.selection_text() {
+                let result = match self.clipboard.as_ref() {
+                    Some(copy) => copy(&text),
+                    None => crate::clipboard::copy(&text),
+                };
+                match result {
+                    Ok(()) => self.set_status_message(format!(
+                        "Copied {} character(s) to the clipboard.",
+                        text.chars().count()
+                    )),
+                    Err(err) => self.set_status_message(format!("Could not copy: {err}")),
+                }
+                return;
+            }
+
+            if !self.input.is_empty() {
+                self.clear_input();
+                self.command_popup_idx = 0;
+                self.set_status_message("Cleared the prompt.");
+                return;
+            }
+        }
+
+        if !self.stop_run() {
+            self.should_quit = true;
+        }
     }
 
     /// Whether the transcript already carries a result for this tool call.
@@ -1035,9 +1193,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if !self.stop_run() {
-                    self.should_quit = true;
-                }
+                self.handle_interrupt();
             }
             KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
@@ -1133,7 +1289,9 @@ impl App {
                     self.focus = FocusPane::Input;
                 }
                 ViewMode::Chat => {
-                    if self.input.starts_with('/') {
+                    if self.has_selection() {
+                        self.clear_selection();
+                    } else if self.input.starts_with('/') {
                         self.clear_input();
                         self.command_popup_idx = 0;
                     } else {
@@ -1219,8 +1377,21 @@ impl App {
                     self.submit_prompt(prompt, event_tx);
                 }
             }
-            // Caret movement. Cmd arrives as `SUPER`; Home/End and Ctrl+A/Ctrl+E
-            // are the fallbacks, since Terminal.app never forwards the Command key.
+            // Caret movement. Shift extends a selection; Cmd arrives as `SUPER`;
+            // Home/End and Ctrl+A/Ctrl+E are the fallbacks, since Terminal.app
+            // never forwards the Command key.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.extend_left(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => self.extend_right(),
+            KeyCode::Home
+                if key.modifiers.contains(KeyModifiers::SHIFT) && !self.input.is_empty() =>
+            {
+                self.extend_home()
+            }
+            KeyCode::End
+                if key.modifiers.contains(KeyModifiers::SHIFT) && !self.input.is_empty() =>
+            {
+                self.extend_end()
+            }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::SUPER) => self.cursor_home(),
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.cursor_prev_word(),
             KeyCode::Left => self.cursor_left(),
@@ -1230,7 +1401,7 @@ impl App {
             KeyCode::Home if !self.input.is_empty() => self.cursor_home(),
             KeyCode::End if !self.input.is_empty() => self.cursor_end(),
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_home()
+                self.select_all()
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cursor_end()
@@ -1266,6 +1437,7 @@ impl App {
                 self.scroll_to_bottom();
             }
             KeyCode::Up => {
+                self.clear_selection();
                 // Argument cycling wins over the command list and over history:
                 // in this slot the arrows mean "change the value", matching Tab.
                 if let Some(next) =
@@ -1300,6 +1472,7 @@ impl App {
                 }
             }
             KeyCode::Down => {
+                self.clear_selection();
                 if let Some(next) =
                     crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Forward)
                 {
@@ -2011,7 +2184,10 @@ impl App {
                 out.push_str("\n**Keyboard Shortcuts:**\n");
                 out.push_str("- `Ctrl+N`: New Session | `Ctrl+P`: Cycle Mode | `Tab`: Autocomplete / Cycle Focus\n");
                 out.push_str(
-                    "- `Ctrl+B`: Toggle Sidebar | `Ctrl+H`: Toggle Help | `Ctrl+C / Esc`: Cancel\n",
+                    "- `Ctrl+B`: Toggle Sidebar | `Ctrl+H`: Toggle Help | `Ctrl+C`: Copy / Clear / Cancel / Exit\n",
+                );
+                out.push_str(
+                    "- `Ctrl+A`: Select all | `Shift + ←/→`: Extend selection | `Esc`: Drop selection or cancel\n",
                 );
                 out.push_str("- `/pause` / `/unpause`: Hold & release a run at tool boundaries | `Esc`: Dismiss a question modal\n");
 

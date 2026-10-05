@@ -265,12 +265,18 @@ async fn input_caret_moves_to_home_and_end() {
     press(&mut app, KeyCode::End, KeyModifiers::empty());
     assert_eq!(app.input_cursor, 11);
 
-    // Ctrl+A / Ctrl+E are the fallback for terminals that forward neither
+    // Ctrl+A selects the whole prompt; Ctrl+E drops the selection and parks
+    // the caret at the end, the fallback for terminals that forward neither
     // Command nor Home/End.
     press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
-    assert_eq!(app.input_cursor, 0);
+    assert_eq!(
+        app.input_cursor, 11,
+        "select-all parks the caret at the end"
+    );
+    assert_eq!(app.selection_range(), Some(0..11));
     press(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
     assert_eq!(app.input_cursor, 11);
+    assert_eq!(app.selection_range(), None, "Ctrl+E drops the selection");
 
     // Option/Alt steps by word.
     press(&mut app, KeyCode::Left, KeyModifiers::ALT);
@@ -746,4 +752,180 @@ async fn test_slash_argument_completion_through_key_handling() {
         tx.clone(),
     );
     assert_eq!(app.focus, FocusPane::Input);
+}
+
+/// Set the selection to `start..cursor`, the way a shift-movement would.
+fn select(app: &mut App, start: usize, cursor: usize) {
+    app.input_selection = Some(start);
+    app.input_cursor = cursor;
+}
+
+#[tokio::test]
+async fn typing_and_deleting_replace_the_selection() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let press = |app: &mut App, code: KeyCode, mods: KeyModifiers| {
+        app.handle_key(KeyEvent::new(code, mods), tx.clone());
+    };
+
+    app.set_input("hello world".to_string());
+    press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(app.selection_range(), Some(0..11), "Ctrl+A selects it all");
+    press(&mut app, KeyCode::Char('y'), KeyModifiers::empty());
+    assert_eq!(app.input, "y", "typing replaces the selection");
+    assert_eq!(app.selection_range(), None);
+
+    app.set_input("hello world".to_string());
+    select(&mut app, 0, 5);
+    press(&mut app, KeyCode::Backspace, KeyModifiers::empty());
+    assert_eq!(app.input, " world", "Backspace deletes the selection");
+    assert_eq!(app.input_cursor, 0);
+
+    app.set_input("hello world".to_string());
+    select(&mut app, 5, 11);
+    press(&mut app, KeyCode::Delete, KeyModifiers::empty());
+    assert_eq!(app.input, "hello", "Delete removes it forwards too");
+    assert_eq!(app.input_cursor, 5);
+}
+
+#[tokio::test]
+async fn shift_arrows_extend_and_plain_arrows_collapse() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let press = |app: &mut App, code: KeyCode, mods: KeyModifiers| {
+        app.handle_key(KeyEvent::new(code, mods), tx.clone());
+    };
+
+    app.set_input("hello".to_string());
+    press(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+    assert_eq!(app.selection_range(), Some(4..5), "shift extends the range");
+    press(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+    assert_eq!(app.selection_range(), Some(3..5));
+    press(&mut app, KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(
+        app.selection_range(),
+        Some(4..5),
+        "shift can shrink it again"
+    );
+
+    press(&mut app, KeyCode::Left, KeyModifiers::empty());
+    assert_eq!(app.selection_range(), None, "a plain arrow drops it");
+    assert_eq!(app.input_cursor, 3);
+}
+
+#[tokio::test]
+async fn esc_clears_the_selection_before_the_prompt() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.set_input("keep me".to_string());
+    app.input_selection = Some(0);
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        tx.clone(),
+    );
+
+    assert_eq!(app.selection_range(), None);
+    assert_eq!(app.input, "keep me", "Esc with a selection keeps the text");
+}
+
+#[tokio::test]
+async fn recalling_history_drops_the_selection() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.input_history = vec!["older".to_string()];
+    app.set_input("now".to_string());
+    app.input_selection = Some(0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), tx);
+
+    assert_eq!(app.input, "older");
+    assert_eq!(app.selection_range(), None);
+}
+
+#[tokio::test]
+async fn ctrl_c_copies_a_selection_without_touching_the_prompt() {
+    use std::sync::Mutex;
+
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let copied = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&copied);
+    app.clipboard = Some(Arc::new(move |text: &str| {
+        sink.lock().unwrap().push(text.to_string());
+        Ok(())
+    }));
+
+    app.set_input("hello world".to_string());
+    select(&mut app, 0, 5);
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), tx);
+
+    assert_eq!(*copied.lock().unwrap(), vec!["hello".to_string()]);
+    assert_eq!(app.input, "hello world", "copying leaves the prompt alone");
+    assert_eq!(app.selection_range(), Some(0..5), "and keeps it selected");
+}
+
+#[tokio::test]
+async fn ctrl_c_clears_a_draft_before_cancelling_or_quitting() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.cancel_token = Some(tokio_util::sync::CancellationToken::new());
+    app.set_input("half a thought".to_string());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), tx);
+
+    assert!(app.input.is_empty(), "the first Ctrl+C clears the draft");
+    assert!(app.cancel_token.is_some(), "it does not cancel the run yet");
+    assert!(!app.should_quit);
+}
+
+#[tokio::test]
+async fn ctrl_c_stops_the_run_then_quits_when_idle() {
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let token = tokio_util::sync::CancellationToken::new();
+    app.cancel_token = Some(token.clone());
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        tx.clone(),
+    );
+    assert!(token.is_cancelled(), "an empty prompt cancels the live run");
+    assert!(!app.should_quit);
+
+    // Once the run has unwound, Ctrl+C means quit.
+    app.cancel_token = None;
+    app.agent_status = AgentStatus::Idle;
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), tx);
+    assert!(app.should_quit);
+}
+
+#[tokio::test]
+async fn a_selection_paints_a_highlight_behind_the_text() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("gpt-4o");
+    app.set_input("hello".to_string());
+    app.input_selection = Some(0);
+
+    let backend = TestBackend::new(60, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = Theme::default();
+    terminal
+        .draw(|f| thunder_tui::ui::draw(f, &mut app, &theme))
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let selection_bg = ratatui::style::Color::Rgb(30, 58, 95);
+    let highlighted: String = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.bg == selection_bg)
+        .map(|cell| cell.symbol())
+        .collect();
+    assert_eq!(
+        highlighted, "hello",
+        "exactly the selected text carries the selection background"
+    );
 }

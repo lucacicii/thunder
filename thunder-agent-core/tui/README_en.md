@@ -25,7 +25,9 @@
   - `Ctrl + N`: Create clean new session.
   - `Ctrl + P`: Fast cycle execution modes (`Auto` ➔ `Single`).
   - `Ctrl + H`: Toggle keyboard shortcut help popup.
-  - `Ctrl + C` / `Esc`: Cancel running task or exit TUI cleanly.
+  - `Ctrl + A`: Select the whole prompt (pair with `Ctrl + C` to copy it).
+  - `Ctrl + C`: Copy the selection, else clear the prompt, else cancel the run, else exit.
+  - `Esc`: Drop the selection first, else dismiss the overlay or cancel the run.
 - **Crash-Safe Terminal Handling**: Panic hooks guarantee clean restoration to Normal terminal mode on unexpected errors.
 
 ---
