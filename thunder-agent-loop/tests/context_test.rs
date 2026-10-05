@@ -12,10 +12,10 @@ fn test_default_autonomous_system_prompt_content() {
         .expect("default system prompt must be set");
     assert!(prompt.starts_with("# Role & Philosophy"));
     assert!(prompt.contains("<intent_analysis>"));
-    assert!(prompt.contains("Ask（咨询/问答）"));
-    assert!(prompt.contains("Plan（规划/架构）"));
-    assert!(prompt.contains("Write / Edit（文件或内容操作）"));
-    assert!(prompt.contains("运行时硬约束 (Guardrails)"));
+    assert!(prompt.contains("Ask (question / consultation)"));
+    assert!(prompt.contains("Plan (planning / architecture)"));
+    assert!(prompt.contains("Write / Edit (file or content operations)"));
+    assert!(prompt.contains("## Runtime Guardrails"));
     assert_eq!(prompt, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
 }
 

@@ -62,6 +62,7 @@ fn bar_row(rows: &[String]) -> usize {
 fn app_with_run(workspace: &std::path::Path) -> App {
     let mut app = App::new("gpt-4o");
     app.workspace_dir = workspace.to_path_buf();
+    app.thinking_level = Some("high".to_string());
     app.conversation.messages.clear();
     app.metrics.record_turn(&TurnStats {
         prompt_tokens: Some(12_000),
@@ -92,10 +93,24 @@ async fn the_bar_sits_on_the_row_above_the_prompt() {
 
     assert!(bar.contains("tok/s"), "speed: {bar:?}");
     assert!(bar.contains("Cache"), "cache: {bar:?}");
-    assert!(bar.contains("上下文"), "context: {bar:?}");
-    assert!(bar.contains("总消耗"), "session total: {bar:?}");
+    // The context segment carries the number without a label of its own.
+    assert!(bar.contains("13,500"), "context: {bar:?}");
+    assert!(bar.contains("Total"), "session total: {bar:?}");
     assert!(bar.contains("Turn"), "turn breakdown: {bar:?}");
-    assert!(bar.contains("耗时"), "duration: {bar:?}");
+    assert!(bar.contains("Elapsed"), "duration: {bar:?}");
+    assert!(bar.contains("openai/gpt-4o"), "model: {bar:?}");
+    assert!(bar.contains("think:high"), "thinking level: {bar:?}");
+    assert!(!bar.contains("上下文"), "labels are English: {bar:?}");
+    // Order: the workspace stays first, the model and its thinking level come
+    // next, ahead of the telemetry they explain.
+    let order: Vec<usize> = ["📁", "🤖", "🧠", "Total"]
+        .iter()
+        .map(|marker| {
+            bar.find(marker)
+                .unwrap_or_else(|| panic!("{marker} missing: {bar:?}"))
+        })
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "order: {bar:?}");
     // The workspace is abbreviated but its distinguishing tail survives.
     let tail = dir
         .path()
@@ -120,7 +135,7 @@ async fn the_bar_reports_the_numbers_the_engine_reported() {
     assert!(bar.contains("12,000"), "input tokens: {bar:?}");
     assert!(bar.contains("1,500"), "output tokens: {bar:?}");
     assert!(bar.contains("91.67%"), "cache hit rate: {bar:?}");
-    assert!(bar.contains("思考 300"), "reasoning: {bar:?}");
+    assert!(bar.contains("think 300"), "reasoning: {bar:?}");
 }
 
 #[tokio::test]
@@ -130,13 +145,13 @@ async fn turning_the_bar_off_returns_the_row_to_the_transcript() {
 
     let on = draw_rows(&mut app, 120, 24);
     let on_bar = on[bar_row(&on)].clone();
-    assert!(on_bar.contains("上下文"), "bar is drawn: {on_bar:?}");
+    assert!(on_bar.contains("Total"), "bar is drawn: {on_bar:?}");
 
     app.metrics.enabled = false;
     let off = draw_rows(&mut app, 120, 24);
     let off_above = off[bar_row(&off)].clone();
     assert!(
-        !off_above.contains("上下文"),
+        !off_above.contains("Total"),
         "the bar is gone: {off_above:?}"
     );
     // What takes its place is the transcript's bottom border.

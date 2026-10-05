@@ -250,7 +250,7 @@ impl PermissionGuardMiddleware {
         // for — that is the whole difference between an informed yes and a
         // rubber stamp.
         let title = match request.caller.plugin_id() {
-            Some(id) if !id.is_empty() => format!("插件 {id} 请求：{}", request.title),
+            Some(id) if !id.is_empty() => format!("Plugin {id} requests: {}", request.title),
             _ => request.title.clone(),
         };
 
@@ -291,8 +291,8 @@ impl PermissionGuardMiddleware {
                     .request(
                         UiSource::Host,
                         UiRequest::Input {
-                            title: "拒绝原因（会告知 Agent）".to_string(),
-                            placeholder: Some("例如：先别动生产配置".to_string()),
+                            title: "Reason for denying (the agent will be told)".to_string(),
+                            placeholder: Some("e.g. leave the production config alone".to_string()),
                             timeout_ms,
                         },
                     )

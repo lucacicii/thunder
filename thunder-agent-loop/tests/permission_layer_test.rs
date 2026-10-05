@@ -26,6 +26,7 @@ fn registry() -> ToolRegistry {
 struct ScriptedUi {
     answers: std::sync::Mutex<Vec<UiResponse>>,
     titles: std::sync::Mutex<Vec<String>>,
+    options: std::sync::Mutex<Vec<Vec<String>>>,
 }
 
 impl ScriptedUi {
@@ -33,19 +34,25 @@ impl ScriptedUi {
         Arc::new(Self {
             answers: std::sync::Mutex::new(answers.into_iter().rev().collect()),
             titles: std::sync::Mutex::new(Vec::new()),
+            options: std::sync::Mutex::new(Vec::new()),
         })
     }
 
     fn titles(&self) -> Vec<String> {
         self.titles.lock().unwrap().clone()
     }
+
+    fn options(&self) -> Vec<Vec<String>> {
+        self.options.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl HostUi for ScriptedUi {
     async fn request(&self, _source: UiSource, request: UiRequest) -> UiResponse {
-        if let UiRequest::Select { title, .. } = &request {
+        if let UiRequest::Select { title, options, .. } = &request {
             self.titles.lock().unwrap().push(title.clone());
+            self.options.lock().unwrap().push(options.clone());
         }
         self.answers
             .lock()
@@ -236,6 +243,36 @@ async fn read_only_tier_refuses_rather_than_asks() {
 }
 
 // ----------------------------------------------------------------- the mode
+
+/// The approval dialog is the one place a user is asked to say yes or no, so
+/// its headline and its options have to read in the language the rest of the
+/// terminal UI uses.
+#[tokio::test]
+async fn the_approval_dialog_reads_english() {
+    let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
+    let g = guard(
+        policy(Permission::Bash, ApprovalMode::Mutations),
+        ui.clone(),
+    );
+    g.handle(
+        &call("bash", serde_json::json!({"command": "ls"})),
+        &ctx(),
+        None,
+        Arc::new(Terminal),
+    )
+    .await;
+
+    assert_eq!(ui.titles(), vec!["Run bash".to_string()]);
+    let asked = ui.options();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0][0], ALLOW_ONCE, "the once-only allow comes first");
+    assert!(asked[0].iter().any(|option| option == DENY));
+    assert!(
+        asked[0].iter().all(|option| option.is_ascii()),
+        "every option is English: {:?}",
+        asked[0]
+    );
+}
 
 #[tokio::test]
 async fn allow_once_runs_the_call() {
@@ -449,7 +486,7 @@ async fn a_plugin_request_is_labelled_and_a_model_request_is_not() {
     .await;
     let titles = ui2.titles();
     assert_eq!(titles.len(), 1);
-    assert!(!titles[0].contains("插件"), "got: {:?}", titles[0]);
+    assert!(!titles[0].contains("Plugin"), "got: {:?}", titles[0]);
 }
 
 // ------------------------------------------------------------- concurrency

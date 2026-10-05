@@ -185,16 +185,16 @@ pub fn is_forbidden_destructive_call(tool: &str, args: &serde_json::Value) -> Op
 }
 
 /// Options offered by the approval dialog, in display order.
-pub const ALLOW_ONCE: &str = "允许一次";
-pub const ALLOW_ALWAYS: &str = "总是允许";
-pub const DENY: &str = "拒绝";
-pub const DENY_WITH_REASON: &str = "拒绝并说明原因";
+pub const ALLOW_ONCE: &str = "Allow once";
+pub const ALLOW_ALWAYS: &str = "Always allow";
+pub const DENY: &str = "Deny";
+pub const DENY_WITH_REASON: &str = "Deny with reason";
 
 /// A pending question for the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub tool: String,
-    /// Short headline, e.g. `执行 bash`.
+    /// Short headline, e.g. `Run bash`.
     pub title: String,
     /// The concrete thing being authorised, e.g. the command or path.
     pub detail: String,
@@ -487,10 +487,10 @@ impl SessionPolicy {
         Verdict::Ask(ApprovalRequest {
             tool: tool.to_string(),
             title: match effect {
-                ToolEffect::Exec => format!("执行 {tool}"),
-                ToolEffect::Write => format!("写入 {tool}"),
-                ToolEffect::Read => format!("读取 {tool}"),
-                ToolEffect::Other => format!("运行 {tool}"),
+                ToolEffect::Exec => format!("Run {tool}"),
+                ToolEffect::Write => format!("Write {tool}"),
+                ToolEffect::Read => format!("Read {tool}"),
+                ToolEffect::Other => format!("Use {tool}"),
             },
             detail: describe_call(&args),
             options: vec![

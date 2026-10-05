@@ -400,9 +400,9 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                 AskQuestion {
                     question: title.clone(),
                     header: Some(if source == UiSource::Host {
-                        "权限审批 (Approval)".to_string()
+                        "Approval".to_string()
                     } else {
-                        "插件交互 (Plugin)".to_string()
+                        "Plugin".to_string()
                     }),
                     multi_select: false,
                     options: ask_opts,
@@ -414,15 +414,15 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                 } else {
                     format!("{title}\n{message}")
                 },
-                header: Some("确认 (Confirm)".to_string()),
+                header: Some("Confirm".to_string()),
                 multi_select: false,
                 options: vec![
                     AskOption {
-                        label: "确认".to_string(),
+                        label: "Confirm".to_string(),
                         description: None,
                     },
                     AskOption {
-                        label: "取消".to_string(),
+                        label: "Cancel".to_string(),
                         description: None,
                     },
                 ],
@@ -485,7 +485,9 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                     if let Some(ans) = obj.values().next().and_then(|v| v.as_str()) {
                         match request {
                             UiRequest::Confirm { .. } => UiResponse::Confirmed {
-                                confirmed: ans == "确认" || ans == "yes" || ans == "true",
+                                confirmed: ans.eq_ignore_ascii_case("confirm")
+                                    || ans == "yes"
+                                    || ans == "true",
                             },
                             _ => UiResponse::value(ans.to_string()),
                         }
@@ -731,6 +733,11 @@ mod tests {
 
         assert_eq!(incoming.questions.len(), 1);
         assert_eq!(incoming.questions[0].question, "执行 bash");
+        assert_eq!(
+            incoming.questions[0].header.as_deref(),
+            Some("Approval"),
+            "the dialog's own chrome is English even when the caller is not"
+        );
         assert_eq!(incoming.questions[0].options.len(), 2);
 
         let mut pending = PendingQuestion::from_incoming(incoming).expect("pending question");
@@ -741,5 +748,48 @@ mod tests {
 
         let response = handle.await.unwrap();
         assert_eq!(response, UiResponse::value("允许一次"));
+    }
+
+    #[tokio::test]
+    async fn tui_confirm_dialog_is_english_end_to_end() {
+        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+
+        let (event_tx, mut rx) = mpsc::unbounded_channel();
+        let ui = TuiHostUi::new(event_tx);
+
+        let handle = tokio::spawn(async move {
+            ui.request(
+                UiSource::Host,
+                UiRequest::Confirm {
+                    title: "Run bash".to_string(),
+                    message: "rm -rf build/".to_string(),
+                    timeout_ms: Some(5000),
+                },
+            )
+            .await
+        });
+
+        let incoming = match rx.recv().await.expect("event received") {
+            AppEvent::UserQuestion(q) => q,
+            _ => panic!("expected UserQuestion"),
+        };
+        let question = &incoming.questions[0];
+        assert_eq!(question.header.as_deref(), Some("Confirm"));
+        let labels: Vec<&str> = question
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Confirm", "Cancel"]);
+
+        // Picking the first option is what makes it a confirmation.
+        let mut pending = PendingQuestion::from_incoming(incoming).expect("pending question");
+        let payload = pending
+            .answer_current("Confirm".to_string())
+            .expect("resolves immediately");
+        pending.resolve(payload);
+
+        let response = handle.await.unwrap();
+        assert_eq!(response, UiResponse::Confirmed { confirmed: true });
     }
 }

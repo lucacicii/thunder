@@ -110,7 +110,10 @@ pub async fn generate_title(
         .map(|t| truncate_chars(t, 300))
         .unwrap_or_default();
 
-    let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (between 4 and 10 Chinese characters or 2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
+    // English-only: every surface that shows a title (TUI header, session
+    // list, panel) is English, and asking for a Chinese-character budget made
+    // half the generated titles Chinese.
+    let naming_instruction = "You are a concise title generator. Generate a concise, descriptive conversation title (2 to 6 English words, no punctuation, no quotes, no explanations, no prefix like 'Title:') summarizing the exchange.\n\nUser: ".to_string()
         + &user_excerpt
         + "\nAssistant: "
         + &assistant_excerpt;

@@ -160,7 +160,7 @@ pub struct Metrics {
     /// the model did not have.
     first_token_at: Option<Instant>,
     /// Wall clock from submit to the run finishing, matching the panel's
-    /// "总耗时" (which includes tool execution and queueing).
+    /// total-time figure (which includes tool execution and queueing).
     run_started_at: Option<Instant>,
     pub last_run_wall_ms: Option<u64>,
     pub last_run: Option<AgentStats>,
@@ -326,7 +326,24 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
         ]));
     }
 
-    // 2. Context occupancy against the model's window.
+    // 2. Which model is answering, and at what thinking level. The header
+    //    carries the same pair, but the eye is already here, next to the
+    //    box the next prompt is typed into.
+    segments.push(Segment::new(vec![
+        Span::styled("🤖 ", label),
+        Span::styled(app.model.selection_id(), value),
+    ]));
+
+    if let Some(level) = app.effective_thinking_level() {
+        segments.push(Segment::new(vec![
+            Span::styled("🧠 ", label),
+            Span::styled(format!("think:{level}"), value),
+        ]));
+    }
+
+    // 3. Context occupancy against the model's window.
+    //    The value stands on its own, so it carries no label: the bar has nine
+    //    things to say and every cell it saves is one a segment keeps.
     let context = metric.context_tokens(app.conversation.stats.total_tokens);
     let window = app
         .provider_registry
@@ -334,20 +351,17 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
         .map(|spec| spec.context_window)
         .filter(|w| *w > 0);
     let percent = window.map(|w| context as f64 / w as f64 * 100.0);
-    let mut context_spans = vec![
-        Span::styled("上下文 ", label),
-        Span::styled(
-            match window {
-                Some(w) => format!(
-                    "{} / {}",
-                    format_token_count(context),
-                    format_compact_tokens(w)
-                ),
-                None => format_token_count(context),
-            },
-            value,
-        ),
-    ];
+    let mut context_spans = vec![Span::styled(
+        match window {
+            Some(w) => format!(
+                "{} / {}",
+                format_token_count(context),
+                format_compact_tokens(w)
+            ),
+            None => format_token_count(context),
+        },
+        value,
+    )];
     if let Some(p) = percent {
         context_spans.push(Span::styled(
             format!(" ({p:.0}%)"),
@@ -362,7 +376,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
     }
     segments.push(Segment::new(context_spans));
 
-    // 3. Speed: live while streaming, the last run's average once it settles.
+    // 4. Speed: live while streaming, the last run's average once it settles.
     let running = app.is_running();
     let speed_spans = if running {
         let mut spans = vec![Span::styled(
@@ -374,7 +388,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
         let mut live = format!("{} tok", format_token_count(metric.live_tokens));
         if metric.live_reasoning > 0 {
             live.push_str(&format!(
-                " (思考 {})",
+                " (think {})",
                 format_token_count(metric.live_reasoning)
             ));
         }
@@ -400,7 +414,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
     };
     segments.push(Segment::new(speed_spans));
 
-    // 4. Prompt cache. Shown from the last run's numbers, which is what the
+    // 5. Prompt cache. Shown from the last run's numbers, which is what the
     //    panel does while streaming too — this turn's cache figures only exist
     //    once the provider has answered.
     let cache = metric.last_run.as_ref().map(|s| {
@@ -426,16 +440,16 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
         segments.push(Segment::new(spans));
     }
 
-    // 5. Cumulative billed usage for the whole conversation.
+    // 6. Cumulative billed usage for the whole conversation.
     segments.push(Segment::new(vec![
-        Span::styled("总消耗 ", label),
+        Span::styled("Total ", label),
         Span::styled(
             format_token_count(app.conversation.stats.total_used_tokens),
             value,
         ),
     ]));
 
-    // 6. This run's token breakdown.
+    // 7. This run's token breakdown.
     if let Some(stats) = metric.last_run.as_ref() {
         let prompt = stats.total_prompt_tokens;
         let completion = stats.total_completion_tokens;
@@ -456,7 +470,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
             if stats.total_reasoning_tokens > 0 {
                 spans.push(Span::styled(
                     format!(
-                        " (思考 {})",
+                        " (think {})",
                         format_token_count(stats.total_reasoning_tokens)
                     ),
                     label,
@@ -467,10 +481,10 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
         }
     }
 
-    // 7. Wall clock of the last run.
+    // 8. Wall clock of the last run.
     if let Some(ms) = metric.last_run_wall_ms {
         segments.push(Segment::new(vec![
-            Span::styled("耗时 ", label),
+            Span::styled("Elapsed ", label),
             Span::styled(format_duration(ms), value),
         ]));
     }
@@ -481,8 +495,8 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
 /// Keeps the longest leading run of segments that fits `width`.
 ///
 /// Deliberately a strict prefix. A greedy scan that skipped an over-wide
-/// segment could keep a *less* important one instead — showing `耗时` while
-/// dropping `总消耗` — which reads as a bug rather than as degradation.
+/// segment could keep a *less* important one instead — showing `Elapsed` while
+/// dropping `Total` — which reads as a bug rather than as degradation.
 fn fit(segments: Vec<Segment>, width: usize) -> Vec<Segment> {
     let mut used = 0usize;
     let mut kept = Vec::new();
@@ -641,6 +655,7 @@ mod tests {
     #[test]
     fn segments_drop_the_least_important_when_narrow() {
         let mut app = App::new("gpt-4o");
+        app.thinking_level = Some("high".to_string());
         app.conversation.messages.clear();
         app.conversation.add_user_message("hello");
         app.metrics.record_turn(&TurnStats {
@@ -660,7 +675,13 @@ mod tests {
         let theme = Theme::default();
 
         let all = build_segments(&app, &theme, 200);
-        assert_eq!(all.len(), 7, "every item has something to report");
+        assert_eq!(all.len(), 9, "every item has something to report");
+
+        // The identity pair leads, so a narrow bar can still say who is
+        // answering for as long as it can say anything at all.
+        assert!(all[0].text().contains('📁'));
+        assert_eq!(all[1].text(), "🤖 openai/gpt-4o");
+        assert_eq!(all[2].text(), "🧠 think:high");
 
         // Wide: everything fits.
         assert_eq!(fit(build_segments(&app, &theme, 300), 300).len(), all.len());
