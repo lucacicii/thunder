@@ -153,7 +153,7 @@ flowchart TB
     ASK["Verdict::Ask(ApprovalRequest)"]
     ALLOW["Verdict::Allow"]
 
-    S1 -.->|"顺序承重"| NOTE["<b>为什么档位必须最先查：</b><br/>『总是允许』是一次同意的记录，<br/>而同意扛不过天花板被收紧。<br/>若先查规则，read-only run 里<br/>旧的 bash(git status) 规则会继续生效。"]
+    S1 -.->|"顺序承重"| NOTE["<b>为什么档位必须最先查：</b><br/>『Always allow』是一次同意的记录，<br/>而同意扛不过天花板被收紧。<br/>若先查规则，read-only run 里<br/>旧的 bash(git status) 规则会继续生效。"]
 
     style S1 fill:#fce8e6,stroke:#ea4335,stroke-width:2px
     style NOTE fill:#fff4e5,stroke:#f9ab00
@@ -167,20 +167,20 @@ flowchart TB
 flowchart TB
     A["Verdict::Ask"] --> L{"prompt_lock<br/>串行化"}
     L -->|"与 cancellation<br/>竞速"| CANC["cancelled → Refuse<br/>（取消的 run 不会<br/>占住整批调用）"]
-    L -->|拿到锁| R["AllowRule::for_call(tool, args)<br/>推导最窄的『总是允许』规则"]
+    L -->|拿到锁| R["AllowRule::for_call(tool, args)<br/>推导最窄的『Always allow』规则"]
 
     R --> FILTER{"rule.is_some()?"}
-    FILTER -->|否| O1["选项裁掉『总是允许』<br/>（插件工具：参数无作用域）"]
+    FILTER -->|否| O1["选项裁掉『Always allow』<br/>（插件工具：参数无作用域）"]
     FILTER -->|是| O2["保留四个选项"]
     O1 --> TITLE
-    O2 --> TITLE["标题标注调用方<br/>插件请求 → 『插件 X 请求：…』<br/>（绝不让插件伪装成助手发起）"]
-    TITLE --> DIALOG["HostUi.request(Select)<br/>①允许一次 ②总是允许 ③拒绝 ④拒绝并说明原因"]
+    O2 --> TITLE["标题标注调用方<br/>插件请求 → 『Plugin X requests: …』<br/>（绝不让插件伪装成助手发起）"]
+    TITLE --> DIALOG["HostUi.request(Select)<br/>① Allow once ② Always allow ③ Deny ④ Deny with reason"]
 
     DIALOG --> ANS{"答案"}
-    ANS -->|"① 允许一次"| A1["执行本次"]
-    ANS -->|"② 总是允许"| A2["policy.remember(rule)<br/>（下次同规则直接 Allow）"]
-    ANS -->|"③ 拒绝"| A3["Refuse: the user declined"]
-    ANS -->|"④ 拒绝+原因"| A4["追问 Input → 原因原文回灌模型"]
+    ANS -->|"① Allow once"| A1["执行本次"]
+    ANS -->|"② Always allow"| A2["policy.remember(rule)<br/>（下次同规则直接 Allow）"]
+    ANS -->|"③ Deny"| A3["Refuse: the user declined"]
+    ANS -->|"④ Deny with reason"| A4["追问 Input → 原因原文回灌模型"]
     ANS -->|"无答案（超时/关闭/无面板）"| F1["Refuse: no answer<br/>== 拒绝，fail-closed"]
     ANS -->|"答案不在选项集内"| F2["Refuse: unrecognised answer<br/>意外值绝不扩大权限"]
 
@@ -196,7 +196,7 @@ flowchart TB
     style A2 fill:#e6f4ea,stroke:#34a853
 ```
 
-### 4.1 『总是允许』规则的窄化
+### 4.1 『Always allow』规则的窄化
 
 `AllowRule::for_call`（`policy.rs:255`）—— 规则绝不授予"一个工具类"：
 
@@ -254,7 +254,7 @@ flowchart TB
     D -->|不通过| E1["拒绝，并在错误里点名插件"]
     D -->|通过| D2["rules 检查（与模型同一套）"]
     D2 --> D3["mode 决定是否弹窗"]
-    D3 --> DLG["弹窗标题：『插件 X 请求：执行 bash』<br/>用户批准的是插件的请求，<br/>不是助手请求的"]
+    D3 --> DLG["弹窗标题：『Plugin X requests: Run bash』<br/>用户批准的是插件的请求，<br/>不是助手请求的"]
 
     subgraph SEC["协议层防伪（daemon README）"]
         S1["ui_request.request_id 由 daemon 签发<br/>（进程号+计数器+随机后缀）<br/>→ 插件无法自选，无法伪造/重放审批"]

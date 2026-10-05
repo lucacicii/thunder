@@ -3,7 +3,7 @@ use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
@@ -43,8 +43,6 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     };
 
     let title_str = app.conversation.title.as_deref().unwrap_or("Untitled");
-    let tokens_str = format!("Tokens: ~{}", app.conversation.stats.total_tokens);
-    let turns_str = format!("Turns: {}", app.conversation.stats.turn_count);
 
     let left = Line::from(vec![
         Span::styled(
@@ -100,27 +98,20 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ),
     ]);
 
-    let right = Line::from(vec![
-        Span::styled(tokens_str, theme.muted_style()),
-        Span::styled(" | ", Style::default().fg(theme.border_normal)),
-        Span::styled(turns_str, theme.muted_style()),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(theme.border_normal));
-
+    // Token and turn counts deliberately live in the metrics bar only: this row
+    // is one line tall, and repeating them here pushed the line past the pane
+    // width, truncating whatever sat at its end.
     let paragraph = Paragraph::new(vec![Line::from(
         [
             left.spans.into_iter().collect::<Vec<_>>(),
             vec![Span::raw("   ")],
             center.spans.into_iter().collect::<Vec<_>>(),
-            vec![Span::raw("   ")],
-            right.spans.into_iter().collect::<Vec<_>>(),
         ]
         .concat(),
     )])
-    .block(block)
+    // No block: a bordered block on a one-row area leaves nothing to draw in,
+    // which is why this line used to be an anonymous rule. The chat pane's top
+    // border sits directly below and already separates the two.
     .alignment(Alignment::Center);
 
     f.render_widget(paragraph, area);

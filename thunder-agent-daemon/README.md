@@ -50,7 +50,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"pause_task","id":"req-6","task_id":"task-1"}
 {"method":"resume_task","id":"req-7","task_id":"task-1"}
 {"method":"answer_question","id":"req-8","question_id":"task-1:q1","answers":{"要重构哪一层？":"渲染层"}}
-{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
+{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"Allow once"}
 {"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":false}
 {"method":"answer_ui","id":"req-11","request_id":"ui_1234_3_101","cancelled":true}
 {"method":"get_permission_state","id":"req-13","session_id":"sess-001"}
@@ -74,7 +74,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ```json
 {"type":"ui_request","request_id":"ui_1234_1_99","task_id":"task-1","session_id":"sess-001",
- "source":"host","ui":"select","title":"允许执行 rm -rf build/？","options":["允许一次","总是允许","拒绝"],"timeout_ms":60000}
+ "source":"host","ui":"select","title":"Run rm -rf build/","options":["Allow once","Always allow","Deny"],"timeout_ms":60000}
 {"type":"ui_request","request_id":"ui_1234_2_100","source":"host","ui":"confirm","title":"Proceed?","message":"将写入 3 个文件"}
 {"type":"ui_request","request_id":"...","source":"host","ui":"input","title":"输入值","placeholder":"..."}
 {"type":"ui_request","request_id":"...","source":"host","ui":"editor","title":"编辑","prefill":"..."}
@@ -83,7 +83,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 宿主 → 守护进程（`request_id` 必须原样回传）：
 
 ```json
-{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"允许一次"}
+{"method":"answer_ui","id":"req-9","request_id":"ui_1234_1_99","value":"Allow once"}
 {"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":true}
 {"method":"answer_ui","id":"req-11","request_id":"ui_...","cancelled":true}
 ```
@@ -153,17 +153,17 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ```json
 {"type":"ui_request","request_id":"ui_...","source":"host","ui":"select",
- "title":"执行 bash","options":["允许一次","总是允许","拒绝","拒绝并说明原因"],
+ "title":"Run bash","options":["Allow once","Always allow","Deny","Deny with reason"],
  "detail":"rm -rf build/"}
 ```
 
 - 弹窗**串行**投递：同一批并行工具调用不会叠出多个框，避免批准错对象。
-- `允许一次` 只对**当前这一次调用**生效；批准结果绑定 `(tool_call_id, 参数哈希)`，
+- `Allow once` 只对**当前这一次调用**生效；批准结果绑定 `(tool_call_id, 参数哈希)`，
   参数变了就失效，无法重放。
-- `总是允许` 只在能推导出**窄规则**时出现（如 `git status`、`src/lib.rs`），
+- `Always allow` 只在能推导出**窄规则**时出现（如 `git status`、`src/lib.rs`），
   且规则对 shell 命令做**链接符过滤**：`git status` 永远不会授权
   `git status && rm -rf /`。插件类工具（参数无可用作用域）**不提供**该选项。
-- `拒绝并说明原因` 会追问一句，原因原文回灌给模型。
+- `Deny with reason` 会追问一句，原因原文回灌给模型。
 
 ### 在哪里生效
 
@@ -180,7 +180,7 @@ PermissionGuardMiddleware   唯一判定 + 执行 —— 决定 Allow/Deny/Ask�
 - **被拒的调用不会创建任何临时文件** —— 拒绝发生在事务层之外。
 
 判定顺序本身就是安全属性，同样有测试：**先查档位，再查已记住的规则，最后才看模式**。
-"总是允许"是一次同意的记录，而同意不能扛过天花板被收紧 —— 否则在一个只读 run 里
+"Always allow"是一次同意的记录，而同意不能扛过天花板被收紧 —— 否则在一个只读 run 里
 `bash(git status)` 的旧规则会继续生效。
 
 ### 插件也是同一条路径

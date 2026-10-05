@@ -254,7 +254,7 @@ pub async fn confirm_plugin_action(
         .request(
             UiSource::Plugin,
             UiRequest::Confirm {
-                title: format!("插件 {plugin_id} 请求执行 {tool}"),
+                title: format!("Plugin {plugin_id} wants to run {tool}"),
                 message: detail.to_string(),
                 timeout_ms: None,
             },

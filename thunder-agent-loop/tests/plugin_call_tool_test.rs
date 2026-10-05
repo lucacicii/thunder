@@ -142,7 +142,7 @@ async fn a_plugin_cannot_escape_the_path_jail() {
 }
 
 /// A plugin-initiated privileged call goes through the approval gate, and the
-/// dialog names the plugin. Without the name, a user approving "执行 bash" has
+/// dialog names the plugin. Without the name, a user approving "Run bash" has
 /// no way to know a plugin asked rather than the assistant.
 #[tokio::test]
 async fn a_plugin_initiated_call_is_gated_and_attributed() {

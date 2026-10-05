@@ -163,6 +163,11 @@ use thunder_agent_loop::types::tool::{ToolDefinition, ToolExecutionContext};
 /// writes `write_file` targets, so tests must never touch the crate directory.
 fn tiny_window_config(workspace: &std::path::Path) -> AgentConfig {
     let mut cfg = AgentConfig::new("mock-model")
+        // A short, fixed prompt: the shipped default is free to be rewritten,
+        // and this fixture's arithmetic (compaction triggers past 1_000
+        // estimated tokens, the last 200 are kept verbatim) must not move with
+        // it.
+        .with_system_prompt("You are a test agent.")
         .with_max_turns(10)
         .with_workspace_dir(workspace);
     cfg.pruning.max_context_tokens = 1_600; // hard ceiling

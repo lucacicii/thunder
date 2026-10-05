@@ -48,7 +48,7 @@ pub struct ToolExecutionContext {
     /// a tool on its own initiative sets this to its own id, so anything that
     /// surfaces the call to a human (notably the approval gate) can say *who* is
     /// asking. Without it a plugin's request is indistinguishable from the
-    /// model's, and a user approving "执行 bash" has no way to know a plugin
+    /// model's, and a user approving "Run bash" has no way to know a plugin
     /// asked rather than the assistant.
     pub caller: Option<String>,
     /// Which run this call belongs to, for services that are shared across runs.
