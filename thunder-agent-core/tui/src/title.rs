@@ -51,7 +51,7 @@ pub async fn generate_conversation_title(
     if conv.is_title_manual() && !force {
         return Err(TitleGenError::new(
             "manual_locked",
-            "title was set manually; use `/title force` to override",
+            "the name was set manually; use `/rename --auto` to override",
         ));
     }
 

@@ -21,6 +21,11 @@ fn test_slash_command_autocomplete_filtering() {
     let res = filter_commands("/re");
     let res_names: Vec<_> = res.iter().map(|c| c.name).collect();
     assert!(res_names.contains(&"resume"));
+    assert!(res_names.contains(&"rename"));
+
+    // The rename command has no aliases: `/title` is gone for good.
+    assert!(lookup_command("rename").is_some());
+    assert!(lookup_command("title").is_none());
 
     let m = filter_commands("/m");
     let names: Vec<_> = m.iter().map(|c| c.name).collect();
@@ -299,7 +304,7 @@ fn test_argument_cycle_declines_outside_a_fixed_argument_slot() {
     assert_eq!(arg_cycle("/model ", CycleDir::Forward), None);
     assert_eq!(arg_cycle("/model gpt-4o", CycleDir::Forward), None);
     assert_eq!(arg_cycle("/image ", CycleDir::Forward), None);
-    assert_eq!(arg_cycle("/title hello", CycleDir::Forward), None);
+    assert_eq!(arg_cycle("/rename hello", CycleDir::Forward), None);
     // Unknown command, unknown value, and non-slash input.
     assert_eq!(arg_cycle("/nope ", CycleDir::Forward), None);
     assert_eq!(arg_cycle("/think foo", CycleDir::Forward), None);

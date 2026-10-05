@@ -10,6 +10,12 @@ use ratatui::Frame;
 const MAX_VISIBLE_COMMANDS: usize = 8;
 
 pub fn render_command_popup(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
+    // The input box is collecting a session name: a name may start with `/`,
+    // and the command list must not cover the rename hint.
+    if app.rename_mode {
+        return;
+    }
+
     // Once the command name is complete and it takes a fixed first argument,
     // the popup switches from commands to that argument's values.
     if let Some(ctx) = arg_context(&app.input) {

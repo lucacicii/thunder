@@ -145,6 +145,9 @@ pub struct App {
     pub pending_images: Vec<ContentPart>,
     pub history_idx: Option<usize>,
     pub command_popup_idx: usize,
+    /// Set while the input box is collecting a new session name for `/rename`:
+    /// Enter saves the name instead of submitting a prompt, and Esc cancels.
+    pub rename_mode: bool,
     pub picker: PickerState,
     pub workspace_dir: PathBuf,
     pub temperature: f32,
@@ -340,6 +343,7 @@ impl App {
             pending_images: Vec::new(),
             history_idx: None,
             command_popup_idx: 0,
+            rename_mode: false,
             picker: PickerState::new(),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             temperature: 0.2,
@@ -484,6 +488,8 @@ impl App {
                 self.title_attempted = false;
                 self.clear_run_state();
                 self.clear_session_details();
+                // A rename staged for the session being left must not follow us here.
+                self.rename_mode = false;
                 self.agent_status = AgentStatus::Idle;
                 self.scroll_offset = 0;
                 self.last_error = None;
@@ -881,6 +887,14 @@ impl App {
                 self.clear_input();
                 self.command_popup_idx = 0;
                 self.set_status_message("Cleared the prompt.");
+                return;
+            }
+
+            // An empty box in rename mode means "cancel", not "quit the app":
+            // Ctrl+C is the cancel gesture, and quitting here would discard the
+            // session the user was renaming.
+            if self.rename_mode {
+                self.cancel_rename();
                 return;
             }
         }
@@ -1450,11 +1464,56 @@ impl App {
         ));
         self.conversation.title_source = Some("manual".to_string());
         self.conversation.updated_at_ms = now_ms();
+        // The session rail renders `session_list`, which only reloads on
+        // startup / load / delete — without this the sidebar would keep showing
+        // the old name until the next refresh.
+        if let Some(row) = self
+            .session_list
+            .iter_mut()
+            .find(|s| s.id == self.conversation.id)
+        {
+            row.title = self.conversation.title.clone();
+            row.updated_at_ms = self.conversation.updated_at_ms;
+        }
         self.set_status_message(format!(
             "Title set: {}",
             self.conversation.title.clone().unwrap_or_default()
         ));
         self.save_and_refresh();
+    }
+
+    /// Enter `/rename`'s inline mode: the next Enter saves the typed name.
+    fn begin_rename(&mut self) {
+        self.rename_mode = true;
+        self.clear_input();
+        self.command_popup_idx = 0;
+        self.focus = FocusPane::Input;
+        self.set_status_message("Type a new session name, then press Enter (Esc cancels).");
+    }
+
+    /// Save the name staged in the input box, or say why it cannot be saved.
+    fn submit_rename(&mut self) {
+        // A name is one line: fold any pasted newlines and runs of spaces.
+        let name = self.input.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            self.set_status_message("A session name must not be empty.");
+            return;
+        }
+        self.rename_mode = false;
+        self.clear_input();
+        self.command_popup_idx = 0;
+        // Record the rename the way every other slash command echoes itself.
+        self.conversation
+            .add_user_message(format!("/rename {name}"));
+        self.set_manual_title(&name);
+    }
+
+    /// Leave rename mode without touching the title.
+    fn cancel_rename(&mut self) {
+        self.rename_mode = false;
+        self.clear_input();
+        self.command_popup_idx = 0;
+        self.set_status_message("Rename cancelled.");
     }
 
     /// Whether a finished run should trigger background auto-titling: the run
@@ -1464,8 +1523,8 @@ impl App {
     ///
     /// One attempt per loaded conversation: a generation that fails leaves the
     /// placeholder in place, and retrying on every run would only re-print the
-    /// failure. A manual title is never overwritten here (`/title force` is the
-    /// deliberate way past it).
+    /// failure. A manual title is never overwritten here (`/rename --auto` is
+    /// the deliberate way past it).
     pub fn should_autogenerate_title(&self) -> bool {
         !self.title_attempted
             && !self.conversation.is_title_manual()
@@ -1635,6 +1694,9 @@ impl App {
             {
                 self.scroll_down(1);
             }
+            // Renaming owns the input box: Tab must not complete a command over
+            // the name being typed, nor move focus out of the editor.
+            KeyCode::Tab if self.rename_mode => {}
             KeyCode::Tab => {
                 if self.focus == FocusPane::Input {
                     // Inside a command's argument slot, Tab changes the value
@@ -1677,7 +1739,11 @@ impl App {
                     self.focus = FocusPane::Input;
                 }
                 ViewMode::Chat => {
-                    if self.focus == FocusPane::Monitor {
+                    if self.rename_mode {
+                        // Renaming is its own little mode: Esc backs out of it
+                        // without stopping the run behind it.
+                        self.cancel_rename();
+                    } else if self.focus == FocusPane::Monitor {
                         // Escaping the rail is a focus change, not a cancel: the
                         // run the user is watching must keep running.
                         self.focus = FocusPane::Input;
@@ -1706,6 +1772,10 @@ impl App {
         event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
     ) {
         match key.code {
+            // A name is being typed rather than a prompt: Enter saves it. This
+            // sits above every other Enter rule, so it also wins while a run is
+            // in flight (a rename is local metadata, not a steering message).
+            KeyCode::Enter if self.rename_mode => self.submit_rename(),
             // Shift+Enter starts a new line; Enter alone still submits. Only
             // terminals speaking the kitty keyboard protocol can tell the two
             // apart, so Ctrl+J stays as the universal fallback.
@@ -2474,6 +2544,7 @@ impl App {
         self.title_attempted = false;
         self.clear_run_state();
         self.clear_session_details();
+        self.rename_mode = false;
         self.agent_status = AgentStatus::Idle;
         self.scroll_offset = 0;
         self.last_error = None;
@@ -3589,10 +3660,12 @@ impl App {
                 true
             }
 
-            // /title [text | force] — set manually or (re)generate via utility model
-            "title" | "rename" => {
+            // /rename [name | --auto] — name the session, or let the utility
+            // model regenerate its name. A bare `/rename` collects the name in
+            // the input box rather than guessing one.
+            "rename" => {
                 match args.first().copied() {
-                    Some("force") | Some("regen") | Some("auto") => {
+                    Some("--auto") => {
                         self.conversation.add_user_message(raw_cmd);
                         self.spawn_title_generation(event_tx.clone(), true);
                     }
@@ -3601,21 +3674,7 @@ impl App {
                         self.conversation.add_user_message(raw_cmd);
                         self.set_manual_title(&text);
                     }
-                    _ => {
-                        self.conversation.add_user_message(raw_cmd);
-                        if self.conversation.is_title_manual() {
-                            self.conversation.add_assistant_message(
-                                Some(
-                                    "This conversation's title was set manually; use `/title force` to regenerate it."
-                                        .to_string(),
-                                ),
-                                None,
-                            );
-                            self.save_and_refresh();
-                        } else {
-                            self.spawn_title_generation(event_tx.clone(), false);
-                        }
-                    }
+                    _ => self.begin_rename(),
                 }
                 true
             }
@@ -3834,10 +3893,7 @@ impl App {
             // - conversation: one-line prompt cost, keeps session semantics alive
             // - skills: catalog is compact one-liners; keeps `load_skill` reachable
             // - mcp: only when this workspace actually configures MCP servers
-            let workspace_has_mcp_config = workspace_dir
-                .join(".thunder")
-                .join("mcp.json")
-                .exists()
+            let workspace_has_mcp_config = workspace_dir.join(".thunder").join("mcp.json").exists()
                 || workspace_dir.join("mcp_servers.json").exists()
                 || workspace_dir.join(".mcp.json").exists();
 
