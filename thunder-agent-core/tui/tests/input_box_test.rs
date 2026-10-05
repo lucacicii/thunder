@@ -217,7 +217,7 @@ fn paste_is_ignored_while_a_modal_owns_the_screen() {
 }
 
 #[test]
-fn the_static_tips_row_is_gone_and_the_row_is_reclaimed() {
+fn the_static_tips_row_is_gone_and_the_footer_is_the_session_line() {
     let mut app = App::new("gpt-4o");
     let rows = draw_rows(&mut app, 100, 20);
     let text = screen(&rows);
@@ -228,16 +228,25 @@ fn the_static_tips_row_is_gone_and_the_row_is_reclaimed() {
         "no duplicate token readout: {text:?}"
     );
 
-    // Nothing to say: the last row is still part of the input panel.
+    // The footer is permanent now: its last row names the session, and the
+    // panel above it keeps its own background.
     let last = rows.len() - 1;
-    assert_eq!(rows[last].1, theme_bg(), "the footer row collapsed away");
+    assert_eq!(rows[last].1, Color::Rgb(10, 14, 20));
+    assert!(
+        rows[last].0.contains(&app.conversation.id),
+        "an untitled session falls back to its id: {:?}",
+        rows[last].0
+    );
+    assert_ne!(rows[last - 1].1, Color::Rgb(10, 14, 20));
 
-    // A status message still gets its row.
+    // A status message stacks above the session line rather than replacing it.
     app.set_status_message("hello there");
     let rows = draw_rows(&mut app, 100, 20);
     assert!(
-        screen(&rows).contains("hello there"),
-        "the status line returns when it has something to say"
+        rows[rows.len() - 2].0.contains("hello there"),
+        "the status line sits above the session: {:?}",
+        rows[rows.len() - 2].0
     );
     assert_eq!(rows[rows.len() - 1].1, Color::Rgb(10, 14, 20));
+    assert!(rows[rows.len() - 1].0.contains(&app.conversation.id));
 }

@@ -42,8 +42,6 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ),
     };
 
-    let title_str = app.conversation.title.as_deref().unwrap_or("Untitled");
-
     let left = Line::from(vec![
         Span::styled(
             "⚡ THUNDER ",
@@ -88,31 +86,14 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         },
     ]);
 
-    let center = Line::from(vec![
-        Span::styled("Session: ", theme.muted_style()),
-        Span::styled(
-            title_str,
-            Style::default()
-                .fg(theme.text_main)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-
-    // Token and turn counts deliberately live in the metrics bar only: this row
-    // is one line tall, and repeating them here pushed the line past the pane
-    // width, truncating whatever sat at its end.
-    let paragraph = Paragraph::new(vec![Line::from(
-        [
-            left.spans.into_iter().collect::<Vec<_>>(),
-            vec![Span::raw("   ")],
-            center.spans.into_iter().collect::<Vec<_>>(),
-        ]
-        .concat(),
-    )])
-    // No block: a bordered block on a one-row area leaves nothing to draw in,
-    // which is why this line used to be an anonymous rule. The chat pane's top
-    // border sits directly below and already separates the two.
-    .alignment(Alignment::Center);
+    // Token and turn counts deliberately live in the metrics bar only, and the
+    // session name lives in the footer: this row is one line tall, and crowding
+    // it pushed the line past the pane width, truncating whatever sat at its end.
+    let paragraph = Paragraph::new(vec![left])
+        // No block: a bordered block on a one-row area leaves nothing to draw in,
+        // which is why this line used to be an anonymous rule. The chat pane's top
+        // border sits directly below and already separates the two.
+        .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
 }
