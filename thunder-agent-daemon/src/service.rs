@@ -988,17 +988,8 @@ impl DaemonService {
         // Load or create conversation
         let mut conversation = match self.store.load(&effective_session_id).await {
             Ok(Some(existing)) => existing,
-            _ => {
-                let mut c = Conversation::new(effective_session_id.clone());
-                let title = if prompt.chars().count() > 30 {
-                    let truncated: String = prompt.chars().take(30).collect();
-                    format!("{truncated}...")
-                } else {
-                    prompt.clone()
-                };
-                c = c.with_title(title);
-                c
-            }
+            _ => Conversation::new(effective_session_id.clone())
+                .with_title(provisional_title(&prompt)),
         };
 
         // Dynamically reload latest providers configuration before resolving models
@@ -1750,6 +1741,12 @@ mod title_tests {
         let mut conv = Conversation::new("s1");
         assert!(conv.is_title_placeholder());
         conv = conv.with_title("[Active Workspace: /Users/luca...");
+        assert!(conv.is_title_placeholder());
+        // The seed a fresh session carries, and the provisional title a first
+        // prompt can leave behind, are both still worth replacing.
+        conv = conv.with_title("New Conversation");
+        assert!(conv.is_title_placeholder());
+        conv = conv.with_title("Please refactor the prompt box...");
         assert!(conv.is_title_placeholder());
         conv.title = Some("真正的标题".to_string());
         assert!(!conv.is_title_placeholder());

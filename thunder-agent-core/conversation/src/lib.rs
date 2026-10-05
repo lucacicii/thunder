@@ -26,8 +26,9 @@ pub mod prelude {
     pub use crate::store::{ConversationStore, FsConversationStore, MemoryConversationStore};
     pub use crate::turn::{extract_turns, truncate_turns, Turn};
     pub use crate::types::{
-        now_ms, Conversation, ConversationFilter, ConversationStats, ConversationStatsReport,
-        ConversationStatus, ConversationSummary, OrchestrationMeta, StageRecord,
+        now_ms, provisional_title, Conversation, ConversationFilter, ConversationStats,
+        ConversationStatsReport, ConversationStatus, ConversationSummary, OrchestrationMeta,
+        StageRecord,
     };
 }
 

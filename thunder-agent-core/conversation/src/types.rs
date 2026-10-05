@@ -145,13 +145,18 @@ impl Conversation {
         self.title_source.as_deref() == Some("manual")
     }
 
-    /// True when the title is missing or still the initial truncated-prompt placeholder
+    /// True when the title is missing or still a placeholder a host may replace:
+    /// never set, blank, the seed a fresh conversation carries, or the
+    /// truncated first-prompt title [`provisional_title`] writes.
     pub fn is_title_placeholder(&self) -> bool {
         match self.title.as_deref() {
             None => true,
             Some(t) => {
                 let t = t.trim();
-                t.is_empty() || (t.len() >= 3 && t.ends_with("..."))
+                t.is_empty()
+                    || t.eq_ignore_ascii_case("new conversation")
+                    || t.eq_ignore_ascii_case("untitled")
+                    || (t.len() >= 3 && t.ends_with("..."))
             }
         }
     }
@@ -599,4 +604,23 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// How many characters of the first prompt a provisional title keeps.
+const PROVISIONAL_TITLE_CHARS: usize = 30;
+
+/// Title a fresh conversation carries until the model names it.
+///
+/// The first prompt, whitespace-collapsed onto one line and cut to
+/// [`PROVISIONAL_TITLE_CHARS`] with an ellipsis so
+/// [`Conversation::is_title_placeholder`] still marks it for replacement. A
+/// prompt that fits stays verbatim and reads as the real title.
+pub fn provisional_title(prompt: &str) -> String {
+    let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > PROVISIONAL_TITLE_CHARS {
+        let truncated: String = flat.chars().take(PROVISIONAL_TITLE_CHARS).collect();
+        format!("{truncated}...")
+    } else {
+        flat
+    }
 }
