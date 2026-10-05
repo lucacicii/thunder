@@ -99,6 +99,18 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled(
+                "Ctrl + T       ",
+                Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Show or hide the turn rail floating on the right (Tab focuses it; j/k + Enter jumps)",
+                theme.text_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "/metrics [on|off]     ",
                 Style::default().fg(theme.assistant_bubble),
             ),
@@ -114,6 +126,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
             ),
             Span::styled(
                 "Inspect or clear messages queued into the running agent",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "/timeline [on|off]    ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Show or hide the turn rail on the right of the transcript",
                 theme.muted_style(),
             ),
         ]),

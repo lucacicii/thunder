@@ -19,12 +19,14 @@
     - **Multi-Agent Synthesis Report Rendering**: In `Parallel` or `FanOut` topologies, prominently renders `### 📝 Synthesized Report` at the top with expandable per-role execution details.
   - **Interactive `❯` Input Line & Slash Auto-completion**: Type `/` to open the command palette popup with `Tab` completion and `↑/↓` selection.
   - **Session Resume & Persistence (`/resume`)**: List all saved sessions and restore any session by index or ID instantly.
+  - **Turn timeline rail**: A minimal rail floats on the transcript's right edge, one tick per user turn. Hover for details (state, tool calls, duration, prompt excerpt); click or press `Enter` to scroll that turn to the top. `Ctrl + T` toggles it, and narrow terminals hide it automatically.
 - **Keyboard-Driven Workflow**:
   - `Enter`: Submit prompt / run agent loop.
   - `Tab`: Auto-complete slash command / switch focus.
   - `Ctrl + N`: Create clean new session.
   - `Ctrl + P`: Fast cycle execution modes (`Auto` ➔ `Single`).
   - `Ctrl + H`: Toggle the shortcut reference popup (scroll with `↑ / ↓` or `PageUp / PageDown`).
+  - `Ctrl + T`: Show or hide the turn rail on the right of the transcript (`Tab` focuses it, `j / k` + `Enter` jumps).
   - `Ctrl + A`: Select the whole prompt (pair with `Ctrl + C` to copy it).
   - `Ctrl + C`: Copy the selection, else clear the prompt, else cancel the run, else exit.
   - `Esc`: Drop the selection first, else dismiss the overlay or cancel the run.
@@ -49,6 +51,7 @@
 | **`/export`** | `[path]` | Export chat and tool execution log to Markdown |
 | **`/clear`** | | Clear current chat stream and create a fresh session |
 | **`/health`** | | Run local agent and environment diagnostics |
+| **`/timeline`** | `[on \| off]` | Show or hide the turn rail on the right of the transcript |
 | **`/pipeline`** | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
 | **`/parallel`** | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
 | **`/fanout`** | `<task>` | Run task directly in decomposed subtask fan-out mode |

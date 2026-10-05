@@ -1,4 +1,4 @@
-use crate::app::{ActiveToolCall, AgentStatus, App, LinkHitbox};
+use crate::app::{ActiveToolCall, AgentStatus, App, LinkHitbox, TimelineMark};
 use crate::ui::markdown::{self, LinkSpan, RenderCtx, Rendered};
 use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Rect};
@@ -21,6 +21,16 @@ struct Stream {
     links: Vec<LinkSpan>,
     /// Screen rows occupied by `lines[..=i]`, one entry per line.
     row_end: Vec<usize>,
+}
+
+/// A user turn as it is discovered while building the stream. `line` is the
+/// logical line the turn starts on; it becomes a screen row only once the whole
+/// stream has been measured, because wrapping decides how many rows precede it.
+struct PendingTurn {
+    index: usize,
+    line: usize,
+    prompt: String,
+    tools: usize,
 }
 
 impl Stream {
@@ -74,6 +84,32 @@ fn rows_before(row_end: &[usize], index: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// First non-empty line of a prompt, cut to something that fits a one-row hint.
+fn prompt_excerpt(content: &str) -> String {
+    const MAX: usize = 60;
+    let line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let mut excerpt = thunder_agent_providers::naming::truncate_chars(line, MAX);
+    if line.chars().count() > MAX {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
+/// Whether a user message is the UI echoing one of its own slash commands back
+/// into the transcript. Those are bookkeeping, not turns the agent answered, so
+/// the rail does not chart them.
+fn is_local_command_echo(content: &str) -> bool {
+    let token = content.split_whitespace().next().unwrap_or("");
+    token.starts_with('/')
+        && crate::commands::ALL_COMMANDS
+            .iter()
+            .any(|cmd| cmd.matches(token))
+}
+
 pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let width = area.width.max(1) as usize;
     let markdown_on = app.markdown_enabled;
@@ -81,6 +117,10 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let raw_style = Style::default().fg(theme.text_main);
 
     let mut stream = Stream::new(area.width.max(1));
+    // The turns the rail charts, and the tool calls the current one has issued
+    // so far (closed out when the next user message arrives).
+    let mut turns: Vec<PendingTurn> = Vec::new();
+    let mut turn_tools = 0usize;
     {
         let mut ctx = RenderCtx {
             theme,
@@ -110,6 +150,19 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     stream.raw(Line::raw(""));
                 }
                 ChatMessage::User { content, parts, .. } => {
+                    // A new user message closes the previous turn's tool count.
+                    if let Some(previous) = turns.last_mut() {
+                        previous.tools = turn_tools;
+                    }
+                    turn_tools = 0;
+                    if !is_local_command_echo(content) {
+                        turns.push(PendingTurn {
+                            index: turns.len() + 1,
+                            line: stream.lines.len(),
+                            prompt: prompt_excerpt(content),
+                            tools: 0,
+                        });
+                    }
                     stream.raw(Line::from(vec![Span::styled(
                         "👤 You",
                         Style::default()
@@ -148,6 +201,7 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         push_body(&mut stream, &mut ctx, markdown_on, c, raw_style);
                     }
                     if let Some(calls) = tool_calls {
+                        turn_tools += calls.len();
                         for call in calls {
                             stream.raw(Line::from(vec![
                                 Span::raw("  "),
@@ -281,6 +335,28 @@ pub fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // screen rows the stream measured as it was built.
     let links = std::mem::take(&mut stream.links);
     let row_end = std::mem::take(&mut stream.row_end);
+
+    // Close out the last turn, then turn line indices into the rows the pane
+    // actually paints on: the rail jumps by row, and only this map knows them.
+    if let Some(last) = turns.last_mut() {
+        last.tools = turn_tools;
+    }
+    let marks: Vec<TimelineMark> = turns
+        .iter()
+        .map(|turn| TimelineMark {
+            index: turn.index,
+            row: rows_before(&row_end, turn.line),
+            prompt: turn.prompt.clone(),
+            tools: turn.tools,
+            duration_ms: app
+                .turn_durations
+                .get(turn.index.saturating_sub(1))
+                .copied()
+                .flatten(),
+        })
+        .collect();
+    app.timeline_marks = marks;
+
     let paragraph = Paragraph::new(stream.lines).wrap(Wrap { trim: false });
     let total_rendered_lines = row_end.last().copied().unwrap_or(0);
     debug_assert_eq!(

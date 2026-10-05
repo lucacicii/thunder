@@ -17,6 +17,17 @@ async fn test_app_state_and_focus_cycle() {
     app.cycle_focus();
     assert_eq!(app.focus, FocusPane::Chat);
 
+    // The turn rail is the pane after the transcript while it is on screen.
+    app.cycle_focus();
+    assert_eq!(app.focus, FocusPane::Monitor);
+
+    app.cycle_focus();
+    assert_eq!(app.focus, FocusPane::Input);
+
+    // Hidden, it drops out of the cycle instead of becoming a dead stop.
+    app.set_timeline_visible(false);
+    app.cycle_focus();
+    assert_eq!(app.focus, FocusPane::Chat);
     app.cycle_focus();
     assert_eq!(app.focus, FocusPane::Input);
 }
@@ -744,9 +755,15 @@ async fn test_slash_argument_completion_through_key_handling() {
     );
     assert_eq!(app.input, "/model gpt-4o");
 
-    // Outside the input pane, Tab keeps switching focus.
+    // Outside the input pane, Tab keeps switching focus, and the rail is a stop
+    // on the way back to the prompt.
     app.set_input(String::new());
     app.focus = FocusPane::Chat;
+    app.handle_key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.focus, FocusPane::Monitor);
     app.handle_key(
         KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
         tx.clone(),

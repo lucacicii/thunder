@@ -15,7 +15,8 @@ pub mod ui;
 
 pub mod prelude {
     pub use crate::app::{
-        ActiveToolCall, AgentStatus, App, ClientFactory, FocusPane, TraceRunMeta, ViewMode,
+        ActiveToolCall, AgentStatus, App, ClientFactory, FocusPane, TimelineMark, TraceRunMeta,
+        ViewMode,
     };
     pub use crate::event::{AppEvent, EventHandler};
     pub use crate::runner::TuiRunner;
