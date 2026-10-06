@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 fn test_slash_command_autocomplete_filtering() {
     // 1. Slash prefix returns all commands
     let all = filter_commands("/");
-    assert_eq!(all.len(), 29);
+    assert_eq!(all.len(), 30);
 
     // 2. Filter by prefix
     let sk = filter_commands("/sk");
@@ -32,6 +32,7 @@ fn test_slash_command_autocomplete_filtering() {
     assert!(names.contains(&"model"));
     assert!(names.contains(&"mode"));
     assert!(names.contains(&"mcp"));
+    assert!(names.contains(&"memory"));
 
     // 3. No slash returns empty
     let non = filter_commands("hello");
