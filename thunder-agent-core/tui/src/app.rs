@@ -148,6 +148,9 @@ pub struct App {
     /// Set while the input box is collecting a new session name for `/rename`:
     /// Enter saves the name instead of submitting a prompt, and Esc cancels.
     pub rename_mode: bool,
+    /// Prompt templates discovered under `<ws>/.thunder/prompts/`, cached so
+    /// `/prompt run` renders one without re-reading the directory.
+    pub prompt_templates: Vec<thunder_agent_skills::types::Skill>,
     pub picker: PickerState,
     pub workspace_dir: PathBuf,
     pub temperature: f32,
@@ -344,6 +347,7 @@ impl App {
             history_idx: None,
             command_popup_idx: 0,
             rename_mode: false,
+            prompt_templates: Vec::new(),
             picker: PickerState::new(),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             temperature: 0.2,
@@ -2806,6 +2810,130 @@ impl App {
         });
     }
 
+    /// The prompt-template directory for the current workspace.
+    fn prompts_dir(&self) -> PathBuf {
+        self.workspace_dir.join(".thunder").join("prompts")
+    }
+
+    /// Load and cache the templates under `<ws>/.thunder/prompts/`.
+    ///
+    /// Reuses the skill frontmatter parser, so a template is a markdown file
+    /// with an optional `---` header (`name`, `description`). Files are read in
+    /// name order for a stable listing.
+    fn reload_prompt_templates(&mut self) {
+        let dir = self.prompts_dir();
+        let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        files.sort();
+
+        let mut out = Vec::new();
+        for file in files {
+            if let Ok(raw) = std::fs::read_to_string(&file) {
+                if let Ok(skill) =
+                    thunder_agent_skills::parser::SkillParser::parse_markdown(&raw, Some(&file))
+                {
+                    out.push(skill);
+                }
+            }
+        }
+        self.prompt_templates = out;
+    }
+
+    /// Find a cached template by name (exact, then case-insensitive).
+    fn find_prompt_template(&self, name: &str) -> Option<&thunder_agent_skills::types::Skill> {
+        self.prompt_templates
+            .iter()
+            .find(|s| s.name == name || s.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Expand a template body: `$ARGUMENTS`, `$ARGUMENT` and `{{args}}` all
+    /// stand for the text typed after the template name.
+    fn render_prompt_template(body: &str, args: Option<&str>) -> String {
+        let a = args.unwrap_or("");
+        body.replace("$ARGUMENTS", a)
+            .replace("$ARGUMENT", a)
+            .replace("{{args}}", a)
+    }
+
+    /// `/prompt [list | show <name> | run <name> [args]]`.
+    ///
+    /// Read-only for `list`/`show`; `run` submits the rendered template as the
+    /// next user turn.
+    fn run_prompt_command(
+        &mut self,
+        args: &[&str],
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
+        self.reload_prompt_templates();
+
+        match args.first().copied() {
+            Some("run") => {
+                let Some(name) = args.get(1).copied() else {
+                    self.conversation
+                        .add_assistant_message(Some("Usage: `/prompt run <name> [args]`".to_string()), None);
+                    self.save_and_refresh();
+                    return;
+                };
+                let extra = if args.len() > 2 {
+                    Some(args[2..].join(" "))
+                } else {
+                    None
+                };
+                match self.find_prompt_template(name) {
+                    Some(t) => {
+                        let rendered =
+                            Self::render_prompt_template(&t.prompt_instructions, extra.as_deref());
+                        self.submit_prompt(rendered, event_tx);
+                    }
+                    None => {
+                        let out = format!("❌ No prompt template named `{name}`. Use `/prompt list`.");
+                        self.conversation.add_assistant_message(Some(out), None);
+                        self.save_and_refresh();
+                    }
+                }
+            }
+            Some("show") => {
+                let out = match args.get(1).copied() {
+                    None => "Usage: `/prompt show <name>`".to_string(),
+                    Some(name) => match self.find_prompt_template(name) {
+                        Some(t) => format!(
+                            "### `{}`\n\n{}\n\n---\n\n{}",
+                            t.name,
+                            t.description,
+                            t.prompt_instructions.trim_end()
+                        ),
+                        None => format!("❌ No prompt template named `{name}`."),
+                    },
+                };
+                self.conversation.add_assistant_message(Some(out), None);
+                self.save_and_refresh();
+            }
+            _ => {
+                let out = if self.prompt_templates.is_empty() {
+                    "No prompt templates found. Add markdown files under `.thunder/prompts/`."
+                        .to_string()
+                } else {
+                    let mut out = String::from(
+                        "### Prompt Templates\n\nReusable prompts under `.thunder/prompts/`. Run one with `/prompt run <name> [args]`; `$ARGUMENTS` is substituted.\n\n",
+                    );
+                    for t in &self.prompt_templates {
+                        let brief = t.description.lines().next().unwrap_or("").trim();
+                        out.push_str(&format!("- **{}**: {brief}\n", t.name));
+                    }
+                    out
+                };
+                self.conversation.add_assistant_message(Some(out), None);
+                self.save_and_refresh();
+            }
+        }
+    }
+
     pub fn execute_slash_command(
         &mut self,
         raw_cmd: &str,
@@ -3781,6 +3909,13 @@ impl App {
                     }
                     _ => self.begin_rename(),
                 }
+                true
+            }
+
+            // /prompt [list | show <name> | run <name> [args]] — reusable prompt
+            // templates under `.thunder/prompts/`.
+            "prompt" | "prompts" | "template" => {
+                self.run_prompt_command(args, event_tx.clone());
                 true
             }
 
