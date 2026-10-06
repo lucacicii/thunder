@@ -350,6 +350,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled(
+                "/prompt [list|run <n>]    ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "Browse or run reusable prompt templates",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "/memory [list|show <f>]   ",
                 Style::default().fg(theme.assistant_bubble),
             ),

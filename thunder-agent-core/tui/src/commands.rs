@@ -181,6 +181,14 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Session,
     ),
     SlashCommand::new(
+        "prompt",
+        &["prompts", "template"],
+        "[list | show <name> | run <name> [args]]",
+        "Browse the reusable prompt templates under `.thunder/prompts/`",
+        CommandCategory::General,
+    )
+    .with_args(&["list"]),
+    SlashCommand::new(
         "memory",
         &["mem"],
         "[list | show <file>]",
