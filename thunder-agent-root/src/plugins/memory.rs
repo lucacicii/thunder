@@ -150,9 +150,9 @@ impl MemoryPlugin {
     }
 
     /// The ordered memory files, lowest precedence first. Shared by the prompt
-    /// renderer and the `memory_write` tool so both agree on what counts as a
-    /// memory file.
-    async fn source_files(ws: &Path, mem: &MemorySection) -> Vec<PathBuf> {
+    /// renderer, the `memory_write` tool and the host command surface so all of
+    /// them agree on what counts as a memory file.
+    pub async fn source_files(ws: &Path, mem: &MemorySection) -> Vec<PathBuf> {
         let thunder_dir = ws.join(THUNDER_DIR);
         // Later entries read as "more specific", matching how a reader expects
         // overrides to appear.
@@ -476,6 +476,15 @@ impl MemoryWriteTool {
         let route = route?;
         self.workspaces.read().await.get(route).cloned()
     }
+}
+
+/// Resolve the ordered memory files for `ws`, honouring the project config.
+///
+/// A convenience wrapper so a host (the TUI's memory command) can list the same
+/// files the plugin injects, without reaching into the plugin internals.
+pub async fn memory_sources(ws: &Path) -> Vec<PathBuf> {
+    let cfg = ThunderConfig::load(Some(ws)).await;
+    MemoryPlugin::source_files(ws, &cfg.memory()).await
 }
 
 /// Collapse `.` and `..` without touching the filesystem, so a not-yet-created

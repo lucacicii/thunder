@@ -2710,6 +2710,102 @@ impl App {
         }
     }
 
+    /// `/memory [list | show <file>]` — report the project's long-term memory.
+    ///
+    /// Resolves the same files the memory plugin injects, so what the user sees
+    /// here is exactly what the agent is told. The work is spawned (the config
+    /// load is async) and delivered through `AgentFinished`, matching how
+    /// `/skills show` renders its result.
+    fn run_memory_command(
+        &mut self,
+        args: &[&str],
+        event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+    ) {
+        let ws = self.workspace_dir.clone();
+        let action = args.first().copied().unwrap_or("list").to_string();
+        let arg1 = args.get(1).map(|s| s.to_string());
+
+        tokio::spawn(async move {
+            let sources =
+                thunder_agent_root::plugins::memory::memory_sources(&ws).await;
+
+            let content = match action.as_str() {
+                "list" => {
+                    if sources.is_empty() {
+                        "(No memory files found under `.thunder/`.)".to_string()
+                    } else {
+                        let mut out = String::from(
+                            "### Project Memory\n\nFiles injected into the system prompt, in order:\n\n",
+                        );
+                        for (i, path) in sources.iter().enumerate() {
+                            let rel = path.strip_prefix(&ws).unwrap_or(path);
+                            match std::fs::metadata(path) {
+                                Ok(meta) if meta.is_file() => out.push_str(&format!(
+                                    "{}. `{}` — {} bytes\n",
+                                    i + 1,
+                                    rel.display(),
+                                    meta.len()
+                                )),
+                                _ => out.push_str(&format!(
+                                    "{}. `{}` — (not present)\n",
+                                    i + 1,
+                                    rel.display()
+                                )),
+                            }
+                        }
+                        out.push_str(
+                            "\n*Record a note with the agent's `memory_write` tool, or edit the files directly.*",
+                        );
+                        out
+                    }
+                }
+                "show" => match arg1 {
+                    None => "Usage: `/memory show <file>` (e.g. `/memory show THUNDER.md`)".to_string(),
+                    Some(name) => {
+                        let want = name.trim_start_matches("./");
+                        // Only files that exist: the source list names
+                        // conventional paths (including the user-global one)
+                        // whether or not they are present, and `show` must read
+                        // a real file rather than the first name that matches.
+                        let target = sources.iter().filter(|p| p.is_file()).find(|p| {
+                            p.strip_prefix(&ws)
+                                .map(|rel| rel.to_string_lossy() == want)
+                                .unwrap_or(false)
+                                || p.file_name().and_then(|f| f.to_str()) == Some(want)
+                        });
+                        match target {
+                            Some(path) => match std::fs::read_to_string(path) {
+                                Ok(body) => {
+                                    let rel = path.strip_prefix(&ws).unwrap_or(path);
+                                    format!("### `{}`\n\n{}", rel.display(), body.trim_end())
+                                }
+                                Err(e) => {
+                                    format!("❌ Failed to read `{}`: {e}", path.display())
+                                }
+                            },
+                            None => format!(
+                                "❌ No memory file matches `{name}`. Use `/memory list` to see them."
+                            ),
+                        }
+                    }
+                },
+                other => format!(
+                    "Unknown `/memory` action `{other}`. Use `/memory [list | show <file>]`."
+                ),
+            };
+
+            let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                agent_id: "memory".to_string(),
+                success: true,
+                final_text: Some(content),
+                authoritative_messages: None,
+                raw_messages: None,
+                run_stats: None,
+                finish_reason: None,
+            });
+        });
+    }
+
     pub fn execute_slash_command(
         &mut self,
         raw_cmd: &str,
@@ -3657,6 +3753,15 @@ impl App {
                         self.spawn_trace_picker(event_tx.clone());
                     }
                 }
+                true
+            }
+
+            // /memory [list | show <file>] — the project memory that the agent
+            // reads into its system prompt. Read-only: recording a note is the
+            // model's `memory_write` tool, not a host command.
+            "memory" | "mem" => {
+                self.conversation.add_user_message(raw_cmd);
+                self.run_memory_command(args, event_tx.clone());
                 true
             }
 

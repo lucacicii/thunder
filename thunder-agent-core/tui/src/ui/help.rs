@@ -350,6 +350,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled(
+                "/memory [list|show <f>]   ",
+                Style::default().fg(theme.assistant_bubble),
+            ),
+            Span::styled(
+                "List the project memory injected into the system prompt",
+                theme.muted_style(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "/skills [list|load|scan]  ",
                 Style::default().fg(theme.assistant_bubble),
             ),

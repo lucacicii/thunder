@@ -181,6 +181,14 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Session,
     ),
     SlashCommand::new(
+        "memory",
+        &["mem"],
+        "[list | show <file>]",
+        "List the project memory files that are injected into the system prompt",
+        CommandCategory::Session,
+    )
+    .with_args(&["list"]),
+    SlashCommand::new(
         "clear",
         &["new", "reset"],
         "",
