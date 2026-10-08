@@ -1,22 +1,17 @@
 use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::core::token_estimator::estimate_token_count;
-use thunder_agent_loop::types::config::{AgentConfig, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
+use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::message::ChatMessage;
 
 #[test]
-fn test_default_autonomous_system_prompt_content() {
+fn test_default_config_ships_no_system_prompt() {
     let cfg = AgentConfig::default();
-    let prompt = cfg
-        .system_prompt
-        .as_deref()
-        .expect("default system prompt must be set");
-    assert!(prompt.starts_with("# Role & Philosophy"));
-    assert!(prompt.contains("<intent_analysis>"));
-    assert!(prompt.contains("Ask (question / consultation)"));
-    assert!(prompt.contains("Plan (planning / architecture)"));
-    assert!(prompt.contains("Write / Edit (file or content operations)"));
-    assert!(prompt.contains("## Runtime Guardrails"));
-    assert_eq!(prompt, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+    // A generic agent core has no opinion about the agent's persona; a host or
+    // a capability pack supplies the prompt (see thunder-agent-pack-code).
+    assert!(
+        cfg.system_prompt.is_none(),
+        "the kernel must not impose a default prompt"
+    );
 }
 
 #[test]

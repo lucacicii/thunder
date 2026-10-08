@@ -398,10 +398,9 @@ impl Conversation {
             return (count_before, count_before);
         }
 
-        let sys_prompt = self
-            .system_prompt
-            .clone()
-            .unwrap_or_else(|| thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT.to_string());
+        // The kernel ships no default prompt; a conversation without one simply
+        // summarises the turns it has.
+        let sys_prompt = self.system_prompt.clone().unwrap_or_default();
 
         let recent_slice: Vec<_> = self
             .messages

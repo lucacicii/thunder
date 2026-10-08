@@ -125,18 +125,18 @@ mod tests {
         let mut guard = LoopGuard::new(10, 3, 5, 5);
 
         assert!(guard
-            .record_and_check_repetition("bash", "ls -la")
+            .record_and_check_repetition("lookup", "key=a")
             .is_none());
         assert!(guard
-            .record_and_check_repetition("bash", "ls -la")
+            .record_and_check_repetition("lookup", "key=a")
             .is_none());
-        let warning = guard.record_and_check_repetition("bash", "ls -la");
+        let warning = guard.record_and_check_repetition("lookup", "key=a");
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("executed the exact same tool"));
         assert!(!guard.is_repetition_limit_exceeded());
 
-        guard.record_and_check_repetition("bash", "ls -la");
-        guard.record_and_check_repetition("bash", "ls -la");
+        guard.record_and_check_repetition("lookup", "key=a");
+        guard.record_and_check_repetition("lookup", "key=a");
         assert!(guard.is_repetition_limit_exceeded());
     }
 

@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
 use thunder_agent_loop::types::message::ChatMessage;
-use thunder_agent_loop::{AgentRunResult, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
+use thunder_agent_loop::AgentRunResult;
+use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_conversation::prelude::*;
 use tokio::sync::RwLock;
 

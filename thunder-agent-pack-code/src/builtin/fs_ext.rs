@@ -1,8 +1,8 @@
 //! Fast file-lookup and directory-listing tools built on the `ignore` crate
 //! (fd's traversal core) and `globset` — in-process, .gitignore-aware.
 
-use crate::tools::builtin::search::{build_glob_set, build_walker, relative_display};
-use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use crate::builtin::search::{build_glob_set, build_walker, relative_display};
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use ignore::WalkState;
 use parking_lot::Mutex;

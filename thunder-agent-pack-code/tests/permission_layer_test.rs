@@ -5,13 +5,16 @@
 //! middlewares with a seam nothing tested as a unit. They are now the contract
 //! of a single layer, and each one has a test that fails if it breaks.
 
+mod support;
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::builtin::*;
 use thunder_agent_loop::tools::executor::ToolExecutor;
 use thunder_agent_loop::tools::middleware::PermissionGuardMiddleware;
-use thunder_agent_loop::tools::middleware::{ToolHandler, ToolMiddleware, ToolPipeline};
+use thunder_agent_loop::tools::middleware::{ToolHandler, ToolMiddleware};
 use thunder_agent_loop::tools::registry::ToolRegistry;
 
 fn registry() -> ToolRegistry {
@@ -106,7 +109,7 @@ fn policy(tier: Permission, mode: ApprovalMode) -> Arc<SessionPolicy> {
 /// unjudged.
 #[test]
 fn the_layer_sits_outside_the_transaction() {
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         std::env::temp_dir(),
         &[],
         registry(),
@@ -141,7 +144,7 @@ fn the_layer_sits_outside_the_transaction() {
 /// an embedder that has not adopted `SessionPolicy` is not left unguarded.
 #[test]
 fn a_pipeline_without_a_policy_still_has_the_judge() {
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         std::env::temp_dir(),
         &[],
         registry(),
@@ -154,7 +157,7 @@ fn a_pipeline_without_a_policy_still_has_the_judge() {
     assert!(pipeline.has_middleware(PermissionGuardMiddleware::NAME));
     assert_eq!(
         pipeline.middlewares().len(),
-        5,
+        6,
         "the stack is otherwise intact"
     );
 }
@@ -548,7 +551,7 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
     let mut reg = registry();
     reg.register(Arc::new(Mystery));
 
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         std::env::temp_dir(),
         &[],
         reg,
@@ -574,7 +577,7 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
     // Read-only tier: refused, because an unclassified tool needs write access.
     // Before the two tables were merged this tool was waved through by
     // `allows_builtin`, which returned `true` for names it did not know.
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         std::env::temp_dir(),
         &[],
         registry(),

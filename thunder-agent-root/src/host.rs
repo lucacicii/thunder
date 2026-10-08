@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::tools::builtin::{
+use thunder_agent_pack_code::builtin::{
     BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
 };
 use thunder_agent_loop::types::config::Permission;
@@ -19,8 +19,8 @@ use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
-    DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
 };
+use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -498,7 +498,12 @@ impl ThunderRoot {
             }
         }
 
-        let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
+        // Install the code capability pack: this host is a coding agent, so it
+        // gets the shell/file tools, the workspace path jail and atomic writes.
+        // The generic loop knows none of that.
+        let mut agent = AgentLoop::new(agent_cfg)
+            .with_id(format!("root_{}", session_id))
+            .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
 
         // The judge. Always installed, including in `yolo`: the mode stops the
         // *prompting*, not the tier check, and one code path for every mode means

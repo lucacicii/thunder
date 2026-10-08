@@ -5,9 +5,12 @@
 //! no tier, no jail, no approval prompt. Every test here asserts that the call
 //! goes through the *same* onion a model-initiated call does.
 
+mod support;
+
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::builtin::*;
 use thunder_agent_loop::tools::executor::ToolExecutor;
 use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
@@ -18,7 +21,7 @@ fn pipeline(tier: Permission, mode: ApprovalMode, ws: &std::path::Path) -> ToolP
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(BashTool::default()));
 
-    ToolPipeline::configured(
+    support::code_pipeline(
         ws.to_path_buf(),
         &[],
         registry,
@@ -176,7 +179,7 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         ws.to_path_buf(),
         &[],
         registry,
@@ -249,7 +252,7 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         ws.to_path_buf(),
         &[],
         registry,

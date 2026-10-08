@@ -296,8 +296,13 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
     out
 }
 
-/// Mechanically extract read/modified file lists from tool calls in the region
-/// (write_file → modified; read_file → read-only unless also modified).
+/// Mechanically extract the paths a region's tool calls touched, split into
+/// read-only and modified.
+///
+/// A call is classified by its tool's declared [`crate::types::policy::ToolEffect`],
+/// not by its name: a read effect is read-only, anything else (including an
+/// unclassified tool) counts as modified. A path that was both read and written
+/// appears only under modified.
 pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>) {
     let mut read = std::collections::BTreeSet::new();
     let mut modified = std::collections::BTreeSet::new();
@@ -317,14 +322,16 @@ pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>
             let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            match tc.function.name.as_str() {
-                "write_file" | "edit_file" => {
-                    modified.insert(path.to_string());
-                }
-                "read_file" => {
+            // Classified by declared effect, not by tool name: the kernel does
+            // not know what `write_file` is. A tool nobody classified counts as
+            // a mutation, the same conservative rule the permission layer uses.
+            match crate::types::policy::ToolEffect::of(&tc.function.name) {
+                crate::types::policy::ToolEffect::Read => {
                     read.insert(path.to_string());
                 }
-                _ => {}
+                _ => {
+                    modified.insert(path.to_string());
+                }
             }
         }
     }

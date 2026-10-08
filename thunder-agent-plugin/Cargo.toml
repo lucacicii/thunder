@@ -28,3 +28,4 @@ parking_lot.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["ansi"] }
 tempfile.workspace = true
+thunder-agent-pack-code.workspace = true

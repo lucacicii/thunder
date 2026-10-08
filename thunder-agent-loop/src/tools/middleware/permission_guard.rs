@@ -173,7 +173,13 @@ impl ToolMiddleware for PermissionGuardMiddleware {
             None => Caller::Model,
         };
 
-        let verdict = self.policy.decide(call, &caller).await;
+        // Judge the tool's *declared* effect, which the executor stamped onto
+        // the context. Falling back to the name heuristic keeps a hand-built
+        // context (a plugin invoking a tool directly) no weaker than before.
+        let effect = ctx
+            .effect
+            .unwrap_or_else(|| crate::types::policy::ToolEffect::of(tool));
+        let verdict = self.policy.decide_with_effect(call, effect, &caller).await;
 
         let request = match verdict {
             Verdict::Allow => return next.handle(call, ctx, timeout).await,

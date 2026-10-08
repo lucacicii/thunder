@@ -39,6 +39,25 @@ pub struct AgentRunResult {
     pub finish_reason: FinishReason,
 }
 
+/// Everything a capability pack needs to assemble a tool pipeline for a run.
+///
+/// The pack owns the *shape* of its stack (path jail, atomic writes, change
+/// detection); the loop only owns the registry the pack must wrap, and the
+/// scratchpad/policy/ui state the pack's layers may need.
+pub struct PipelineContext {
+    /// The run's configuration. Carries the host's layer toggles and the
+    /// workspace roots, which are pack inputs rather than loop inputs.
+    pub config: crate::types::config::AgentConfig,
+    /// The live tool registry to wrap.
+    pub registry: crate::tools::registry::ToolRegistry,
+    /// Scratchpad for oversized tool output, when the run has one.
+    pub scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
+    /// The session's approval policy, when the host adopted one.
+    pub policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+    /// The panel approval dialogs may use, when the host installed one.
+    pub ui: Option<Arc<dyn crate::types::ui::HostUi>>,
+}
+
 /// A complete single-agent unit.
 ///
 /// One instance runs at most one task at a time. Parallel work requires
@@ -66,6 +85,21 @@ pub struct AgentLoop {
     /// headless host refuses rather than assuming consent.
     policy: Option<Arc<crate::types::policy::SessionPolicy>>,
     host_ui: Option<Arc<dyn crate::types::ui::HostUi>>,
+    /// Host-supplied check on whether a finished run may actually finish.
+    ///
+    /// `None` keeps the plain behaviour: the model's last answer ends the run.
+    completion_gate: Option<Arc<dyn crate::loop_engine::gate::CompletionGate>>,
+    /// How many times the gate may send the run back before the loop gives up.
+    /// Ignored when `completion_gate` is `None`.
+    max_gate_rounds: usize,
+    /// Host-supplied assembly of the tool pipeline.
+    ///
+    /// The kernel does not build a code pipeline: it does not know what a
+    /// workspace, a path jail or an atomic file write is. A capability pack
+    /// hands over a builder that assembles *its* stack around the registry the
+    /// loop owns, and the loop replays that builder every time it rebuilds the
+    /// executor (a new tool, a new policy) so the pack's layers are never lost.
+    pipeline_builder: Option<Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>>,
 }
 
 impl AgentLoop {
@@ -79,18 +113,14 @@ impl AgentLoop {
         )
         .with_scratchpad(scratchpad.clone());
 
-        let ws = config.workspace_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        let tool_executor = ToolExecutor::with_configured_pipeline(
+        // The kernel installs only its own baseline pipeline. A capability pack
+        // replaces it via `with_pipeline_builder` after construction.
+        let tool_executor = ToolExecutor::with_pipeline(
             tool_registry.clone(),
-            ws,
-            config.extra_workspace_roots.clone(),
-            Some(scratchpad.clone()),
-            &config.middleware,
-            config.permission,
-            None,
-            None,
+            crate::tools::middleware::ToolPipeline::baseline(
+                tool_registry.clone(),
+                Some(scratchpad.clone()),
+            ),
         );
 
         Self {
@@ -107,7 +137,26 @@ impl AgentLoop {
             steer_queues: crate::core::steer::SteerQueues::new_shared(),
             policy: None,
             host_ui: None,
+            completion_gate: None,
+            max_gate_rounds: 3,
+            pipeline_builder: None,
         }
+    }
+
+    /// Install a completion gate and the number of retries it may request.
+    ///
+    /// When the model stops calling tools, the gate gets to judge the answer
+    /// before the run is allowed to finish; a `retry` feeds its feedback back to
+    /// the model and continues the loop. `max_rounds` is a hard ceiling so a
+    /// gate that never passes cannot spin forever — `0` disables the gate.
+    pub fn with_completion_gate(
+        mut self,
+        gate: Arc<dyn crate::loop_engine::gate::CompletionGate>,
+        max_rounds: usize,
+    ) -> Self {
+        self.completion_gate = Some(gate);
+        self.max_gate_rounds = max_rounds;
+        self
     }
 
     /// Install the permission policy and the panel it may prompt through.
@@ -127,21 +176,40 @@ impl AgentLoop {
         self
     }
 
-    /// Reassemble the pipeline from the current config and registrations.
+    /// Install the host's pipeline assembly and rebuild the executor with it.
+    ///
+    /// Called by a capability pack after construction. The builder is replayed
+    /// on every later rebuild, so a tool registered afterwards still runs
+    /// through the pack's layers.
+    pub fn with_pipeline_builder(
+        mut self,
+        build: Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
+    ) -> Self {
+        self.pipeline_builder = Some(build);
+        self.tool_executor = self.rebuild_executor();
+        self
+    }
+
+    /// Reassemble the pipeline from the current registrations.
+    ///
+    /// Uses the host's builder when one is installed, and the kernel's own
+    /// baseline pipeline otherwise.
     fn rebuild_executor(&self) -> ToolExecutor {
-        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        ToolExecutor::with_configured_pipeline(
-            self.tool_registry.clone(),
-            ws,
-            self.config.extra_workspace_roots.clone(),
-            Some(self.scratchpad.clone()),
-            &self.config.middleware,
-            self.config.permission,
-            self.policy.clone(),
-            self.host_ui.clone(),
-        )
+        let registry = self.tool_registry.clone();
+        let pipeline = match &self.pipeline_builder {
+            Some(build) => build(PipelineContext {
+                config: self.config.clone(),
+                registry: registry.clone(),
+                scratchpad: Some(self.scratchpad.clone()),
+                policy: self.policy.clone(),
+                ui: self.host_ui.clone(),
+            }),
+            None => crate::tools::middleware::ToolPipeline::baseline(
+                registry.clone(),
+                Some(self.scratchpad.clone()),
+            ),
+        };
+        ToolExecutor::with_pipeline(registry, pipeline)
     }
 
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).
@@ -150,19 +218,7 @@ impl AgentLoop {
         self.id = id.into();
         self.scratchpad = ScratchpadManager::new(&self.id, self.config.scratchpad.clone());
         self.tool_registry.set_scratchpad(self.scratchpad.clone());
-        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        self.tool_executor = ToolExecutor::with_configured_pipeline(
-            self.tool_registry.clone(),
-            ws,
-            self.config.extra_workspace_roots.clone(),
-            Some(self.scratchpad.clone()),
-            &self.config.middleware,
-            self.config.permission,
-            self.policy.clone(),
-            self.host_ui.clone(),
-        );
+        self.tool_executor = self.rebuild_executor();
         self
     }
 
@@ -217,56 +273,13 @@ impl AgentLoop {
 
     pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
         self.tool_registry.register(tool);
-        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        self.tool_executor = ToolExecutor::with_configured_pipeline(
-            self.tool_registry.clone(),
-            ws,
-            self.config.extra_workspace_roots.clone(),
-            Some(self.scratchpad.clone()),
-            &self.config.middleware,
-            self.config.permission,
-            self.policy.clone(),
-            self.host_ui.clone(),
-        );
-        self
-    }
-
-    /// Disables atomic transactions on this AgentLoop (ideal for benchmarking or testing raw tool behavior).
-    pub fn without_transactions(mut self) -> Self {
-        self.config.middleware.enable_transaction = false;
-        let ws = self.config.workspace_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        self.tool_executor = ToolExecutor::with_configured_pipeline(
-            self.tool_registry.clone(),
-            ws,
-            self.config.extra_workspace_roots.clone(),
-            Some(self.scratchpad.clone()),
-            &self.config.middleware,
-            self.config.permission,
-            self.policy.clone(),
-            self.host_ui.clone(),
-        );
+        self.tool_executor = self.rebuild_executor();
         self
     }
 
     /// Injects a completely custom `ToolExecutor` into this AgentLoop.
     pub fn with_tool_executor(mut self, executor: ToolExecutor) -> Self {
         self.tool_executor = executor;
-        self
-    }
-
-    /// Convenience builder to register standard built-in tools
-    /// (bash, read_file, write_file, grep, find, ls).
-    pub fn with_builtins(mut self) -> Self {
-        self.register_tool(Arc::new(crate::tools::builtin::BashTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::ReadFileTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::WriteFileTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::GrepTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::FindTool::default()));
-        self.register_tool(Arc::new(crate::tools::builtin::ListDirTool::default()));
         self
     }
 
@@ -362,8 +375,20 @@ impl AgentLoop {
         let config = self.config.clone();
         let llm_client = self.llm_client.clone();
         let tool_registry = self.tool_registry.clone();
-        let tool_executor = self.tool_executor.clone();
+        // The run's tools get a sink bound to *this* run's event stream, so a
+        // business event a tool emits (a file change, a validation failure)
+        // arrives on the same handle the host is already draining.
+        let tool_executor = self
+            .tool_executor
+            .clone()
+            .with_event_sink(Arc::new(ChannelEventSink {
+                agent_id: self.id.clone(),
+                dispatcher: self.event_dispatcher.clone(),
+                event_sender: event_sender.clone(),
+            }));
         let dispatcher = self.event_dispatcher.clone();
+        let completion_gate = self.completion_gate.clone();
+        let max_gate_rounds = self.max_gate_rounds;
         let mut pruner = ContextPruner::new(config.pruning.clone());
         let scratchpad = self.scratchpad.clone();
         let agent_id = self.id.clone();
@@ -404,6 +429,8 @@ impl AgentLoop {
             // a checkpoint compaction rewrites the projection, then kept in sync
             // with durable pushes so hosts can persist the original history.
             let mut raw_log: Option<Vec<ChatMessage>> = None;
+            // How many times the completion gate has sent this run back.
+            let mut gate_round: usize = 0;
 
             // Input queued before the run started (the user may have typed while
             // the previous run was finishing) plus anything queued since. Each
@@ -1015,6 +1042,89 @@ impl AgentLoop {
                         );
                     }
                     if pending_messages.is_empty() {
+                        // The model has stopped. Before letting the run end, give
+                        // the host's gate its say: it may judge the answer, and
+                        // send the run back with feedback instead of finishing.
+                        if let Some(gate) = completion_gate.as_ref() {
+                            if gate_round < max_gate_rounds {
+                                let judged = answer_content.clone().or_else(|| {
+                                    if reasoning_content.is_empty() {
+                                        None
+                                    } else {
+                                        Some(reasoning_content.clone())
+                                    }
+                                });
+                                let verdict = gate
+                                    .verify(crate::loop_engine::gate::GateRequest {
+                                        turn,
+                                        round: gate_round + 1,
+                                        final_text: judged.clone().unwrap_or_default(),
+                                        messages: context.get_messages(),
+                                        stats: tracker.get_stats(),
+                                    })
+                                    .await;
+                                match verdict {
+                                    crate::loop_engine::gate::GateVerdict::Pass => {
+                                        emitter
+                                            .emit(AgentEvent::GateResult {
+                                                turn,
+                                                round: gate_round + 1,
+                                                verdict: "pass".to_string(),
+                                                detail: None,
+                                            })
+                                            .await;
+                                    }
+                                    crate::loop_engine::gate::GateVerdict::Retry { feedback } => {
+                                        gate_round += 1;
+                                        info!(
+                                            agent_id = %agent_id,
+                                            round = gate_round,
+                                            "Completion gate requested another round"
+                                        );
+                                        emitter
+                                            .emit(AgentEvent::GateResult {
+                                                turn,
+                                                round: gate_round,
+                                                verdict: "retry".to_string(),
+                                                detail: Some(feedback.clone()),
+                                            })
+                                            .await;
+                                        let message = ChatMessage::user(feedback);
+                                        context.push(message.clone());
+                                        if let Some(log) = raw_log.as_mut() {
+                                            log.push(message);
+                                        }
+                                        continue;
+                                    }
+                                    crate::loop_engine::gate::GateVerdict::Fail { reason } => {
+                                        gate_round += 1;
+                                        error!(
+                                            agent_id = %agent_id,
+                                            reason = %reason,
+                                            "Completion gate rejected the run"
+                                        );
+                                        emitter
+                                            .emit(AgentEvent::GateResult {
+                                                turn,
+                                                round: gate_round,
+                                                verdict: "fail".to_string(),
+                                                detail: Some(reason),
+                                            })
+                                            .await;
+                                        loop_finish_reason = FinishReason::Error;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                // Out of gate rounds: the run ends on the gate's
+                                // terms, not on a silent pass.
+                                warn!(
+                                    agent_id = %agent_id,
+                                    max_rounds = max_gate_rounds,
+                                    "Completion gate out of rounds; finishing anyway"
+                                );
+                            }
+                        }
                         info!(agent_id = %agent_id, "LLM concluded the task autonomously (no more tool calls)");
                         final_content = answer_content.or_else(|| {
                             if !reasoning_content.is_empty() {
@@ -1077,17 +1187,6 @@ impl AgentLoop {
                     }
                     info!(agent_id = %agent_id, turn, "Resumed from pause");
                 }
-
-                let ws = config
-                    .workspace_dir
-                    .clone()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                let has_bash = tool_calls.iter().any(|tc| tc.function.name == "bash");
-                let before_git_status = if has_bash {
-                    detect_git_status_snapshot(&ws).await
-                } else {
-                    std::collections::HashSet::new()
-                };
 
                 let exec_results = tool_executor
                     .execute_all(
@@ -1156,63 +1255,6 @@ impl AgentLoop {
                                 guidance: notice.guidance.clone(),
                             })
                             .await;
-                    }
-
-                    // Emit FileChange for write_file or bash
-                    if executed.tool_call.function.name == "write_file" {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(
-                            &executed.tool_call.function.arguments,
-                        ) {
-                            if let Some(path_str) = parsed.get("path").and_then(|v| v.as_str()) {
-                                let bytes = parsed
-                                    .get("content")
-                                    .and_then(|v| v.as_str())
-                                    .map(|c| c.len());
-                                let action = if executed.result.is_error {
-                                    "failed".to_string()
-                                } else {
-                                    "written".to_string()
-                                };
-                                emitter
-                                    .emit(AgentEvent::FileChange {
-                                        turn,
-                                        tool_call_id: executed.tool_call.id.clone(),
-                                        path: path_str.to_string(),
-                                        action,
-                                        bytes,
-                                        tool_name: "write_file".to_string(),
-                                    })
-                                    .await;
-                            }
-                        }
-                    } else if executed.tool_call.function.name == "bash" {
-                        let after_git_status = detect_git_status_snapshot(&ws).await;
-                        for entry in &after_git_status {
-                            if !before_git_status.contains(entry) {
-                                let file_path = if entry.len() > 3 {
-                                    entry[3..].trim().to_string()
-                                } else {
-                                    entry.clone()
-                                };
-                                let action = if entry.starts_with("??") {
-                                    "created".to_string()
-                                } else if entry.starts_with('D') || entry.contains(" D") {
-                                    "deleted".to_string()
-                                } else {
-                                    "modified".to_string()
-                                };
-                                emitter
-                                    .emit(AgentEvent::FileChange {
-                                        turn,
-                                        tool_call_id: executed.tool_call.id.clone(),
-                                        path: file_path,
-                                        action,
-                                        bytes: None,
-                                        tool_name: "bash".to_string(),
-                                    })
-                                    .await;
-                            }
-                        }
                     }
 
                     let tool_msg = ChatMessage::Tool {
@@ -1383,6 +1425,48 @@ impl Emitter {
     }
 }
 
+/// Bridges a tool's business events onto the run's event stream.
+///
+/// Deliberately thin: it wraps the payload in a generic
+/// [`AgentEvent::Custom`] and hands it to the same channel and sidecar the loop
+/// uses, so a host consumes tool-emitted events with no extra plumbing and the
+/// kernel never learns what they mean.
+#[derive(Debug)]
+struct ChannelEventSink {
+    agent_id: String,
+    dispatcher: AgentEventDispatcher,
+    event_sender: mpsc::Sender<ObservedEvent>,
+}
+
+impl ChannelEventSink {
+    fn emit(&self, kind: &str, payload: serde_json::Value) {
+        let observed = ObservedEvent {
+            agent_id: self.agent_id.clone(),
+            event: AgentEvent::Custom {
+                kind: kind.to_string(),
+                payload,
+            },
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        self.dispatcher.emit(observed.clone());
+        // A business event is structural, not a micro-delta: never drop it.
+        let sender = self.event_sender.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(observed))
+                .await;
+        });
+    }
+}
+
+impl crate::types::tool::ToolEventSink for ChannelEventSink {
+    fn emit_custom(&self, kind: &str, payload: serde_json::Value) {
+        self.emit(kind, payload);
+    }
+}
+
 fn generate_agent_id() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1418,33 +1502,6 @@ impl From<Vec<ChatMessage>> for ContextInput {
 impl From<ContextBuffer> for ContextInput {
     fn from(ctx: ContextBuffer) -> Self {
         ContextInput::Buffer(ctx)
-    }
-}
-
-async fn detect_git_status_snapshot(
-    workspace: &std::path::Path,
-) -> std::collections::HashSet<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(workspace)
-        .output()
-        .await;
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.lines()
-                .filter_map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.len() > 3 {
-                        Some(trimmed.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        _ => std::collections::HashSet::new(),
     }
 }
 
@@ -1512,7 +1569,7 @@ mod cancel_repair_tests {
             content: Some("let me look".to_string()),
             tool_calls: Some(
                 ids.iter()
-                    .map(|id| ToolCall::new_function(*id, "read_file", "{}"))
+                    .map(|id| ToolCall::new_function(*id, "lookup", "{}"))
                     .collect(),
             ),
             refusal: None,
@@ -1524,7 +1581,7 @@ mod cancel_repair_tests {
         ChatMessage::Tool {
             tool_call_id: call_id.to_string(),
             content: "ok".to_string(),
-            name: Some("read_file".to_string()),
+            name: Some("lookup".to_string()),
         }
     }
 
@@ -1534,8 +1591,8 @@ mod cancel_repair_tests {
         assert_eq!(
             dangling_tool_calls(&messages),
             vec![
-                ("a".to_string(), "read_file".to_string()),
-                ("b".to_string(), "read_file".to_string())
+                ("a".to_string(), "lookup".to_string()),
+                ("b".to_string(), "lookup".to_string())
             ]
         );
     }
@@ -1557,7 +1614,7 @@ mod cancel_repair_tests {
         let messages = vec![assistant_with_calls(&["a", "b"]), tool("a")];
         assert_eq!(
             dangling_tool_calls(&messages),
-            vec![("b".to_string(), "read_file".to_string())]
+            vec![("b".to_string(), "lookup".to_string())]
         );
     }
 

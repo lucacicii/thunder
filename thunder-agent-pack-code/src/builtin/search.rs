@@ -3,7 +3,7 @@
 //! pi's grep tool spawns, but embedded in-process: no subprocess overhead and
 //! no external binary to distribute.
 
-use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{

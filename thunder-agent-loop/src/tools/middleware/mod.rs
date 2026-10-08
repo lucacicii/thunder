@@ -1,16 +1,10 @@
 pub mod output;
 pub mod permission_guard;
-pub mod resource;
-pub mod security;
 pub mod telemetry;
-pub mod transaction;
 
 pub use output::OutputPostProcessorMiddleware;
 pub use permission_guard::PermissionGuardMiddleware;
-pub use resource::ResourceGuardMiddleware;
-pub use security::SecurityGuardMiddleware;
 pub use telemetry::SystemNotice;
-pub use transaction::{TempFileGuard, TransactionMiddleware};
 
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;
@@ -18,6 +12,10 @@ use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Default cap for a single tool result before it is truncated or spilled to
+/// the scratchpad.
+pub const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// An Onion Middleware wrapping around tool execution.
 ///
@@ -117,105 +115,24 @@ impl ToolPipeline {
         Self::new(Arc::new(RegistryTerminalHandler::new(registry)))
     }
 
-    /// Assembles the complete standard 4-layer Onion Middleware Pipeline.
+    /// The kernel's own pipeline: dispatch straight to the registry, with the
+    /// output post-processor on top when a scratchpad is available.
     ///
-    /// Layer order:
-    ///   1. SecurityGuardMiddleware (Path Jail, forbidden commands)
-    ///   2. ResourceGuardMiddleware (ReadFile OOM defense, cancellation telemetry)
-    ///   3. TransactionMiddleware (.thunder/tmp atomic shadow write, permissions, cleanup)
-    ///   4. OutputPostProcessorMiddleware (Scratchpad lossless persistence, truncation)
-    ///   5. RegistryTerminalHandler (Core tool invocation)
-    pub fn standard(
-        workspace_root: std::path::PathBuf,
-        extra_workspace_roots: &[std::path::PathBuf],
+    /// Nothing here knows what a workspace, a shell or a file is. Capability
+    /// packs assemble their own stack (path jail, atomic writes, change
+    /// detection) on top of [`ToolPipeline::from_registry`] and hand it to the
+    /// loop through [`crate::loop_engine::engine::AgentLoop::with_pipeline_builder`].
+    pub fn baseline(
         registry: ToolRegistry,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
     ) -> Self {
-        Self::configured(
-            workspace_root,
-            extra_workspace_roots,
-            registry,
-            scratchpad,
-            &crate::types::config::MiddlewareConfig::default(),
-            crate::types::config::Permission::default(),
-            None,
-            None,
-        )
-    }
-
-    /// Assembles an Onion Middleware Pipeline adhering to caller's `MiddlewareConfig`.
-    ///
-    /// `policy` and `ui` are the judge's inputs. Passing `None` for either
-    /// degrades safely: without a policy the guard has nothing to ask and lets
-    /// everything through (the host's tool registration is then the only
-    /// ceiling), and without a UI every `Ask` resolves as cancelled, so a
-    /// headless host refuses rather than assuming consent.
-    #[allow(clippy::too_many_arguments)]
-    pub fn configured(
-        workspace_root: std::path::PathBuf,
-        extra_workspace_roots: &[std::path::PathBuf],
-        mut registry: ToolRegistry,
-        scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-        cfg: &crate::types::config::MiddlewareConfig,
-        permission: crate::types::config::Permission,
-        policy: Option<Arc<crate::types::policy::SessionPolicy>>,
-        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
-    ) -> Self {
-        let max_output_bytes = 64 * 1024;
-        let terminal: Arc<dyn ToolHandler> = if cfg.enable_output_post_processor {
-            registry.clear_scratchpad();
-            Arc::new(RegistryTerminalHandler::new(registry))
-        } else {
-            Arc::new(RegistryTerminalHandler::new(registry))
-        };
-
+        let terminal: Arc<dyn ToolHandler> = Arc::new(RegistryTerminalHandler::new(
+            registry.clone(),
+        ));
         let mut pipeline = Self::new(terminal);
-        // Outermost gate: a denied capability never reaches the workspace.
-        let mut all_roots = vec![workspace_root.clone()];
-        all_roots.extend(extra_workspace_roots.iter().cloned());
-        let mut extra_roots_list: Vec<std::path::PathBuf> = extra_workspace_roots.to_vec();
-        // Automatically whitelist the scratchpad directory so the model can inspect
-        // persisted oversized logs without being blocked by the workspace path jail.
-        if let Some(ref sp) = scratchpad {
-            let sp_dir = sp.session_dir().to_path_buf();
-            if !all_roots.contains(&sp_dir) {
-                all_roots.push(sp_dir.clone());
-            }
-            if !extra_roots_list.contains(&sp_dir) {
-                extra_roots_list.push(sp_dir);
-            }
-        }
-        // One layer, outermost. It judges with the policy when given one, and
-        // otherwise falls back to the bare tier so the pipeline is still
-        // defended for embedders that have not adopted `SessionPolicy` yet.
-        let mut guard = match policy {
-            Some(policy) => permission_guard::PermissionGuardMiddleware::new(
-                policy,
-                ui.unwrap_or_else(|| {
-                    Arc::new(crate::types::ui::NullHostUi) as Arc<dyn crate::types::ui::HostUi>
-                }),
-            ),
-            None => permission_guard::PermissionGuardMiddleware::new_tier_only(
-                permission,
-                all_roots.clone(),
-            ),
-        };
-        guard = guard.with_workspace_roots(all_roots);
-        pipeline.add_middleware(Arc::new(guard));
-        if cfg.enable_security_guard {
-            pipeline.add_middleware(Arc::new(
-                SecurityGuardMiddleware::new(&workspace_root).with_extra_roots(extra_roots_list),
-            ));
-        }
-        if cfg.enable_resource_guard {
-            pipeline.add_middleware(Arc::new(ResourceGuardMiddleware::new(&workspace_root)));
-        }
-        if cfg.enable_transaction {
-            pipeline.add_middleware(Arc::new(TransactionMiddleware::new(&workspace_root)));
-        }
-        if cfg.enable_output_post_processor {
+        if scratchpad.is_some() {
             pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(
-                max_output_bytes,
+                DEFAULT_MAX_TOOL_OUTPUT_BYTES,
                 scratchpad,
             )));
         }

@@ -99,15 +99,6 @@ pub enum AgentEvent {
         name: String,
         result: ToolExecutionResult,
     },
-    FileChange {
-        turn: usize,
-        tool_call_id: String,
-        path: String,
-        action: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bytes: Option<usize>,
-        tool_name: String,
-    },
     TelemetryNotice {
         turn: usize,
         tool_call_id: String,
@@ -156,6 +147,31 @@ pub enum AgentEvent {
         turn: Option<usize>,
         message: String,
         recoverable: bool,
+    },
+    /// A host-defined event, forwarded verbatim.
+    ///
+    /// The loop cannot know that "two files changed" or "the form failed
+    /// validation" deserves an event, so it does not try. A tool or middleware
+    /// emits one through the execution context's event sink, and the loop
+    /// carries it here without interpreting `kind` or `payload`. Hosts pattern
+    /// match on their own `kind`; unknown kinds are safe to ignore.
+    Custom {
+        kind: String,
+        payload: serde_json::Value,
+    },
+    /// The completion gate judged a finished answer.
+    ///
+    /// Emitted once per gate evaluation so a host can render "verifying..."
+    /// and, on `retry`, explain why the run did not stop.
+    GateResult {
+        turn: usize,
+        /// 1-based gate evaluation counter within this run.
+        round: usize,
+        /// `pass`, `retry`, or `fail`.
+        verdict: String,
+        /// The gate's feedback (retry) or failure reason (fail).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 

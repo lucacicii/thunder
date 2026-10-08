@@ -1,7 +1,7 @@
-use crate::tools::middleware::telemetry::SystemNotice;
-use crate::tools::middleware::{ToolHandler, ToolMiddleware};
-use crate::types::message::ToolCall;
-use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
+use thunder_agent_loop::tools::middleware::telemetry::SystemNotice;
+use thunder_agent_loop::tools::middleware::{ToolHandler, ToolMiddleware};
+use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_loop::types::tool::{ToolExecutionContext, ToolExecutionResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -377,8 +377,8 @@ impl ToolMiddleware for TransactionMiddleware {
         next: Arc<dyn ToolHandler>,
     ) -> ToolExecutionResult {
         let is_write_effect = call.function.name == "write_file"
-            || crate::types::policy::ToolEffect::of(&call.function.name)
-                == crate::types::policy::ToolEffect::Write;
+            || thunder_agent_loop::types::policy::ToolEffect::of(&call.function.name)
+                == thunder_agent_loop::types::policy::ToolEffect::Write;
 
         // Intercept mutating file write calls for atomic staging
         if is_write_effect {

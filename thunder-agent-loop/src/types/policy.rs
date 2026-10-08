@@ -450,6 +450,22 @@ impl SessionPolicy {
     /// rules first would let "always allow bash(git status)" keep working in a
     /// read-only run.
     pub async fn decide(&self, call: &ToolCall, caller: &Caller) -> Verdict {
+        let effect = ToolEffect::of(&call.function.name);
+        self.decide_with_effect(call, effect, caller).await
+    }
+
+    /// Decide what to do with a call whose effect the caller already knows.
+    ///
+    /// Preferred over [`SessionPolicy::decide`] whenever the tool declared its
+    /// own [`ToolEffect`]: judging that declaration is stricter than re-deriving
+    /// it from the tool's name, and it is the only path that works for a tool
+    /// whose name says nothing about what it does.
+    pub async fn decide_with_effect(
+        &self,
+        call: &ToolCall,
+        effect: ToolEffect,
+        caller: &Caller,
+    ) -> Verdict {
         let tool = call.function.name.as_str();
         // A provider hands arguments over as a JSON *string*. An unparseable one
         // must not become an empty object that quietly matches a narrow rule.
@@ -458,7 +474,6 @@ impl SessionPolicy {
 
         let guard = self.inner.lock().await;
         let mode = guard.mode;
-        let effect = ToolEffect::of(tool);
 
         // 1. The ceiling. Checked before anything else can say yes.
         if !tier_allows(guard.tier, effect) {
