@@ -35,6 +35,8 @@ export interface RunTaskOptions {
   model?: string;
   useMock?: boolean;
   workspaceDir?: string;
+  /** Disable ask_user_question for clients that cannot answer it. */
+  headless?: boolean;
   /** Callback for real-time observed events (tokens, tools, turns) */
   onEvent?: (event: any) => void;
 }
@@ -182,6 +184,7 @@ export class ThunderClient extends EventEmitter {
         model: opts.model,
         use_mock: opts.useMock ?? this.options.useMock ?? false,
         workspace_dir: opts.workspaceDir ?? this.options.workspaceDir,
+        headless: opts.headless ?? false,
       }).catch((err) => {
         this.activeTaskListeners.delete(opts.taskId);
         this.off('task_completed', onCompleted);

@@ -436,6 +436,7 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
             turn: 1,
             timestamp: 1,
         },
+        timestamp_ms: 0,
     });
     app.handle_agent_event(ObservedEvent {
         agent_id: "a".to_string(),
@@ -443,6 +444,7 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
             turn: 1,
             delta: "ignored-micro-delta".to_string(),
         },
+        timestamp_ms: 0,
     });
     app.handle_agent_event(ObservedEvent {
         agent_id: "a".to_string(),
@@ -450,6 +452,7 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
             turn: 1,
             tool_call: ToolCall::new_function("c1", "grep", "{}"),
         },
+        timestamp_ms: 0,
     });
 
     let stats = AgentStats {

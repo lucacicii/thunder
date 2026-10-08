@@ -76,6 +76,7 @@ async fn test_app_streaming_event_ingestion() {
             turn: 1,
             timestamp: 100,
         },
+        timestamp_ms: 0,
     });
     assert_eq!(app.agent_status, AgentStatus::Thinking);
 
@@ -85,6 +86,7 @@ async fn test_app_streaming_event_ingestion() {
             turn: 1,
             delta: "Hello ".to_string(),
         },
+        timestamp_ms: 0,
     });
     app.handle_agent_event(ObservedEvent {
         agent_id: "agent_1".to_string(),
@@ -92,6 +94,7 @@ async fn test_app_streaming_event_ingestion() {
             turn: 1,
             delta: "world!".to_string(),
         },
+        timestamp_ms: 0,
     });
     assert_eq!(app.agent_status, AgentStatus::Streaming);
     assert_eq!(app.streaming_delta, "Hello world!");
@@ -103,6 +106,7 @@ async fn test_app_streaming_event_ingestion() {
             turn: 1,
             tool_call: ToolCall::new_function("call_1", "read_file", "{\"path\":\"Cargo.toml\"}"),
         },
+        timestamp_ms: 0,
     });
     assert_eq!(app.active_tool_calls.len(), 1);
     assert_eq!(app.active_tool_calls[0].name, "read_file");
@@ -130,6 +134,7 @@ async fn test_app_streaming_event_ingestion() {
                 telemetry: None,
             },
         },
+        timestamp_ms: 0,
     });
     assert!(app.active_tool_calls.is_empty());
     assert!(matches!(
@@ -432,6 +437,7 @@ async fn a_queued_message_enters_the_transcript_when_accepted() {
             message: "new direction".to_string(),
             image_count: 0,
         },
+        timestamp_ms: 0,
     });
 
     assert!(
@@ -523,6 +529,7 @@ async fn a_steer_carries_staged_images() {
             message: "look at this".to_string(),
             image_count: 1,
         },
+        timestamp_ms: 0,
     });
 
     let last_user = app
@@ -615,6 +622,7 @@ async fn a_tool_result_that_arrives_after_the_stop_still_lands() {
                     telemetry: None,
                 },
             },
+            timestamp_ms: 0,
         }
     }
 

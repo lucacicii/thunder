@@ -37,6 +37,11 @@ pub enum DaemonRequest {
         /// accepted for clipboard paste. Older daemons ignore this field.
         #[serde(default)]
         attachments: Option<Vec<Attachment>>,
+        /// Non-interactive runs omit the `ask_user_question` tool entirely.
+        /// This is the default for daemon clients that do not subscribe to
+        /// `user_question`; interactive hosts may explicitly set it to `false`.
+        #[serde(default)]
+        headless: bool,
     },
     /// Cooperatively pause a running task at the next tool boundary
     PauseTask { id: Option<String>, task_id: String },
@@ -299,6 +304,38 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// Older clients do not send `headless`; they must keep the interactive
+    /// question tool. A client that opts in gets the daemon's non-interactive
+    /// behavior.
+    #[test]
+    fn run_task_headless_is_opt_in() {
+        let default_req = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-1",
+            "prompt": "hello"
+        }))
+        .expect("parses");
+        assert!(matches!(
+            default_req,
+            DaemonRequest::RunTask {
+                headless: false,
+                ..
+            }
+        ));
+
+        let headless_req = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-2",
+            "prompt": "hello",
+            "headless": true
+        }))
+        .expect("parses");
+        assert!(matches!(
+            headless_req,
+            DaemonRequest::RunTask { headless: true, .. }
+        ));
     }
 
     /// Text-only steer stays valid: attachments are optional, and a host that

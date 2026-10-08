@@ -1361,6 +1361,10 @@ impl Emitter {
         let observed = ObservedEvent {
             agent_id: self.agent_id.clone(),
             event,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
         };
         self.dispatcher.emit(observed.clone());
 

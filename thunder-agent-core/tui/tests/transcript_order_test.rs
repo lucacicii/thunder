@@ -20,6 +20,7 @@ fn observed(event: AgentEvent) -> ObservedEvent {
     ObservedEvent {
         agent_id: "agent_1".to_string(),
         event,
+        timestamp_ms: 0,
     }
 }
 
