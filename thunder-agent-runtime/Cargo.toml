@@ -1,0 +1,33 @@
+[package]
+name = "thunder-agent-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Generic stdio runtime for the thunder agent core: host-executed tools, host-verified completion, no product policy"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["agent", "runtime", "stdio", "json"]
+categories = ["development-tools"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "thunder-runtime"
+path = "src/main.rs"
+
+[dependencies]
+thunder-agent-loop.workspace = true
+thunder-pi-bridge.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "io-std"] }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile.workspace = true

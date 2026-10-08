@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::builtin::*;
+use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::*;
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
@@ -330,7 +332,7 @@ impl App {
         let model = ModelRef::parse(&model_name.into());
         let initial_conv = Conversation::new(format!("sess_{}", now_ms()))
             .with_title("New Conversation")
-            .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
 
         Self {
             mode: ViewMode::Chat,
@@ -2544,7 +2546,7 @@ impl App {
         let new_id = format!("sess_{}", now_ms());
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
-            .with_system_prompt(thunder_agent_loop::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
         self.title_attempted = false;
         self.clear_run_state();
         self.clear_session_details();
@@ -4266,7 +4268,11 @@ impl App {
         let ws = self.workspace_dir.clone();
 
         tokio::spawn(async move {
-            let mut agent = AgentLoop::new(config.clone()).with_id("tui_agent");
+            let agent = AgentLoop::new(config.clone()).with_id("tui_agent");
+            // The TUI is a coding agent: install the code capability pack so the
+            // shell/file tools run behind the workspace jail and atomic writes.
+            let mut agent =
+                agent.with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
 
             // Resolve the transport: injected factory (tests/embedders) first,
             // then the provider registry. Never proceed without a client — a
@@ -4862,15 +4868,18 @@ fn format_trace_event(event: &ObservedEvent) -> Option<String> {
             result.duration_ms,
             if result.truncated { " (truncated)" } else { "" }
         )),
-        AgentEvent::FileChange {
-            path,
-            action,
-            bytes,
-            ..
-        } => Some(format!(
-            "  📝 {action} {path}{}",
-            bytes.map(|b| format!(" ({b}B)")).unwrap_or_default()
-        )),
+        AgentEvent::Custom { kind, payload } if kind == "file_change" => {
+            let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            let action = payload
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("changed");
+            let bytes = payload.get("bytes").and_then(|v| v.as_u64());
+            Some(format!(
+                "  📝 {action} {path}{}",
+                bytes.map(|b| format!(" ({b}B)")).unwrap_or_default()
+            ))
+        }
         AgentEvent::TelemetryNotice { layer, action, .. } => {
             Some(format!("  📡 telemetry {layer}/{action}"))
         }
@@ -4886,6 +4895,19 @@ fn format_trace_event(event: &ObservedEvent) -> Option<String> {
         AgentEvent::SteerAccepted {
             behavior, message, ..
         } => Some(format!("  📥 {behavior} accepted: {message}")),
+        AgentEvent::GateResult {
+            round,
+            verdict,
+            detail,
+            ..
+        } => Some(format!(
+            "  🚦 gate round {round}: {verdict}{}",
+            detail
+                .as_deref()
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default()
+        )),
+        AgentEvent::Custom { kind, .. } => Some(format!("  ✦ {kind}")),
         AgentEvent::LoopComplete { .. }
         | AgentEvent::TokenDelta { .. }
         | AgentEvent::ReasoningDelta { .. }

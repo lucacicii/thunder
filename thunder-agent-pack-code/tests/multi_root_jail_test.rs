@@ -2,10 +2,11 @@
 //! read/write standing as the primary workspace through the full onion
 //! pipeline (PermissionGuard → SecurityGuard → ResourceGuard → Transaction).
 
+mod support;
+
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_loop::tools::builtin::{ReadFileTool, WriteFileTool};
-use thunder_agent_loop::tools::middleware::ToolPipeline;
+use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::config::{MiddlewareConfig, Permission};
 use thunder_agent_loop::types::message::ToolCall;
@@ -37,7 +38,7 @@ async fn write_file_lands_in_extra_root_via_transaction() {
     registry.register(Arc::new(WriteFileTool::default()));
     registry.register(Arc::new(ReadFileTool::default()));
 
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         ws.clone(),
         std::slice::from_ref(&repo),
         registry,
@@ -143,7 +144,7 @@ async fn agent_loop_rebuilds_pipeline_with_extra_roots() {
 /// must not reach the filesystem, while the same work inside a root succeeds.
 #[tokio::test]
 async fn bash_cannot_write_outside_roots_via_cd_and_interpreter() {
-    use thunder_agent_loop::tools::builtin::BashTool;
+    use thunder_agent_pack_code::builtin::BashTool;
 
     let ws = temp_dir("thunder_bashjail_ws");
     let outside = temp_dir("thunder_bashjail_outside");
@@ -152,7 +153,7 @@ async fn bash_cannot_write_outside_roots_via_cd_and_interpreter() {
     let mut registry = ToolRegistry::default();
     // Same wiring as the TUI / host: bash runs in the workspace root.
     registry.register(Arc::new(BashTool::default().with_default_cwd(ws.clone())));
-    let pipeline = ToolPipeline::configured(
+    let pipeline = support::code_pipeline(
         ws.clone(),
         &[],
         registry,

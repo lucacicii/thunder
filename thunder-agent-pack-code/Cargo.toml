@@ -1,14 +1,15 @@
 [package]
-name = "thunder-agent-plugin"
+name = "thunder-agent-pack-code"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "Lightweight TypeScript Single-File Plugin Runtime and Sidecar Host for Thunder Agent"
+description = "Code capability pack for thunder-agent-loop: shell/file tools, workspace path jail, atomic writes, change detection, and the engineering default prompt"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
+keywords = ["agent", "tools", "shell", "filesystem"]
+categories = ["development-tools"]
 
 [lints]
 workspace = true
@@ -16,16 +17,22 @@ workspace = true
 [dependencies]
 thunder-agent-loop.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
-tokio-util = { workspace = true, features = ["codec", "io"] }
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
-tracing.workspace = true
-futures-util.workspace = true
 parking_lot.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+globset.workspace = true
+grep-matcher.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+ignore.workspace = true
+regex.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-tracing-subscriber = { workspace = true, features = ["ansi"] }
 tempfile.workspace = true
-thunder-agent-pack-code.workspace = true

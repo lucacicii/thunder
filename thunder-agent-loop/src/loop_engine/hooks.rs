@@ -3,7 +3,7 @@ use tokio::sync::broadcast;
 
 /// Lossy sidecar for fire-and-forget subscribers (`subscribe_events`).
 /// The reliable per-run stream lives on [`crate::AgentHandle::events`].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AgentEventDispatcher {
     sender: broadcast::Sender<ObservedEvent>,
 }

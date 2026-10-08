@@ -1,8 +1,9 @@
 use crate::tools::middleware::{ToolMiddleware, ToolPipeline};
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;
-use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
+use crate::types::tool::{ToolEventSink, ToolExecutionContext, ToolExecutionResult};
 use futures_util::future::join_all;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -17,55 +18,50 @@ pub struct ExecutedToolResult {
 pub struct ToolExecutor {
     registry: ToolRegistry,
     pipeline: ToolPipeline,
+    /// Per-run event sink, installed by the loop before it executes anything.
+    ///
+    /// Held behind a lock rather than cloned into each call because the loop
+    /// sets it once per run, after this executor was built, and a run has
+    /// exactly one sink for its whole lifetime.
+    event_sink: Arc<Mutex<Option<Arc<dyn ToolEventSink>>>>,
 }
 
 impl ToolExecutor {
     pub fn new(registry: ToolRegistry) -> Self {
         let pipeline = ToolPipeline::from_registry(registry.clone());
-        Self { registry, pipeline }
-    }
-
-    pub fn with_standard_pipeline(
-        registry: ToolRegistry,
-        workspace_root: std::path::PathBuf,
-        extra_workspace_roots: Vec<std::path::PathBuf>,
-        scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-    ) -> Self {
-        let pipeline = ToolPipeline::standard(
-            workspace_root,
-            &extra_workspace_roots,
-            registry.clone(),
-            scratchpad,
-        );
-        Self { registry, pipeline }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_configured_pipeline(
-        registry: ToolRegistry,
-        workspace_root: std::path::PathBuf,
-        extra_workspace_roots: Vec<std::path::PathBuf>,
-        scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-        cfg: &crate::types::config::MiddlewareConfig,
-        permission: crate::types::config::Permission,
-        policy: Option<Arc<crate::types::policy::SessionPolicy>>,
-        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
-    ) -> Self {
-        let pipeline = ToolPipeline::configured(
-            workspace_root,
-            &extra_workspace_roots,
-            registry.clone(),
-            scratchpad,
-            cfg,
-            permission,
-            policy,
-            ui,
-        );
-        Self { registry, pipeline }
+        Self {
+            registry,
+            pipeline,
+            event_sink: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn with_pipeline(registry: ToolRegistry, pipeline: ToolPipeline) -> Self {
-        Self { registry, pipeline }
+        Self {
+            registry,
+            pipeline,
+            event_sink: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Return this executor with the run's event sink installed.
+    ///
+    /// Consuming builder, deliberately: the sink belongs to one run, and a
+    /// shared `Arc` would leak that run's event sender into every future clone
+    /// of this executor — keeping a finished run's event stream open forever.
+    /// Swapping the slot on a fresh clone keeps the ownership honest.
+    pub fn with_event_sink(mut self, sink: Arc<dyn ToolEventSink>) -> Self {
+        self.event_sink = Arc::new(Mutex::new(Some(sink)));
+        self
+    }
+
+    /// What this call can do to the world: the tool's own declaration when the
+    /// tool is registered, otherwise the conservative name-based fallback.
+    fn resolve_effect(&self, tool_name: &str) -> crate::types::policy::ToolEffect {
+        self.registry
+            .get(tool_name)
+            .map(|t| t.effect())
+            .unwrap_or_else(|| crate::types::policy::ToolEffect::of(tool_name))
     }
 
     pub fn with_middleware(mut self, mw: Arc<dyn ToolMiddleware>) -> Self {
@@ -95,9 +91,17 @@ impl ToolExecutor {
     pub async fn execute_with_context(
         &self,
         call: &ToolCall,
-        ctx: ToolExecutionContext,
+        mut ctx: ToolExecutionContext,
         custom_timeout: Option<Duration>,
     ) -> ToolExecutionResult {
+        // Stamp the tool's declared effect and the run's event sink. Both are
+        // the executor's to know, not the caller's: a plugin that builds a
+        // context by hand should still be judged by what the tool *is*, and
+        // should still be able to report events.
+        ctx.effect = Some(self.resolve_effect(&call.function.name));
+        if ctx.event_sink.is_none() {
+            ctx.event_sink = self.event_sink.lock().clone();
+        }
         self.pipeline.execute(call, &ctx, custom_timeout).await
     }
 
@@ -139,7 +143,6 @@ impl ToolExecutor {
         let route = route.map(Arc::new);
         let futures = tool_calls.iter().map(|tc| {
             let route = route.clone();
-            let pipeline = self.pipeline.clone();
             let tc_clone = tc.clone();
             let token = cancellation_token.clone();
 
@@ -151,7 +154,9 @@ impl ToolExecutor {
                     route: route.as_ref().map(|r| r.as_str().to_string()),
                     ..Default::default()
                 };
-                let res = pipeline.execute(&tc_clone, &ctx, custom_timeout).await;
+                // Route through the context-aware path so the declared effect
+                // and the run's event sink are stamped onto every parallel call.
+                let res = self.execute_with_context(&tc_clone, ctx, custom_timeout).await;
                 ExecutedToolResult {
                     tool_call: tc_clone,
                     result: res,

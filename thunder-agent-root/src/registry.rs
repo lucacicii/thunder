@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
-use thunder_agent_loop::{AgentRunResult, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
+use thunder_agent_loop::AgentRunResult;
+use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use tracing::info;
 
 #[derive(Clone, Default)]

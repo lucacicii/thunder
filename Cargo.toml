@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "thunder-agent-loop",
+    "thunder-agent-pack-code",
+    "thunder-agent-runtime",
     "thunder-pi-bridge",
     "thunder-agent-providers",
     "thunder-agent-skills",
@@ -30,6 +32,7 @@ homepage = "https://github.com/lucacicii/thunder"
 [workspace.dependencies]
 # Internal crates (path dependencies)
 thunder-agent-loop = { path = "thunder-agent-loop" }
+thunder-agent-pack-code = { path = "thunder-agent-pack-code" }
 thunder-pi-bridge = { path = "thunder-pi-bridge" }
 thunder-agent-providers = { path = "thunder-agent-providers" }
 thunder-agent-skills = { path = "thunder-agent-skills" }

@@ -6,6 +6,26 @@ use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
 use thunder_agent_plugin::{run_registry, SidecarConfig, SidecarManager, TsToolBridge};
 use tokio_util::sync::CancellationToken;
 
+/// Build the coding pipeline (built-in tools + path jail + atomic writes) the
+/// way a real coding host does, via the code capability pack.
+async fn code_pipeline(
+    ws: &std::path::Path,
+    registry: thunder_agent_loop::tools::registry::ToolRegistry,
+    policy: Arc<SessionPolicy>,
+    ui: Arc<dyn HostUi>,
+) -> thunder_agent_loop::tools::middleware::ToolPipeline {
+    let mut config = thunder_agent_loop::types::config::AgentConfig::new("test-model");
+    config.workspace_dir = Some(ws.to_path_buf());
+    config.permission = policy.tier().await;
+    thunder_agent_pack_code::build_code_pipeline(thunder_agent_loop::PipelineContext {
+        config,
+        registry,
+        scratchpad: None,
+        policy: Some(policy),
+        ui: Some(ui),
+    })
+}
+
 /// Build a `SidecarConfig` for a test: one registered run, plus the sidecar-level
 /// defaults the `call_rpc` seam uses.
 ///
@@ -64,30 +84,21 @@ async fn run_invoker_with(
 ) -> Arc<dyn ToolInvoker> {
     use thunder_agent_loop::prelude::*;
     use thunder_agent_loop::tools::executor::ToolExecutor;
-    use thunder_agent_loop::tools::middleware::ToolPipeline;
     use thunder_agent_loop::tools::registry::ToolRegistry;
 
     let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
     registry.register(Arc::new(
-        thunder_agent_loop::tools::builtin::WriteFileTool::default(),
+        thunder_agent_pack_code::builtin::WriteFileTool::default(),
     ));
     registry.register(Arc::new(
-        thunder_agent_loop::tools::builtin::ReadFileTool::default(),
+        thunder_agent_pack_code::builtin::ReadFileTool::default(),
     ));
     registry.register(Arc::new(
-        thunder_agent_loop::tools::builtin::BashTool::default(),
+        thunder_agent_pack_code::builtin::BashTool::default(),
     ));
     let tier = policy.tier().await;
-    let pipeline = ToolPipeline::configured(
-        ws.to_path_buf(),
-        &[],
-        registry,
-        None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
-        tier,
-        Some(policy),
-        Some(Arc::new(NullHostUi)),
-    );
+    let _ = tier;
+    let pipeline = code_pipeline(ws, registry, policy, Arc::new(NullHostUi)).await;
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
     Arc::new(PipelineToolInvoker::new(executor).with_turn(1))
 }
@@ -578,7 +589,6 @@ export default definePlugin({
 async fn plugin_call_tool_reaches_a_registered_tool() {
     use thunder_agent_loop::prelude::*;
     use thunder_agent_loop::tools::executor::ToolExecutor;
-    use thunder_agent_loop::tools::middleware::ToolPipeline;
     use thunder_agent_loop::tools::registry::ToolRegistry;
 
     if !SidecarManager::is_node_available().await {
@@ -612,18 +622,15 @@ export default definePlugin({
     // but in the default no-prompt mode.
     let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
     registry.register(Arc::new(
-        thunder_agent_loop::tools::builtin::WriteFileTool::default(),
+        thunder_agent_pack_code::builtin::WriteFileTool::default(),
     ));
-    let pipeline = ToolPipeline::configured(
-        ws_dir.clone(),
-        &[],
+    let pipeline = code_pipeline(
+        &ws_dir,
         registry,
-        None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
-        Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
-        Some(Arc::new(NullHostUi)),
-    );
+        SessionPolicy::new(Permission::Bash, ApprovalMode::Never),
+        Arc::new(NullHostUi),
+    )
+    .await;
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
     let invoker: Arc<dyn ToolInvoker> = Arc::new(PipelineToolInvoker::new(executor).with_turn(1));
 
@@ -678,7 +685,6 @@ export default definePlugin({
 async fn ts_plugin_calling_sibling_ts_plugin_routes_through_pipeline() {
     use thunder_agent_loop::prelude::*;
     use thunder_agent_loop::tools::executor::ToolExecutor;
-    use thunder_agent_loop::tools::middleware::ToolPipeline;
     use thunder_agent_loop::tools::registry::ToolRegistry;
 
     if !SidecarManager::is_node_available().await {
@@ -768,16 +774,13 @@ export default definePlugin({
         registry.register(Arc::new(TsToolBridge::new(t, Arc::clone(&sidecar))));
     }
 
-    let pipeline = ToolPipeline::configured(
-        ws_dir.clone(),
-        &[],
+    let pipeline = code_pipeline(
+        &ws_dir,
         registry,
-        None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
-        Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
-        Some(Arc::new(NullHostUi)),
-    );
+        SessionPolicy::new(Permission::Bash, ApprovalMode::Never),
+        Arc::new(NullHostUi),
+    )
+    .await;
     let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
     *invoker_slot.write().await = Some(Arc::new(PipelineToolInvoker::new(executor).with_turn(1)));
 

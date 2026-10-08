@@ -26,6 +26,7 @@ crossterm.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 thunder-agent-loop.workspace = true
+thunder-agent-pack-code.workspace = true
 thunder-conversation.workspace = true
 thunder-agent-skills.workspace = true
 thunder-agent-mcp.workspace = true

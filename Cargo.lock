@@ -1555,12 +1555,6 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
- "globset",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "libc",
  "parking_lot",
  "regex",
  "serde",
@@ -1588,6 +1582,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "thunder-agent-pack-code"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "libc",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thunder-agent-loop",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "thunder-agent-plugin"
 version = "0.2.0"
 dependencies = [
@@ -1598,6 +1614,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thunder-agent-loop",
+ "thunder-agent-pack-code",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1633,10 +1650,27 @@ dependencies = [
  "tempfile",
  "thunder-agent-loop",
  "thunder-agent-mcp",
+ "thunder-agent-pack-code",
  "thunder-agent-plugin",
  "thunder-agent-providers",
  "thunder-agent-skills",
  "thunder-conversation",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "thunder-agent-runtime"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thunder-agent-loop",
+ "thunder-pi-bridge",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1701,6 +1735,7 @@ dependencies = [
  "tempfile",
  "thunder-agent-loop",
  "thunder-agent-mcp",
+ "thunder-agent-pack-code",
  "thunder-agent-providers",
  "thunder-agent-root",
  "thunder-agent-skills",

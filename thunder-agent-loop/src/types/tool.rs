@@ -1,7 +1,24 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+use crate::types::policy::ToolEffect;
+
+/// Sink for events a tool or middleware wants to surface to the host.
+///
+/// The kernel owns the loop, not the meaning of a call, so it cannot know that
+/// "this bash command rewrote two files" or "this form submission failed
+/// validation" deserves an event. It only knows how to *carry* one. A host (or a
+/// capability pack) that does know emits through the sink parked on the
+/// execution context, and the loop forwards it as
+/// [`crate::types::event::AgentEvent::Custom`] without interpreting the payload.
+pub trait ToolEventSink: Send + Sync + std::fmt::Debug {
+    /// Emit a business-defined event. `kind` is the host's own label (e.g.
+    /// `file_change`); `payload` is opaque to the kernel.
+    fn emit_custom(&self, kind: &str, payload: serde_json::Value);
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDefinition {
@@ -63,6 +80,21 @@ pub struct ToolExecutionContext {
     /// the workspace root and the path jail, so misrouting it would let one run's
     /// plugin write inside another run's workspace.
     pub route: Option<String>,
+    /// What this call can do to the world, resolved by the executor from the
+    /// tool's own [`AgentTool::effect`] declaration.
+    ///
+    /// Middlewares judge this instead of re-deriving it from the tool name. A
+    /// name is a convention; the declaration is a contract, and it is the only
+    /// thing that survives a tool called anything at all.
+    ///
+    /// `None` means nobody resolved it (a hand-built context, a direct
+    /// middleware call); consumers then fall back to the name heuristic rather
+    /// than assuming the call is harmless.
+    pub effect: Option<ToolEffect>,
+    /// Sink for business-defined events; see [`ToolEventSink`]. `None` means the
+    /// host installed no sink, and a tool that has something to report simply
+    /// has nowhere to send it.
+    pub event_sink: Option<Arc<dyn ToolEventSink>>,
 }
 
 impl Default for ToolExecutionContext {
@@ -75,6 +107,10 @@ impl Default for ToolExecutionContext {
             cancellation_token: CancellationToken::new(),
             caller: None,
             route: None,
+            // Unresolved: consumers fall back to the name heuristic, which is
+            // never weaker than treating an unknown tool as a mutation.
+            effect: None,
+            event_sink: None,
         }
     }
 }
@@ -154,6 +190,17 @@ impl ToolExecutionResult {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
+
+    /// What this tool can do to the world.
+    ///
+    /// Defaults to the name-based classification so a tool that says nothing is
+    /// no worse off than before. A tool that knows its own semantics should
+    /// override this: it is the difference between the loop *guessing* and the
+    /// tool *declaring*.
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::of(&self.definition().function.name)
+    }
+
     async fn execute(
         &self,
         args: serde_json::Value,

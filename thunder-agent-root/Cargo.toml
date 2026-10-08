@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 thunder-agent-loop.workspace = true
+thunder-agent-pack-code.workspace = true
 thunder-conversation = { workspace = true, optional = true }
 thunder-agent-skills = { workspace = true, optional = true }
 thunder-agent-mcp = { workspace = true, optional = true }

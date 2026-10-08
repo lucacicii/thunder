@@ -1,4 +1,4 @@
-use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::{Path, PathBuf};

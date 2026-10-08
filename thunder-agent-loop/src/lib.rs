@@ -25,7 +25,12 @@ pub mod prelude {
     pub use crate::core::steer::{
         PendingQueue, QueueBehavior, QueueMode, QueueSnapshot, SteerQueues,
     };
-    pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
+    pub use crate::loop_engine::engine::{
+        AgentLoop, AgentRunResult, ContextInput, PipelineContext,
+    };
+    pub use crate::loop_engine::gate::{
+        AcceptAllGate, CompletionGate, GateRequest, GateVerdict,
+    };
     pub use crate::loop_engine::handle::AgentHandle;
     pub use crate::pruning::error_detector::{
         extract_context_overflow_limit, is_context_overflow_error,
@@ -33,15 +38,11 @@ pub mod prelude {
     pub use crate::stream::client::{
         ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient,
     };
-    pub use crate::tools::builtin::{
-        BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
-    };
     pub use crate::tools::scratchpad::{
         Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager,
     };
     pub use crate::types::config::{
-        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission,
-        DEFAULT_AUTONOMOUS_SYSTEM_PROMPT,
+        AgentConfig, ContextPruningConfig, LoopGuardConfig, MiddlewareConfig, Permission,
     };
     pub use crate::types::error::AgentError;
     pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
@@ -56,7 +57,8 @@ pub mod prelude {
         ALLOW_ONCE, DENY, DENY_WITH_REASON,
     };
     pub use crate::types::tool::{
-        AgentTool, FunctionDefinition, ToolDefinition, ToolExecutionContext, ToolExecutionResult,
+        AgentTool, FunctionDefinition, ToolDefinition, ToolEventSink, ToolExecutionContext,
+        ToolExecutionResult,
     };
     pub use crate::types::ui::{
         HostUi, NotifyLevel, NullHostUi, UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT,

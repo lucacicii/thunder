@@ -193,6 +193,9 @@ impl ToolInvoker for PipelineToolInvoker {
             // The plugin's own session, so downstream shared services resolve
             // the same run the host would.
             route: ctx.session_id.clone(),
+            // Left unset on purpose: `execute_with_context` stamps the tool's
+            // declared effect and the run's event sink before the pipeline runs.
+            ..Default::default()
         };
 
         // `execute_with_context`, not `execute_one`: the latter would rebuild the

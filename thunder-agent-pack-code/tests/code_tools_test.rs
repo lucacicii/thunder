@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::tools::builtin::bash::BashTool;
+use thunder_agent_pack_code::builtin::bash::BashTool;
 use thunder_agent_loop::tools::executor::ToolExecutor;
 use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::message::ToolCall;
@@ -102,7 +102,10 @@ async fn test_bash_tool_execution() {
 #[tokio::test]
 async fn test_agent_loop_with_builtins_builder() {
     let cfg = thunder_agent_loop::types::config::AgentConfig::new("mock-model");
-    let agent = thunder_agent_loop::AgentLoop::new(cfg).with_builtins();
+    let agent = thunder_agent_pack_code::install_code_pack(
+        thunder_agent_loop::AgentLoop::new(cfg),
+        &thunder_agent_pack_code::CodePackConfig::default(),
+    );
     // AgentLoop successfully built with bash, read_file, and write_file
     assert_eq!(
         agent.status(),
@@ -122,10 +125,6 @@ async fn test_turn_off_transactions_without_modifying_code() {
     cfg2.middleware.enable_transaction = false;
     assert!(!cfg2.middleware.enable_transaction);
 
-    // Option 3: Using AgentLoop fluent method
-    let agent = thunder_agent_loop::AgentLoop::new(cfg2).without_transactions();
-    assert!(!agent.config().middleware.enable_transaction);
-
     // Option 4: Disabling all middlewares for bare-metal execution
     let cfg_bare =
         thunder_agent_loop::types::config::AgentConfig::new("mock-model").without_middlewares();
@@ -139,9 +138,9 @@ async fn test_turn_off_transactions_without_modifying_code() {
 // grep / find / ls — embedded ripgrep-core tools
 // ════════════════════════════════════════════════════════════
 
-use thunder_agent_loop::tools::builtin::fs::ReadFileTool;
-use thunder_agent_loop::tools::builtin::fs_ext::{FindTool, ListDirTool};
-use thunder_agent_loop::tools::builtin::search::GrepTool;
+use thunder_agent_pack_code::builtin::fs::ReadFileTool;
+use thunder_agent_pack_code::builtin::fs_ext::{FindTool, ListDirTool};
+use thunder_agent_pack_code::builtin::search::GrepTool;
 
 fn test_ctx() -> ToolExecutionContext {
     ToolExecutionContext {
