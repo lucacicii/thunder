@@ -2,6 +2,7 @@ use crate::error::PluginError;
 use crate::plugin::PluginContext;
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
+use crate::instructions::discover_context_files;
 use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -403,7 +404,17 @@ impl ThunderRoot {
             .as_deref()
             .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
             .to_string();
-        // Appended (not replacing) project instructions, per the config contract.
+        // 4a. Discover and append AGENTS.md / CLAUDE.md instruction context files (aligning with Pi)
+        let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
+        let context_files = discover_context_files(self.workspace_root.as_deref(), home_dir.as_deref()).await;
+        for ctx_file in context_files {
+            base_prompt.push_str("\n\n### Context Instructions (");
+            base_prompt.push_str(&ctx_file.path.display().to_string());
+            base_prompt.push_str(")\n");
+            base_prompt.push_str(&ctx_file.content);
+        }
+
+        // 4b. Appended (not replacing) project instructions from config, per the config contract.
         if let Some(rel) = thunder_cfg.system_prompt_file() {
             if let Some(ws) = &self.workspace_root {
                 let path = ws.join(".thunder").join(rel);
