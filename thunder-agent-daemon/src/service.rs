@@ -389,6 +389,7 @@ impl DaemonService {
                 extra_workspace_dirs,
                 thinking_level,
                 attachments,
+                headless,
             } => {
                 self.handle_run_task(
                     id,
@@ -401,6 +402,7 @@ impl DaemonService {
                     extra_workspace_dirs,
                     thinking_level,
                     attachments,
+                    headless,
                 )
                 .await;
             }
@@ -887,6 +889,7 @@ impl DaemonService {
         extra_workspace_dirs: Option<Vec<String>>,
         thinking_level: Option<String>,
         attachments: Option<Vec<crate::protocol::Attachment>>,
+        headless: bool,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -1157,6 +1160,7 @@ impl DaemonService {
             "workspace": chosen_workspace,
             "shared_roots": chosen_shared_roots,
             "thinking_level": chosen_thinking,
+            "headless": headless,
             "use_mock": use_mock
         });
 
@@ -1233,15 +1237,17 @@ impl DaemonService {
                 .with_script_plugin(script_plugin)
                 .build(root);
 
-            // Mount ask_user_question tool unconditionally so the LLM can ask clarifying
-            // questions when requirements are ambiguous (Intent Gate / Ambiguous branch).
-            let tool = crate::ask_user::AskUserQuestionTool::new(
-                task_id.clone(),
-                effective_session_id.clone(),
-                output_tx.clone(),
-                pending_questions.clone(),
-            );
-            root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
+            // Headless clients cannot answer `user_question`. Omitting the tool
+            // prevents each clarification from costing the full request timeout.
+            if !headless {
+                let tool = crate::ask_user::AskUserQuestionTool::new(
+                    task_id.clone(),
+                    effective_session_id.clone(),
+                    output_tx.clone(),
+                    pending_questions.clone(),
+                );
+                root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
+            }
 
             #[cfg(feature = "testing-mock")]
             let mock = if use_mock {

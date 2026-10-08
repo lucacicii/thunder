@@ -53,6 +53,10 @@ pub enum FinishReason {
 pub struct ObservedEvent {
     pub agent_id: String,
     pub event: AgentEvent,
+    /// Wall-clock time when the loop emitted the event. This is intentionally
+    /// outside `AgentEvent` so every variant gets a uniform trace timestamp.
+    #[serde(default)]
+    pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,4 +157,20 @@ pub enum AgentEvent {
         message: String,
         recoverable: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observed_event_timestamp_defaults_for_old_traces() {
+        let event: ObservedEvent = serde_json::from_value(serde_json::json!({
+            "agent_id": "agent-1",
+            "event": { "type": "turn_start", "turn": 1, "timestamp": 42 }
+        }))
+        .expect("old events deserialize");
+
+        assert_eq!(event.timestamp_ms, 0);
+    }
 }
