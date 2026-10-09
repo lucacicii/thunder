@@ -47,8 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let id = serde_json::from_str::<serde_json::Value>(trimmed)
                     .ok()
                     .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string));
-                let _ = id;
-                runtime.emit_error(format!("invalid request: {err}"));
+                if let Some(id) = id {
+                    runtime.reply(Some(id), false, Some(format!("invalid request: {err}"))).await;
+                } else {
+                    runtime.emit_error(format!("invalid request: {err}"));
+                }
             }
         }
     }
