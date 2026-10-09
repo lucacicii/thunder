@@ -29,7 +29,7 @@ fn default_parameters() -> serde_json::Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateSpec {
     /// How many times the gate may send the run back before the loop gives up.
-    #[serde(default = "default_gate_rounds")]
+    #[serde(default = "default_gate_rounds", alias = "maxRounds")]
     pub max_rounds: usize,
 }
 
@@ -45,25 +45,26 @@ pub enum RuntimeRequest {
     /// Start one agent run. Events stream back tagged with `run_id`.
     Start {
         id: Option<String>,
+        #[serde(alias = "runId")]
         run_id: String,
         /// pi-ai model descriptor, exactly as the bridge expects it.
         model: thunder_pi_bridge::BridgeModel,
-        #[serde(default)]
+        #[serde(default, alias = "systemPrompt")]
         system_prompt: Option<String>,
         #[serde(default)]
         messages: Vec<ChatMessage>,
         #[serde(default)]
         tools: Vec<RemoteToolSpec>,
-        #[serde(default)]
+        #[serde(default, alias = "maxTurns")]
         max_turns: Option<usize>,
         #[serde(default)]
         temperature: Option<f32>,
-        #[serde(default)]
+        #[serde(default, alias = "thinkingLevel")]
         thinking_level: Option<String>,
-        #[serde(default = "default_timeout_ms")]
+        #[serde(default = "default_timeout_ms", alias = "requestTimeoutMs")]
         request_timeout_ms: u64,
         /// Prompt-cache routing key (one conversation = one key).
-        #[serde(default)]
+        #[serde(default, alias = "sessionId")]
         session_id: Option<String>,
         #[serde(default)]
         gate: Option<GateSpec>,
@@ -71,7 +72,9 @@ pub enum RuntimeRequest {
     /// The host's answer to a `tool_call`.
     ToolResult {
         id: Option<String>,
+        #[serde(alias = "runId")]
         run_id: String,
+        #[serde(alias = "callId")]
         call_id: String,
         #[serde(default)]
         ok: bool,
@@ -81,6 +84,7 @@ pub enum RuntimeRequest {
     /// The host's verdict on a `gate_request`.
     GateResult {
         id: Option<String>,
+        #[serde(alias = "runId")]
         run_id: String,
         /// `pass`, `retry`, or `fail`.
         verdict: String,
@@ -88,7 +92,7 @@ pub enum RuntimeRequest {
         feedback: Option<String>,
     },
     /// Stop a run.
-    Cancel { id: Option<String>, run_id: String },
+    Cancel { id: Option<String>, #[serde(alias = "runId")] run_id: String },
 }
 
 fn default_timeout_ms() -> u64 {

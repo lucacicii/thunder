@@ -53,7 +53,7 @@ impl Runtime {
         });
     }
 
-    async fn reply(&self, id: Option<String>, ok: bool, error: Option<String>) {
+    pub async fn reply(&self, id: Option<String>, ok: bool, error: Option<String>) {
         self.emit(RuntimeEvent::Response {
             id,
             ok,
