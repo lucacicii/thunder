@@ -67,7 +67,9 @@ async fn prompt_run_submits_the_rendered_template() {
         .iter()
         .rev()
         .find_map(|m| match m {
-            thunder_agent_loop::types::message::ChatMessage::User { content, .. } => Some(content.clone()),
+            thunder_agent_loop::types::message::ChatMessage::User { content, .. } => {
+                Some(content.clone())
+            }
             _ => None,
         })
         .unwrap_or_default();
@@ -75,7 +77,10 @@ async fn prompt_run_submits_the_rendered_template() {
         user.contains("Explain the following in depth: src/main.rs"),
         "template not rendered with args:\n{user}"
     );
-    assert!(!user.contains("$ARGUMENTS"), "placeholder left unsubstituted");
+    assert!(
+        !user.contains("$ARGUMENTS"),
+        "placeholder left unsubstituted"
+    );
 }
 
 #[test]

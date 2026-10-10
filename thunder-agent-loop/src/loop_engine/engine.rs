@@ -99,7 +99,9 @@ pub struct AgentLoop {
     /// hands over a builder that assembles *its* stack around the registry the
     /// loop owns, and the loop replays that builder every time it rebuilds the
     /// executor (a new tool, a new policy) so the pack's layers are never lost.
-    pipeline_builder: Option<Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>>,
+    pipeline_builder: Option<
+        Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
+    >,
 }
 
 impl AgentLoop {
@@ -378,14 +380,14 @@ impl AgentLoop {
         // The run's tools get a sink bound to *this* run's event stream, so a
         // business event a tool emits (a file change, a validation failure)
         // arrives on the same handle the host is already draining.
-        let tool_executor = self
-            .tool_executor
-            .clone()
-            .with_event_sink(Arc::new(ChannelEventSink {
-                agent_id: self.id.clone(),
-                dispatcher: self.event_dispatcher.clone(),
-                event_sender: event_sender.clone(),
-            }));
+        let tool_executor =
+            self.tool_executor
+                .clone()
+                .with_event_sink(Arc::new(ChannelEventSink {
+                    agent_id: self.id.clone(),
+                    dispatcher: self.event_dispatcher.clone(),
+                    event_sender: event_sender.clone(),
+                }));
         let dispatcher = self.event_dispatcher.clone();
         let completion_gate = self.completion_gate.clone();
         let max_gate_rounds = self.max_gate_rounds;

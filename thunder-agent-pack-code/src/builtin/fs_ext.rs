@@ -2,7 +2,6 @@
 //! (fd's traversal core) and `globset` — in-process, .gitignore-aware.
 
 use crate::builtin::search::{build_glob_set, build_walker, relative_display};
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use ignore::WalkState;
 use parking_lot::Mutex;
@@ -10,6 +9,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 
 /// Max results (pi's find DEFAULT_LIMIT).
 const DEFAULT_FIND_LIMIT: usize = 1000;

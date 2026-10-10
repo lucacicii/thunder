@@ -47,9 +47,15 @@ impl LLMClientTrait for PromptCapturingClient {
 async fn test_thunder_root_loads_workspace_agents_md() {
     let ws = tempdir().unwrap();
     let agents_md_path = ws.path().join("AGENTS.md");
-    tokio::fs::write(&agents_md_path, "Master instruction: build high performance system.").await.unwrap();
+    tokio::fs::write(
+        &agents_md_path,
+        "Master instruction: build high performance system.",
+    )
+    .await
+    .unwrap();
 
-    let root = ThunderRoot::new(AgentConfig::new("test/model")).with_workspace(ws.path().to_path_buf());
+    let root =
+        ThunderRoot::new(AgentConfig::new("test/model")).with_workspace(ws.path().to_path_buf());
     let client = Arc::new(PromptCapturingClient {
         seen: Mutex::new(None),
     });

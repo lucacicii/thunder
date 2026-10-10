@@ -1,8 +1,6 @@
 //! One-call installation of the code capability pack onto a loop.
 
-use crate::builtin::{
-    BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
-};
+use crate::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use crate::pipeline::build_code_pipeline;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
