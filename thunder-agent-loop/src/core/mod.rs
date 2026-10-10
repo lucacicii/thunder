@@ -1,5 +1,6 @@
 pub mod context;
 pub mod images;
+pub mod paths;
 pub mod pause;
 pub mod state;
 pub mod steer;
