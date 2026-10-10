@@ -520,8 +520,22 @@ impl ProviderRegistry {
     }
 
     /// Dynamically update a model's context window after real error detection or runtime confirmation,
-    /// and asynchronously persist it to the local cache file.
+    /// and persist it to the default cache file.
     pub fn update_model_context_window(&mut self, selection_id: &str, real_limit: usize) -> bool {
+        self.update_model_context_window_at(&default_metadata_cache_path(), selection_id, real_limit)
+    }
+
+    /// Same as [`Self::update_model_context_window`], but the caller names the cache
+    /// file. Every path-touching entry point takes its path from the caller (the
+    /// `with_scratch_root` precedent in thunder-agent-root), so that a caller with
+    /// its own idea of the data root — a test, or a host that hands the root over
+    /// explicitly — never has to mutate process-wide env to be obeyed.
+    pub fn update_model_context_window_at(
+        &mut self,
+        cache_path: &Path,
+        selection_id: &str,
+        real_limit: usize,
+    ) -> bool {
         let trimmed = selection_id.trim();
         let mut updated = false;
         let mut resolved_selection = trimmed.to_string();
@@ -538,10 +552,9 @@ impl ProviderRegistry {
         }
 
         if updated {
-            let cache_path = default_metadata_cache_path();
-            let mut cache = ModelMetadataCache::load_from_file(&cache_path);
+            let mut cache = ModelMetadataCache::load_from_file(cache_path);
             cache.context_windows.insert(resolved_selection, real_limit);
-            let _ = cache.save_to_file(&cache_path);
+            let _ = cache.save_to_file(cache_path);
         }
 
         updated

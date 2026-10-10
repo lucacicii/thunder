@@ -62,8 +62,22 @@ async fn test_provider_registry_update_model_context_window() {
 
     assert_eq!(registry.models[0].context_window, 128_000);
 
-    // Dynamically learn new context limit from 400 detection
-    let updated = registry.update_model_context_window("mock/model-x", 32_768);
+    // Dynamically learn new context limit from 400 detection.
+    //
+    // The cache file is named explicitly rather than left to the env-resolving
+    // default: without a path this test used to write into the developer's real
+    // ~/.thunder/models_metadata.json (a `cargo test` side effect on the machine).
+    let dir = tempdir().expect("tempdir");
+    let cache_file = dir.path().join("models_metadata.json");
+
+    let updated = registry.update_model_context_window_at(&cache_file, "mock/model-x", 32_768);
     assert!(updated);
     assert_eq!(registry.models[0].context_window, 32_768);
+
+    // ...and the learned limit actually reaches the file the caller named.
+    let persisted = ModelMetadataCache::load_from_file(&cache_file);
+    assert_eq!(
+        persisted.context_windows.get("mock/model-x").copied(),
+        Some(32_768)
+    );
 }
