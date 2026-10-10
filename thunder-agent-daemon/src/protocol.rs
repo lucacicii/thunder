@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::ui::{NotifyLevel, UiRequest, UiSource};
+use thunder_agent_providers::ModelDescriptor;
 
 /// Incoming command from host (Electron / CLI) via stdin
 #[derive(Debug, Deserialize)]
@@ -24,6 +25,17 @@ pub enum DaemonRequest {
         prompt: String,
         session_id: Option<String>,
         model: Option<String>,
+        /// Full model descriptor supplied by a host that owns its own provider
+        /// configuration. When present the daemon builds the stream client from
+        /// it and never reads `models.json` / `auth.json` for this run; `model`
+        /// stays a label only. Older daemons ignore this field, and a request
+        /// that omits it keeps the registry path exactly as before.
+        ///
+        /// Boxed only to keep `DaemonRequest` from ballooning past clippy's
+        /// `large_enum_variant` threshold — `Box` is serde-transparent, so the
+        /// wire shape is unchanged.
+        #[serde(default)]
+        model_descriptor: Option<Box<ModelDescriptor>>,
         use_mock: Option<bool>,
         workspace_dir: Option<String>,
         /// Extra roots (e.g. repositories referenced by the task) granted the
@@ -336,6 +348,83 @@ mod tests {
             headless_req,
             DaemonRequest::RunTask { headless: true, .. }
         ));
+    }
+
+    /// A host that owns its provider configuration can hand the daemon a full
+    /// model descriptor instead of a `models.json` selection. The descriptor
+    /// must survive the wire unchanged, and it must coexist with the optional
+    /// `model` label.
+    #[test]
+    fn run_task_round_trips_a_model_descriptor() {
+        let descriptor = serde_json::json!({
+            "provider": "cc-switch",
+            "id": "deepseek/v4-flash",
+            "name": "DeepSeek V4 Flash",
+            "api": "openai-completions",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-test",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 16384
+        });
+
+        let req = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-desc-1",
+            "prompt": "hello",
+            "model": "cc-switch/deepseek/v4-flash",
+            "model_descriptor": descriptor,
+        }))
+        .expect("parses");
+
+        match req {
+            DaemonRequest::RunTask {
+                model,
+                model_descriptor,
+                ..
+            } => {
+                assert_eq!(model.as_deref(), Some("cc-switch/deepseek/v4-flash"));
+                let d = model_descriptor.expect("descriptor present");
+                assert_eq!(d.provider, "cc-switch");
+                assert_eq!(d.id, "deepseek/v4-flash");
+                assert_eq!(d.api, "openai-completions");
+                assert_eq!(d.context_window, 200_000);
+                assert_eq!(d.max_tokens, 16_384);
+                assert!(d.reasoning);
+                assert!(d.input.iter().any(|m| m == "image"));
+                // The descriptor must be able to take the same wire shape back
+                // out, so a host can trust the round trip.
+                let back = serde_json::to_value(&d).expect("serializes");
+                assert_eq!(back, descriptor);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Omitting the descriptor must keep parsing: every existing host keeps the
+    /// registry path, and `model` alone still selects a `models.json` entry.
+    #[test]
+    fn run_task_without_descriptor_still_parses() {
+        let req = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-nodesc-1",
+            "prompt": "hello",
+            "model": "openai/gpt-4o"
+        }))
+        .expect("parses");
+
+        match req {
+            DaemonRequest::RunTask {
+                model,
+                model_descriptor,
+                ..
+            } => {
+                assert_eq!(model.as_deref(), Some("openai/gpt-4o"));
+                assert!(model_descriptor.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     /// Text-only steer stays valid: attachments are optional, and a host that
