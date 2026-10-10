@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Only the final job needs to write to the release; the build jobs only read.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # darwin-arm64 builds natively on the arm64 runner; darwin-x64 is
+          # cross-compiled from the same runner (GitHub retired macos-13, so a
+          # rustup target is the reliable way to still ship an Intel build).
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            arch: darwin-arm64
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            arch: darwin-x64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            arch: linux-x64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        # Pinned the same way as ci.yml: an unpinned stable makes release
+        # artifacts non-reproducible from one tag to the next.
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch on a branch: still build so artifacts are
+            # downloadable, but name them with a placeholder version.
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release binaries
+        # No test suite here: ci.yml owns that. This job only produces the two
+        # host-consumed binaries.
+        run: |
+          cargo build --release --locked \
+            --target ${{ matrix.target }} \
+            -p thunder-agent-runtime -p thunder-agent-daemon
+
+      - name: Package flat tarballs
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          arch="${{ matrix.arch }}"
+          out="target/${{ matrix.target }}/release"
+          for bin in thunder-runtime thunder-daemon; do
+            rm -rf "pkg-$bin"
+            mkdir -p "pkg-$bin"
+            cp "$out/$bin" "pkg-$bin/$bin"
+            archive="${bin}-${version}-${arch}.tar.gz"
+            tar -czf "$archive" -C "pkg-$bin" "$bin"
+            # Flat layout, one entry only: a host unpacks straight into place.
+            test "$(tar -tzf "$archive" | wc -l | tr -d ' ')" -eq 1
+            echo "packaged $archive"
+          done
+
+      - name: Upload arch artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: thunder-binaries-${{ matrix.arch }}
+          path: |
+            thunder-runtime-*.tar.gz
+            thunder-daemon-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    # A `workflow_dispatch` run has no tag to attach to; it still builds and
+    # uploads the artifacts above. Only a real `v*` tag publishes.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write VERSION
+        working-directory: dist
+        # A host that downloads these binaries has the tag and the archives, and
+        # nothing that says which commit produced them. Without this the
+        # provenance stamp in the consuming app degrades to "unknown" the moment
+        # it stops building from a checkout — and "which build is this?" is the
+        # first question asked when a protocol mismatch shows up.
+        run: |
+          set -euo pipefail
+          {
+            echo "version=${GITHUB_REF_NAME#v}"
+            echo "commit=$(echo "${{ github.sha }}" | cut -c1-7)"
+          } > VERSION
+          cat VERSION
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        # sha256sum-style lines: "<hash>  <filename>", one per uploaded asset.
+        # VERSION is included: a provenance file nobody checks the hash of is
+        # not much better than no provenance at all.
+        run: |
+          set -euo pipefail
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Creates the release for the pushed tag when none exists yet.
+          tag_name: ${{ github.ref_name }}
+          name: Thunder ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
