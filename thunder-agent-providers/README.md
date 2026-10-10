@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-providers` 负责加载与解析 `models.json`（模型目录）与 `auth.json`（鉴权信息），提供模型规格发现、上下文窗口缓存、可用性判定与思考档位（Thinking Level）映射。所有 LLM 执行传输统一下沉至 [`thunder-pi-bridge`](../thunder-pi-bridge)（运行 `@earendil-works/pi-ai` 的 Node.js Sidecar），本包**不再持有任何自定义方言适配器**。
+`thunder-agent-providers` 负责加载与解析 `models.json`（模型目录）与 `auth.json`（鉴权信息），提供模型规格发现、上下文窗口缓存、可用性判定与思考档位（Thinking Level）映射。传输也在这个包里：`RpiAiClient` 经 `rpi-ai` 进程内直连模型流式接口，不起子进程、不依赖 Node。`openai-responses` / `openai-completions` / `anthropic-messages` 以外的方言以明确报错拒绝。
 
 ---
 
@@ -22,7 +22,7 @@
    - 对本机目录中尚未探测（`thinking_levels_probed != true`）的 reasoning 候选模型，通过内置 HTTP 客户端发起一次轻量探测请求，从供应商返回的错误/枚举信息中推断其真实支持的思考档位（见 `src/probe.rs`）。
    - 探测结果会回写 `models.json` 并标记为已探测，因此后续加载默认跳过网络访问。
 
-> ⚠️ 关于传输职责：本包**不承担模型调用传输**——所有 LLM 执行统一经由 `thunder-pi-bridge`。但它并非"零 HTTP"：`src/probe.rs` 持有 `reqwest` 客户端，仅用于上述一次性的思考档位探测。模型实际推理流量不经由此客户端。
+> ⚠️ 两条 HTTP 路径，各司其职：`src/client.rs` 承载推理流式传输（`rpi-ai`），`src/probe.rs` 另持一个 `reqwest` 客户端，仅用于上述一次性的思考档位探测。探测流量不承载任何补全。
 
 ---
 

@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-providers` loads and parses `models.json` (model catalog) and `auth.json` (credentials), providing model discovery, context window caching, availability resolution, and thinking level mappings. All LLM execution transport is delegated to [`thunder-pi-bridge`](../thunder-pi-bridge) (a Node.js sidecar running `@earendil-works/pi-ai`); this crate **holds no custom dialect adapters**.
+`thunder-agent-providers` loads and parses `models.json` (model catalog) and `auth.json` (credentials), providing model discovery, context window caching, availability resolution, and thinking level mappings. It also owns the transport: `RpiAiClient` streams from the provider in-process via `rpi-ai`, with no child process and no Node dependency. Dialects beyond `openai-responses` / `openai-completions` / `anthropic-messages` are rejected with a clear error.
 
 ---
 
@@ -22,7 +22,7 @@
    - For reasoning-candidate models in the local catalog that have not yet been probed (`thinking_levels_probed != true`), issues a single lightweight request through an internal HTTP client to infer the supported thinking levels from the provider's error/enum response (see `src/probe.rs`).
    - Results are written back into `models.json` and flagged as probed, so subsequent loads skip the network entirely.
 
-> ⚠️ Transport responsibility: this crate **does not** own model-invocation transport — all LLM execution goes through `thunder-pi-bridge`. It is *not* "zero-HTTP" though: `src/probe.rs` holds a `reqwest` client used solely for the one-time thinking-level probe above. Actual inference traffic never flows through it.
+> ⚠️ Two HTTP paths, one purpose each: `src/client.rs` carries the inference stream (`rpi-ai`), while `src/probe.rs` holds a separate `reqwest` client used solely for the one-time thinking-level probe above. Probe traffic never carries a completion.
 
 ---
 

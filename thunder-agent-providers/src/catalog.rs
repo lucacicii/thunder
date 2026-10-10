@@ -150,17 +150,17 @@ pub struct ModelSpec {
     pub thinking_levels_probed: bool,
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
     pub compat: Option<serde_json::Value>,
-    /// pi `Model.cost` passthrough (per-million pricing) → `BridgeModel.cost`.
-    pub cost: Option<thunder_pi_bridge::BridgeCost>,
+    /// pi `Model.cost` passthrough (per-million pricing) → `ModelDescriptor.cost`.
+    pub cost: Option<crate::model::ModelCost>,
     /// pi `Model.promptCache` passthrough (seconds per retention tier) →
-    /// `BridgeModel.prompt_cache`.
-    pub prompt_cache: Option<thunder_pi_bridge::BridgePromptCache>,
+    /// `ModelDescriptor.prompt_cache`.
+    pub prompt_cache: Option<crate::model::ModelPromptCache>,
 }
 
 impl ModelSpec {
-    pub fn to_bridge_model(&self) -> thunder_pi_bridge::BridgeModel {
+    pub fn to_descriptor(&self) -> crate::model::ModelDescriptor {
         let mut m =
-            thunder_pi_bridge::BridgeModel::new(&self.provider, &self.id, self.api.as_pi_api_str());
+            crate::model::ModelDescriptor::new(&self.provider, &self.id, self.api.as_pi_api_str());
         m.name = self.name.clone();
         m.base_url = self.base_url.clone();
         m.api_key = self.api_key.clone();
@@ -323,18 +323,16 @@ impl ProviderRegistry {
                     thinking_levels_probed: model.thinking_levels_probed.unwrap_or(false),
                     thinking_level_map,
                     compat: compat_val,
-                    cost: model.cost.map(|c| thunder_pi_bridge::BridgeCost {
+                    cost: model.cost.map(|c| crate::model::ModelCost {
                         input: c.input.unwrap_or(0.0),
                         output: c.output.unwrap_or(0.0),
                         cache_read: c.cache_read.unwrap_or(0.0),
                         cache_write: c.cache_write.unwrap_or(0.0),
                         tiers: Vec::new(),
                     }),
-                    prompt_cache: model.prompt_cache.map(|pc| {
-                        thunder_pi_bridge::BridgePromptCache {
-                            short: pc.short,
-                            long: pc.long,
-                        }
+                    prompt_cache: model.prompt_cache.map(|pc| crate::model::ModelPromptCache {
+                        short: pc.short,
+                        long: pc.long,
                     }),
                 });
             }

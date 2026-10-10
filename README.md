@@ -15,9 +15,9 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 1. **单 Agent 闭环内核（`thunder-agent-loop`）**：
    - 单一任务的原子闭环执行体，负责驱动完整的多轮推理、流式 Token 接收、并发工具调度与上下文裁剪。绝不耦合任何多智能体图或黑板逻辑。
    - 工具调用本身即并发派发（`ToolExecutor::execute_all`），单 Agent 内即可获得并行工具执行收益，同时保持会话前缀稳定以最大化供应商侧 Prompt Cache 命中。
-2. **pi-bridge 单一传输底座**：
-   - 彻底废弃维护成本高昂的自定义 Rust 模型方言适配器。
-   - 统一由 `thunder-pi-bridge` 驱动通过 esbuild 预打包的 `@earendil-works/pi-ai` Node.js Sidecar。支持免 `npm install` 冷启动，零成本抹平 OpenAI、Anthropic Claude、DeepSeek、Gemini 等所有主流提供商的协议差异与思考档位映射。
+2. **进程内流式传输（`rpi-ai`）**：
+   - 模型调用在 `thunder-agent-providers` 内直接发 HTTP 流式请求，**不起子进程、不随包携带 `bridge.mjs`、不要求宿主机装 Node**。
+   - 覆盖 `openai-responses` / `openai-completions` / `anthropic-messages` 三种方言，含思考档位与 Prompt Cache 保留策略映射；这三种以外的方言（Gemini、Bedrock、Vertex、Mistral）以明确报错拒绝，而不是静默失败。
 3. **上下文检查点压缩（Checkpoint Compaction）**：
    - 默认策略下，两次压缩之间请求前缀**字节级稳定**，最大化供应商侧 Prompt Cache 命中率。
    - 仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal/Progress/Decisions/Next Steps + 读/写文件清单），尾部 `keep_recent_tokens` 原文保留。
@@ -35,13 +35,12 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 
 ---
 
-## 📦 工作区包概览 (10 Workspace Crates)
+## 📦 工作区包概览 (9 Workspace Crates)
 
 | Crate | 路径 | 说明 |
 | :--- | :--- | :--- |
 | **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent 内核**：单 Agent 闭环执行引擎，极致轻量与低延迟，支持检查点式上下文压缩与跨 Agent 文件写入安全锁 |
-| **`thunder-pi-bridge`** | [`thunder-pi-bridge`](thunder-pi-bridge) | **LLM 传输桥**：基于 `@earendil-works/pi-ai` 的预打包 Node.js Sidecar，统一多模型方言与流式传输 |
-| **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **模型目录**：加载与解析 `models.json` / `auth.json`，提供模型规格缓存与思考档位映射 |
+| **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **模型目录 + 流式传输**：加载与解析 `models.json` / `auth.json`，并以 `RpiAiClient` 进程内直连模型 |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **技能引擎**：扫描并解析 Playbook / SKILL.md，支持意图触发匹配与 120s TTL 全局文件缓存 |
 | **`thunder-agent-plugin`** | [`thunder-agent-plugin`](thunder-agent-plugin) | **TS 插件引擎**：TypeScript 单文件插件宿主，原生免编译执行、蓝绿无缝热重载与语法错误免疫 |
 | **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP 客户端**：Model Context Protocol 客户端实现，动态发现与无缝桥接远程工具 |
@@ -56,7 +55,7 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 
 ### 运行环境要求
 - **Rust**: 1.80+
-- **Node.js**: 20+ (运行 `thunder-pi-bridge` Sidecar 所需，运行时内置打包好的代码，无需 `npm install`)
+- 不需要 Node.js：模型调用在进程内完成（曾用于此的 `bridge.mjs` 侧车已移除）
 
 ### 常用命令
 

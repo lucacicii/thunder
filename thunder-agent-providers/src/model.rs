@@ -1,10 +1,13 @@
-//! Inline pi-ai `Model` definition sent from Rust to the bridge sidecar.
+//! The model descriptor: pi-ai's `Model` shape, serialized.
 //!
-//! This mirrors the fields pi-ai accepts on an ad-hoc (unregistered) model:
-//! compat is auto-detected from `base_url` unless explicitly overridden via
-//! `compat`. Keeping this DTO inside the bridge crate (instead of reusing
-//! `ModelSpec` from thunder-agent-providers) keeps the dependency arrow
-//! one-way: providers → bridge.
+//! This is the wire contract between a host and `thunder-runtime` (the host
+//! builds it, the runtime deserializes it and hands it to whichever client this
+//! crate produces), and the shape the catalog renders each `ModelSpec` into. It
+//! used to live in the `thunder-pi-bridge` crate, which existed to feed a Node
+//! sidecar; the shape outlived the sidecar, and the field names are still
+//! pi-ai's because a host may be an older build than the runtime it talks to.
+//!
+//! **Do not rename the fields** — the camelCase spelling is the protocol.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,7 +22,7 @@ pub const API_GOOGLE_GENERATIVE_AI: &str = "google-generative-ai";
 /// pi-ai's `calculateCost` reads this unconditionally.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeCost {
+pub struct ModelCost {
     #[serde(default)]
     pub input: f64,
     #[serde(default)]
@@ -33,10 +36,12 @@ pub struct BridgeCost {
 }
 
 /// pi `Model.promptCache`: best-effort prompt-cache lifetime in seconds per
-/// retention tier. Passthrough only — thunder's loop does not interpret it.
+/// retention tier. Best-effort — the loop does not interpret it, but
+/// `ModelSpec::prompt_cache_warm_settings` reads the `short` tier, so losing it
+/// turns cache warming off rather than merely mispricing a run.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgePromptCache {
+pub struct ModelPromptCache {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,7 +50,7 @@ pub struct BridgePromptCache {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeModel {
+pub struct ModelDescriptor {
     /// pi provider id (thunder provider id, used for routing/replies only)
     pub provider: String,
     /// Bare model id on the wire (never `provider/model`)
@@ -60,9 +65,8 @@ pub struct BridgeModel {
     #[serde(default)]
     pub reasoning: bool,
     /// pi `Model.input`: content modalities, e.g. `["text"]` or `["text","image"]`.
-    /// pi-ai requires it (image downgrade logic reads it); an empty vec is
-    /// normalized to `["text"]` by the sidecar. Set `["text","image"]` for
-    /// vision models so pi-ai keeps image blocks instead of downgrading them.
+    /// An empty vec is normalized to `["text"]` when converted, so vision models
+    /// keep image blocks instead of having them downgraded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
     #[serde(default)]
@@ -76,16 +80,16 @@ pub struct BridgeModel {
     /// pi compat overrides passthrough (OpenAICompletionsCompat-shaped JSON)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<serde_json::Value>,
-    /// Pricing info; `None` is normalized to zeros by the sidecar (pi-ai
-    /// requires the field for usage cost accounting).
+    /// Pricing info; `None` means "no rates declared", which the cache-warming
+    /// gate reads as economics-unavailable rather than as free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost: Option<BridgeCost>,
+    pub cost: Option<ModelCost>,
     /// pi `Model.promptCache` passthrough (cache lifetime seconds per tier).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_cache: Option<BridgePromptCache>,
+    pub prompt_cache: Option<ModelPromptCache>,
 }
 
-impl BridgeModel {
+impl ModelDescriptor {
     pub fn new(provider: impl Into<String>, id: impl Into<String>, api: impl Into<String>) -> Self {
         let id: String = id.into();
         Self {
@@ -104,7 +108,8 @@ mod tests {
 
     #[test]
     fn serializes_camel_case_for_pi_model_shape() {
-        let mut model = BridgeModel::new("cc-switch", "deepseek/v4-flash", API_OPENAI_COMPLETIONS);
+        let mut model =
+            ModelDescriptor::new("cc-switch", "deepseek/v4-flash", API_OPENAI_COMPLETIONS);
         model.base_url = "https://api.example.com/v1".into();
         model.api_key = Some("sk-test".into());
         model.context_window = 1_000_000;

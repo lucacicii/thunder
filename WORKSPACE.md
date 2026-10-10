@@ -43,8 +43,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 ├── test.sh                       # 全工作区测试套件脚本
 ├── .thunder/                       # Thunder 自身配置（用户级 ~/.thunder/ 与项目级同构）
 ├── thunder-agent-loop/           # Agent A：单 Agent 闭环执行引擎
-├── thunder-pi-bridge/            # pi-ai Node Sidecar 传输底座（打包 @earendil-works/pi-ai）
-├── thunder-agent-providers/      # LLM Catalog 与配置解析
+├── thunder-agent-providers/      # LLM Catalog、配置解析与进程内流式传输
 ├── thunder-agent-skills/         # Skill 解析、注册与全局缓存
 ├── thunder-agent-plugin/         # TypeScript 单文件插件宿主引擎
 ├── thunder-agent-mcp/            # MCP 客户端与动态工具桥接
@@ -63,7 +62,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 
 ```text
                        ┌─────────────────────────┐
-                       │    thunder-pi-bridge    │ (Node Sidecar: pi-ai)
+                       │  thunder-agent-providers│ (RpiAiClient: 进程内 HTTP)
                        └────────────┬────────────┘
                                     │ implements LLMClientTrait
                                     ▼
@@ -94,9 +93,9 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 1. **单 Agent 闭环内核边界**：
    - **内核 = `thunder-agent-loop`**：负责单个 AgentLoop 的自主执行（推理、流式事件、工具调度、上下文裁剪）。不感知任何多 Agent 拓扑、外部调度器或持久化会话库。
    - 宿主（root / daemon / tui）只通过 `start` / `join` / `cancel` 驱动内核，绝不接管内核内部的 turn。
-2. **纯粹的传输抽象与 Pi-Bridge**：
+2. **纯粹的传输抽象与进程内直连**：
    - `thunder-agent-loop` 内置的 `LLMClientTrait` 纯契约抽象，不包含任何网络或特定供应商协议库。
-   - 生产环境中统一通过 `thunder-pi-bridge` 将调用代理给 `@earendil-works/pi-ai`，零维护支持多供应商方言与思考模式。
+   - 生产环境中由 `thunder-agent-providers` 的 `RpiAiClient` 直接发 HTTP 流式请求（`rpi-ai`），不起子进程、不依赖宿主机装 Node；不支持的方言明确报错。
 3. **并发写安全保护**：
    - 无论宿主并发多任务还是单 Agent 内多工具并发，写文件操作统一通过 `FILE_MUTATION_LOCKS` 按物理路径互斥排队，杜绝竞态破坏。
 4. **确定性轻量宿主**：

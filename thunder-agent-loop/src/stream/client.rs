@@ -66,7 +66,7 @@ pub trait LLMClientTrait: Send + Sync {
 }
 
 /// A default unconfigured client that returns an informative error if invoked.
-/// Production LLM transport is provided by `thunder-pi-bridge` (via `@earendil-works/pi-ai`).
+/// Production LLM transport is provided by `thunder-agent-providers` (`RpiAiClient`).
 #[derive(Debug, Clone, Default)]
 pub struct UnconfiguredLLMClient;
 
@@ -77,6 +77,6 @@ impl LLMClientTrait for UnconfiguredLLMClient {
         _options: ChatRequestOptions,
         _cancel_token: CancellationToken,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
-        Err("No LLM client configured. In production, thunder-pi-bridge provides the LLM transport via @earendil-works/pi-ai.".to_string())
+        Err("No LLM client configured. In production, thunder-agent-providers' RpiAiClient provides the LLM transport.".to_string())
     }
 }
