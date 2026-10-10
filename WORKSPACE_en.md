@@ -43,8 +43,7 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── test.sh                       # Workspace-wide test suite script
 ├── .thunder/                       # Thunder's own config (user-level ~/.thunder/ mirrors it)
 ├── thunder-agent-loop/           # Agent A: Single-agent atomic loop engine
-├── thunder-pi-bridge/            # pi-ai Node Sidecar transport (@earendil-works/pi-ai)
-├── thunder-agent-providers/      # LLM catalog & config parsing
+├── thunder-agent-providers/      # LLM catalog, config parsing & in-process streaming
 ├── thunder-agent-skills/         # Skill parsing, discovery & global cache
 ├── thunder-agent-plugin/         # TypeScript single-file plugin engine
 ├── thunder-agent-mcp/            # MCP client & dynamic tool bridge
@@ -63,7 +62,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 
 ```text
                        ┌─────────────────────────┐
-                       │    thunder-pi-bridge    │ (Node Sidecar: pi-ai)
+                       │  thunder-agent-providers│ (RpiAiClient: in-process HTTP)
                        └────────────┬────────────┘
                                     │ implements LLMClientTrait
                                     ▼
@@ -96,7 +95,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
    - Hosts (root / daemon / tui) drive the kernel only through `start` / `join` / `cancel`, and never drive the kernel's internal turns.
 2. **Pure Transport Abstraction & Pi-Bridge**:
    - `thunder-agent-loop` defines `LLMClientTrait` as a pure transport contract without internal HTTP or dialect dependencies.
-   - In production, calls are delegated through `thunder-pi-bridge` to `@earendil-works/pi-ai`, achieving zero-maintenance support for multi-provider dialects and reasoning effort levels.
+   - In production, `thunder-agent-providers`' `RpiAiClient` issues the HTTP stream directly (`rpi-ai`) — no child process, no Node on the host. Dialects it cannot stream are rejected with a clear error.
 3. **Concurrent Mutation Safety**:
    - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` using process-wide physical path mutexes, preventing silent overwrites.
 4. **Deterministic Lightweight Host**:

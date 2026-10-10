@@ -65,7 +65,7 @@ Rules:
 ## What stays in A
 
 - Closed autonomous loop (`run` / `start`)
-- `LLMClientTrait` transport abstraction (implemented in production by `thunder-pi-bridge`)
+- `LLMClientTrait` transport abstraction (implemented in production by `RpiAiClient`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
 - In-memory context pruning with decoupled tool output eviction (`tool_eviction_threshold_tokens`)
 - Process-wide path concurrency locking (`FILE_MUTATION_LOCKS`)

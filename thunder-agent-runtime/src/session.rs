@@ -7,7 +7,7 @@ use std::sync::Arc;
 use thunder_agent_loop::loop_engine::gate::GateVerdict;
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::{AgentLoop, ContextInput};
-use thunder_pi_bridge::PiAiClient;
+use thunder_agent_providers::RpiAiClient;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -190,7 +190,7 @@ impl Runtime {
         &self,
         id: Option<String>,
         run_id: String,
-        model: thunder_pi_bridge::BridgeModel,
+        model: thunder_agent_providers::ModelDescriptor,
         system_prompt: Option<String>,
         messages: Vec<thunder_agent_loop::ChatMessage>,
         tools: Vec<RemoteToolSpec>,
@@ -221,7 +221,25 @@ impl Runtime {
         config.request_timeout_ms = request_timeout_ms;
         config.session_id = session_id;
 
-        let client = PiAiClient::new_lazy(model, request_timeout_ms);
+        // A dialect this build cannot stream fails the run here, with the reason
+        // in the reply — the host has no other way to learn why nothing streamed.
+        let client = match RpiAiClient::from_descriptor(&model, request_timeout_ms) {
+            Ok((client, notes)) => {
+                if !notes.is_empty() {
+                    tracing::warn!(
+                        model = %model.id,
+                        notes = ?notes.describe(),
+                        "model descriptor lost fields the stream client cannot carry"
+                    );
+                }
+                client
+            }
+            Err(err) => {
+                self.reply(id, false, Some(format!("model `{}`: {err}", model.id)))
+                    .await;
+                return;
+            }
+        };
         let mut agent = AgentLoop::new(config)
             .with_id(run_id.clone())
             .with_custom_client(Arc::new(client));

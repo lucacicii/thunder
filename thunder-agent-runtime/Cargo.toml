@@ -20,7 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 thunder-agent-loop.workspace = true
-thunder-pi-bridge.workspace = true
+thunder-agent-providers.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "io-std"] }
 serde.workspace = true
 serde_json.workspace = true

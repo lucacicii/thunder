@@ -1,13 +1,16 @@
 //! Multi-provider LLM adapter engine for Thunder.
 //!
 //! Exposes pi-ai compatible models.json / auth.json configuration parsing and
-//! proxies streaming LLM execution through `@earendil-works/pi-ai` via `thunder-pi-bridge`.
+//! streams from the resolved model over HTTP, in process ([`client::RpiAiClient`]).
 
 pub mod api;
 pub mod auth;
 pub mod catalog;
+pub mod client;
 pub mod config;
+pub mod convert;
 pub mod error;
+pub mod model;
 pub mod naming;
 pub mod probe;
 pub mod source;
@@ -16,11 +19,15 @@ pub mod openai {
     pub use crate::api::normalize_openai_base;
 }
 
+// The two names a consumer outside this crate needs: the model description it
+// sends over the wire, and the client that streams it.
+pub use crate::client::RpiAiClient;
+pub use crate::model::{ModelCost, ModelDescriptor, ModelPromptCache};
+
 use crate::catalog::{ModelSpec, ProviderRegistry};
 use crate::error::ProviderError;
 use std::sync::Arc;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_pi_bridge::PiAiClient;
 
 pub fn client_for(
     spec: &ModelSpec,
@@ -32,8 +39,29 @@ pub fn client_for(
             spec.selection_id()
         )));
     }
-    let bridge_model = spec.to_bridge_model();
-    Ok(Arc::new(PiAiClient::new_lazy(bridge_model, timeout_ms)))
+    let descriptor = spec.to_descriptor();
+    // A dialect this build cannot stream is reported as such, naming the model:
+    // the catalog's `available` flag only speaks about credentials, so this is
+    // the first place a user learns the difference.
+    if !convert::supports_api(&descriptor.api) {
+        return Err(ProviderError::Config(format!(
+            "model `{}`: {}",
+            spec.selection_id(),
+            convert::unsupported_api_message(&descriptor.api)
+        )));
+    }
+    let (client, notes) =
+        client::RpiAiClient::from_descriptor(&descriptor, timeout_ms).map_err(|err| {
+            ProviderError::Transport(format!("model `{}`: {err}", spec.selection_id()))
+        })?;
+    if !notes.is_empty() {
+        tracing::warn!(
+            model = %spec.selection_id(),
+            notes = ?notes.describe(),
+            "model descriptor lost fields the stream client cannot carry"
+        );
+    }
+    Ok(Arc::new(client))
 }
 
 pub async fn client_for_selection(
@@ -62,11 +90,14 @@ pub mod prelude {
         default_metadata_cache_path, ModelMetadataCache, ModelSpec, ProviderRegistry,
         DEFAULT_SAFE_CONTEXT_WINDOW,
     };
+    pub use crate::client::RpiAiClient;
     pub use crate::client_for;
     pub use crate::client_for_selection;
     pub use crate::config::ModelsFile;
+    pub use crate::convert::{supports_api, ConversionNotes, SUPPORTED_APIS};
     pub use crate::error::ProviderError;
     pub use crate::has_available_model;
+    pub use crate::model::{ModelCost, ModelDescriptor, ModelPromptCache};
     pub use crate::naming::{clamp_title, clean_generated_title, generate_title, TitleGenError};
     pub use crate::source::ConfigSource;
 }

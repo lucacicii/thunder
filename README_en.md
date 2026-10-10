@@ -15,9 +15,9 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 1. **Single-Agent Closed-Loop Kernel (`thunder-agent-loop`)**:
    - Atomic closed execution unit for a single task. Responsible for driving multi-turn reasoning, streaming token parsing, concurrent tool execution, and context pruning. Never couples multi-agent graph or shared blackboard logic.
    - Tool calls are dispatched concurrently (`ToolExecutor::execute_all`), so a single agent already gains parallel tool-execution benefits while keeping a stable conversation prefix to maximize provider-side prompt cache hits.
-2. **`pi-bridge` Single Transport Convergence**:
-   - Replaced high-maintenance custom Rust model dialect adapters with a single Node.js sidecar running `@earendil-works/pi-ai`, pre-bundled via esbuild.
-   - Zero `npm install` required on fresh checkouts. Seamlessly unifies dialect handling, token accounting, and thinking level mappings across OpenAI, Anthropic Claude, DeepSeek, Google Gemini, Ollama, and more.
+2. **In-Process Streaming Transport (`rpi-ai`)**:
+   - Model calls are HTTP streams issued from inside `thunder-agent-providers` — **no child process, no bundled `bridge.mjs`, no Node required on the host**.
+   - Covers `openai-responses`, `openai-completions` and `anthropic-messages`, including token accounting, thinking-level and prompt-cache retention mapping. Dialects outside those three (Gemini, Bedrock, Vertex, Mistral) are rejected with a clear error rather than failing silently.
 3. **Checkpoint Context Compaction**:
    - Between two compactions the request prefix stays **byte-identical**, maximizing provider-side prompt cache hits.
    - Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) does it swap older history for a single LLM-generated structured checkpoint (Goal / Progress / Decisions / Next Steps + read/modified file lists), keeping the last `keep_recent_tokens` verbatim.
@@ -35,12 +35,11 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 
 ---
 
-## 📦 Workspace Package Matrix (10 Workspace Crates)
+## 📦 Workspace Package Matrix (9 Workspace Crates)
 
 | Crate | Path | Description |
 | :--- | :--- | :--- |
 | **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent A**: Single-agent atomic loop engine with decoupled tool output eviction and cross-agent file write mutex |
-| **`thunder-pi-bridge`** | [`thunder-pi-bridge`](thunder-pi-bridge) | **LLM Transport**: Pre-bundled Node.js sidecar running `@earendil-works/pi-ai`, normalizing model dialects and streaming |
 | **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **Model Catalog**: Loads `models.json` / `auth.json`, manages model specifications and thinking level mappings |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **Skills Engine**: Discovers and parses Playbooks / SKILL.md with intent trigger matching and 120s TTL global cache |
 | **`thunder-agent-plugin`** | [`thunder-agent-plugin`](thunder-agent-plugin) | **TS Plugin Host**: Single-file TypeScript plugin runner with native execution, blue-green reload, and error immunity |
@@ -57,7 +56,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 
 ### Prerequisites
 - **Rust**: 1.80+
-- **Node.js**: 20+ (Required for `thunder-pi-bridge` sidecar; runtime bundle is pre-packaged, no `npm install` needed)
+- **No Node.js needed**: model calls happen in-process (the `bridge.mjs` sidecar that used to require it is gone)
 
 ### Common Commands
 

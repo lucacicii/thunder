@@ -259,7 +259,7 @@ async fn test_resolve_utility_model_and_probed_flag() {
 }
 
 #[test]
-fn cache_compat_flags_flow_to_bridge_model() {
+fn cache_compat_flags_flow_to_model_descriptor() {
     // Regression: CompatConfig used to silently drop every prompt-cache flag,
     // so pi-ai fell back to defaults (no cache_control injection on
     // anthropic-style openai endpoints, wrong long-retention TTLs, no
@@ -288,7 +288,7 @@ fn cache_compat_flags_flow_to_bridge_model() {
     let registry = ProviderRegistry::from_parts(file, &AuthFile::default()).unwrap();
     let spec = registry.resolve("vllm-proxy/claude-sonnet-5").unwrap();
 
-    let bridge = spec.to_bridge_model();
+    let bridge = spec.to_descriptor();
     let compat = bridge.compat.as_ref().expect("compat must passthrough");
     // model-level compat merges over provider-level
     assert_eq!(compat["cacheControlFormat"], "anthropic");
@@ -307,7 +307,7 @@ fn cache_compat_flags_flow_to_bridge_model() {
     assert_eq!(prompt_cache.short, Some(300));
     assert_eq!(prompt_cache.long, Some(3600));
 
-    // the serialized BridgeModel keeps pi-ai's camelCase wire names
+    // the serialized descriptor keeps pi-ai's camelCase wire names
     let json = serde_json::to_value(&bridge).unwrap();
     assert_eq!(json["promptCache"]["short"], 300);
     assert_eq!(json["cost"]["cacheWrite"], 3.75);
@@ -316,7 +316,7 @@ fn cache_compat_flags_flow_to_bridge_model() {
 #[test]
 fn prompt_cache_warm_settings_derivation() {
     use thunder_agent_providers::catalog::ModelSpec;
-    use thunder_pi_bridge::{BridgeCost, BridgePromptCache};
+    use thunder_agent_providers::{ModelCost, ModelPromptCache};
 
     let base = |api, compat, prompt_cache, cost| ModelSpec {
         provider: "p".to_string(),
@@ -343,13 +343,13 @@ fn prompt_cache_warm_settings_derivation() {
         cost,
     };
     let pc = || {
-        Some(BridgePromptCache {
+        Some(ModelPromptCache {
             short: Some(300),
             long: Some(3600),
         })
     };
     let cost = || {
-        Some(BridgeCost {
+        Some(ModelCost {
             input: 3.0,
             output: 15.0,
             cache_read: 0.3,
@@ -401,7 +401,7 @@ fn prompt_cache_warm_settings_derivation() {
     let spec = base(
         ProviderApi::AnthropicMessages,
         None,
-        Some(BridgePromptCache {
+        Some(ModelPromptCache {
             short: None,
             long: Some(3600),
         }),
@@ -414,7 +414,7 @@ fn prompt_cache_warm_settings_derivation() {
         ProviderApi::AnthropicMessages,
         None,
         pc(),
-        Some(BridgeCost::default()),
+        Some(ModelCost::default()),
     );
     let s = spec.prompt_cache_warm_settings(Some("high")).unwrap();
     let (decision, _) = thunder_agent_loop::cache::warmer::decide_warming(50_000, false, &s);

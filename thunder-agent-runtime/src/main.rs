@@ -10,8 +10,8 @@
 //!
 //! `--config-dir <path>` names thunder's user data root for this process (the
 //! same knob as `THUNDER_CONFIG_DIR`; see `thunder_agent_loop::core::paths`), so
-//! a host can keep this binary's bridge install, scratchpad and conversation
-//! state out of the end user's `~/.thunder`.
+//! a host can keep this binary's scratchpad and conversation state out of the
+//! end user's `~/.thunder`.
 
 mod protocol;
 mod remote;
@@ -37,9 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // `--config-dir <path>` names thunder's user data root for this process. It
     // is applied to the environment rather than threaded through as a value, so
-    // every layer below — the loop's scratchpad and the Node bridge child spawned
-    // on the first model call — resolves one root. An explicit flag beats an
-    // inherited `THUNDER_CONFIG_DIR`.
+    // every layer below — the loop's scratchpad among them — resolves one root.
+    // An explicit flag beats an inherited `THUNDER_CONFIG_DIR`.
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--config-dir") {
         match args.get(pos + 1) {

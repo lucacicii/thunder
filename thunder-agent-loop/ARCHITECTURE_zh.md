@@ -60,7 +60,7 @@ let result = handle.join().await?;
 ## 留在 A 内部的能力
 
 - 完整的闭环自主循环（`run` / `start`）
-- `LLMClientTrait` 传输抽象契约（生产环境由 `thunder-pi-bridge` 实现）
+- `LLMClientTrait` 传输抽象契约（生产环境由 `RpiAiClient` 实现）
 - 工具注册表、并发工具派发、超时熔断与 UTF-8 截断
 - 内存上下文裁剪，支持解耦工具输出驱逐（`tool_eviction_threshold_tokens`）
 - 全局路径排队锁（`FILE_MUTATION_LOCKS`）
