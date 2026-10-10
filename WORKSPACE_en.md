@@ -104,6 +104,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 5. **Config lives in .thunder/, never .arp**:
    - `.arp/` belongs to `agent-resume-panel` (panel config + shared artifacts); Thunder reads none of it.
    - Thunder's own project state lives under `.thunder/`: `config.json` (agent config), `mcp.json` (MCP servers), `THUNDER.md` + `memory/*.md` (long-term memory), `plugins/`, `tmp/`. The user-level `~/.thunder/` supplies same-named defaults, overridden by user -> project -> `*.local.*`.
+   - The user-level data root can be relocated wholesale with `THUNDER_CONFIG_DIR` (or `--config-dir <path>`), defaulting to `~/.thunder`. It owns *all* of thunder's own state — the files above plus `conversations/`, `scratchpad/`, `bridge/`, `models.json`/`auth.json`/`models_metadata.json` — so a host can contain one instance inside its own directory. Resolution lives in `thunder-agent-loop/src/core/paths.rs`; cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
 
 ---
 

@@ -68,18 +68,11 @@ pub fn resolve_thinking_levels(
 }
 
 /// Resolves standard location for runtime learned model specifications cache.
+///
+/// Lives with `models.json` under the user data root, which is also where hosts
+/// read it from — the two sides must agree on one directory.
 pub fn default_metadata_cache_path() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-            .join(".thunder")
-            .join("models_metadata.json")
-    } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        PathBuf::from(userprofile)
-            .join(".thunder")
-            .join("models_metadata.json")
-    } else {
-        std::env::temp_dir().join("thunder_models_metadata.json")
-    }
+    thunder_agent_loop::core::paths::thunder_subdir("models_metadata.json")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

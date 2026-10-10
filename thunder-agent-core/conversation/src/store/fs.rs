@@ -57,11 +57,7 @@ impl FsConversationStore {
     }
 
     pub fn default_store_root() -> PathBuf {
-        if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".thunder").join("conversations")
-        } else {
-            std::env::temp_dir().join("thunder-conversations")
-        }
+        thunder_agent_loop::core::paths::thunder_subdir("conversations")
     }
 
     pub fn root(&self) -> &Path {

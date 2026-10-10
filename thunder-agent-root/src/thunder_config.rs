@@ -90,9 +90,7 @@ impl ThunderConfig {
     /// The config files consulted, lowest precedence first.
     pub fn candidate_paths(workspace: Option<&Path>) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        if let Some(home) = std::env::var_os("HOME") {
-            paths.push(PathBuf::from(home).join(THUNDER_DIR).join(CONFIG_FILE));
-        }
+        paths.push(thunder_agent_loop::core::paths::thunder_config_dir().join(CONFIG_FILE));
         if let Some(ws) = workspace {
             paths.push(ws.join(THUNDER_DIR).join(CONFIG_FILE));
             paths.push(ws.join(THUNDER_DIR).join(CONFIG_LOCAL_FILE));

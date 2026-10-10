@@ -127,9 +127,10 @@ impl McpConfig {
             PathBuf::from(".mcp.json"),
         ];
 
-        if let Ok(home) = std::env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            candidates.push(home_path.join(".thunder").join("mcp.json"));
+        // thunder's own mcp.json follows its data root; the rest are cross-tool
+        // files that belong to the user, so they stay under the real home.
+        candidates.push(thunder_agent_loop::core::paths::thunder_subdir("mcp.json"));
+        if let Some(home_path) = thunder_agent_loop::core::paths::real_home_dir() {
             candidates.push(home_path.join(".mcp.json"));
             candidates.push(home_path.join("mcp_servers.json"));
             candidates.push(home_path.join(".cursor/mcp.json"));

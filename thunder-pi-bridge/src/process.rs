@@ -723,12 +723,11 @@ fn done_to_chunk(value: &serde_json::Value) -> LLMStreamChunk {
     }
 }
 
-/// Ensure a directory path for the global bridge install.
+/// Ensure a directory path for the global bridge install, under thunder's user
+/// data root — so an embedding host gets its own bridge copy instead of sharing
+/// the end user's `~/.thunder/bridge`.
 pub fn default_bridge_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    home.join(".thunder").join("bridge")
+    thunder_agent_loop::core::paths::thunder_subdir("bridge")
 }
 
 /// One-line helper used by tests: does this dir look like a bridge install?

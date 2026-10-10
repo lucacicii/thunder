@@ -10,13 +10,11 @@ pub struct AuthFile {
 }
 
 impl AuthFile {
+    /// Always resolves: the data root itself falls back to `<home>/.thunder`.
+    /// The `Option` shape is kept for callers written against the old fallible
+    /// signature.
     pub fn default_path() -> Option<PathBuf> {
-        if let Ok(dir) = std::env::var("THUNDER_CONFIG_DIR") {
-            return Some(PathBuf::from(dir).join("auth.json"));
-        }
-        std::env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".thunder/auth.json"))
+        Some(thunder_agent_loop::core::paths::thunder_config_dir().join("auth.json"))
     }
 
     pub async fn load_default() -> Self {

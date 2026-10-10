@@ -405,8 +405,16 @@ impl ThunderRoot {
             .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
             .to_string();
         // 4a. Discover and append AGENTS.md / CLAUDE.md instruction context files (aligning with Pi)
-        let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
-        let context_files = discover_context_files(self.workspace_root.as_deref(), home_dir.as_deref()).await;
+        // Two roots: the user's own cross-tool dirs, and thunder's data root, which
+        // an embedding host may have pointed somewhere private.
+        let real_home = thunder_agent_loop::core::paths::real_home_dir();
+        let thunder_root = thunder_agent_loop::core::paths::thunder_config_dir();
+        let context_files = discover_context_files(
+            self.workspace_root.as_deref(),
+            real_home.as_deref(),
+            Some(thunder_root.as_path()),
+        )
+        .await;
         for ctx_file in context_files {
             base_prompt.push_str("\n\n### Context Instructions (");
             base_prompt.push_str(&ctx_file.path.display().to_string());
