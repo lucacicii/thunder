@@ -17,6 +17,12 @@ jobs:
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    # The default is 360 minutes, and a wedged runner sits in the job until it
+    # expires — a v0.3.0 build spent 20 minutes stuck uploading an 8 MB artifact
+    # and did not respond to cancel or force-cancel. Real work here is a few
+    # minutes warm and well under this cold (fat LTO, codegen-units = 1), so a
+    # ceiling turns "wedged" into "failed" and lets the tag be rebuilt.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +135,10 @@ jobs:
     # uploads the artifacts above. Only a real `v*` tag publishes.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # Downloads three ~20 MB artifact sets, hashes them and calls the release
+    # API; seconds of work. Halves the upload that wedged in v0.3.0 — an
+    # artifact that never arrives must not hold the release open.
+    timeout-minutes: 10
     steps:
       - name: Download all arch artifacts
         uses: actions/download-artifact@v4
