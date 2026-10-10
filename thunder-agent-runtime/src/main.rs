@@ -43,10 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--config-dir") {
         match args.get(pos + 1) {
-            Some(dir) => std::env::set_var(
-                thunder_agent_loop::core::paths::THUNDER_CONFIG_DIR_ENV,
-                dir,
-            ),
+            Some(dir) => {
+                std::env::set_var(thunder_agent_loop::core::paths::THUNDER_CONFIG_DIR_ENV, dir)
+            }
             None => {
                 eprintln!("--config-dir requires a path");
                 std::process::exit(2);
@@ -72,7 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok()
                     .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string));
                 if let Some(id) = id {
-                    runtime.reply(Some(id), false, Some(format!("invalid request: {err}"))).await;
+                    runtime
+                        .reply(Some(id), false, Some(format!("invalid request: {err}")))
+                        .await;
                 } else {
                     runtime.emit_error(format!("invalid request: {err}"));
                 }

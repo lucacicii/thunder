@@ -121,7 +121,9 @@ impl Runtime {
                         self.reply(
                             id,
                             false,
-                            Some(format!("no pending tool call `{call_id}` for run `{run_id}`")),
+                            Some(format!(
+                                "no pending tool call `{call_id}` for run `{run_id}`"
+                            )),
                         )
                         .await;
                     }
@@ -250,10 +252,7 @@ impl Runtime {
         let token = CancellationToken::new();
         self.runs.lock().await.insert(run_id.clone(), token.clone());
 
-        let mut handle = match agent.start(
-            ContextInput::Messages(messages),
-            Some(token.clone()),
-        ) {
+        let mut handle = match agent.start(ContextInput::Messages(messages), Some(token.clone())) {
             Ok(handle) => handle,
             Err(err) => {
                 self.runs.lock().await.remove(&run_id);
@@ -353,10 +352,7 @@ async fn writer_task(
     let _ = stdout.flush().await;
 }
 
-pub(crate) async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
-    w: &mut W,
-    frame: &RuntimeEvent,
-) {
+pub(crate) async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, frame: &RuntimeEvent) {
     match serde_json::to_string(frame) {
         Ok(line) => {
             let _ = w.write_all(line.as_bytes()).await;

@@ -522,7 +522,11 @@ impl ProviderRegistry {
     /// Dynamically update a model's context window after real error detection or runtime confirmation,
     /// and persist it to the default cache file.
     pub fn update_model_context_window(&mut self, selection_id: &str, real_limit: usize) -> bool {
-        self.update_model_context_window_at(&default_metadata_cache_path(), selection_id, real_limit)
+        self.update_model_context_window_at(
+            &default_metadata_cache_path(),
+            selection_id,
+            real_limit,
+        )
     }
 
     /// Same as [`Self::update_model_context_window`], but the caller names the cache

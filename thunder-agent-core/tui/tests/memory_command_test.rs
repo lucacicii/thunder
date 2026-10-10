@@ -50,7 +50,10 @@ async fn memory_list_names_the_project_files() {
         other => panic!("unexpected event: {other:?}"),
     };
 
-    assert!(content.contains("THUNDER.md"), "listing missing the main file:\n{content}");
+    assert!(
+        content.contains("THUNDER.md"),
+        "listing missing the main file:\n{content}"
+    );
     assert!(
         content.contains("memory/build.md"),
         "listing missing the topic file:\n{content}"

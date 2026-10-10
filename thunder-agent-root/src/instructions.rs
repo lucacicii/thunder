@@ -73,7 +73,9 @@ pub async fn discover_context_files(
         }
         for candidate_dir in global_candidates {
             if let Some(file_path) = find_context_file_in_dir(&candidate_dir) {
-                let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+                let canonical = file_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| file_path.clone());
                 if seen_canonical_paths.insert(canonical) {
                     match tokio::fs::read_to_string(&file_path).await {
                         Ok(raw) => {
@@ -104,7 +106,9 @@ pub async fn discover_context_files(
 
         while let Some(dir) = curr {
             if let Some(file_path) = find_context_file_in_dir(&dir) {
-                let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+                let canonical = file_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| file_path.clone());
                 if seen_canonical_paths.insert(canonical) {
                     match tokio::fs::read_to_string(&file_path).await {
                         Ok(raw) => {
@@ -146,19 +150,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path();
 
-        tokio::fs::write(p.join("CLAUDE.md"), "claude content").await.unwrap();
-        assert_eq!(
-            find_context_file_in_dir(p),
-            Some(p.join("CLAUDE.md"))
-        );
+        tokio::fs::write(p.join("CLAUDE.md"), "claude content")
+            .await
+            .unwrap();
+        assert_eq!(find_context_file_in_dir(p), Some(p.join("CLAUDE.md")));
 
-        tokio::fs::write(p.join("AGENTS.md"), "agents content").await.unwrap();
-        assert_eq!(
-            find_context_file_in_dir(p),
-            Some(p.join("AGENTS.md"))
-        );
+        tokio::fs::write(p.join("AGENTS.md"), "agents content")
+            .await
+            .unwrap();
+        assert_eq!(find_context_file_in_dir(p), Some(p.join("AGENTS.md")));
 
-        tokio::fs::write(p.join("AGENTS.override.md"), "override content").await.unwrap();
+        tokio::fs::write(p.join("AGENTS.override.md"), "override content")
+            .await
+            .unwrap();
         assert_eq!(
             find_context_file_in_dir(p),
             Some(p.join("AGENTS.override.md"))
@@ -172,8 +176,12 @@ mod tests {
         let child = parent.join("child");
         tokio::fs::create_dir_all(&child).await.unwrap();
 
-        tokio::fs::write(parent.join("AGENTS.md"), "parent instructions").await.unwrap();
-        tokio::fs::write(child.join("AGENTS.md"), "child instructions").await.unwrap();
+        tokio::fs::write(parent.join("AGENTS.md"), "parent instructions")
+            .await
+            .unwrap();
+        tokio::fs::write(child.join("AGENTS.md"), "child instructions")
+            .await
+            .unwrap();
 
         let files = discover_context_files(Some(&child), None, None).await;
         assert_eq!(files.len(), 2);
@@ -188,10 +196,14 @@ mod tests {
         let home = tempdir().unwrap();
         let agents_dir = home.path().join(".agents");
         tokio::fs::create_dir_all(&agents_dir).await.unwrap();
-        tokio::fs::write(agents_dir.join("AGENTS.md"), "global agents").await.unwrap();
+        tokio::fs::write(agents_dir.join("AGENTS.md"), "global agents")
+            .await
+            .unwrap();
 
         let ws = tempdir().unwrap();
-        tokio::fs::write(ws.path().join("AGENTS.md"), "ws agents").await.unwrap();
+        tokio::fs::write(ws.path().join("AGENTS.md"), "ws agents")
+            .await
+            .unwrap();
 
         let files = discover_context_files(Some(ws.path()), Some(home.path()), None).await;
         assert_eq!(files.len(), 2);

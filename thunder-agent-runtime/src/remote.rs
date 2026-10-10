@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::gate::{CompletionGate, GateRequest, GateVerdict};
 use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::tool::{
-    AgentTool, ToolDefinition, ToolExecutionContext,
-};
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Shared registry of tool calls the host has not answered yet.

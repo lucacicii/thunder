@@ -156,7 +156,9 @@ impl ToolExecutor {
                 };
                 // Route through the context-aware path so the declared effect
                 // and the run's event sink are stamped onto every parallel call.
-                let res = self.execute_with_context(&tc_clone, ctx, custom_timeout).await;
+                let res = self
+                    .execute_with_context(&tc_clone, ctx, custom_timeout)
+                    .await;
                 ExecutedToolResult {
                     tool_call: tc_clone,
                     result: res,

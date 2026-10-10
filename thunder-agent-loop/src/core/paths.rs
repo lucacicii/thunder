@@ -132,7 +132,8 @@ mod tests {
 
     #[test]
     fn blank_env_values_count_as_unset() {
-        let dir = thunder_config_dir_from(env(&[(THUNDER_CONFIG_DIR_ENV, "   "), ("HOME", "/home/u")]));
+        let dir =
+            thunder_config_dir_from(env(&[(THUNDER_CONFIG_DIR_ENV, "   "), ("HOME", "/home/u")]));
         assert_eq!(dir, PathBuf::from("/home/u").join(THUNDER_DIR_NAME));
     }
 

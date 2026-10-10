@@ -126,9 +126,8 @@ impl ToolPipeline {
         registry: ToolRegistry,
         scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
     ) -> Self {
-        let terminal: Arc<dyn ToolHandler> = Arc::new(RegistryTerminalHandler::new(
-            registry.clone(),
-        ));
+        let terminal: Arc<dyn ToolHandler> =
+            Arc::new(RegistryTerminalHandler::new(registry.clone()));
         let mut pipeline = Self::new(terminal);
         if scratchpad.is_some() {
             pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(

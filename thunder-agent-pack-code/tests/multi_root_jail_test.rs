@@ -6,12 +6,12 @@ mod support;
 
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::config::{MiddlewareConfig, Permission};
 use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_loop::types::tool::ToolExecutionContext;
 use thunder_agent_loop::AgentLoop;
+use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use tokio_util::sync::CancellationToken;
 
 fn temp_dir(name: &str) -> std::path::PathBuf {

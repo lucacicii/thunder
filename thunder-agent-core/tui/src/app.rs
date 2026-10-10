@@ -2732,8 +2732,7 @@ impl App {
         let arg1 = args.get(1).map(|s| s.to_string());
 
         tokio::spawn(async move {
-            let sources =
-                thunder_agent_root::plugins::memory::memory_sources(&ws).await;
+            let sources = thunder_agent_root::plugins::memory::memory_sources(&ws).await;
 
             let content = match action.as_str() {
                 "list" => {
@@ -2766,7 +2765,9 @@ impl App {
                     }
                 }
                 "show" => match arg1 {
-                    None => "Usage: `/memory show <file>` (e.g. `/memory show THUNDER.md`)".to_string(),
+                    None => {
+                        "Usage: `/memory show <file>` (e.g. `/memory show THUNDER.md`)".to_string()
+                    }
                     Some(name) => {
                         let want = name.trim_start_matches("./");
                         // Only files that exist: the source list names
@@ -2877,8 +2878,10 @@ impl App {
         match args.first().copied() {
             Some("run") => {
                 let Some(name) = args.get(1).copied() else {
-                    self.conversation
-                        .add_assistant_message(Some("Usage: `/prompt run <name> [args]`".to_string()), None);
+                    self.conversation.add_assistant_message(
+                        Some("Usage: `/prompt run <name> [args]`".to_string()),
+                        None,
+                    );
                     self.save_and_refresh();
                     return;
                 };
@@ -2894,7 +2897,8 @@ impl App {
                         self.submit_prompt(rendered, event_tx);
                     }
                     None => {
-                        let out = format!("❌ No prompt template named `{name}`. Use `/prompt list`.");
+                        let out =
+                            format!("❌ No prompt template named `{name}`. Use `/prompt list`.");
                         self.conversation.add_assistant_message(Some(out), None);
                         self.save_and_refresh();
                     }

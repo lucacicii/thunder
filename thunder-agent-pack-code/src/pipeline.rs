@@ -1,6 +1,8 @@
 //! Assembles the coding pipeline the kernel used to build for itself.
 
-use crate::middleware::{FileChangeMiddleware, ResourceGuardMiddleware, SecurityGuardMiddleware, TransactionMiddleware};
+use crate::middleware::{
+    FileChangeMiddleware, ResourceGuardMiddleware, SecurityGuardMiddleware, TransactionMiddleware,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::tools::middleware::{
@@ -71,9 +73,7 @@ pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     }
 
     let terminal: Arc<dyn thunder_agent_loop::tools::middleware::ToolHandler> =
-        Arc::new(thunder_agent_loop::tools::middleware::RegistryTerminalHandler::new(
-            registry,
-        ));
+        Arc::new(thunder_agent_loop::tools::middleware::RegistryTerminalHandler::new(registry));
     let mut pipeline = ToolPipeline::new(terminal);
 
     // Add order is outermost-first (see `ToolPipeline::execute`).

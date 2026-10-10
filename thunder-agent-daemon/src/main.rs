@@ -43,10 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // explicit flag beats an inherited `THUNDER_CONFIG_DIR`.
     if let Some(pos) = args.iter().position(|a| a == "--config-dir") {
         match args.get(pos + 1) {
-            Some(dir) => std::env::set_var(
-                thunder_agent_loop::core::paths::THUNDER_CONFIG_DIR_ENV,
-                dir,
-            ),
+            Some(dir) => {
+                std::env::set_var(thunder_agent_loop::core::paths::THUNDER_CONFIG_DIR_ENV, dir)
+            }
             None => {
                 eprintln!("--config-dir requires a path");
                 std::process::exit(2);
