@@ -39,6 +39,12 @@ fn default_gate_rounds() -> usize {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
+// A wire frame: parsed once per line of stdin, matched once. `Start` is far larger
+// than the other variants (it carries the model, the messages and the tool specs),
+// but nothing here sits in a slice or gets copied in a loop, so the size gap
+// clippy::large_enum_variant warns about costs nothing at runtime — boxing the
+// variant would only add an allocation and churn every construction site.
+#[allow(clippy::large_enum_variant)]
 pub enum RuntimeRequest {
     /// Liveness + protocol version.
     Ping { id: Option<String> },
@@ -92,7 +98,11 @@ pub enum RuntimeRequest {
         feedback: Option<String>,
     },
     /// Stop a run.
-    Cancel { id: Option<String>, #[serde(alias = "runId")] run_id: String },
+    Cancel {
+        id: Option<String>,
+        #[serde(alias = "runId")]
+        run_id: String,
+    },
 }
 
 fn default_timeout_ms() -> u64 {
