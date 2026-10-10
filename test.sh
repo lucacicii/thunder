@@ -35,7 +35,10 @@ echo -e "Cargo Version: $(cargo --version)"
 echo ""
 
 echo -e "${BLUE}▶ Running cargo test --workspace (10 Crates, Unified Target)...${NC}"
-cargo test --workspace --quiet --features thunder-agent-daemon/testing-mock "$@"
+# --no-fail-fast: cargo stops at the first failing test target by default, so a
+# red run would hide every failure in the crates after it (which is exactly how
+# the tui platform-test failures above masked whatever came later). Report them all.
+cargo test --workspace --no-fail-fast --quiet --features thunder-agent-daemon/testing-mock "$@"
 
 echo -e "${GREEN}✔ All 10 workspace packages passed!${NC}\n"
 echo -e "${GREEN}✨ All Thunder crates and test suites completed successfully!${NC}"
