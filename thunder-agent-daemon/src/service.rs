@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use thunder_agent_loop::prelude::*;
+use thunder_agent_providers::catalog::resolve_thinking_levels;
 use thunder_agent_providers::prelude::*;
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
@@ -13,6 +14,20 @@ use thunder_conversation::prelude::*;
 #[cfg(feature = "testing-mock")]
 use crate::mock::DaemonMockClient;
 use crate::protocol::{DaemonRequest, DaemonResponse};
+
+/// Outbound model-request timeout every run is configured with.
+///
+/// One source of truth: the same value goes to the descriptor-built stream
+/// client and to `AgentConfig::request_timeout_ms`, so a host-supplied model and
+/// a registry-resolved one time out identically.
+const REQUEST_TIMEOUT_MS: u64 = 120_000;
+
+/// The label a host-supplied descriptor is known by, matching the registry's
+/// `provider/id` selection id so a conversation bound to a descriptor reads the
+/// same as one bound to `models.json`.
+fn descriptor_selection_id(descriptor: &ModelDescriptor) -> String {
+    format!("{}/{}", descriptor.provider, descriptor.id)
+}
 
 /// Host/test seam for resolving the LLM client of a task run.
 ///
@@ -384,6 +399,7 @@ impl DaemonService {
                 prompt,
                 session_id,
                 model,
+                model_descriptor,
                 use_mock,
                 workspace_dir,
                 extra_workspace_dirs,
@@ -397,6 +413,7 @@ impl DaemonService {
                     prompt,
                     session_id,
                     model,
+                    model_descriptor,
                     use_mock.unwrap_or(false),
                     workspace_dir,
                     extra_workspace_dirs,
@@ -884,6 +901,7 @@ impl DaemonService {
         prompt: String,
         session_id: Option<String>,
         model: Option<String>,
+        model_descriptor: Option<Box<ModelDescriptor>>,
         use_mock: bool,
         workspace_dir: Option<String>,
         extra_workspace_dirs: Option<Vec<String>>,
@@ -995,6 +1013,52 @@ impl DaemonService {
             }
         }
 
+        // A host that owns its own provider configuration sends a full model
+        // descriptor: build the stream client from it here, so this run never
+        // consults models.json / auth.json. A descriptor that cannot become a
+        // client is answered verbatim — the host is the only party that can fix
+        // it — and the bookkeeping acquired above is released exactly as the
+        // attachment-rejection path below does.
+        let descriptor_model_label = model_descriptor
+            .as_ref()
+            .map(|descriptor| descriptor_selection_id(descriptor));
+        let descriptor_client: Option<Arc<dyn LLMClientTrait>> = match model_descriptor.as_ref() {
+            Some(descriptor) => {
+                let label = descriptor_model_label.clone().unwrap_or_default();
+                match RpiAiClient::from_descriptor(descriptor, REQUEST_TIMEOUT_MS) {
+                    Ok((client, notes)) => {
+                        if !notes.is_empty() {
+                            warn!(
+                                model = %label,
+                                notes = ?notes.describe(),
+                                "model descriptor lost fields the stream client cannot carry"
+                            );
+                        }
+                        Some(Arc::new(client) as Arc<dyn LLMClientTrait>)
+                    }
+                    Err(err) => {
+                        error!(model = %label, error = %err, "Rejected model descriptor");
+                        self.send_response(DaemonResponse::Response {
+                            id,
+                            success: false,
+                            data: None,
+                            error: Some(format!("model descriptor `{label}`: {err}")),
+                        })
+                        .await;
+                        self.active_tasks.lock().await.remove(&task_id);
+                        self.active_pauses.lock().await.remove(&task_id);
+                        self.active_queues.lock().await.remove(&task_id);
+                        self.active_sessions
+                            .lock()
+                            .await
+                            .remove(&effective_session_id);
+                        return;
+                    }
+                }
+            }
+            None => None,
+        };
+
         // Load or create conversation
         let mut conversation = match self.store.load(&effective_session_id).await {
             Ok(Some(existing)) => existing,
@@ -1019,7 +1083,16 @@ impl DaemonService {
         }
 
         let chosen_model = model
-            .or_else(|| conversation.model.clone())
+            .or_else(|| {
+                // A host that supplied a descriptor and no `model` string names
+                // the run by that descriptor, even if the conversation remembers
+                // an older selection.
+                if model_descriptor.is_some() {
+                    descriptor_model_label.clone()
+                } else {
+                    conversation.model.clone()
+                }
+            })
             .unwrap_or_else(|| {
                 available
                     .first()
@@ -1047,8 +1120,15 @@ impl DaemonService {
             }
         }
 
+        // A descriptor carries no explicit level list, so its default is derived
+        // with the same heuristic the catalog applies to a `models.json` entry.
+        let descriptor_default_thinking = model_descriptor
+            .as_ref()
+            .map(|d| resolve_thinking_levels(None, None, d.reasoning, false, &d.id).1);
+
         let chosen_thinking = thinking_level
             .or_else(|| conversation.thinking_level.clone())
+            .or(descriptor_default_thinking)
             .or_else(|| {
                 registry
                     .resolve(&chosen_model)
@@ -1116,32 +1196,40 @@ impl DaemonService {
         };
 
         // Gate attachments on the selected model's modality so the operator gets
-        // a clear error instead of a provider-side "image not supported". An
-        // unresolved model (mock / custom) is passed through: the registry is
-        // not the authority for a model it does not know.
+        // a clear error instead of a provider-side "image not supported". A
+        // host-supplied descriptor is authoritative for its own model; otherwise
+        // the registry is asked, and an unresolved model (mock / custom) is
+        // passed through because the registry is not the authority for a model
+        // it does not know.
         if !image_parts.is_empty() {
-            if let Some(spec) = registry.resolve(&chosen_model) {
-                if !crate::attachments::model_supports_images(&spec.input) {
-                    let err = format!(
-                        "Model '{}' does not accept image input; choose a vision model or remove the attachments.",
-                        chosen_model
-                    );
-                    self.send_response(DaemonResponse::Response {
-                        id,
-                        success: false,
-                        data: None,
-                        error: Some(err),
-                    })
-                    .await;
-                    self.active_tasks.lock().await.remove(&task_id);
-                    self.active_pauses.lock().await.remove(&task_id);
-                    self.active_queues.lock().await.remove(&task_id);
-                    self.active_sessions
-                        .lock()
-                        .await
-                        .remove(&effective_session_id);
-                    return;
+            let supports_images = match model_descriptor.as_ref() {
+                Some(descriptor) => {
+                    Some(crate::attachments::model_supports_images(&descriptor.input))
                 }
+                None => registry
+                    .resolve(&chosen_model)
+                    .map(|spec| crate::attachments::model_supports_images(&spec.input)),
+            };
+            if supports_images == Some(false) {
+                let err = format!(
+                    "Model '{}' does not accept image input; choose a vision model or remove the attachments.",
+                    chosen_model
+                );
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: false,
+                    data: None,
+                    error: Some(err),
+                })
+                .await;
+                self.active_tasks.lock().await.remove(&task_id);
+                self.active_pauses.lock().await.remove(&task_id);
+                self.active_queues.lock().await.remove(&task_id);
+                self.active_sessions
+                    .lock()
+                    .await
+                    .remove(&effective_session_id);
+                return;
             }
         }
 
@@ -1205,7 +1293,7 @@ impl DaemonService {
         tokio::spawn(async move {
             let _permit = permit;
             let mut base_cfg = AgentConfig::new(chosen_model.clone()).with_unlimited_turns();
-            base_cfg.request_timeout_ms = 120_000;
+            base_cfg.request_timeout_ms = REQUEST_TIMEOUT_MS;
             // Prompt-cache routing affinity: every request of this conversation
             // reuses one cache shard (OpenAI prompt_cache_key / Mistral
             // promptCacheKey / session-affinity headers).
@@ -1213,7 +1301,16 @@ impl DaemonService {
             if let Some(ref tl) = chosen_thinking {
                 base_cfg.thinking_level = Some(tl.clone());
             }
-            if let Some(spec) = registry.resolve(&chosen_model) {
+            if let Some(descriptor) = model_descriptor.as_ref() {
+                // A host descriptor is the authority for its own model: take the
+                // context window from it, falling back to the catalog's safe
+                // default when the host left it unset (serde default is 0).
+                base_cfg.pruning.max_context_tokens = if descriptor.context_window > 0 {
+                    descriptor.context_window
+                } else {
+                    DEFAULT_SAFE_CONTEXT_WINDOW
+                };
+            } else if let Some(spec) = registry.resolve(&chosen_model) {
                 base_cfg.pruning.max_context_tokens = spec.context_window;
                 // Prompt-cache warming: enabled only when the model declares
                 // both a promptCache lifetime and cost pricing in models.json.
@@ -1222,8 +1319,9 @@ impl DaemonService {
             }
 
             // Transport resolution order: injected factory (in-process tests /
-            // embedders) → feature-gated test mock → provider registry (handled
-            // inside ThunderRoot when `custom_client` is None).
+            // embedders) → feature-gated test mock → host-supplied descriptor →
+            // provider registry (handled inside ThunderRoot when `custom_client`
+            // is None).
             let injected = client_factory.as_ref().and_then(|f| f(&base_cfg));
 
             let root = ThunderRoot::new(base_cfg)
@@ -1257,7 +1355,12 @@ impl DaemonService {
             };
             #[cfg(not(feature = "testing-mock"))]
             let mock: Option<Arc<dyn LLMClientTrait>> = None;
-            let custom_client: Option<Arc<dyn LLMClientTrait>> = injected.or(mock);
+            // An explicit mock request wins over a descriptor: `use_mock` is a
+            // deliberate, test-build-only signal, and a request carrying both is
+            // contradictory. In a release build `use_mock` is rejected before it
+            // can reach here, so the descriptor is the only custom client.
+            let custom_client: Option<Arc<dyn LLMClientTrait>> =
+                injected.or(mock).or(descriptor_client);
 
             let options = RootRunOptions {
                 session_id: Some(effective_session_id.clone()),
