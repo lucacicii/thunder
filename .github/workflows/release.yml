@@ -75,15 +75,42 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           arch="${{ matrix.arch }}"
           out="target/${{ matrix.target }}/release"
+
+          # The member is written here rather than by `tar`, for a macOS reason
+          # that is easy to miss. The kernel stamps every file it creates with a
+          # com.apple.provenance xattr; `xattr -c` cannot remove it (it exits 0
+          # having done nothing) and bsdtar stores any surviving xattr as an
+          # AppleDouble "._name" member. `tar -tzf` hides that member again on
+          # the way out, so counting entries with the local tar reports 1 while
+          # GNU tar, Python and Go all see two — the check would be testing
+          # bsdtar's view of the archive instead of the archive. Telling bsdtar
+          # to skip mac metadata is not enough either: `--no-mac-metadata` drops
+          # the member but leaves the xattr in the pax headers, and it is a
+          # bsdtar-only flag. Writing one member with no metadata gives every
+          # runner the same flat archive, and the assertion below is then
+          # checked by a reader that cannot hide anything from itself.
           for bin in thunder-runtime thunder-daemon; do
-            rm -rf "pkg-$bin"
-            mkdir -p "pkg-$bin"
-            cp "$out/$bin" "pkg-$bin/$bin"
             archive="${bin}-${version}-${arch}.tar.gz"
-            tar -czf "$archive" -C "pkg-$bin" "$bin"
-            # Flat layout, one entry only: a host unpacks straight into place.
-            test "$(tar -tzf "$archive" | wc -l | tr -d ' ')" -eq 1
-            echo "packaged $archive"
+            # Heredoc body sits at the block's own indent so it reaches python
+            # flush left; an indented first statement is an IndentationError.
+            python3 - "$out/$bin" "$archive" "$bin" <<'PY'
+          import sys, tarfile
+
+          src, dst, name = sys.argv[1], sys.argv[2], sys.argv[3]
+          with tarfile.open(dst, "w:gz") as t:
+              info = t.gettarinfo(src, arcname=name)
+              info.pax_headers = {}
+              info.uid = info.gid = 0
+              info.uname = info.gname = ""
+              with open(src, "rb") as f:
+                  t.addfile(info, f)
+
+          # Flat layout, one entry only: a host unpacks straight into place.
+          with tarfile.open(dst) as t:
+              names = t.getnames()
+          assert names == [name], f"expected exactly [{name}], got {names}"
+          PY
+            echo "packaged $archive (1 entry)"
           done
 
       - name: Upload arch artifacts
