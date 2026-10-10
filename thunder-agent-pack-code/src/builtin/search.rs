@@ -3,7 +3,6 @@
 //! pi's grep tool spawns, but embedded in-process: no subprocess overhead and
 //! no external binary to distribute.
 
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{
@@ -15,6 +14,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 
 /// Max matched lines returned (same as pi's DEFAULT_LIMIT for grep).
 const DEFAULT_MATCH_LIMIT: usize = 100;

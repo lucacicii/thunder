@@ -28,9 +28,7 @@ pub mod prelude {
     pub use crate::loop_engine::engine::{
         AgentLoop, AgentRunResult, ContextInput, PipelineContext,
     };
-    pub use crate::loop_engine::gate::{
-        AcceptAllGate, CompletionGate, GateRequest, GateVerdict,
-    };
+    pub use crate::loop_engine::gate::{AcceptAllGate, CompletionGate, GateRequest, GateVerdict};
     pub use crate::loop_engine::handle::AgentHandle;
     pub use crate::pruning::error_detector::{
         extract_context_overflow_limit, is_context_overflow_error,

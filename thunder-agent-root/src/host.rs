@@ -1,16 +1,13 @@
 use crate::error::PluginError;
+use crate::instructions::discover_context_files;
 use crate::plugin::PluginContext;
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
-use crate::instructions::discover_context_files;
 use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_pack_code::builtin::{
-    BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
-};
 use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::invoke::{
     empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
@@ -19,6 +16,9 @@ use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
+};
+use thunder_agent_pack_code::builtin::{
+    BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
 };
 use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};

@@ -179,10 +179,13 @@ async fn runs_a_non_code_workflow_end_to_end() {
 
     assert_eq!(result.finish_reason, FinishReason::Done);
     assert_eq!(calls.lock().await.len(), 1, "the tool ran exactly once");
-    assert!(saw_custom_event, "a tool-emitted business event was carried");
+    assert!(
+        saw_custom_event,
+        "a tool-emitted business event was carried"
+    );
     assert_eq!(gate_retries, 1, "the gate sent the run back once");
-    assert!(result
-        .messages
-        .iter()
-        .any(|m| m.content_str().unwrap_or_default().contains("must be positive")));
+    assert!(result.messages.iter().any(|m| m
+        .content_str()
+        .unwrap_or_default()
+        .contains("must be positive")));
 }

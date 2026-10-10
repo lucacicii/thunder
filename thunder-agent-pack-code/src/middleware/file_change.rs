@@ -60,7 +60,8 @@ impl ToolMiddleware for FileChangeMiddleware {
         };
 
         if call.function.name == "write_file" {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+            {
                 if let Some(path) = parsed.get("path").and_then(|v| v.as_str()) {
                     let bytes = parsed
                         .get("content")
