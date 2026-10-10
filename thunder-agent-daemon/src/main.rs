@@ -36,6 +36,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|pos| args.get(pos + 1))
         .map(PathBuf::from);
 
+    // `--config-dir <path>` names thunder's user data root for this process. It
+    // is applied to the environment rather than threaded through as a value, so
+    // every layer below — the conversation store, the plugin host, and the Node
+    // bridge child spawned on the first model call — resolves one root. An
+    // explicit flag beats an inherited `THUNDER_CONFIG_DIR`.
+    if let Some(pos) = args.iter().position(|a| a == "--config-dir") {
+        match args.get(pos + 1) {
+            Some(dir) => std::env::set_var(
+                thunder_agent_loop::core::paths::THUNDER_CONFIG_DIR_ENV,
+                dir,
+            ),
+            None => {
+                eprintln!("--config-dir requires a path");
+                std::process::exit(2);
+            }
+        }
+    }
+
     let service = Arc::new(DaemonService::new(workspace).await?);
 
     let stdin = tokio::io::stdin();

@@ -25,11 +25,9 @@ impl TsScriptPluginEngine {
 
         let mut plugin_dirs = Vec::new();
 
-        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            let global_dir = home.join(".thunder").join("plugins");
-            let _ = tokio::fs::create_dir_all(&global_dir).await;
-            plugin_dirs.push(global_dir);
-        }
+        let global_dir = thunder_agent_loop::core::paths::thunder_subdir("plugins");
+        let _ = tokio::fs::create_dir_all(&global_dir).await;
+        plugin_dirs.push(global_dir);
 
         let ws_plugin_dir = workspace_dir.join(".thunder").join("plugins");
         let _ = tokio::fs::create_dir_all(&ws_plugin_dir).await;

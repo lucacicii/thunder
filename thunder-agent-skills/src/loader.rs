@@ -130,6 +130,25 @@ impl SkillLoader {
 
     /// Default system-wide and local search directories for Agent skills.
     pub fn default_search_paths() -> Vec<PathBuf> {
+        Self::default_search_paths_from(
+            &thunder_agent_loop::core::paths::thunder_config_dir(),
+            thunder_agent_loop::core::paths::real_home_dir().as_deref(),
+            global_skills_disabled(),
+        )
+    }
+
+    /// [`default_search_paths`] with both roots — and the global-skills flag —
+    /// injected, so precedence and the root split are testable without touching
+    /// the process environment.
+    ///
+    /// `.thunder/skills` is thunder's own and follows its data root; the
+    /// `.agents` / `.pi` paths are the *user's* cross-tool surfaces and always
+    /// resolve against the real home.
+    pub fn default_search_paths_from(
+        thunder_home: &Path,
+        real_home: Option<&Path>,
+        global_disabled: bool,
+    ) -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
         // 1. Current workspace relative skill paths
@@ -137,19 +156,18 @@ impl SkillLoader {
         paths.push(PathBuf::from(".pi/skills"));
         paths.push(PathBuf::from("skills"));
 
-        // 2. User home directory skill paths (Agent & Thunder standards)
-        // Can be disabled via THUNDER_SKILLS_NO_GLOBAL=1 to prevent cross-workspace skill pollution and prompt bloat
-        let disable_global = std::env::var("THUNDER_SKILLS_NO_GLOBAL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        if !disable_global {
-            if let Ok(home) = std::env::var("HOME") {
-                let home_path = PathBuf::from(home);
-                paths.push(home_path.join(".agents/skills"));
-                paths.push(home_path.join(".thunder/skills"));
-                paths.push(home_path.join(".pi/agent/skills"));
-                paths.push(home_path.join(".pi/skills"));
+        // 2. User-level skill paths (Agent & Thunder standards). "Global" here
+        // means user-level, thunder's own included, so the switch also drops
+        // `<root>/skills`. Order mirrors the pre-contract list (later wins):
+        // .agents, .thunder, .pi/agent, .pi.
+        if !global_disabled {
+            if let Some(home) = real_home {
+                paths.push(home.join(".agents/skills"));
+            }
+            paths.push(thunder_home.join("skills"));
+            if let Some(home) = real_home {
+                paths.push(home.join(".pi/agent/skills"));
+                paths.push(home.join(".pi/skills"));
             }
         }
 
@@ -169,5 +187,90 @@ impl SkillLoader {
             report.push_str(&format!("- **`{}`**: {}\n", s.name, brief));
         }
         (loaded, report)
+    }
+}
+
+/// `THUNDER_SKILLS_NO_GLOBAL=1` — drop user-level skill directories so a run does
+/// not inherit cross-workspace skills it never asked for.
+fn global_skills_disabled() -> bool {
+    std::env::var("THUNDER_SKILLS_NO_GLOBAL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// thunder's own skills follow its data root; the user's cross-tool skill
+    /// directories stay under the real home.
+    #[test]
+    fn global_skill_paths_split_between_root_and_user_home() {
+        let paths = SkillLoader::default_search_paths_from(
+            Path::new("/data/thunder"),
+            Some(Path::new("/home/u")),
+            false,
+        );
+
+        assert!(paths.contains(&PathBuf::from("/data/thunder/skills")));
+        assert!(paths.contains(&PathBuf::from("/home/u/.agents/skills")));
+        assert!(paths.contains(&PathBuf::from("/home/u/.pi/agent/skills")));
+        assert!(paths.contains(&PathBuf::from("/home/u/.pi/skills")));
+        assert!(
+            !paths.iter().any(|p| p.starts_with("/home/u/.thunder")),
+            "thunder's own skills must come from the data root, not the user home: {paths:?}"
+        );
+    }
+
+    /// Order is load-bearing (later paths win), so it must match the list this
+    /// produced before the data-root contract existed.
+    #[test]
+    fn global_skill_path_order_is_preserved() {
+        let paths = SkillLoader::default_search_paths_from(
+            Path::new("/data/thunder"),
+            Some(Path::new("/home/u")),
+            false,
+        );
+        let globals: Vec<String> = paths
+            .iter()
+            .filter(|p| p.is_absolute())
+            .map(|p| p.display().to_string())
+            .collect();
+        assert_eq!(
+            globals,
+            vec![
+                "/home/u/.agents/skills",
+                "/data/thunder/skills",
+                "/home/u/.pi/agent/skills",
+                "/home/u/.pi/skills",
+            ]
+        );
+    }
+
+    /// No user home at all: still resolves, and still offers thunder's own dir.
+    #[test]
+    fn missing_user_home_keeps_thunders_own_skills() {
+        let paths = SkillLoader::default_search_paths_from(Path::new("/data/thunder"), None, false);
+        assert!(paths.contains(&PathBuf::from("/data/thunder/skills")));
+        assert!(paths.contains(&PathBuf::from("skills")));
+    }
+
+    /// The global switch drops every user-level path, thunder's own included —
+    /// what `THUNDER_SKILLS_NO_GLOBAL` did before the split.
+    #[test]
+    fn global_switch_drops_all_user_level_paths() {
+        let paths = SkillLoader::default_search_paths_from(
+            Path::new("/data/thunder"),
+            Some(Path::new("/home/u")),
+            true,
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(".agents/skills"),
+                PathBuf::from(".pi/skills"),
+                PathBuf::from("skills"),
+            ]
+        );
     }
 }
