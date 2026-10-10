@@ -12,15 +12,8 @@ pub struct ConfigSource {
 
 impl ConfigSource {
     pub fn thunder_user() -> Option<Self> {
-        let root = std::env::var("THUNDER_CONFIG_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".thunder"))
-            });
-        root.map(|dir| Self {
+        let dir = thunder_agent_loop::core::paths::thunder_config_dir();
+        Some(Self {
             name: "thunder-user".to_string(),
             models_path: dir.join("models.json"),
             auth_path: dir.join("auth.json"),

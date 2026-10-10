@@ -172,10 +172,8 @@ pub fn has_ts_plugins(workspace_dir: Option<&std::path::Path>) -> bool {
         })
     }
 
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        if any_plugin(home.join(".thunder").join("plugins")) {
-            return true;
-        }
+    if any_plugin(thunder_agent_loop::core::paths::thunder_subdir("plugins")) {
+        return true;
     }
     workspace_dir.is_some_and(|ws| any_plugin(ws.join(".thunder").join("plugins")))
 }

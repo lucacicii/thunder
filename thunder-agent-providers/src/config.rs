@@ -3,6 +3,7 @@ use crate::error::ProviderError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use thunder_agent_loop::core::paths::{thunder_config_dir, thunder_config_dir_from};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,27 +187,33 @@ impl ModelsFile {
     }
 
     pub fn default_paths() -> Vec<PathBuf> {
-        let mut paths = vec![PathBuf::from(".thunder/models.json")];
-        if let Ok(dir) = std::env::var("THUNDER_CONFIG_DIR") {
-            paths.push(PathBuf::from(dir).join("models.json"));
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            paths.push(PathBuf::from(home).join(".thunder/models.json"));
-        }
-        paths
+        Self::default_paths_from(|key| std::env::var(key).ok())
     }
 
+    /// Where `models.json` may live, first match wins.
+    ///
+    /// A project-local `.thunder/models.json` comes first — a workspace may pin
+    /// its own registry — then the user data root
+    /// ([`thunder_config_dir`]). An explicit root *replaces* the home layer
+    /// rather than adding to it: that is what makes `THUNDER_CONFIG_DIR` an
+    /// isolation boundary instead of one more fallback.
+    pub fn default_paths_from(vars: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+        vec![
+            PathBuf::from(".thunder/models.json"),
+            thunder_config_dir_from(&vars).join("models.json"),
+        ]
+    }
+
+    /// The file to write when thunder persists a probe result or a utility-model
+    /// choice: the first candidate that already exists, else the place it would
+    /// be created. Infallible — the data root always resolves.
     pub fn primary_config_path() -> Option<PathBuf> {
         for path in Self::default_paths() {
             if path.exists() {
                 return Some(path);
             }
         }
-        if let Ok(home) = std::env::var("HOME") {
-            Some(PathBuf::from(home).join(".thunder/models.json"))
-        } else {
-            None
-        }
+        Some(thunder_config_dir().join("models.json"))
     }
 
     pub async fn load_default() -> Self {
@@ -362,5 +369,74 @@ impl ModelFileConfig {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fake environment, so these tests never mutate the process environment
+    /// (`std::env::set_var` is process-global; `cargo test` runs one binary's
+    /// tests on many threads).
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |key: &str| map.get(key).cloned()
+    }
+
+    /// The project-local probe stays first: a workspace may pin its own registry.
+    #[test]
+    fn project_local_probe_comes_first() {
+        let paths = ModelsFile::default_paths_from(env(&[("HOME", "/home/u")]));
+        assert_eq!(paths[0], PathBuf::from(".thunder/models.json"));
+    }
+
+    /// No root set: `<home>/.thunder/models.json` — what this produced before the
+    /// data-root contract existed, byte for byte.
+    #[test]
+    fn root_defaults_to_home() {
+        let paths = ModelsFile::default_paths_from(env(&[("HOME", "/home/u")]));
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(".thunder/models.json"),
+                PathBuf::from("/home/u/.thunder/models.json"),
+            ]
+        );
+    }
+
+    /// An explicit root replaces the home layer. One entry, not two — and no
+    /// candidate under `~`. This is the intended behavior change: a process that
+    /// names its own root must never read `~/.thunder`.
+    #[test]
+    fn explicit_root_replaces_the_home_layer() {
+        let paths = ModelsFile::default_paths_from(env(&[
+            ("THUNDER_CONFIG_DIR", "/data/thunder"),
+            ("HOME", "/home/u"),
+        ]));
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(".thunder/models.json"),
+                PathBuf::from("/data/thunder/models.json"),
+            ]
+        );
+        assert!(
+            paths.iter().all(|p| !p.starts_with("/home/u")),
+            "an explicit root must keep the home directory out of the search path: {paths:?}"
+        );
+    }
+
+    /// No home at all: still resolves, under the temp dir.
+    #[test]
+    fn root_falls_back_to_temp_without_a_home() {
+        let paths = ModelsFile::default_paths_from(env(&[]));
+        assert_eq!(
+            paths[1],
+            std::env::temp_dir().join(".thunder").join("models.json")
+        );
     }
 }

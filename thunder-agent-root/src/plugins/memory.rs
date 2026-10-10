@@ -157,9 +157,7 @@ impl MemoryPlugin {
         // Later entries read as "more specific", matching how a reader expects
         // overrides to appear.
         let mut sources: Vec<PathBuf> = Vec::new();
-        if let Some(home) = std::env::var_os("HOME") {
-            sources.push(PathBuf::from(home).join(THUNDER_DIR).join(MEMORY_FILE));
-        }
+        sources.push(thunder_agent_loop::core::paths::thunder_config_dir().join(MEMORY_FILE));
         sources.push(thunder_dir.join(MEMORY_FILE));
 
         // Topic-split notes, deterministic order.
@@ -190,10 +188,8 @@ impl MemoryPlugin {
     /// Roots an import may resolve inside: the workspace and the thunder home.
     fn allowed_roots(ws: &Path) -> Vec<PathBuf> {
         let mut roots = vec![ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf())];
-        if let Some(home) = std::env::var_os("HOME") {
-            let h = PathBuf::from(home).join(THUNDER_DIR);
-            roots.push(h.canonicalize().unwrap_or(h));
-        }
+        let thunder_home = thunder_agent_loop::core::paths::thunder_config_dir();
+        roots.push(thunder_home.canonicalize().unwrap_or(thunder_home));
         roots
     }
 
