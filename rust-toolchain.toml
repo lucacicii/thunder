@@ -1,0 +1,13 @@
+# The compiler this workspace is formatted and linted with.
+#
+# CI used to install whatever `stable` happened to be that day, so a Rust release
+# that changed rustfmt's output turned the whole repo into a formatting diff and
+# the Format & Lint job went red without a line of code changing. Pinning keeps
+# `cargo fmt --check` and `cargo clippy` reproducible: CI, a contributor's machine
+# and the version this file was formatted against all agree.
+#
+# Bumping is deliberate: change the channel here and in .github/workflows/ci.yml,
+# then run `cargo fmt --all` and commit the result in the same PR.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
