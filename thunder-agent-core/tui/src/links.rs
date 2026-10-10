@@ -658,19 +658,30 @@ mod tests {
         );
     }
 
+    // The opener the production code selects for this platform. Asserting the
+    // literal "open" here pinned the tests to macOS and failed on Linux CI, where
+    // `reveal_command`/`open_url_command` return "xdg-open".
+    #[cfg(target_os = "macos")]
+    const OPENER: &str = "open";
+    #[cfg(not(target_os = "macos"))]
+    const OPENER: &str = "xdg-open";
+
     #[test]
     fn reveal_command_is_flag_safe() {
         let (program, args) = reveal_command(Path::new("/tmp/-n"));
-        assert_eq!(program, "open");
-        // `-R` selects reveal; the path is a single operand after it, so a name
-        // that looks like a flag can never be parsed as one.
+        assert_eq!(program, OPENER);
+        // A name that looks like a flag can never be parsed as one: macOS keeps it
+        // a single operand after `-R`, while elsewhere only its directory is passed.
+        #[cfg(target_os = "macos")]
         assert_eq!(args, vec![OsString::from("-R"), OsString::from("/tmp/-n")]);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(args, vec![OsString::from("/tmp")]);
     }
 
     #[test]
     fn url_command_passes_the_url_verbatim() {
         let (program, args) = open_url_command("https://example.com/a b");
-        assert_eq!(program, "open");
+        assert_eq!(program, OPENER);
         assert_eq!(args, vec![OsString::from("https://example.com/a b")]);
     }
 
