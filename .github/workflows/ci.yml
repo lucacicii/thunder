@@ -19,8 +19,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned, not `@stable`: an unpinned stable is exactly what broke this job
+        # when a new release changed rustfmt's output. Keep in step with
+        # rust-toolchain.toml, which pins the same version for local builds.
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Rust Cache
@@ -30,7 +34,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # Same feature set the test run uses (test.sh): without it, everything
+        # behind #[cfg(feature = "testing-mock")] — the daemon's mock model and
+        # most of daemon_ipc_test — is never linted, and since RUSTFLAGS turns
+        # warnings into errors, a problem there would only ever surface at the
+        # last step with no earlier signal.
+        run: cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
 
   bridge-bundle:
     name: Verify pi-bridge bundle is in sync
@@ -74,15 +83,21 @@ jobs:
           node-version: 22
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned, not `@stable`: an unpinned stable is exactly what broke this job
+        # when a new release changed rustfmt's output. Keep in step with
+        # rust-toolchain.toml, which pins the same version for local builds.
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo Check
-        run: cargo check --workspace --all-targets
+        # Keep this in step with the feature set the suite runs with (test.sh),
+        # so the code CI actually tests is the code CI checks.
+        run: cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mock
 
       - name: Run Test Suite
         run: ./test.sh
