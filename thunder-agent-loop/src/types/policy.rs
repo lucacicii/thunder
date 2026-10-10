@@ -581,11 +581,53 @@ pub fn call_hash(tool: &str, args: &serde_json::Value) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tool.hash(&mut hasher);
-    // Field order must not matter, so hash the canonical form.
-    serde_json::to_string(args)
-        .unwrap_or_default()
-        .hash(&mut hasher);
+    // Field order must not matter, so hash a canonical form. `serde_json` will
+    // *not* give us one: its object type sorts keys only while `preserve_order`
+    // is off, and any crate in the dependency graph can turn that feature on
+    // (`rpi-ai` does). `canonical_json` sorts keys itself, so the fingerprint
+    // does not depend on which features happened to win unification.
+    canonical_json(args).hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Serialize with object keys sorted, arrays left in order (array order is
+/// meaningful; key order is not). Numbers and strings keep `serde_json`'s
+/// spelling, so equal values still hash equally.
+fn canonical_json(value: &serde_json::Value) -> String {
+    let mut out = String::new();
+    write_canonical(value, &mut out);
+    out
+}
+
+fn write_canonical(value: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(&map[key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -933,6 +975,28 @@ mod tests {
             &args(serde_json::json!({"content": "b", "path": "a"})),
         );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn call_hash_ignores_key_order_recursively_but_not_array_order() {
+        // Nested objects must canonicalize too — a plugin tool taking a struct
+        // argument is exactly where an approval would otherwise be forgotten.
+        let a = call_hash(
+            "mcp_tool",
+            &args(serde_json::json!({"opts": {"b": 1, "a": 2}, "list": [1, 2]})),
+        );
+        let b = call_hash(
+            "mcp_tool",
+            &args(serde_json::json!({"list": [1, 2], "opts": {"a": 2, "b": 1}})),
+        );
+        assert_eq!(a, b, "nested key order must not change the fingerprint");
+
+        // Array order *is* meaningful, so it must still change the fingerprint.
+        let c = call_hash("mcp_tool", &args(serde_json::json!({"list": [2, 1]})));
+        assert_ne!(
+            call_hash("mcp_tool", &args(serde_json::json!({"list": [1, 2]}))),
+            c
+        );
     }
 
     #[test]
