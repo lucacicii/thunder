@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-loop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-pack-code"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "globset",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-providers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-root"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-agent-skills"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "glob",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-conversation"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "thunder-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crossterm",
