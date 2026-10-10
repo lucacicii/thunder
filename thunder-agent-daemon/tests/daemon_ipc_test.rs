@@ -695,3 +695,148 @@ async fn test_daemon_never_silently_falls_back_to_mock() -> Result<(), Box<dyn s
     let _ = tokio::fs::remove_dir_all(&tmp_home).await;
     Ok(())
 }
+
+/// A host that owns its provider configuration can run a task by attaching a
+/// full `model_descriptor`, with no `models.json` on disk at all: the daemon
+/// builds the stream client from the descriptor and labels the run with the
+/// descriptor's `provider/id`.
+///
+/// Network-free by construction: `RpiAiClient::from_descriptor` only builds an
+/// HTTP client (it dials nothing), and the run is abandoned as soon as the
+/// acknowledgement is read.
+#[tokio::test]
+async fn test_run_task_with_descriptor_needs_no_models_json(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let real_home = tempfile::tempdir()?;
+    let data_root = tempfile::tempdir()?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .env("HOME", real_home.path())
+        .env_remove("USERPROFILE")
+        .env("THUNDER_CONFIG_DIR", data_root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let stdout = child.stdout.take().expect("child stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    let req = serde_json::json!({
+        "method": "run_task",
+        "id": "req-desc-1",
+        "task_id": "task-desc-1",
+        "prompt": "hello from a descriptor",
+        "model_descriptor": {
+            "provider": "testprovider",
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "openai-completions",
+            "baseUrl": "http://127.0.0.1:9/v1",
+            "apiKey": "sk-test",
+            "contextWindow": 32000,
+            "maxTokens": 2048,
+            "input": ["text"]
+        }
+    });
+    stdin.write_all(format!("{req}\n").as_bytes()).await?;
+    stdin.flush().await?;
+
+    let mut ack = serde_json::Value::Null;
+    while let Ok(Some(line)) = reader.next_line().await {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp["type"] == "response" && resp["id"] == "req-desc-1" {
+            ack = resp;
+            break;
+        }
+    }
+
+    assert_eq!(
+        ack["success"], true,
+        "a descriptor-backed run must be accepted without models.json: {ack}"
+    );
+    assert_eq!(ack["data"]["model"], "testprovider/test-model");
+    assert!(
+        data_root.path().join("conversations").is_dir(),
+        "the run should have recorded a conversation under the injected root"
+    );
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    Ok(())
+}
+
+/// A descriptor this build cannot stream is answered with a specific error, and
+/// the task/session bookkeeping it claimed is released: a second request under
+/// the same `task_id` and `session_id` must reach the descriptor again rather
+/// than be refused as a conflict or a busy session.
+#[tokio::test]
+async fn test_run_task_descriptor_error_releases_bookkeeping(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let real_home = tempfile::tempdir()?;
+    let data_root = tempfile::tempdir()?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thunder-daemon"))
+        .env("HOME", real_home.path())
+        .env_remove("USERPROFILE")
+        .env("THUNDER_CONFIG_DIR", data_root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let stdout = child.stdout.take().expect("child stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    let bad_descriptor = serde_json::json!({
+        "provider": "testprovider",
+        "id": "no-such-dialect",
+        "name": "Unstreamable",
+        "api": "google-generative-ai",
+        "baseUrl": "https://example.invalid/v1"
+    });
+
+    for attempt in 0..2 {
+        let req_id = format!("req-bad-desc-{attempt}");
+        let req = serde_json::json!({
+            "method": "run_task",
+            "id": req_id,
+            "task_id": "task-bad-desc",
+            "session_id": "sess-bad-desc",
+            "prompt": "hello",
+            "model_descriptor": bad_descriptor
+        });
+        stdin.write_all(format!("{req}\n").as_bytes()).await?;
+        stdin.flush().await?;
+
+        let mut resp = serde_json::Value::Null;
+        while let Ok(Some(line)) = reader.next_line().await {
+            let evt: serde_json::Value = serde_json::from_str(&line)?;
+            if evt["type"] == "response" && evt["id"].as_str() == Some(req_id.as_str()) {
+                resp = evt;
+                break;
+            }
+        }
+
+        assert_eq!(resp["success"], false, "attempt {attempt}: {resp}");
+        let err = resp["error"].as_str().unwrap_or_default();
+        assert!(
+            err.contains("model descriptor `testprovider/no-such-dialect`"),
+            "attempt {attempt}: expected an error naming the descriptor, got: {err}"
+        );
+        assert!(
+            err.contains("not streamable"),
+            "attempt {attempt}: the reason must name the unsupported dialect, got: {err}"
+        );
+        assert!(
+            !err.contains("already running") && !err.contains("is busy"),
+            "attempt {attempt}: bookkeeping was not released: {err}"
+        );
+    }
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    Ok(())
+}
