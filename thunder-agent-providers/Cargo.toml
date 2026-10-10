@@ -17,7 +17,9 @@ workspace = true
 
 [dependencies]
 thunder-agent-loop.workspace = true
-thunder-pi-bridge.workspace = true
+# The streaming HTTP stack. `providers` pulls reqwest + eventsource-stream;
+# without it only the types and the `faux` test provider build.
+rpi-ai = { version = "0.3.18", features = ["providers"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
 tokio-util.workspace = true
 reqwest.workspace = true
@@ -31,3 +33,6 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile.workspace = true
+# For the `examples/`: they print a real provider round trip and want the agent
+# loop's own tracing visible while they do.
+tracing-subscriber.workspace = true

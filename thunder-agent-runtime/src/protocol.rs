@@ -53,8 +53,8 @@ pub enum RuntimeRequest {
         id: Option<String>,
         #[serde(alias = "runId")]
         run_id: String,
-        /// pi-ai model descriptor, exactly as the bridge expects it.
-        model: thunder_pi_bridge::BridgeModel,
+        /// pi-ai model descriptor: which model, where, and how to reach it.
+        model: thunder_agent_providers::ModelDescriptor,
         #[serde(default, alias = "systemPrompt")]
         system_prompt: Option<String>,
         #[serde(default)]
