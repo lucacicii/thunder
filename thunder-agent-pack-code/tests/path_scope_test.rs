@@ -54,7 +54,6 @@ fn executor(
         extra_roots,
         registry.clone(),
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(SessionPolicy::new(Permission::Bash, mode)),
         ui,

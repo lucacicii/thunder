@@ -31,10 +31,13 @@ use std::time::{Duration, Instant};
 ///
 /// They were two layers doing one job with two rule sets, and the seam between
 /// them was load-bearing in a way nothing tested as a unit: the guard had to
-/// stay outermost (or a user could approve past the tier) and the gate had to
-/// stay outside `TransactionMiddleware` (or a refused call would stage files).
-/// Keeping the outer name and folding the gate in makes the layer a single
-/// thing with a single contract.
+/// stay outermost (or a user could approve past the tier). Keeping the outer
+/// name and folding the gate in makes the layer a single thing with a single
+/// contract.
+///
+/// It also had to stay outside the atomic-write layer, or a refused call would
+/// stage a temp file. That layer is gone — the write tool stages for itself and
+/// a refused call never reaches it — so the ordering constraint went with it.
 ///
 /// # Contract
 ///

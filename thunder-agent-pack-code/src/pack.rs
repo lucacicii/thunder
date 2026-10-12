@@ -32,6 +32,12 @@ impl Default for CodePackConfig {
 /// running through the pack's layers. The scope comes along because a pipeline
 /// that asks the user about a path and a kernel that does not know where that
 /// path is would be answering two different questions.
+///
+/// Each tool gets the workspace as its default directory, so a relative path in
+/// a call means "relative to the workspace". That is the meaning the host's own
+/// assembly gives it, and the meaning a write had before the transaction layer
+/// was folded into the tool — the layer joined the workspace root, and a bare
+/// tool would resolve against the process working directory instead.
 pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
     let scope = crate::scope::CodeScope::from_agent_config(agent.config(), None);
     agent = agent
@@ -39,12 +45,27 @@ pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> Agent
         .with_tool_scope(Arc::new(scope));
 
     if config.register_builtins {
-        agent.register_tool(Arc::new(BashTool::default()));
-        agent.register_tool(Arc::new(ReadFileTool::default()));
-        agent.register_tool(Arc::new(WriteFileTool::default()));
-        agent.register_tool(Arc::new(GrepTool::default()));
-        agent.register_tool(Arc::new(FindTool::default()));
-        agent.register_tool(Arc::new(ListDirTool::default()));
+        let ws = agent.config().workspace_dir.clone();
+        let mut bash = BashTool::default();
+        let mut read = ReadFileTool::default();
+        let mut write = WriteFileTool::default();
+        let mut grep = GrepTool::default();
+        let mut find = FindTool::default();
+        let mut ls = ListDirTool::default();
+        if let Some(ref dir) = ws {
+            bash = bash.with_default_cwd(dir.clone());
+            read = read.with_default_cwd(dir.clone());
+            write = write.with_default_cwd(dir.clone());
+            grep = grep.with_default_cwd(dir.clone());
+            find = find.with_default_cwd(dir.clone());
+            ls = ls.with_default_cwd(dir.clone());
+        }
+        agent.register_tool(Arc::new(bash));
+        agent.register_tool(Arc::new(read));
+        agent.register_tool(Arc::new(write));
+        agent.register_tool(Arc::new(grep));
+        agent.register_tool(Arc::new(find));
+        agent.register_tool(Arc::new(ls));
     }
 
     agent

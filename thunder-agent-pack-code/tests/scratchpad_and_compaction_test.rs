@@ -114,7 +114,6 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
         &[],
         pipe_reg,
         Some(manager.clone()),
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         None,
         None,

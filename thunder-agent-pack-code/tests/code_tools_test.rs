@@ -113,26 +113,11 @@ async fn test_agent_loop_with_builtins_builder() {
     );
 }
 
-#[tokio::test]
-async fn test_turn_off_transactions_without_modifying_code() {
-    // Option 1: Using AgentConfig builder
-    let cfg1 =
-        thunder_agent_loop::types::config::AgentConfig::new("mock-model").without_transactions();
-    assert!(!cfg1.middleware.enable_transaction);
-
-    // Option 2: Using direct boolean toggle in config
-    let mut cfg2 = thunder_agent_loop::types::config::AgentConfig::new("mock-model");
-    cfg2.middleware.enable_transaction = false;
-    assert!(!cfg2.middleware.enable_transaction);
-
-    // There is no third option any more: the security, resource and output
-    // layers were deleted, so the only switch left is the atomic write.
-    assert!(
-        thunder_agent_loop::types::config::AgentConfig::new("mock-model")
-            .middleware
-            .enable_transaction
-    );
-}
+// The atomic write used to be a layer with a switch: `AgentConfig::without_transactions`
+// turned `TransactionMiddleware` off, and every test that wanted the raw tool had
+// to know about it. It is now the write tool's own behaviour, so there is no
+// switch to test — only the write, which `path_scope_test.rs` exercises through
+// the whole stack.
 
 // ════════════════════════════════════════════════════════════
 // grep / find / ls — embedded ripgrep-core tools

@@ -104,17 +104,20 @@ fn policy(tier: Permission, mode: ApprovalMode) -> Arc<SessionPolicy> {
 
 // ---------------------------------------------------------------- position
 
-/// The layer must sit outside `TransactionMiddleware` so a refused call stages
-/// no temp file, and there must be nothing outside it that could let a call run
-/// unjudged.
+/// The judge is the only layer, and it is outermost: there must be nothing
+/// outside it that could let a call run unjudged.
+///
+/// There used to be a layer inside it — the atomic write, which is why this test
+/// once read as "outside the transaction". That capability now lives in the
+/// write tool itself, so a refused call stages no file because it never reaches
+/// a tool, not because of where a layer was placed.
 #[test]
-fn the_layer_sits_outside_the_transaction() {
+fn the_layer_is_the_only_one_and_the_outermost() {
     let pipeline = support::code_pipeline(
         std::env::temp_dir(),
         &[],
         registry(),
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(policy(Permission::Bash, ApprovalMode::Mutations)),
         Some(Arc::new(NullHostUi)),
@@ -125,18 +128,10 @@ fn the_layer_sits_outside_the_transaction() {
         .map(|m| m.name().to_string())
         .collect();
 
-    let guard = order
-        .iter()
-        .position(|n| n == PermissionGuardMiddleware::NAME)
-        .expect("the judge is installed");
-    let tx = order
-        .iter()
-        .position(|n| n == "TransactionMiddleware")
-        .expect("transaction present");
-    assert_eq!(guard, 0, "nothing may run before the judge: {order:?}");
-    assert!(
-        guard < tx,
-        "a refused call must not stage a file: {order:?}"
+    assert_eq!(
+        order,
+        vec![PermissionGuardMiddleware::NAME.to_string()],
+        "the judge, and nothing that could sit outside it: {order:?}"
     );
 }
 
@@ -149,7 +144,6 @@ fn a_pipeline_without_a_policy_still_has_the_judge() {
         &[],
         registry(),
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Read,
         None,
         None,
@@ -158,8 +152,8 @@ fn a_pipeline_without_a_policy_still_has_the_judge() {
     let order: Vec<&str> = pipeline.middlewares().iter().map(|m| m.name()).collect();
     assert_eq!(
         order,
-        vec![PermissionGuardMiddleware::NAME, "TransactionMiddleware"],
-        "the judge, then the atomic write, and nothing else"
+        vec![PermissionGuardMiddleware::NAME],
+        "the judge, and nothing else"
     );
 }
 
@@ -557,7 +551,6 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
         &[],
         reg,
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(policy(Permission::Bash, ApprovalMode::Never)),
         Some(Arc::new(NullHostUi)),
@@ -583,7 +576,6 @@ async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
         &[],
         registry(),
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Read,
         Some(policy(Permission::Read, ApprovalMode::Never)),
         Some(Arc::new(NullHostUi)),

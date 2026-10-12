@@ -17,16 +17,24 @@ use thunder_agent_pack_code::builtin::*;
 
 fn pipeline(tier: Permission, mode: ApprovalMode, ws: &std::path::Path) -> ToolPipeline {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
-    registry.register(Arc::new(WriteFileTool::default()));
-    registry.register(Arc::new(ReadFileTool::default()));
-    registry.register(Arc::new(BashTool::default()));
+    // Registered the way a host registers them: a relative path in a call means
+    // "relative to the workspace". A bare tool would resolve against the process
+    // working directory — which is the thing this test would then be asserting.
+    registry.register(Arc::new(
+        WriteFileTool::default().with_default_cwd(ws.to_path_buf()),
+    ));
+    registry.register(Arc::new(
+        ReadFileTool::default().with_default_cwd(ws.to_path_buf()),
+    ));
+    registry.register(Arc::new(
+        BashTool::default().with_default_cwd(ws.to_path_buf()),
+    ));
 
     support::code_pipeline(
         ws.to_path_buf(),
         &[],
         registry,
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         tier,
         Some(SessionPolicy::new(tier, mode)),
         Some(Arc::new(NullHostUi)),
@@ -184,7 +192,6 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
         &[],
         registry,
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(SessionPolicy::new(
             Permission::Bash,
@@ -259,7 +266,6 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
         &[],
         registry,
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(SessionPolicy::new(
             Permission::Bash,

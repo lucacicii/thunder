@@ -180,7 +180,7 @@ impl AgentLoop {
     ) -> Self {
         self.policy = Some(policy);
         self.host_ui = Some(ui);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -194,7 +194,7 @@ impl AgentLoop {
         build: Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
     ) -> Self {
         self.pipeline_builder = Some(build);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -207,15 +207,18 @@ impl AgentLoop {
     /// pipeline, so a tool registered later is classified the same way.
     pub fn with_tool_scope(mut self, scope: Arc<dyn crate::types::scope::ToolScope>) -> Self {
         self.tool_scope = Some(scope);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
     /// Reassemble the pipeline from the current registrations.
     ///
     /// Uses the host's builder when one is installed, and the kernel's own
-    /// baseline pipeline otherwise.
-    fn rebuild_executor(&self) -> ToolExecutor {
+    /// baseline pipeline otherwise. Called after anything that changes what the
+    /// executor must see — a new policy, a new scope, a tool registered later —
+    /// because the executor holds a snapshot of the registry, and a snapshot
+    /// taken before a registration does not contain it.
+    fn refresh_executor(&self) -> ToolExecutor {
         let registry = self.tool_registry.clone();
         let pipeline = match &self.pipeline_builder {
             Some(build) => build(PipelineContext {
@@ -240,7 +243,7 @@ impl AgentLoop {
         self.id = id.into();
         self.scratchpad = ScratchpadManager::new(&self.id, self.config.scratchpad.clone());
         self.tool_registry.set_scratchpad(self.scratchpad.clone());
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -295,7 +298,7 @@ impl AgentLoop {
 
     pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
         self.tool_registry.register(tool);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 

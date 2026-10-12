@@ -54,7 +54,6 @@ fn permissive_executor(scope: Option<Arc<dyn ToolScope>>) -> ToolExecutor {
         &[],
         registry.clone(),
         None,
-        &thunder_agent_loop::types::config::MiddlewareConfig::default(),
         Permission::Bash,
         Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
         None,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::tools::scratchpad::ScratchpadManager;
-use thunder_agent_loop::types::config::{AgentConfig, MiddlewareConfig, Permission};
+use thunder_agent_loop::types::config::{AgentConfig, Permission};
 use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::PipelineContext;
@@ -21,7 +21,6 @@ pub fn code_pipeline(
     extra_workspace_roots: &[PathBuf],
     registry: ToolRegistry,
     scratchpad: Option<ScratchpadManager>,
-    middleware: &MiddlewareConfig,
     permission: Permission,
     policy: Option<Arc<SessionPolicy>>,
     ui: Option<Arc<dyn HostUi>>,
@@ -29,7 +28,6 @@ pub fn code_pipeline(
     let mut config = AgentConfig::new("test-model");
     config.workspace_dir = Some(workspace_root);
     config.extra_workspace_roots = extra_workspace_roots.to_vec();
-    config.middleware = middleware.clone();
     config.permission = permission;
     thunder_agent_pack_code::build_code_pipeline(PipelineContext {
         config,

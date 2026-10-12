@@ -88,13 +88,15 @@ async fn run_invoker_with(
 
     let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
     registry.register(Arc::new(
-        thunder_agent_pack_code::builtin::WriteFileTool::default(),
+        thunder_agent_pack_code::builtin::WriteFileTool::default()
+            .with_default_cwd(ws.to_path_buf()),
     ));
     registry.register(Arc::new(
-        thunder_agent_pack_code::builtin::ReadFileTool::default(),
+        thunder_agent_pack_code::builtin::ReadFileTool::default()
+            .with_default_cwd(ws.to_path_buf()),
     ));
     registry.register(Arc::new(
-        thunder_agent_pack_code::builtin::BashTool::default(),
+        thunder_agent_pack_code::builtin::BashTool::default().with_default_cwd(ws.to_path_buf()),
     ));
     let tier = policy.tier().await;
     let _ = tier;
@@ -622,7 +624,7 @@ export default definePlugin({
     // but in the default no-prompt mode.
     let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
     registry.register(Arc::new(
-        thunder_agent_pack_code::builtin::WriteFileTool::default(),
+        thunder_agent_pack_code::builtin::WriteFileTool::default().with_default_cwd(ws_dir.clone()),
     ));
     let pipeline = code_pipeline(
         &ws_dir,

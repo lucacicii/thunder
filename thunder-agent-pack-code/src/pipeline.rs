@@ -1,10 +1,9 @@
 //! Assembles the coding pipeline the kernel used to build for itself.
 
-use crate::middleware::TransactionMiddleware;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::tools::middleware::{PermissionGuardMiddleware, ToolPipeline};
-use thunder_agent_loop::types::config::{AgentConfig, MiddlewareConfig, Permission};
+use thunder_agent_loop::types::config::{AgentConfig, Permission};
 use thunder_agent_loop::types::ui::{HostUi, NullHostUi};
 use thunder_agent_loop::PipelineContext;
 
@@ -13,7 +12,6 @@ use thunder_agent_loop::PipelineContext;
 pub struct CodePipelineConfig {
     pub workspace_root: PathBuf,
     pub extra_workspace_roots: Vec<PathBuf>,
-    pub middleware: MiddlewareConfig,
     pub permission: Permission,
 }
 
@@ -30,7 +28,6 @@ impl CodePipelineConfig {
                 .clone()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             extra_workspace_roots: config.extra_workspace_roots.clone(),
-            middleware: config.middleware.clone(),
             permission: config.permission,
         }
     }
@@ -40,10 +37,9 @@ impl CodePipelineConfig {
 ///
 /// One layer, outermost first:
 ///   1. `PermissionGuardMiddleware` — human approval
-///   2. `TransactionMiddleware`    — atomic shadow writes, per-path locking
-///   3. `RegistryTerminalHandler`  — the actual tool
+///   2. `RegistryTerminalHandler`   — the actual tool
 ///
-/// Three layers used to sit here and no longer do. `SecurityGuardMiddleware` was
+/// Four layers used to sit here and no longer do. `SecurityGuardMiddleware` was
 /// the path jail: it answered "is this path inside the workspace" with a refusal,
 /// and refused a great deal of ordinary work in the process. Its knowledge moved
 /// to [`crate::scope::CodeScope`], where it classifies instead of judging, and
@@ -52,7 +48,11 @@ impl CodePipelineConfig {
 /// `ResourceGuardMiddleware` and `OutputPostProcessorMiddleware` were both
 /// second copies of checks made below them (in the read tool and in
 /// `ToolRegistry::execute_tool_call`), and two ceilings for one behaviour is one
-/// ceiling too many.
+/// ceiling too many. `TransactionMiddleware` was a capability rather than a
+/// check, which is why it could not simply be dropped: its atomic write, its
+/// per-path lock and its cancellation branch now live in
+/// [`crate::builtin::fs::WriteFileTool`], where they cannot be left out of an
+/// assembly — and where, before, they never ran at all.
 pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     let cfg = CodePipelineConfig::from_agent_config(&inputs.config);
     let registry = inputs.registry.clone();
@@ -85,10 +85,6 @@ pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     }
     .with_workspace_roots(all_roots);
     pipeline.add_middleware(Arc::new(guard));
-
-    if cfg.middleware.enable_transaction {
-        pipeline.add_middleware(Arc::new(TransactionMiddleware::new(&cfg.workspace_root)));
-    }
 
     pipeline
 }

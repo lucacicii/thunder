@@ -76,30 +76,6 @@ impl Default for LoopGuardConfig {
     }
 }
 
-/// Dynamic toggles for the code pack's remaining layers.
-///
-/// The security, resource and output layers are gone: the first two duplicated
-/// checks that live below them, and the third is what
-/// [`crate::tools::registry::ToolRegistry::execute_tool_call`] already does for
-/// every call. What is left is the atomic write, which is a genuine capability
-/// rather than a check — and it is on its way out too.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiddlewareConfig {
-    pub enable_transaction: bool,
-}
-
-impl Default for MiddlewareConfig {
-    fn default() -> Self {
-        let disable_tx = std::env::var("THUNDER_DISABLE_TX")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        Self {
-            enable_transaction: !disable_tx,
-        }
-    }
-}
-
 /// Tool capability tier for an agent unit.
 ///
 /// Progression: `Read` ⊂ `Write` ⊂ `Bash`.
@@ -202,7 +178,6 @@ pub struct AgentConfig {
     /// the host's scope treats them as inside the working area.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_workspace_roots: Vec<PathBuf>,
-    pub middleware: MiddlewareConfig,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
     pub loop_guard: LoopGuardConfig,
@@ -235,7 +210,6 @@ impl Default for AgentConfig {
             session_id: None,
             prompt_cache_warm: None,
             extra_workspace_roots: Vec::new(),
-            middleware: MiddlewareConfig::default(),
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             loop_guard: LoopGuardConfig::default(),
@@ -286,12 +260,6 @@ impl AgentConfig {
 
     pub fn with_max_stream_retries(mut self, retries: usize) -> Self {
         self.max_stream_retries = retries;
-        self
-    }
-
-    /// Disables atomic transaction middleware (e.g. for testing raw tool behavior)
-    pub fn without_transactions(mut self) -> Self {
-        self.middleware.enable_transaction = false;
         self
     }
 

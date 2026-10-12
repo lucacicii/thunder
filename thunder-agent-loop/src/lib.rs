@@ -45,7 +45,7 @@ pub mod prelude {
     };
     pub use crate::tools::Guard;
     pub use crate::types::config::{
-        AgentConfig, ContextPruningConfig, LoopGuardConfig, MiddlewareConfig, Permission,
+        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission,
     };
     pub use crate::types::error::AgentError;
     pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
