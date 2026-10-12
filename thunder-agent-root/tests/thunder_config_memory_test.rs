@@ -188,7 +188,7 @@ async fn config_system_prompt_file_is_appended() {
     );
     // The base autonomous prompt must still be present: the file is appended.
     assert!(
-        prompt.contains("intent first, proceed step by step"),
+        prompt.contains("# Role & Philosophy"),
         "base prompt was replaced instead of appended:\n{prompt}"
     );
 }

@@ -217,7 +217,7 @@ pub struct App {
     /// primary workspace (mirrored into `conversation.shared_roots` on submit).
     pub extra_roots: Vec<PathBuf>,
     /// Whether the ask_user_question tool is mounted. Default on, matching the
-    /// daemon (the Intent Gate asks when a request is ambiguous).
+    /// daemon (the engineering prompt asks when a request is ambiguous).
     pub ask_user_enabled: bool,
     /// Cooperative pause gate for the running task, if any.
     pub pause_gate: Option<Arc<PauseGate>>,
@@ -1731,14 +1731,21 @@ impl App {
                 }
                 self.cycle_focus();
             }
-            // Shift+Tab walks argument values backwards. It has no other
-            // binding in the input pane, so it stays inert elsewhere.
+            // Shift+Tab walks argument values backwards; with no value to walk
+            // it cycles the approval mode instead, which is where the binding
+            // is most useful. Argument cycling wins while it has something to
+            // do, so a command's argument is never silently discarded for a
+            // mode change.
             KeyCode::BackTab => {
-                if self.focus == FocusPane::Input {
+                if self.focus == FocusPane::Input && !self.rename_mode {
                     if let Some(next) =
                         crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Backward)
                     {
                         self.set_input(next);
+                    } else {
+                        let next = self.mode_plugin.mode().next();
+                        self.mode_plugin.set_mode(next);
+                        self.set_status_message(format!("Mode: {}", next.as_str()));
                     }
                 }
             }
@@ -4269,6 +4276,9 @@ impl App {
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
         let mode_plugin = Arc::clone(&self.mode_plugin);
         let ws = self.workspace_dir.clone();
+        // Direct mode builds no `ThunderRoot`, so nothing else binds the plan
+        // file's location — without this, plan mode would have nowhere to write.
+        mode_plugin.bind_session(Some(ws.clone()), &self.conversation.id);
 
         tokio::spawn(async move {
             let agent = AgentLoop::new(config.clone()).with_id("tui_agent");
@@ -4285,7 +4295,11 @@ impl App {
                         Some(ws.as_path()),
                     ),
                 ))
-                .with_tool_gate(Some(mode_plugin as _), Some(ui));
+                .with_tool_gate(
+                    Some(Arc::clone(&mode_plugin)
+                        as Arc<dyn thunder_agent_loop::types::gate::ToolGate>),
+                    Some(ui),
+                );
 
             // Resolve the transport: injected factory (tests/embedders) first,
             // then the provider registry. Never proceed without a client — a
@@ -4332,6 +4346,11 @@ impl App {
                 WriteFileTool::default().with_default_cwd(ws.clone()),
             ));
             agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
+            // The mode plugin judges every call *and* carries the plan tools:
+            // without them, plan mode would be a mode with no way out.
+            for tool in thunder_agent_root::plugin::ThunderPlugin::tools(&*mode_plugin) {
+                agent.register_tool(tool);
+            }
             agent = agent.with_pause_gate(pause_gate);
             agent = agent.with_steer_queues(steer_queues);
 

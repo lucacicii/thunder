@@ -21,6 +21,7 @@ pub fn parse_effect(raw: Option<&str>) -> ToolEffect {
         Some("read") => ToolEffect::Read,
         Some("write") => ToolEffect::Write,
         Some("exec") => ToolEffect::Exec,
+        Some("plan_artifact") => ToolEffect::PlanArtifact,
         // Unclassified: the loop treats it as a mutation, which is the safe
         // assumption for a tool the host did not describe.
         _ => ToolEffect::Other,
@@ -164,6 +165,10 @@ mod tests {
     fn declared_effects_map_onto_the_loop_taxonomy() {
         assert_eq!(parse_effect(Some("read")), ToolEffect::Read);
         assert_eq!(parse_effect(Some("WRITE")), ToolEffect::Write);
+        assert_eq!(
+            parse_effect(Some("plan_artifact")),
+            ToolEffect::PlanArtifact
+        );
         assert_eq!(parse_effect(Some("exec")), ToolEffect::Exec);
         // Unknown or absent: a mutation, never "harmless".
         assert_eq!(parse_effect(Some("something-else")), ToolEffect::Other);

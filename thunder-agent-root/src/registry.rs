@@ -94,6 +94,16 @@ impl ActivePluginSet {
         Self { plugins }
     }
 
+    /// Add one more plugin to the resolved set.
+    ///
+    /// For plugins the *host* owns rather than the registry: the mode plugin is
+    /// installed as the run's gate, and it carries tools of its own (the plan
+    /// tools). Without this they would never reach the model — a gate decides
+    /// what may run, but only a plugin contributes what the model can see.
+    pub fn push(&mut self, plugin: Arc<dyn ThunderPlugin>) {
+        self.plugins.push(plugin);
+    }
+
     pub fn plugins(&self) -> &[Arc<dyn ThunderPlugin>] {
         &self.plugins
     }

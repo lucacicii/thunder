@@ -73,6 +73,7 @@ impl ToolGate for AskGate {
     fn decide(&self, request: &ToolGateRequest<'_>) -> GateVerdict {
         let asks = match request.effect {
             ToolEffect::Read => self.reads,
+            ToolEffect::PlanArtifact => false, // the plan artifact is not a workspace change
             ToolEffect::Write | ToolEffect::Other => self.writes,
             ToolEffect::Exec => self.exec,
         };
@@ -82,7 +83,9 @@ impl ToolGate for AskGate {
         GateVerdict::Ask(thunder_agent_loop::types::gate::ApprovalPrompt {
             title: match request.effect {
                 ToolEffect::Exec => format!("Run {}", request.tool),
-                ToolEffect::Write => format!("Write {}", request.tool),
+                ToolEffect::Write | ToolEffect::PlanArtifact => {
+                    format!("Write {}", request.tool)
+                }
                 ToolEffect::Read => format!("Read {}", request.tool),
                 ToolEffect::Other => format!("Use {}", request.tool),
             },

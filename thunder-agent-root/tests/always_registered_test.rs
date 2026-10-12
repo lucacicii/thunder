@@ -32,7 +32,19 @@ impl LLMClientTrait for AllToolsClient {
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
-            let tools = ["read_file", "write_file", "bash", "grep", "find", "ls"];
+            // The built-ins, plus the plan tools the mode plugin carries: plan
+            // mode's only exit is a tool, so it has to be in this list or the
+            // mode is a room with no door.
+            let tools = [
+                "read_file",
+                "write_file",
+                "bash",
+                "grep",
+                "find",
+                "ls",
+                "write_plan",
+                "exit_plan_mode",
+            ];
             let tool_calls = tools
                 .iter()
                 .map(|name| thunder_agent_loop::types::message::ToolCall {
@@ -86,7 +98,16 @@ async fn the_builtins_are_registered_on_every_run() {
         }
     }
 
-    for tool in ["read_file", "write_file", "bash", "grep", "find", "ls"] {
+    for tool in [
+        "read_file",
+        "write_file",
+        "bash",
+        "grep",
+        "find",
+        "ls",
+        "write_plan",
+        "exit_plan_mode",
+    ] {
         assert!(
             seen.iter().any(|name| name == tool),
             "`{tool}` must be registered on every run; the gate decides what a call may do, not the list: {seen:?}"

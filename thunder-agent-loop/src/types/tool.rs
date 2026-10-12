@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::types::policy::ToolEffect;
+use crate::types::ui::UiHandle;
 
 /// Sink for events a tool or middleware wants to surface to the host.
 ///
@@ -95,6 +96,12 @@ pub struct ToolExecutionContext {
     /// host installed no sink, and a tool that has something to report simply
     /// has nowhere to send it.
     pub event_sink: Option<Arc<dyn ToolEventSink>>,
+    /// The host's panel, stamped by the executor the same way the event sink
+    /// is: a tool that needs to ask the user something (the plan approval above
+    /// all) raises it through here rather than through its own plumbing.
+    /// `None` means nobody stamped it — a direct `execute` call — and the tool
+    /// degrades to no panel, which for a dialog means the fail-closed branch.
+    pub ui: Option<UiHandle>,
 }
 
 impl Default for ToolExecutionContext {
@@ -111,6 +118,7 @@ impl Default for ToolExecutionContext {
             // never weaker than treating an unknown tool as a mutation.
             effect: None,
             event_sink: None,
+            ui: None,
         }
     }
 }

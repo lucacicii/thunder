@@ -20,10 +20,15 @@
 //! not a way to write in plan mode. And in every mode the kernel's guard has
 //! already run: this gate is asked only about calls that cleared it, so no
 //! matrix entry can make `rm -rf /` runnable.
+//!
+//! Plan mode has one door out and one thing it may write: the tools this
+//! plugin registers ([`WRITE_PLAN_TOOL`], [`EXIT_PLAN_MODE_TOOL`]) are exempt
+//! in every mode — by name, never by the effect a tool declares about itself.
 
-use crate::plugin::{PluginManifest, ThunderPlugin};
+use crate::plugin::{PluginCapability, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
 use thunder_agent_loop::types::gate::{
@@ -31,6 +36,9 @@ use thunder_agent_loop::types::gate::{
 };
 use thunder_agent_loop::types::policy::ToolEffect;
 use thunder_agent_loop::types::scope::Scope;
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_loop::types::ui::{NullHostUi, UiRequest, UiSource};
+use thunder_agent_pack_code::builtin::fs::WriteFileTool;
 
 /// What the agent may do without asking, this mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +112,53 @@ impl Mode {
             Mode::Yolo => "yolo mode: the user has chosen not to be asked",
         }
     }
+}
+
+/// The tool names this plugin registers. The gate exempts these *names* — see
+/// the note on [`ModePlugin`]'s `decide`.
+pub const WRITE_PLAN_TOOL: &str = "write_plan";
+pub const EXIT_PLAN_MODE_TOOL: &str = "exit_plan_mode";
+
+/// What the plan review offers, in the order the options appear. These are the
+/// strings on the wire and in the dialog; the answers are matched against
+/// them, so a translation of the panel must answer with the option it showed.
+pub const APPROVE_AND_AUTO_ACCEPT: &str = "Yes, and auto-accept edits";
+pub const APPROVE_BUT_ASK: &str = "Yes, but ask before each edit";
+pub const APPROVE_FULLY_AUTONOMOUS: &str = "Yes, fully autonomous";
+pub const KEEP_PLANNING: &str = "No, keep planning";
+
+/// Reduce a session id to a safe filename: `[A-Za-z0-9._-]`, everything else
+/// `_`.
+///
+/// The session id arrives from whoever opened the session (the daemon's comes
+/// from the client), and the path jail is gone — this filter is what keeps a
+/// hostile id from walking out of the plans directory. Replacing `/` (and
+/// every other path-shaped character) with `_` leaves no separator to exploit;
+/// what survives is a name *in* the directory, and the two names that would
+/// not be (`.` and `..`) are replaced outright.
+fn sanitize_session_id(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    match cleaned.trim_matches('_') {
+        "" | "." | ".." => "session".to_string(),
+        kept => kept.to_string(),
+    }
+}
+
+/// Where this session's plan lives: `<workspace>/.thunder/plans/<session>.md`.
+fn plan_path(workspace: &Path, session_id: &str) -> PathBuf {
+    workspace
+        .join(".thunder")
+        .join("plans")
+        .join(format!("{}.md", sanitize_session_id(session_id)))
 }
 
 /// A remembered "always allow" rule, scoped to one session.
@@ -211,6 +266,63 @@ impl AllowRule {
     }
 }
 
+/// The state a session's mode is made of: the mode, the rules the user agreed
+/// to, and where this session's plan lives.
+///
+/// Shared between the plugin and the tools it registers, so `exit_plan_mode`
+/// flipping the mode is the same lock `decide` reads — the flip lands on the
+/// very next call, with no rebuild in between.
+#[derive(Debug, Default)]
+struct ModeState {
+    mode: RwLock<Mode>,
+    rules: RwLock<Vec<AllowRule>>,
+    workspace: RwLock<Option<PathBuf>>,
+    session_id: RwLock<String>,
+}
+
+impl ModeState {
+    /// The mode currently in force.
+    fn mode(&self) -> Mode {
+        *self
+            .mode
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Flip the mode. The next call is judged by it.
+    fn set_mode(&self, mode: Mode) {
+        *self
+            .mode
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
+    }
+
+    /// Where this session's plan lives, if a workspace is bound.
+    ///
+    /// An unbound session (a host with no working area) cannot plan to a file;
+    /// the message says so plainly rather than inventing a location.
+    fn plan_path(&self) -> Result<PathBuf, String> {
+        let workspace = self
+            .workspace
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let session_id = self
+            .session_id
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        match workspace {
+            Some(ws) => Ok(plan_path(&ws, &session_id)),
+            None => Err(
+                "No workspace is bound to this session, so there is nowhere to keep the plan. \
+                 Plan mode needs a working area; ask the user to run this somewhere that has one."
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 /// The gate itself, and the state that outlives a call: the mode and the rules
 /// the user has agreed to this session.
 ///
@@ -219,45 +331,57 @@ impl AllowRule {
 /// call — the kernel asks the gate every time and caches nothing.
 #[derive(Debug)]
 pub struct ModePlugin {
-    mode: RwLock<Mode>,
-    rules: RwLock<Vec<AllowRule>>,
+    state: Arc<ModeState>,
     manifest: PluginManifest,
 }
 
 impl ModePlugin {
     pub fn new(mode: Mode) -> Arc<Self> {
         Arc::new(Self {
-            mode: RwLock::new(mode),
-            rules: RwLock::new(Vec::new()),
+            state: Arc::new(ModeState {
+                mode: RwLock::new(mode),
+                ..ModeState::default()
+            }),
             manifest: PluginManifest::new(
                 "mode",
                 "Thunder Mode Gate",
                 "Judges tool calls against the active mode (plan / ask / acceptEdits / yolo) and \
                  the rules the user has agreed to this session.",
                 "0.1.0",
-            ),
+            )
+            .with_capability(PluginCapability::ToolProvider),
         })
     }
 
     /// The mode currently in force.
     pub fn mode(&self) -> Mode {
-        *self
-            .mode
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state.mode()
     }
 
     /// Flip the mode. The next call is judged by it.
     pub fn set_mode(&self, mode: Mode) {
-        *self
-            .mode
+        self.state.set_mode(mode);
+    }
+
+    /// Bind the session this plugin judges: where the plan file lives and what
+    /// it is named after. Called by the host at every run start, so a reused
+    /// plugin is always bound to the session it is judging.
+    pub fn bind_session(&self, workspace: Option<PathBuf>, session_id: &str) {
+        let state = &self.state;
+        *state
+            .workspace
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = workspace;
+        *state
+            .session_id
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session_id.to_string();
     }
 
     /// Rules currently in force, for a listing.
     pub fn rules(&self) -> Vec<AllowRule> {
-        self.rules
+        self.state
+            .rules
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -265,7 +389,8 @@ impl ModePlugin {
 
     /// Forget every remembered rule (e.g. on session end).
     pub fn clear_rules(&self) {
-        self.rules
+        self.state
+            .rules
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
@@ -277,6 +402,7 @@ impl ModePlugin {
     /// seed a session with standing grants of their own.
     pub fn remember(&self, rule: AllowRule) {
         let mut rules = self
+            .state
             .rules
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -291,7 +417,9 @@ impl ModePlugin {
         GateVerdict::Ask(ApprovalPrompt {
             title: match request.effect {
                 ToolEffect::Exec => format!("Run {}", request.tool),
-                ToolEffect::Write => format!("Write {}", request.tool),
+                ToolEffect::Write | ToolEffect::PlanArtifact => {
+                    format!("Write {}", request.tool)
+                }
                 ToolEffect::Read => format!("Read {}", request.tool),
                 ToolEffect::Other => format!("Use {}", request.tool),
             },
@@ -307,6 +435,17 @@ impl ToolGate for ModePlugin {
     fn decide(&self, request: &ToolGateRequest<'_>) -> GateVerdict {
         let mode = self.mode();
 
+        // The plan tools are exempt by *name*, never by the effect a tool
+        // declares about itself: the effect is the tool's own word for what it
+        // does, so an exemption keyed on `PlanArtifact` would let any tool opt
+        // itself out of the matrix by claiming the effect. The names are pinned
+        // because they are the ones this plugin registers — `write_plan` writes
+        // only the plan file, and `exit_plan_mode` changes the mode only
+        // through the approval dialog it raises itself.
+        if request.tool == WRITE_PLAN_TOOL || request.tool == EXIT_PLAN_MODE_TOOL {
+            return GateVerdict::Allow;
+        }
+
         // What the user already agreed to, this session — consulted before the
         // mode, but never in plan mode: a rule recorded in a freer mode must
         // not be a way to write while planning. (Claude Code is as blunt about
@@ -314,6 +453,7 @@ impl ToolGate for ModePlugin {
         // allow rule matches.)
         if mode != Mode::Plan {
             if let Some(rule) = self
+                .state
                 .rules
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -344,11 +484,14 @@ impl ToolGate for ModePlugin {
                 // denies — the question a user can answer is "yes, look".
                 ToolEffect::Exec => self.ask_for(request),
                 _ => GateVerdict::Deny {
+                    // The exit has to be named, or the refusal reads as "try
+                    // again differently" — and with every tool registered, the
+                    // model *will* see `write_file` and try it.
                     reason: format!(
                         "plan mode: only read-only tools run here. '{}' changes something, so it \
-                         is refused — finish investigating, then leave plan mode before making \
-                         changes.",
-                        request.tool
+                         is refused. Write the plan with `{}`, then submit it with `{}` — the \
+                         user's approval is the only way out of plan mode.",
+                        request.tool, WRITE_PLAN_TOOL, EXIT_PLAN_MODE_TOOL
                     ),
                 },
             },
@@ -370,11 +513,215 @@ impl ToolGate for ModePlugin {
     }
 }
 
+/// `write_plan`: the one write plan mode allows, and it is not the model's to
+/// choose — the path comes from the session, not the arguments.
+struct WritePlanTool {
+    state: Arc<ModeState>,
+}
+
+#[async_trait]
+impl AgentTool for WritePlanTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new_function(
+            WRITE_PLAN_TOOL,
+            "Write this session's plan, replacing the previous one. The only write allowed in \
+             plan mode; submit it with exit_plan_mode.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The full plan, markdown."
+                    }
+                },
+                "required": ["content"]
+            }),
+        )
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::PlanArtifact
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                "Missing required field 'content' (the full plan, markdown)".to_string()
+            })?
+            .to_string();
+        let path = self.state.plan_path()?;
+        // The same atomic write every other write goes through: one lock per
+        // path, staged, flushed, renamed — and cancellable before the commit.
+        WriteFileTool::default()
+            .write_cancellable(&path.to_string_lossy(), &content, &ctx.cancellation_token)
+            .await?;
+        Ok(format!(
+            "Plan written to {} ({} bytes). Call `{}` to submit it for approval.",
+            path.display(),
+            content.len(),
+            EXIT_PLAN_MODE_TOOL
+        ))
+    }
+}
+
+/// `exit_plan_mode`: submit the plan for approval. The only way out, and the
+/// user — not the model — picks the mode it lands in.
+struct ExitPlanModeTool {
+    state: Arc<ModeState>,
+}
+
+#[async_trait]
+impl AgentTool for ExitPlanModeTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new_function(
+            EXIT_PLAN_MODE_TOOL,
+            "Submit the plan for the user's approval and leave plan mode. Takes no arguments; \
+             the plan is read from where write_plan put it.",
+            serde_json::json!({"type": "object", "properties": {}}),
+        )
+    }
+
+    // Reading the plan back is a read. The mode flip is not this tool's to
+    // make: it happens only when the user approves, in the dialog below.
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Read
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        let path = self.state.plan_path()?;
+        let plan = tokio::fs::read_to_string(&path).await.map_err(|_| {
+            format!(
+                "No plan file at {}. Write it with `{}` first.",
+                path.display(),
+                WRITE_PLAN_TOOL
+            )
+        })?;
+        if plan.trim().is_empty() {
+            return Err(format!(
+                "The plan file at {} is empty. Write the plan with `{}` first.",
+                path.display(),
+                WRITE_PLAN_TOOL
+            ));
+        }
+
+        let ui = ctx
+            .ui
+            .as_ref()
+            .map(|handle| handle.ui())
+            .unwrap_or_else(|| Arc::new(NullHostUi));
+        let answer = ui
+            .request(
+                UiSource::Host,
+                UiRequest::Review {
+                    title: "Approve this plan?".to_string(),
+                    path: path.display().to_string(),
+                    content: plan,
+                    options: vec![
+                        APPROVE_AND_AUTO_ACCEPT.to_string(),
+                        APPROVE_BUT_ASK.to_string(),
+                        APPROVE_FULLY_AUTONOMOUS.to_string(),
+                        KEEP_PLANNING.to_string(),
+                    ],
+                    timeout_ms: None,
+                },
+            )
+            .await;
+
+        // A review nobody answered is not an error: failing closed here means
+        // staying in plan mode, and an `is_error` result would read as "retry
+        // the call" — the one move that must not follow.
+        let Some(choice) = answer.text() else {
+            return Ok("No answer (dismissed or timed out). Still in plan mode.".to_string());
+        };
+
+        match choice {
+            APPROVE_AND_AUTO_ACCEPT => self.approve(Mode::AcceptEdits),
+            APPROVE_BUT_ASK => self.approve(Mode::Ask),
+            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo),
+            KEEP_PLANNING => {
+                let feedback = ui
+                    .request(
+                        UiSource::Host,
+                        UiRequest::Input {
+                            title: "What should change in the plan?".to_string(),
+                            placeholder: Some(
+                                "e.g. start with the parser, not the CLI".to_string(),
+                            ),
+                            timeout_ms: None,
+                        },
+                    )
+                    .await
+                    .text()
+                    .map(|t| t.trim().to_string())
+                    .unwrap_or_default();
+                if feedback.is_empty() {
+                    Ok(format!(
+                        "Plan not approved. Still in plan mode; the user wants changes but said \
+                         nothing — ask what to change, revise with `{}`, and resubmit.",
+                        WRITE_PLAN_TOOL
+                    ))
+                } else {
+                    Ok(format!(
+                        "Plan not approved. Still in plan mode. The user's feedback: {feedback}"
+                    ))
+                }
+            }
+            // An answer outside the offered set changes nothing: a surprising
+            // value must never flip a mode.
+            other => Ok(format!(
+                "Unrecognised answer '{other}'. Still in plan mode."
+            )),
+        }
+    }
+}
+
+impl ExitPlanModeTool {
+    /// Apply the user's approval: the mode flips, and the model is told which
+    /// mode is now judging it.
+    fn approve(&self, mode: Mode) -> Result<String, String> {
+        self.state.set_mode(mode);
+        Ok(format!(
+            "Plan approved. Mode is now {}. Calls are judged by it from the next one on.",
+            mode.as_str()
+        ))
+    }
+}
+
 #[async_trait]
 impl ThunderPlugin for ModePlugin {
     fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
-    // `write_plan` / `exit_plan_mode` and the mode's prompt contribution arrive
-    // with plan mode itself; the gate is deliberately useful without them.
+
+    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        vec![
+            Arc::new(WritePlanTool {
+                state: Arc::clone(&self.state),
+            }),
+            Arc::new(ExitPlanModeTool {
+                state: Arc::clone(&self.state),
+            }),
+        ]
+    }
+
+    fn system_prompt_contribution(&self) -> Option<String> {
+        Some(
+            "### Approval mode\n             Tool calls are judged by the mode the user chose (plan / ask / acceptEdits / yolo); \
+             the user can change it at any time. In plan mode every write is refused: record the \
+             plan with `write_plan` (the full plan, markdown — it replaces the previous one) and \
+             submit it with `exit_plan_mode`; the user's approval is the only way out. A change \
+             that fits in one sentence does not need a plan."
+                .to_string(),
+        )
+    }
 }

@@ -217,6 +217,9 @@ impl ToolExecutor {
         if ctx.event_sink.is_none() {
             ctx.event_sink = self.event_sink.lock().clone();
         }
+        if ctx.ui.is_none() {
+            ctx.ui = Some(crate::types::ui::UiHandle(self.ui()));
+        }
 
         let started = Instant::now();
 

@@ -21,6 +21,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Fallback wait for a blocking UI request when the caller sets no timeout.
@@ -77,6 +78,23 @@ pub enum UiRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
     },
+    /// Present a document for review, with the choices that decide what
+    /// happens to it. Responds with [`UiResponse::Value`] naming one option.
+    ///
+    /// The reserved-chrome rules of [`UiSource::Host`] apply with teeth here:
+    /// a review is an authorisation moment (the plan approval above all), so a
+    /// client must render `content` as the thing being approved, not as
+    /// decoration around the buttons.
+    Review {
+        title: String,
+        /// Where the document under review lives, for the header.
+        path: String,
+        /// The document itself (markdown).
+        content: String,
+        options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
     /// Multi-line free text. Responds with [`UiResponse::Value`].
     Editor {
         title: String,
@@ -96,6 +114,7 @@ impl UiRequest {
         let ms = match self {
             UiRequest::Select { timeout_ms, .. }
             | UiRequest::Confirm { timeout_ms, .. }
+            | UiRequest::Review { timeout_ms, .. }
             | UiRequest::Input { timeout_ms, .. }
             | UiRequest::Editor { timeout_ms, .. } => *timeout_ms,
         };
@@ -110,6 +129,7 @@ impl UiRequest {
         match self {
             UiRequest::Select { .. } => "select",
             UiRequest::Confirm { .. } => "confirm",
+            UiRequest::Review { .. } => "review",
             UiRequest::Input { .. } => "input",
             UiRequest::Editor { .. } => "editor",
         }
@@ -236,6 +256,27 @@ pub trait HostUi: Send + Sync {
     }
 }
 
+/// A [`HostUi`] as plain data: a field on a context that wants to be `Debug`.
+///
+/// The trait object itself is not `Debug` (implementations are transports, not
+/// data), so contexts that carry one wrap it here — the same trick the root's
+/// `HostUiHandle` uses.
+#[derive(Clone)]
+pub struct UiHandle(pub Arc<dyn HostUi>);
+
+impl std::fmt::Debug for UiHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UiHandle(..)")
+    }
+}
+
+impl UiHandle {
+    /// The panel inside.
+    pub fn ui(&self) -> Arc<dyn HostUi> {
+        Arc::clone(&self.0)
+    }
+}
+
 /// The absence of a UI: every dialog is declined, notifications are dropped.
 ///
 /// This is the default for embedded and headless hosts, and it makes
@@ -321,6 +362,18 @@ mod tests {
         assert_eq!(json["ui"], "select");
         assert_eq!(json["title"], "Allow?");
         assert_eq!(json["options"][1], "no");
+
+        let json = serde_json::to_value(UiRequest::Review {
+            title: "Approve this plan?".into(),
+            path: "plans/s1.md".into(),
+            content: "# Plan".into(),
+            options: vec!["Yes, and auto-accept edits".into()],
+            timeout_ms: None,
+        })
+        .unwrap();
+        assert_eq!(json["ui"], "review");
+        assert_eq!(json["path"], "plans/s1.md");
+        assert_eq!(json["options"][0], "Yes, and auto-accept edits");
 
         // An absent timeout must not appear on the wire, so a panel can tell
         // "no deadline" from "deadline of 0".

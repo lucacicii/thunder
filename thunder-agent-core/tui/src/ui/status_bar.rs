@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use thunder_agent_root::plugins::mode::Mode;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Cell width of the prompt / continuation gutter (`❯ ` or the spinner).
@@ -93,6 +94,21 @@ pub fn footer_height(app: &App) -> u16 {
 /// Background of the footer strip, shared by the session line and the transient
 /// status above it so the two read as one band.
 const FOOTER_BG: Color = Color::Rgb(10, 14, 20);
+
+/// The mode badge: a glyph, the mode's name, and the colour it reads in.
+///
+/// The mode is the one setting that changes what the agent may do without
+/// asking, so it is visible at all times rather than only while it is being
+/// changed. `yolo` is deliberately the quiet one: it is the default, and a
+/// badge that shouts about the default is noise.
+fn mode_badge(theme: &Theme, mode: Mode) -> (String, Color) {
+    match mode {
+        Mode::Plan => ("⏸ plan".to_string(), theme.highlight),
+        Mode::Ask => ("✋ ask".to_string(), theme.accent_primary),
+        Mode::AcceptEdits => ("✎ acceptEdits".to_string(), theme.tool_bubble),
+        Mode::Yolo => ("⚡ yolo".to_string(), theme.text_muted),
+    }
+}
 
 /// Cut text to `max` display cells, ending in an ellipsis when it did not fit.
 fn truncate_to_width(text: &str, max: usize) -> String {
@@ -314,13 +330,26 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         render_transient_status(f, app, status_area, theme);
     }
 
-    let label = truncate_to_width(
-        app.session_label(),
-        (session_area.width as usize).saturating_sub(2),
-    );
+    // The session line carries two things: what this session is, and what mode
+    // is judging it. The badge is reserved its cells first, so a long session
+    // name is cut rather than allowed to push the badge off the edge.
+    let (badge, badge_color) = mode_badge(theme, app.mode_plugin.mode());
+    let width = session_area.width as usize;
+    let badge_width = UnicodeWidthStr::width(badge.as_str()) + 2;
+    let label = truncate_to_width(app.session_label(), width.saturating_sub(badge_width + 2));
+    let gap = width
+        .saturating_sub(2 + UnicodeWidthStr::width(label.as_str()))
+        .saturating_sub(badge_width);
     let session = Paragraph::new(Line::from(vec![
         Span::raw(" "),
         Span::styled(label, theme.muted_style()),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(
+            format!("{badge} "),
+            Style::default()
+                .fg(badge_color)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]))
     .style(Style::default().bg(FOOTER_BG));
     f.render_widget(session, session_area);
@@ -405,6 +434,30 @@ mod tests {
         assert_eq!(footer_height(&app), 2, "a status message stacks above it");
     }
 
+    /// The badge is the only always-visible statement of what the agent may do
+    /// without asking, so every mode has one and they are all distinct.
+    #[test]
+    fn every_mode_has_its_own_badge() {
+        let theme = Theme::default();
+        let badges: Vec<String> = Mode::ALL
+            .iter()
+            .map(|mode| mode_badge(&theme, *mode).0)
+            .collect();
+        for mode in Mode::ALL {
+            assert!(
+                badges.iter().any(|badge| badge.contains(mode.as_str())),
+                "`{}` must be readable from its badge: {badges:?}",
+                mode.as_str()
+            );
+        }
+        let mut sorted = badges.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), badges.len(), "badges must be distinct");
+    }
+
+    /// The badge is reserved its cells, so a session name cannot push it off
+    /// the right edge of a narrow pane.
     #[test]
     fn a_long_session_name_is_cut_to_the_pane() {
         let mut app = App::new("gpt-4o");

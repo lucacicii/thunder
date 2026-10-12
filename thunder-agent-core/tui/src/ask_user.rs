@@ -427,6 +427,27 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                     },
                 ],
             },
+            // A review is a document plus a decision. The modal renders the
+            // title as the question, so the body has to become part of it —
+            // otherwise the user is asked to approve something they cannot see.
+            UiRequest::Review {
+                title,
+                path,
+                content,
+                options,
+                ..
+            } => AskQuestion {
+                question: format!("{title}\n\n{path}\n\n{content}"),
+                header: Some("Review".to_string()),
+                multi_select: false,
+                options: options
+                    .iter()
+                    .map(|option| AskOption {
+                        label: option.clone(),
+                        description: None,
+                    })
+                    .collect(),
+            },
             UiRequest::Input {
                 title, placeholder, ..
             } => AskQuestion {
@@ -463,6 +484,10 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                 ..
             }
             | UiRequest::Confirm {
+                timeout_ms: Some(ms),
+                ..
+            }
+            | UiRequest::Review {
                 timeout_ms: Some(ms),
                 ..
             }

@@ -6,7 +6,9 @@ use serde_json::json;
 use thunder_agent_loop::types::gate::{GateVerdict, ToolGateRequest};
 use thunder_agent_loop::types::policy::{Caller, ToolEffect};
 use thunder_agent_loop::types::scope::Scope;
-use thunder_agent_root::plugins::mode::{AllowRule, Mode, ModePlugin};
+use thunder_agent_root::plugins::mode::{
+    AllowRule, Mode, ModePlugin, EXIT_PLAN_MODE_TOOL, WRITE_PLAN_TOOL,
+};
 
 fn decide(
     plugin: &ModePlugin,
@@ -260,9 +262,56 @@ fn plan_denials_explain_how_to_leave_plan_mode() {
     match verdict {
         GateVerdict::Deny { reason } => {
             assert!(reason.contains("plan mode"), "got: {reason}");
+            // Every tool is registered, so the model *does* see `write_file`
+            // here. Without the exit named, the refusal reads as "try again
+            // differently" and the model retries the same call.
+            assert!(
+                reason.contains("write_plan"),
+                "must name the write: {reason}"
+            );
+            assert!(
+                reason.contains("exit_plan_mode"),
+                "must name the exit: {reason}"
+            );
         }
         other => panic!("expected a denial, got {other:?}"),
     }
+}
+
+/// The plan tools are the door out of plan mode, so they run there — but by
+/// *name*, never because a tool declared an effect about itself.
+#[test]
+fn the_plan_tools_are_exempt_where_a_self_declared_effect_would_not_be() {
+    let plugin = ModePlugin::new(Mode::Plan);
+
+    // The one write plan mode allows, and the exit itself.
+    for tool in [WRITE_PLAN_TOOL, EXIT_PLAN_MODE_TOOL] {
+        let verdict = decide(
+            &plugin,
+            tool,
+            json!({}),
+            ToolEffect::PlanArtifact,
+            Scope::Unknown,
+        );
+        assert!(
+            !asks(&verdict) && !denies(&verdict),
+            "`{tool}` must run in plan mode: {verdict:?}"
+        );
+    }
+
+    // A tool that claims the plan effect without being one is denied like any
+    // other write: the exemption is keyed on the name for exactly this reason.
+    let verdict = decide(
+        &plugin,
+        "sneaky_writer",
+        json!({}),
+        ToolEffect::PlanArtifact,
+        Scope::InScope,
+    );
+    assert!(
+        denies(&verdict),
+        "a self-declared plan effect must not buy an exemption: {verdict:?}"
+    );
 }
 
 /// The names users and configs write — including every pre-0.4 name, and the

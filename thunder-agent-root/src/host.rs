@@ -344,7 +344,7 @@ impl ThunderRoot {
             "ThunderRoot executing prompt"
         );
 
-        let active_set = self
+        let mut active_set = self
             .registry
             .create_active_set(&selection.active_plugin_ids);
 
@@ -359,10 +359,21 @@ impl ThunderRoot {
             .clone()
             .unwrap_or_else(|| ModePlugin::new(options.mode));
         mode_plugin.set_mode(options.mode);
+        // Bind the plan file's location and name. The plugin is shared across a
+        // session's runs, so the binding is refreshed per run rather than only
+        // at construction — otherwise a session that changed workspace would
+        // still plan into the first one's directory.
+        mode_plugin.bind_session(self.workspace_root.clone(), &session_id);
         let ui = options
             .ui
             .clone()
             .unwrap_or_else(|| Arc::clone(&self.host_ui));
+
+        // The mode plugin is the host's own, not a registry selection, so it has
+        // to be added to the active set explicitly: the gate it provides judges
+        // every call, and the plan tools it carries are how the model leaves
+        // plan mode at all.
+        active_set.push(Arc::clone(&mode_plugin) as Arc<dyn crate::plugin::ThunderPlugin>);
 
         info!(
             session_id = %session_id,
