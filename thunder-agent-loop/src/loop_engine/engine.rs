@@ -41,20 +41,20 @@ pub struct AgentRunResult {
 
 /// Everything a capability pack needs to assemble a tool pipeline for a run.
 ///
-/// The pack owns the *shape* of its stack (path jail, atomic writes, change
-/// detection); the loop only owns the registry the pack must wrap, and the
-/// scratchpad/policy/ui state the pack's layers may need.
+/// The pack owns the *shape* of its stack; the loop owns the registry the pack
+/// must wrap, and the scratchpad/ui state the pack's layers may need. Judging
+/// is not here any more: it lives in the executor's funnel, driven by the
+/// host's [`ToolGate`](crate::types::gate::ToolGate), so a pipeline can no
+/// longer be assembled without it.
 pub struct PipelineContext {
-    /// The run's configuration. Carries the host's layer toggles and the
-    /// workspace roots, which are pack inputs rather than loop inputs.
+    /// The run's configuration. Carries the workspace roots, which are pack
+    /// inputs rather than loop inputs.
     pub config: crate::types::config::AgentConfig,
     /// The live tool registry to wrap.
     pub registry: crate::tools::registry::ToolRegistry,
     /// Scratchpad for oversized tool output, when the run has one.
     pub scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-    /// The session's approval policy, when the host adopted one.
-    pub policy: Option<Arc<crate::types::policy::SessionPolicy>>,
-    /// The panel approval dialogs may use, when the host installed one.
+    /// The panel a pack's layers may prompt through, when the host installed one.
     pub ui: Option<Arc<dyn crate::types::ui::HostUi>>,
 }
 
@@ -78,12 +78,14 @@ pub struct AgentLoop {
     /// Steering and follow-up queues; shared with any handle that wants to
     /// inject user input into a run already in flight.
     steer_queues: Arc<crate::core::steer::SteerQueues>,
-    /// The judge's inputs, threaded into every pipeline rebuild.
+    /// The host's judge, threaded into every executor rebuild.
     ///
-    /// `None` means "no policy adopted": the guard then enforces only the static
-    /// tier. `ui` of `None` inside a policy means every dialog is declined, so a
-    /// headless host refuses rather than assuming consent.
-    policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+    /// `None` means "no gate installed": everything the guard allows runs. That
+    /// is not a weakened default — it is the contract of headless embedders,
+    /// stated rather than approximated. Hosts that want asking install a gate.
+    tool_gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
+    /// The panel approval dialogs render through. `None` means every `Ask`
+    /// refuses, which is what fail-closed means for a host with no panel.
     host_ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     /// Host-supplied check on whether a finished run may actually finish.
     ///
@@ -98,7 +100,7 @@ pub struct AgentLoop {
     /// workspace, a path jail or an atomic file write is. A capability pack
     /// hands over a builder that assembles *its* stack around the registry the
     /// loop owns, and the loop replays that builder every time it rebuilds the
-    /// executor (a new tool, a new policy) so the pack's layers are never lost.
+    /// executor (a new tool, a new gate) so the pack's layers are never lost.
     pipeline_builder: Option<
         Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
     >,
@@ -142,7 +144,7 @@ impl AgentLoop {
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
             steer_queues: crate::core::steer::SteerQueues::new_shared(),
-            policy: None,
+            tool_gate: None,
             host_ui: None,
             completion_gate: None,
             max_gate_rounds: 3,
@@ -167,19 +169,22 @@ impl AgentLoop {
         self
     }
 
-    /// Install the permission policy and the panel it may prompt through.
+    /// Install the host's judge and the panel its dialogs render through.
     ///
-    /// Both are held by the unit and travel with every pipeline rebuild, so a
-    /// tool registered later is still judged by the same policy. The policy
-    /// carries the live mode and remembered rules, so flipping the mode
-    /// mid-session takes effect on the next call without rebuilding anything.
-    pub fn with_policy(
+    /// Both are held by the unit and travel with every executor rebuild, so a
+    /// tool registered later is judged the same way. A gate that carries a live
+    /// mode is asked on every call, so flipping the mode mid-session takes
+    /// effect on the next call without rebuilding anything. Passing `None`
+    /// removes the gate — which is what "uninstall the mode plugin" is.
+    pub fn with_tool_gate(
         mut self,
-        policy: Arc<crate::types::policy::SessionPolicy>,
-        ui: Arc<dyn crate::types::ui::HostUi>,
+        gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
+        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     ) -> Self {
-        self.policy = Some(policy);
-        self.host_ui = Some(ui);
+        self.tool_gate = gate;
+        if ui.is_some() {
+            self.host_ui = ui;
+        }
         self.tool_executor = self.refresh_executor();
         self
     }
@@ -215,7 +220,7 @@ impl AgentLoop {
     ///
     /// Uses the host's builder when one is installed, and the kernel's own
     /// baseline pipeline otherwise. Called after anything that changes what the
-    /// executor must see — a new policy, a new scope, a tool registered later —
+    /// executor must see — a new gate, a new scope, a tool registered later —
     /// because the executor holds a snapshot of the registry, and a snapshot
     /// taken before a registration does not contain it.
     fn refresh_executor(&self) -> ToolExecutor {
@@ -225,7 +230,6 @@ impl AgentLoop {
                 config: self.config.clone(),
                 registry: registry.clone(),
                 scratchpad: Some(self.scratchpad.clone()),
-                policy: self.policy.clone(),
                 ui: self.host_ui.clone(),
             }),
             None => crate::tools::middleware::ToolPipeline::baseline(registry.clone()),
@@ -233,6 +237,12 @@ impl AgentLoop {
         let mut executor = ToolExecutor::with_pipeline(registry, pipeline);
         if let Some(scope) = &self.tool_scope {
             executor = executor.with_tool_scope(Arc::clone(scope));
+        }
+        if let Some(gate) = &self.tool_gate {
+            executor = executor.with_tool_gate(Some(Arc::clone(gate)));
+        }
+        if let Some(ui) = &self.host_ui {
+            executor = executor.with_host_ui(Arc::clone(ui));
         }
         executor
     }

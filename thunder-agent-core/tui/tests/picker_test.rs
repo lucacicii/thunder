@@ -60,8 +60,8 @@ async fn test_app_interactive_pickers_integration() {
         "anthropic/claude-3-7-sonnet-latest"
     );
 
-    // 2. Trigger /mode without args -> opens mode picker
-    app.execute_slash_command("/mode", tx.clone());
+    // 2. Trigger /topology without args -> opens the topology picker
+    app.execute_slash_command("/topology", tx.clone());
     assert!(app.picker.is_open);
     assert_eq!(app.picker.kind, PickerKind::SelectMode);
 

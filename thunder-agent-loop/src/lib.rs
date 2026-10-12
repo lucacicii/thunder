@@ -44,9 +44,7 @@ pub mod prelude {
         TraceTiming, TRACE_SCHEMA,
     };
     pub use crate::tools::Guard;
-    pub use crate::types::config::{
-        AgentConfig, ContextPruningConfig, LoopGuardConfig, Permission,
-    };
+    pub use crate::types::config::{AgentConfig, ContextPruningConfig, LoopGuardConfig};
     pub use crate::types::error::AgentError;
     pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
     pub use crate::types::invoke::{
@@ -54,11 +52,14 @@ pub mod prelude {
         ToolInvoker, ToolInvokerSlot,
     };
     pub use crate::types::message::{ChatMessage, ContentPart, Role, ToolCall, ToolCallFunction};
-    pub use crate::types::policy::{
-        call_hash, deny_reason, describe_call, tier_allows, AllowRule, ApprovalMode,
-        ApprovalRequest, Caller, PermissionMode, SessionPolicy, ToolEffect, Verdict, ALLOW_ALWAYS,
-        ALLOW_ONCE, DENY, DENY_WITH_REASON,
+    // `GateVerdict` is deliberately not re-exported from `types::gate` here:
+    // the completion gate already owns that name in this prelude, and a host
+    // that wants the tool gate's verdict says so by naming the module.
+    pub use crate::types::gate::{
+        ApprovalAnswer, ApprovalPrompt, ToolGate, ToolGateRequest, ALLOW_ALWAYS, ALLOW_ONCE, DENY,
+        DENY_WITH_REASON,
     };
+    pub use crate::types::policy::{Caller, ToolEffect};
     pub use crate::types::scope::{Scope, ToolScope, UnknownScope};
     pub use crate::types::tool::{
         AgentTool, FunctionDefinition, ToolDefinition, ToolEventSink, ToolExecutionContext,

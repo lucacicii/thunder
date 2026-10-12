@@ -58,6 +58,11 @@ pub struct AgentSection {
     /// Long-term memory configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemorySection>,
+    /// The mode new sessions start in (`plan` / `ask` / `acceptEdits` /
+    /// `yolo`; the pre-0.4 names parse too). `None` = `yolo`, which is what
+    /// the pre-0.4 default (`never`) asked of nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<String>,
 }
 
 /// The `agent.memory` group.

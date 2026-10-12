@@ -1,7 +1,4 @@
-pub mod permission_guard;
-
 pub use crate::tools::notice::SystemNotice;
-pub use permission_guard::PermissionGuardMiddleware;
 
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;

@@ -38,6 +38,11 @@ pub enum DaemonRequest {
         model_descriptor: Option<Box<ModelDescriptor>>,
         use_mock: Option<bool>,
         workspace_dir: Option<String>,
+        /// The mode this run is judged in (`plan` / `ask` / `acceptEdits` /
+        /// `yolo`, and the old names too). `None` keeps the session's current
+        /// mode, or the config default for a new session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
         /// Extra roots (e.g. repositories referenced by the task) granted the
         /// same read/write standing as `workspace_dir`. Merged into the
         /// conversation's shared_roots; older daemons ignore this field.
@@ -113,13 +118,23 @@ pub enum DaemonRequest {
         id: Option<String>,
         session_id: String,
     },
+    /// Flip a session's mode. The next run of the session — and a run already
+    /// in flight, on its next tool call — is judged by it.
+    SetMode {
+        id: Option<String>,
+        session_id: String,
+        /// Accepts what [`Mode::parse`] accepts, old names included.
+        mode: String,
+    },
     /// Cancel a running task by task_id
     CancelTask { id: Option<String>, task_id: String },
-    /// Reload TypeScript / JavaScript single-file plugins
-    ReloadPlugins {
-        id: Option<String>,
-        path: Option<String>,
-    },
+    /// Drop pooled MCP connections and cached plugin selections, so the next
+    /// run re-reads the workspace's integrations from disk.
+    ///
+    /// The TypeScript plugin host it used to reload is gone with its crate;
+    /// the name is new so a caller cannot reach for the old semantics by
+    /// reflex and quietly get a different, narrower action.
+    ReloadIntegrations { id: Option<String> },
     /// Get full execution trace for a task
     GetTrace {
         id: Option<String>,

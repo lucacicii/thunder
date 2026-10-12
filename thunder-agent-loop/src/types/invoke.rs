@@ -201,10 +201,8 @@ impl ToolInvoker for PipelineToolInvoker {
         // `execute_with_context`, not `execute_one`: the latter would rebuild the
         // context and drop `caller`, which is exactly the field that tells an
         // approval dialog a plugin asked.
-        let result: ToolExecutionResult = self
-            .executor
-            .execute_with_context(&call, tool_ctx, self.timeout)
-            .await;
+        let result: ToolExecutionResult =
+            self.executor.run_tool(&call, tool_ctx, self.timeout).await;
 
         if result.is_error {
             // Surface the layer's own message. It already explains *why* (tier,

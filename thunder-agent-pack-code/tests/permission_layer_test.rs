@@ -1,9 +1,11 @@
-//! The permission layer's contract: one judge, one place, and the order that
-//! makes it safe.
+//! The ask path's contract: one judge, one place, and the refusal that cannot
+//! be misread.
 //!
-//! The invariants here were, until recently, split across two adjacent
-//! middlewares with a seam nothing tested as a unit. They are now the contract
-//! of a single layer, and each one has a test that fails if it breaks.
+//! The judging used to be a middleware the pack assembled, which meant every
+//! invariant here was also an invariant about assembly — leave the layer out
+//! and there was no judge. The judge is in the kernel's funnel now
+//! ([`ToolExecutor::run_tool`]); what is left to pin is the half the kernel
+//! still owns outright: the dialog and everything around it.
 
 mod support;
 
@@ -12,18 +14,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::middleware::PermissionGuardMiddleware;
-use thunder_agent_loop::tools::middleware::{ToolHandler, ToolMiddleware};
 use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition};
 use thunder_agent_pack_code::builtin::*;
-
-fn registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
-    registry.register(Arc::new(WriteFileTool::default()));
-    registry.register(Arc::new(ReadFileTool::default()));
-    registry.register(Arc::new(BashTool::default()));
-    registry
-}
 
 /// Answers every dialog from a script, recording what it was asked.
 struct ScriptedUi {
@@ -67,18 +60,35 @@ impl HostUi for ScriptedUi {
     fn set_status(&self, _key: &str, _text: Option<String>) {}
 }
 
-struct Terminal;
+/// A tool that always succeeds, so a refusal can never be the tool's fault.
+struct Succeeds;
 
 #[async_trait]
-impl ToolHandler for Terminal {
-    async fn handle(
-        &self,
-        _call: &ToolCall,
-        _ctx: &ToolExecutionContext,
-        _timeout: Option<Duration>,
-    ) -> ToolExecutionResult {
-        ToolExecutionResult::success("EXECUTED".into(), Duration::from_millis(1))
+impl AgentTool for Succeeds {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new_function(
+            "mystery_tool",
+            "does something",
+            serde_json::json!({
+                "type": "object", "properties": { "q": { "type": "string" } }
+            }),
+        )
     }
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        Ok("EXECUTED".into())
+    }
+}
+
+fn registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
+    registry.register(Arc::new(WriteFileTool::default()));
+    registry.register(Arc::new(ReadFileTool::default()));
+    registry.register(Arc::new(BashTool::default()));
+    registry
 }
 
 fn call(tool: &str, args: serde_json::Value) -> ToolCall {
@@ -94,153 +104,19 @@ fn ctx() -> ToolExecutionContext {
     }
 }
 
-fn guard(policy: Arc<SessionPolicy>, ui: Arc<dyn HostUi>) -> Arc<PermissionGuardMiddleware> {
-    Arc::new(PermissionGuardMiddleware::new(policy, ui))
+/// An executor judged by a gate that asks about everything that changes
+/// something — the `ask` mode's shape — and answers through `ui`.
+fn asking(ui: Arc<dyn HostUi>) -> ToolExecutor {
+    ToolExecutor::new(registry())
+        .with_tool_gate(Some(support::AskGate::mutations()))
+        .with_host_ui(ui)
 }
 
-fn policy(tier: Permission, mode: ApprovalMode) -> Arc<SessionPolicy> {
-    SessionPolicy::new(tier, mode)
+async fn run(executor: &ToolExecutor, tool: &str, args: serde_json::Value) -> ToolExecutionResult {
+    executor.run_tool(&call(tool, args), ctx(), None).await
 }
 
-// ---------------------------------------------------------------- position
-
-/// The judge is the only layer, and it is outermost: there must be nothing
-/// outside it that could let a call run unjudged.
-///
-/// There used to be a layer inside it — the atomic write, which is why this test
-/// once read as "outside the transaction". That capability now lives in the
-/// write tool itself, so a refused call stages no file because it never reaches
-/// a tool, not because of where a layer was placed.
-#[test]
-fn the_layer_is_the_only_one_and_the_outermost() {
-    let pipeline = support::code_pipeline(
-        std::env::temp_dir(),
-        &[],
-        registry(),
-        None,
-        Permission::Bash,
-        Some(policy(Permission::Bash, ApprovalMode::Mutations)),
-        Some(Arc::new(NullHostUi)),
-    );
-    let order: Vec<String> = pipeline
-        .middlewares()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect();
-
-    assert_eq!(
-        order,
-        vec![PermissionGuardMiddleware::NAME.to_string()],
-        "the judge, and nothing that could sit outside it: {order:?}"
-    );
-}
-
-/// Without a policy the layer still defends the pipeline with the bare tier, so
-/// an embedder that has not adopted `SessionPolicy` is not left unguarded.
-#[test]
-fn a_pipeline_without_a_policy_still_has_the_judge() {
-    let pipeline = support::code_pipeline(
-        std::env::temp_dir(),
-        &[],
-        registry(),
-        None,
-        Permission::Read,
-        None,
-        None,
-    );
-    assert!(pipeline.has_middleware(PermissionGuardMiddleware::NAME));
-    let order: Vec<&str> = pipeline.middlewares().iter().map(|m| m.name()).collect();
-    assert_eq!(
-        order,
-        vec![PermissionGuardMiddleware::NAME],
-        "the judge, and nothing else"
-    );
-}
-
-// ----------------------------------------------------------------- the tier
-
-/// A capability the role forbids is refused *before* any dialog: the user can
-/// never be offered a choice the role already decided.
-#[tokio::test]
-async fn a_forbidden_call_never_reaches_a_dialog() {
-    let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(
-        policy(Permission::Read, ApprovalMode::Mutations),
-        ui.clone(),
-    );
-    let res = g
-        .handle(
-            &call(
-                "write_file",
-                serde_json::json!({"path": "a", "content": "b"}),
-            ),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-
-    assert!(res.is_error);
-    assert!(
-        ui.titles().is_empty(),
-        "a tier denial must not raise a prompt: {:?}",
-        ui.titles()
-    );
-    assert!(res.telemetry.is_some(), "the model needs the ground truth");
-}
-
-#[tokio::test]
-async fn the_denial_names_the_ceiling() {
-    let g = guard(
-        policy(Permission::Read, ApprovalMode::Mutations),
-        Arc::new(NullHostUi),
-    );
-    let res = g
-        .handle(
-            &call("bash", serde_json::json!({"command": "rm -rf /"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-    assert!(res.is_error);
-    let notice = res.telemetry.expect("telemetry");
-    assert!(
-        notice.ground_truth.contains("workspace is unchanged"),
-        "got: {}",
-        notice.ground_truth
-    );
-    assert!(
-        res.output.contains("read-only"),
-        "the reason should say why: {}",
-        res.output
-    );
-}
-
-/// A read-only role refuses writes outright, and never raises a dialog.
-#[tokio::test]
-async fn read_only_tier_refuses_rather_than_asks() {
-    let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Read, ApprovalMode::Never), ui.clone());
-    let res = g
-        .handle(
-            &call(
-                "write_file",
-                serde_json::json!({"path": "a", "content": "b"}),
-            ),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-    assert!(res.is_error);
-    assert!(
-        ui.titles().is_empty(),
-        "read-only tier must not negotiate a write"
-    );
-}
-
-// ----------------------------------------------------------------- the mode
+// ------------------------------------------------------------------ the dialog
 
 /// The approval dialog is the one place a user is asked to say yes or no, so
 /// its headline and its options have to read in the language the rest of the
@@ -248,17 +124,8 @@ async fn read_only_tier_refuses_rather_than_asks() {
 #[tokio::test]
 async fn the_approval_dialog_reads_english() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        ui.clone(),
-    );
-    g.handle(
-        &call("bash", serde_json::json!({"command": "ls"})),
-        &ctx(),
-        None,
-        Arc::new(Terminal),
-    )
-    .await;
+    let executor = asking(ui.clone());
+    run(&executor, "bash", serde_json::json!({"command": "ls"})).await;
 
     assert_eq!(ui.titles(), vec!["Run bash".to_string()]);
     let asked = ui.options();
@@ -272,34 +139,46 @@ async fn the_approval_dialog_reads_english() {
     );
 }
 
+/// "Always allow" appears only when the gate says the call can be narrowed to a
+/// rule. This gate never says so, so the option never appears.
 #[tokio::test]
-async fn allow_once_runs_the_call() {
-    let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
-    let res = g
-        .handle(
-            &call("bash", serde_json::json!({"command": "ls"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-    assert!(!res.is_error);
-    assert_eq!(res.output, "EXECUTED");
+async fn always_allow_is_offered_only_when_a_rule_can_exist() {
+    let ui = ScriptedUi::new(vec![UiResponse::value(DENY)]);
+    let executor = asking(ui.clone());
+    run(
+        &executor,
+        "write_file",
+        serde_json::json!({"path": "a", "content": "b"}),
+    )
+    .await;
+
+    let asked = ui.options();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        !asked[0].contains(&ALLOW_ALWAYS.to_string()),
+        "a call with no safe rule must not offer a blanket yes: {:?}",
+        asked[0]
+    );
 }
 
 #[tokio::test]
+async fn allow_once_runs_the_call() {
+    let executor = asking(ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]));
+    let res = run(&executor, "bash", serde_json::json!({"command": "true"})).await;
+    assert!(!res.is_error, "{}", res.output);
+}
+
+// ----------------------------------------------------------------- the refusal
+
+#[tokio::test]
 async fn refusal_is_a_tool_result_with_ground_truth_not_an_exception() {
-    let ui = ScriptedUi::new(vec![UiResponse::value(DENY)]);
-    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
-    let res = g
-        .handle(
-            &call("bash", serde_json::json!({"command": "rm -rf build"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
+    let executor = asking(ScriptedUi::new(vec![UiResponse::value(DENY)]));
+    let res = run(
+        &executor,
+        "bash",
+        serde_json::json!({"command": "rm -rf build"}),
+    )
+    .await;
     assert!(res.is_error);
     assert!(
         res.output.contains("was not approved"),
@@ -320,35 +199,15 @@ async fn refusal_is_a_tool_result_with_ground_truth_not_an_exception() {
 #[tokio::test]
 async fn every_non_answer_is_a_refusal() {
     // No panel, a dismissal, a value outside the offered set: all must land on
-    // the deny branch. This layer never fails open.
+    // the deny branch. The ask path never fails open.
     for answer in [UiResponse::Cancelled, UiResponse::value("something-else")] {
-        let g = guard(
-            policy(Permission::Bash, ApprovalMode::Mutations),
-            ScriptedUi::new(vec![answer]),
-        );
-        let res = g
-            .handle(
-                &call("bash", serde_json::json!({"command": "ls"})),
-                &ctx(),
-                None,
-                Arc::new(Terminal),
-            )
-            .await;
+        let executor = asking(ScriptedUi::new(vec![answer]));
+        let res = run(&executor, "bash", serde_json::json!({"command": "ls"})).await;
         assert!(res.is_error, "must fail closed");
     }
     // A null UI is the headless host case: it must refuse rather than hang.
-    let g = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        Arc::new(NullHostUi),
-    );
-    let res = g
-        .handle(
-            &call("bash", serde_json::json!({"command": "ls"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
+    let executor = asking(Arc::new(NullHostUi));
+    let res = run(&executor, "bash", serde_json::json!({"command": "ls"})).await;
     assert!(res.is_error);
 }
 
@@ -358,18 +217,13 @@ async fn deny_with_reason_reaches_the_model() {
         UiResponse::value(DENY_WITH_REASON),
         UiResponse::value("先别动生产配置"),
     ]);
-    let g = guard(policy(Permission::Bash, ApprovalMode::Mutations), ui);
-    let res = g
-        .handle(
-            &call(
-                "bash",
-                serde_json::json!({"command": "systemctl restart nginx"}),
-            ),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
+    let executor = asking(ui);
+    let res = run(
+        &executor,
+        "bash",
+        serde_json::json!({"command": "systemctl restart nginx"}),
+    )
+    .await;
     assert!(res.is_error);
     assert!(
         res.output.contains("先别动生产配置"),
@@ -378,55 +232,41 @@ async fn deny_with_reason_reaches_the_model() {
     );
 }
 
+/// Reads do not prompt under a gate shaped like the ask mode — and neither does
+/// anything, under no gate at all.
 #[tokio::test]
-async fn yolo_never_raises_a_dialog() {
+async fn reads_do_not_prompt_and_no_gate_prompts_nothing() {
     let ui = ScriptedUi::new(vec![]);
-    let g = guard(policy(Permission::Bash, ApprovalMode::Never), ui.clone());
-    let res = g
-        .handle(
-            &call("bash", serde_json::json!({"command": "ls"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-    assert!(!res.is_error);
-    assert!(ui.titles().is_empty(), "yolo must not prompt");
-}
+    let executor = asking(ui.clone());
+    let res = run(
+        &executor,
+        "read_file",
+        serde_json::json!({"path": "/etc/hosts"}),
+    )
+    .await;
+    assert!(!res.is_error, "{}", res.output);
+    assert!(ui.titles().is_empty());
 
-#[tokio::test]
-async fn reads_do_not_prompt_in_ask_mode() {
     let ui = ScriptedUi::new(vec![]);
-    let g = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        ui.clone(),
-    );
-    let res = g
-        .handle(
-            &call("read_file", serde_json::json!({"path": "a.txt"})),
-            &ctx(),
-            None,
-            Arc::new(Terminal),
-        )
-        .await;
-    assert!(!res.is_error);
+    let executor = ToolExecutor::new(registry()).with_host_ui(ui.clone());
+    let res = run(&executor, "bash", serde_json::json!({"command": "ls"})).await;
+    assert!(!res.is_error, "no gate means allow: {}", res.output);
     assert!(ui.titles().is_empty());
 }
 
 #[tokio::test]
 async fn a_cancelled_run_raises_no_dialog() {
     let ui = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g = guard(policy(Permission::Bash, ApprovalMode::Always), ui.clone());
+    let executor = asking(ui.clone());
     let token = tokio_util::sync::CancellationToken::new();
     token.cancel();
     let mut c = ctx();
     c.cancellation_token = token;
-    let res = g
-        .handle(
+    let res = executor
+        .run_tool(
             &call("read_file", serde_json::json!({"path": "a.txt"})),
-            &c,
+            c,
             None,
-            Arc::new(Terminal),
         )
         .await;
     assert!(res.is_error);
@@ -441,19 +281,15 @@ async fn a_cancelled_run_raises_no_dialog() {
 #[tokio::test]
 async fn a_plugin_request_is_labelled_and_a_model_request_is_not() {
     let ui = ScriptedUi::new(vec![UiResponse::value(DENY)]);
-    let g = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        ui.clone(),
-    );
+    let executor = asking(ui.clone());
 
     let mut plugin_ctx = ctx();
     plugin_ctx.caller = Some("evil_plugin".into());
-    let res = g
-        .handle(
+    let res = executor
+        .run_tool(
             &call("bash", serde_json::json!({"command": "ls"})),
-            &plugin_ctx,
+            plugin_ctx,
             None,
-            Arc::new(Terminal),
         )
         .await;
     assert!(res.is_error);
@@ -471,17 +307,14 @@ async fn a_plugin_request_is_labelled_and_a_model_request_is_not() {
 
     // A model-initiated call of the same shape must not be dressed up as one.
     let ui2 = ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]);
-    let g2 = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        ui2.clone(),
-    );
-    g2.handle(
-        &call("bash", serde_json::json!({"command": "ls"})),
-        &ctx(),
-        None,
-        Arc::new(Terminal),
-    )
-    .await;
+    let executor = asking(ui2.clone());
+    executor
+        .run_tool(
+            &call("bash", serde_json::json!({"command": "ls"})),
+            ctx(),
+            None,
+        )
+        .await;
     let titles = ui2.titles();
     assert_eq!(titles.len(), 1);
     assert!(!titles[0].contains("Plugin"), "got: {:?}", titles[0]);
@@ -497,101 +330,43 @@ async fn parallel_calls_are_prompted_one_at_a_time() {
         UiResponse::value(ALLOW_ONCE),
         UiResponse::value(ALLOW_ONCE),
     ]);
-    let g = guard(
-        policy(Permission::Bash, ApprovalMode::Mutations),
-        Arc::clone(&ui) as Arc<dyn HostUi>,
-    );
+    let executor = asking(Arc::clone(&ui) as Arc<dyn HostUi>);
 
     let bash_call = call("bash", serde_json::json!({"command": "ls"}));
     let write_call = call(
         "write_file",
         serde_json::json!({"path": "x", "content": "y"}),
     );
-    let c = ctx();
+    let token = tokio_util::sync::CancellationToken::new();
     let (a, b) = tokio::join!(
-        g.handle(&bash_call, &c, None, Arc::new(Terminal)),
-        g.handle(&write_call, &c, None, Arc::new(Terminal)),
+        executor.execute_one(&bash_call, 1, token.clone(), None),
+        executor.execute_one(&write_call, 1, token, None),
     );
     assert!(!a.is_error && !b.is_error);
+    // Two prompts happened, and the point is that they did not overlap — which
+    // the serialised lock guarantees and the count observes.
     assert_eq!(ui.titles().len(), 2);
 }
 
-// ------------------------------------------------------------- integration
+// --------------------------------------------------------------- integration
 
-/// The end-to-end claim: with a pipeline installed, an unclassified tool is
-/// judged by the ceiling rather than waved through.
+/// An unclassified tool is judged by its effect like any other: it asks, and a
+/// denial names it.
 #[tokio::test]
-async fn an_unclassified_tool_is_judged_in_a_real_pipeline() {
-    struct Mystery;
-    #[async_trait]
-    impl AgentTool for Mystery {
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition::new_function(
-                "mystery_tool",
-                "does something",
-                serde_json::json!({
-                    "type": "object", "properties": { "q": { "type": "string" } }
-                }),
-            )
-        }
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ToolExecutionContext,
-        ) -> Result<String, String> {
-            Ok("EXECUTED".into())
-        }
-    }
-
+async fn an_unclassified_tool_is_judged_like_any_other() {
     let mut reg = registry();
-    reg.register(Arc::new(Mystery));
+    reg.register(Arc::new(Succeeds));
+    let executor = ToolExecutor::new(reg)
+        .with_tool_gate(Some(support::AskGate::mutations()))
+        .with_host_ui(ScriptedUi::new(vec![UiResponse::value(ALLOW_ONCE)]));
 
-    let pipeline = support::code_pipeline(
-        std::env::temp_dir(),
-        &[],
-        reg,
-        None,
-        Permission::Bash,
-        Some(policy(Permission::Bash, ApprovalMode::Never)),
-        Some(Arc::new(NullHostUi)),
-    );
-    let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
-
-    // Wide enough tier, no prompting: runs.
     let ok = executor
-        .execute_one(
+        .run_tool(
             &call("mystery_tool", serde_json::json!({"q": "hi"})),
-            1,
-            tokio_util::sync::CancellationToken::new(),
+            ctx(),
             None,
         )
         .await;
     assert!(!ok.is_error, "{}", ok.output);
-
-    // Read-only tier: refused, because an unclassified tool needs write access.
-    // Before the two tables were merged this tool was waved through by
-    // `allows_builtin`, which returned `true` for names it did not know.
-    let pipeline = support::code_pipeline(
-        std::env::temp_dir(),
-        &[],
-        registry(),
-        None,
-        Permission::Read,
-        Some(policy(Permission::Read, ApprovalMode::Never)),
-        Some(Arc::new(NullHostUi)),
-    );
-    let executor = ToolExecutor::with_pipeline(ToolRegistry::default(), pipeline);
-    let denied = executor
-        .execute_one(
-            &call("mystery_tool", serde_json::json!({"q": "hi"})),
-            1,
-            tokio_util::sync::CancellationToken::new(),
-            None,
-        )
-        .await;
-    assert!(
-        denied.is_error,
-        "an unclassified tool must not run read-only"
-    );
-    assert_ne!(denied.output, "EXECUTED");
+    assert_eq!(ok.output, "EXECUTED");
 }

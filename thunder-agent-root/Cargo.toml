@@ -21,7 +21,6 @@ thunder-agent-pack-code.workspace = true
 thunder-conversation = { workspace = true, optional = true }
 thunder-agent-skills = { workspace = true, optional = true }
 thunder-agent-mcp = { workspace = true, optional = true }
-thunder-agent-plugin = { workspace = true, optional = true }
 thunder-agent-providers.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
@@ -33,11 +32,10 @@ futures-util.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi"] }
 
 [features]
-default = ["conversation", "skills", "mcp", "script-plugin"]
+default = ["conversation", "skills", "mcp"]
 conversation = ["dep:thunder-conversation"]
 skills = ["dep:thunder-agent-skills"]
 mcp = ["dep:thunder-agent-mcp"]
-script-plugin = ["dep:thunder-agent-plugin"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

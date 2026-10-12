@@ -2,8 +2,8 @@
 //!
 //! The risk this file exists to pin down: an invoker that dispatches straight
 //! to the registry would be a privilege escalation wearing a plugin's name —
-//! no tier, no jail, no approval prompt. Every test here asserts that the call
-//! goes through the *same* onion a model-initiated call does.
+//! no gate, no guard, no approval prompt. Every test here asserts that the call
+//! goes through the *same* funnel a model-initiated call does.
 
 mod support;
 
@@ -11,11 +11,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::middleware::ToolPipeline;
 use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_loop::types::gate::ToolGate;
 use thunder_agent_pack_code::builtin::*;
 
-fn pipeline(tier: Permission, mode: ApprovalMode, ws: &std::path::Path) -> ToolPipeline {
+/// The executor a host hands the invoker: real tools, an optional judge, an
+/// optional panel.
+fn executor(
+    gate: Option<Arc<dyn ToolGate>>,
+    ui: Option<Arc<dyn thunder_agent_loop::types::ui::HostUi>>,
+    ws: &std::path::Path,
+) -> ToolExecutor {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
     // Registered the way a host registers them: a relative path in a call means
     // "relative to the workspace". A bare tool would resolve against the process
@@ -30,24 +36,17 @@ fn pipeline(tier: Permission, mode: ApprovalMode, ws: &std::path::Path) -> ToolP
         BashTool::default().with_default_cwd(ws.to_path_buf()),
     ));
 
-    support::code_pipeline(
-        ws.to_path_buf(),
-        &[],
-        registry,
-        None,
-        tier,
-        Some(SessionPolicy::new(tier, mode)),
-        Some(Arc::new(NullHostUi)),
-    )
+    let mut executor = ToolExecutor::new(registry);
+    if let Some(gate) = gate {
+        executor = executor.with_tool_gate(Some(gate));
+    }
+    if let Some(ui) = ui {
+        executor = executor.with_host_ui(ui);
+    }
+    executor
 }
 
-fn invoker(pipeline: ToolPipeline, turn: usize) -> Arc<PipelineToolInvoker> {
-    // The pipeline owns its terminal handler, so the executor is rebuilt around
-    // the same pipeline rather than around a second registry.
-    let executor = ToolExecutor::with_pipeline(
-        ToolRegistry::new(64 * 1024, Duration::from_secs(5)),
-        pipeline,
-    );
+fn invoker(executor: ToolExecutor, turn: usize) -> Arc<PipelineToolInvoker> {
     Arc::new(PipelineToolInvoker::new(executor).with_turn(turn))
 }
 
@@ -66,8 +65,7 @@ fn ctx(plugin: &str) -> ToolInvocationContext {
 async fn a_plugin_can_use_the_runs_own_authority() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
-    let inv = invoker(p, 1);
+    let inv = invoker(executor(None, None, ws), 1);
 
     let out = inv
         .invoke(
@@ -76,7 +74,7 @@ async fn a_plugin_can_use_the_runs_own_authority() {
             &ctx("demo"),
         )
         .await
-        .expect("write should run under a yolo bash run");
+        .expect("write should run under a gate-less run");
     assert!(out.contains("by_plugin.txt") || !out.is_empty());
     assert!(
         ws.join("by_plugin.txt").exists(),
@@ -84,59 +82,65 @@ async fn a_plugin_can_use_the_runs_own_authority() {
     );
 }
 
-/// A plugin must not be able to escalate past the run's tier. This is the single
-/// most important assertion in the file: without it, "the plugin runs inside the
-/// agent" becomes "the plugin *is* the agent".
+/// A plugin cannot escalate past the gate. This is the single most important
+/// assertion in the file: without it, "the plugin runs inside the agent"
+/// becomes "the plugin *is* the agent". Both shapes of refusal are pinned — a
+/// gate that denies outright, and a gate that asks into a panel that cannot
+/// answer.
 #[tokio::test]
-async fn a_plugin_cannot_escalate_past_the_tier() {
+async fn a_plugin_cannot_escalate_past_the_gate() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    // Read-only role. No mode can change that, and no mode may reach a dialog
-    // either — the ceiling is checked first, so a user is never offered a choice
-    // the role already decided.
-    for mode in ApprovalMode::ALL {
-        let p = pipeline(Permission::Read, mode, ws);
-        let inv = invoker(p, 1);
 
-        let err = inv
-            .invoke(
-                "write_file",
-                serde_json::json!({ "path": "escalated.txt", "content": "nope" }),
-                &ctx("hostile"),
-            )
-            .await
-            .expect_err("a read-only run must not be writable by a plugin");
-        assert!(
-            err.contains("was not approved"),
-            "{} produced: {err}",
-            mode.as_str()
-        );
-        assert!(
-            err.contains("read-only"),
-            "{} should say the ceiling was the cause: {err}",
-            mode.as_str()
-        );
-        assert!(
-            err.contains("hostile"),
-            "the plugin must be told who asked: {err}"
-        );
-        assert!(
-            !ws.join("escalated.txt").exists(),
-            "{} must not have written anything",
-            mode.as_str()
-        );
-    }
+    // A session whose gate denies everything: no dialog, just the refusal.
+    let inv = invoker(executor(Some(Arc::new(support::DenyAll)), None, ws), 1);
+    let err = inv
+        .invoke(
+            "write_file",
+            serde_json::json!({ "path": "escalated.txt", "content": "nope" }),
+            &ctx("hostile"),
+        )
+        .await
+        .expect_err("a denying gate must refuse a plugin's write");
+    assert!(err.contains("was not approved"), "got: {err}");
+    assert!(
+        err.contains("hostile"),
+        "the plugin must be told who asked: {err}"
+    );
+    assert!(
+        !ws.join("escalated.txt").exists(),
+        "nothing may have been written"
+    );
+
+    // A session whose gate asks, with no panel to answer: fail closed.
+    let inv = invoker(
+        executor(
+            Some(support::AskGate::mutations() as Arc<dyn ToolGate>),
+            Some(Arc::new(NullHostUi)),
+            ws,
+        ),
+        1,
+    );
+    let err = inv
+        .invoke(
+            "write_file",
+            serde_json::json!({ "path": "escalated.txt", "content": "nope" }),
+            &ctx("hostile"),
+        )
+        .await
+        .expect_err("an unanswered dialog must refuse, not assume consent");
+    assert!(err.contains("was not approved"), "got: {err}");
+    assert!(!ws.join("escalated.txt").exists());
 }
 
-/// Nor through the kernel's guard. The floor that refuses `rm -rf /` sits below
+/// Nor past the kernel's guard. The floor that refuses `rm -rf /` sits below
 /// the gate and below the pipeline, so it holds for a plugin-initiated call
-/// exactly as it does for the model's — including in a mode that asks nothing.
+/// exactly as it does for the model's — including with no gate at all.
 #[tokio::test]
 async fn a_plugin_cannot_run_a_guarded_command() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
-    let inv = invoker(p, 1);
+    let inv = invoker(executor(None, None, ws), 1);
 
     let err = inv
         .invoke(
@@ -159,51 +163,39 @@ async fn a_plugin_cannot_run_a_guarded_command() {
 async fn a_plugin_initiated_call_is_gated_and_attributed() {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use thunder_agent_loop::types::ui::{UiResponse, UiSource};
+    use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource};
 
     struct Recorder {
         titles: Arc<StdMutex<Vec<String>>>,
     }
     #[async_trait]
     impl thunder_agent_loop::types::ui::HostUi for Recorder {
-        async fn request(
-            &self,
-            _source: UiSource,
-            request: thunder_agent_loop::types::ui::UiRequest,
-        ) -> UiResponse {
-            if let thunder_agent_loop::types::ui::UiRequest::Select { title, .. } = request {
+        async fn request(&self, _source: UiSource, request: UiRequest) -> UiResponse {
+            if let UiRequest::Select { title, .. } = request {
                 self.titles.lock().unwrap().push(title);
             }
             // The user says no.
             UiResponse::value(DENY)
         }
         fn notify(&self, _: UiSource, _: &str, _: NotifyLevel) {}
-        fn set_status(&self, _: &str, _: Option<String>) {}
+        fn set_status(&self, _key: &str, _text: Option<String>) {}
     }
 
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-
-    let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
-    registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let pipeline = support::code_pipeline(
-        ws.to_path_buf(),
-        &[],
-        registry,
-        None,
-        Permission::Bash,
-        Some(SessionPolicy::new(
-            Permission::Bash,
-            // Shell commands need a human in this mode, which is the case the
-            // dialog — and the attribution it owes the user — exists for.
-            ApprovalMode::ShellOnly,
-        )),
-        Some(Arc::new(Recorder {
-            titles: Arc::clone(&titles),
-        })),
+    // A gate that asks about shell commands, which is the case the dialog —
+    // and the attribution it owes the user — exists for.
+    let inv = invoker(
+        executor(
+            Some(support::AskGate::always()),
+            Some(Arc::new(Recorder {
+                titles: Arc::clone(&titles),
+            })),
+            ws,
+        ),
+        1,
     );
-    let inv = invoker(pipeline, 1);
 
     let err = inv
         .invoke(
@@ -235,61 +227,44 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
 async fn a_model_call_is_not_labelled_as_a_plugin() {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use thunder_agent_loop::types::ui::{UiResponse, UiSource};
+    use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource};
 
     struct Recorder {
         titles: Arc<StdMutex<Vec<String>>>,
     }
     #[async_trait]
     impl thunder_agent_loop::types::ui::HostUi for Recorder {
-        async fn request(
-            &self,
-            _source: UiSource,
-            request: thunder_agent_loop::types::ui::UiRequest,
-        ) -> UiResponse {
-            if let thunder_agent_loop::types::ui::UiRequest::Select { title, .. } = request {
+        async fn request(&self, _source: UiSource, request: UiRequest) -> UiResponse {
+            if let UiRequest::Select { title, .. } = request {
                 self.titles.lock().unwrap().push(title);
             }
             UiResponse::value(ALLOW_ONCE)
         }
         fn notify(&self, _: UiSource, _: &str, _: NotifyLevel) {}
-        fn set_status(&self, _: &str, _: Option<String>) {}
+        fn set_status(&self, _key: &str, _text: Option<String>) {}
     }
 
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
-    registry.register(Arc::new(BashTool::default()));
     let titles = Arc::new(StdMutex::new(Vec::new()));
-    let pipeline = support::code_pipeline(
-        ws.to_path_buf(),
-        &[],
-        registry,
-        None,
-        Permission::Bash,
-        Some(SessionPolicy::new(
-            Permission::Bash,
-            ApprovalMode::Mutations,
-        )),
+    let exec = executor(
+        Some(support::AskGate::always()),
         Some(Arc::new(Recorder {
             titles: Arc::clone(&titles),
         })),
+        ws,
     );
 
     let call = ToolCall::new_function("m1", "bash", r#"{"command":"echo hi"}"#);
-    let ctx = ToolExecutionContext {
-        tool_call_id: "m1".into(),
-        turn: 1,
-        cancellation_token: tokio_util::sync::CancellationToken::new(),
-        ..Default::default()
-    };
-    let res = pipeline.execute(&call, &ctx, None).await;
+    let res = exec
+        .execute_one(&call, 1, tokio_util::sync::CancellationToken::new(), None)
+        .await;
     assert!(!res.is_error, "allowed: {}", res.output);
 
     let titles = titles.lock().unwrap();
     assert_eq!(titles.len(), 1);
     assert!(
-        !titles[0].contains("插件"),
+        !titles[0].contains("插件") && !titles[0].contains("Plugin"),
         "a model call must not be dressed up as a plugin request: {:?}",
         titles[0]
     );
@@ -301,8 +276,7 @@ async fn a_model_call_is_not_labelled_as_a_plugin() {
 async fn an_unknown_tool_is_an_ordinary_error() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
-    let inv = invoker(p, 1);
+    let inv = invoker(executor(None, None, ws), 1);
 
     let err = inv
         .invoke("no_such_tool", serde_json::json!({}), &ctx("demo"))
@@ -328,13 +302,10 @@ async fn no_invoker_means_a_clear_refusal() {
 async fn cancellation_propagates_to_plugin_invocations() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
-    let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let executor =
-        ToolExecutor::with_pipeline(ToolRegistry::new(64 * 1024, Duration::from_secs(5)), p);
     let inv = Arc::new(
-        PipelineToolInvoker::new(executor)
+        PipelineToolInvoker::new(executor(None, None, ws))
             .with_turn(1)
             .with_cancellation(cancel.clone()),
     );

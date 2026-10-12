@@ -44,25 +44,17 @@ fn registry() -> ToolRegistry {
     registry
 }
 
-/// An executor whose pipeline would let everything through: a permissive policy
-/// and no dialogs to answer. Anything refused here was refused by the guard.
+/// An executor with a judge that allows everything and no dialog to answer.
+/// Anything refused here was refused by the guard — which is also why this test
+/// uses a permissive *gate* rather than no gate: the floor must hold under the
+/// most permissive thing a host could install, not only in the gate's absence.
 fn permissive_executor(scope: Option<Arc<dyn ToolScope>>) -> ToolExecutor {
-    let registry = registry();
-    let ws = std::env::temp_dir();
-    let pipeline = support::code_pipeline(
-        ws,
-        &[],
-        registry.clone(),
-        None,
-        Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, ApprovalMode::Never)),
-        None,
-    );
-    let executor = ToolExecutor::with_pipeline(registry, pipeline);
-    match scope {
-        Some(scope) => executor.with_tool_scope(scope),
-        None => executor,
+    let mut executor =
+        ToolExecutor::new(registry()).with_tool_gate(Some(support::AskGate::never()));
+    if let Some(scope) = scope {
+        executor = executor.with_tool_scope(scope);
     }
+    executor
 }
 
 fn ctx(id: &str) -> ToolExecutionContext {
@@ -84,7 +76,7 @@ async fn no_entry_point_skips_the_guard() {
 
     // The context-aware path.
     let res = executor
-        .execute_with_context(&command("c1", "rm -rf /"), ctx("c1"), None)
+        .run_tool(&command("c1", "rm -rf /"), ctx("c1"), None)
         .await;
     assert!(res.is_error, "execute_with_context: {}", res.output);
 
@@ -128,7 +120,7 @@ async fn the_floor_holds_under_a_permissive_scope_and_a_permissive_mode() {
     let executor = permissive_executor(Some(Arc::new(EverythingIsFine)));
 
     let res = executor
-        .execute_with_context(&command("c1", "rm -rf /"), ctx("c1"), None)
+        .run_tool(&command("c1", "rm -rf /"), ctx("c1"), None)
         .await;
 
     assert!(res.is_error, "{}", res.output);
@@ -144,7 +136,7 @@ async fn a_host_can_declare_a_target_off_limits() {
     let executor = permissive_executor(Some(Arc::new(OffLimits)));
 
     let res = executor
-        .execute_with_context(
+        .run_tool(
             &ToolCall::new_function(
                 "c1",
                 "write_file",

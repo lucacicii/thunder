@@ -8,7 +8,6 @@ members = [
     "thunder-agent-skills",
     "thunder-agent-mcp",
     "thunder-agent-root",
-    "thunder-agent-plugin",
     "thunder-agent-daemon",
     "thunder-agent-core/conversation",
     "thunder-agent-core/tui",
@@ -35,7 +34,6 @@ thunder-agent-pack-code = { path = "thunder-agent-pack-code" }
 thunder-agent-providers = { path = "thunder-agent-providers" }
 thunder-agent-skills = { path = "thunder-agent-skills" }
 thunder-agent-mcp = { path = "thunder-agent-mcp" }
-thunder-agent-plugin = { path = "thunder-agent-plugin" }
 thunder-agent-root = { path = "thunder-agent-root" }
 thunder-conversation = { path = "thunder-agent-core/conversation" }
 

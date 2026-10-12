@@ -141,6 +141,16 @@ pub trait ToolGate: Send + Sync {
     }
 }
 
+/// Options the kernel offers on an approval dialog, in display order.
+///
+/// These live here, not with a policy: the dialog is the kernel's
+/// (see the [module docs](self)), so its vocabulary is too. A gate asks
+/// *whether*; the kernel decides what the user is allowed to answer.
+pub const ALLOW_ONCE: &str = "Allow once";
+pub const ALLOW_ALWAYS: &str = "Always allow";
+pub const DENY: &str = "Deny";
+pub const DENY_WITH_REASON: &str = "Deny with reason";
+
 #[cfg(test)]
 mod tests {
     use super::*;

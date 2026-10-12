@@ -1,6 +1,7 @@
 use crate::error::PluginError;
 use crate::instructions::discover_context_files;
 use crate::plugin::PluginContext;
+use crate::plugins::mode::{Mode, ModePlugin};
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
@@ -8,11 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::invoke::{
     empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
 };
-use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
@@ -34,9 +33,9 @@ pub struct RootRunOptions {
     pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
-    /// Tool capability tier (read ⊂ write ⊂ bash). Defaults to the widest tier;
-    /// hosts may narrow it explicitly.
-    pub permission: Permission,
+    /// The mode this run is judged in. Hosts that did not choose default to
+    /// `yolo`, which is what "no gate installed" has always meant.
+    pub mode: Mode,
     /// Optional cooperative pause gate forwarded to the agent unit, letting the
     /// host freeze the run at a tool boundary and resume it later.
     pub pause_gate: Option<Arc<thunder_agent_loop::core::pause::PauseGate>>,
@@ -53,10 +52,10 @@ pub struct RootRunOptions {
     /// in logs and panel routing. It must be unique among *concurrent* runs: it
     /// is the key that decides which run's authority a plugin call spends.
     pub route: Option<String>,
-    /// Session-scoped approval state. Hosts pass the *same* policy across every
+    /// Session-scoped mode state. Hosts pass the *same* plugin across every
     /// run of a session so "always allow" rules and mid-session mode switches
     /// survive a turn; `None` creates a fresh one for this run only.
-    pub policy: Option<Arc<SessionPolicy>>,
+    pub mode_plugin: Option<Arc<ModePlugin>>,
 }
 
 impl Default for RootRunOptions {
@@ -68,12 +67,12 @@ impl Default for RootRunOptions {
             forced_plugins: None,
             register_builtins: true,
             thinking_level: None,
-            permission: Permission::default(),
+            mode: Mode::default(),
+            mode_plugin: None,
             pause_gate: None,
             steer_queues: None,
             ui: None,
             route: None,
-            policy: None,
         }
     }
 }
@@ -349,18 +348,17 @@ impl ThunderRoot {
             .registry
             .create_active_set(&selection.active_plugin_ids);
 
-        // 1b. Resolve the approval policy for this run.
+        // 1b. Resolve the mode this run is judged in.
         //
-        // A host-supplied policy is reused across the session (so remembered
-        // rules and any host-chosen approval mode survive); a fresh one defaults
-        // to `Never` (no prompting). The tier is this run's capability ceiling.
-        let effective_permission = options.permission;
-        let policy = options
-            .policy
+        // A host-supplied plugin is reused across the session (so remembered
+        // rules and mid-session mode switches survive); a fresh one runs in the
+        // mode the options named. The gate always installs — the mode is what
+        // decides whether it ever asks.
+        let mode_plugin = options
+            .mode_plugin
             .clone()
-            .unwrap_or_else(|| SessionPolicy::new(options.permission, Default::default()));
-        policy.set_tier(options.permission).await;
-        let mode = policy.mode().await;
+            .unwrap_or_else(|| ModePlugin::new(options.mode));
+        mode_plugin.set_mode(options.mode);
         let ui = options
             .ui
             .clone()
@@ -368,25 +366,21 @@ impl ThunderRoot {
 
         info!(
             session_id = %session_id,
-            tier = ?options.permission,
-            mode = mode.as_str(),
-            effective_tier = ?effective_permission,
-            "Resolved permission policy"
+            mode = options.mode.as_str(),
+            "Resolved mode"
         );
 
         // 2. Prepare Plugin Context
-        // The permission tier is carried here so every plugin — including the
-        // TypeScript sidecar, whose `ctx.exec()` / `ctx.fs.writeFile()` bypass
-        // the loop's tool pipeline — inherits the *run's* ceiling instead of a
-        // process-wide default.
+        // The mode is carried here so a plugin that frames guidance to the
+        // model can speak of the mode the user chose.
         // Filled in after the agent exists — see the note at the fill site.
         let tool_slot: ToolInvokerSlot = empty_tool_invoker_slot();
         let mut ctx = PluginContext::new(&session_id)
             .with_cancellation(cancel.clone())
-            .with_permission(effective_permission)
+            .with_mode(options.mode)
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
-            .with_policy(Arc::clone(&policy))
+            .with_mode_plugin(Arc::clone(&mode_plugin))
             .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
@@ -478,7 +472,6 @@ impl ThunderRoot {
         // Tags every tool call, which is how a plugin's reverse RPC finds this
         // run's services instead of another run's.
         agent_cfg.route = Some(route.clone());
-        agent_cfg.permission = effective_permission;
         agent_cfg.system_prompt = Some(combined_system_prompt);
         if let Some(ref tl) = options.thinking_level {
             agent_cfg.thinking_level = Some(tl.clone());
@@ -523,10 +516,10 @@ impl ThunderRoot {
                 ),
             ));
 
-        // The judge. Always installed, including in `yolo`: the mode stops the
-        // *prompting*, not the tier check, and one code path for every mode means
-        // there is no configuration in which the ceiling is skipped.
-        agent = agent.with_policy(Arc::clone(&policy), ui.clone());
+        // The judge. Always installed, including in `yolo`: the mode is what
+        // decides whether a call asks, and one code path for every mode means
+        // there is no configuration in which the floor is the only check.
+        agent = agent.with_tool_gate(Some(Arc::clone(&mode_plugin) as _), Some(ui.clone()));
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);
@@ -538,55 +531,29 @@ impl ThunderRoot {
         }
 
         if options.register_builtins {
-            let perm = options.permission;
+            // Every tool, every run. Registration is no longer a capability
+            // decision: the gate decides what a call may do, and a tool absent
+            // from the model's list is a tool the model cannot even ask to use.
             let ws = self.workspace_root.clone();
-            // Gate by capability tier: a denied tool is never registered, so it
-            // never reaches the model's tool list in the first place.
-            if perm.allows_read() {
-                let tool = ReadFileTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
+            let mut tools: Vec<Arc<dyn thunder_agent_loop::types::tool::AgentTool>> = Vec::new();
+            macro_rules! push {
+                ($tool:expr) => {{
+                    let tool = $tool;
+                    let tool = match &ws {
+                        Some(dir) => tool.with_default_cwd(dir.clone()),
+                        None => tool,
+                    };
+                    tools.push(Arc::new(tool));
+                }};
             }
-            if perm.allows_write() {
-                let tool = WriteFileTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
-            }
-            if perm.allows_exec() {
-                let tool = BashTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
-            }
-            // Read-only lookup tools share the read capability tier.
-            if perm.allows_read() {
-                let grep = GrepTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => grep.with_default_cwd(dir.clone()),
-                    None => grep,
-                }));
-                let find = FindTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => find.with_default_cwd(dir.clone()),
-                    None => find,
-                }));
-                let ls = ListDirTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => ls.with_default_cwd(dir.clone()),
-                    None => ls,
-                }));
-            }
-            if perm != Permission::Bash {
-                info!(
-                    session_id = %session_id,
-                    permission = %perm.describe(),
-                    "Built-in tools restricted by permission tier"
-                );
+            push!(ReadFileTool::default());
+            push!(WriteFileTool::default());
+            push!(BashTool::default());
+            push!(GrepTool::default());
+            push!(FindTool::default());
+            push!(ListDirTool::default());
+            for tool in tools {
+                agent.register_tool(tool);
             }
         }
 

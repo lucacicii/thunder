@@ -45,20 +45,22 @@ fn registry() -> ToolRegistry {
 fn executor(
     ws: &PathBuf,
     extra_roots: &[PathBuf],
-    mode: ApprovalMode,
+    asking: bool,
     ui: Option<Arc<dyn HostUi>>,
 ) -> ToolExecutor {
-    let registry = registry();
-    let pipeline = support::code_pipeline(
-        ws.clone(),
-        extra_roots,
-        registry.clone(),
-        None,
-        Permission::Bash,
-        Some(SessionPolicy::new(Permission::Bash, mode)),
-        ui,
-    );
-    ToolExecutor::with_pipeline(registry, pipeline).with_tool_scope(Arc::new(
+    let gate: Option<Arc<dyn thunder_agent_loop::types::gate::ToolGate>> = if asking {
+        Some(support::AskGate::mutations())
+    } else {
+        None
+    };
+    let mut executor = ToolExecutor::new(registry());
+    if let Some(gate) = gate {
+        executor = executor.with_tool_gate(Some(gate));
+    }
+    if let Some(ui) = ui {
+        executor = executor.with_host_ui(ui);
+    }
+    executor.with_tool_scope(Arc::new(
         CodeScope::new(ws).with_extra_roots(extra_roots.to_vec()),
     ))
 }
@@ -79,7 +81,7 @@ async fn run(
     args: serde_json::Value,
 ) -> ToolExecutionResult {
     executor
-        .execute_with_context(
+        .run_tool(
             &ToolCall::new_function(id, tool, args.to_string()),
             ctx(id),
             None,
@@ -111,7 +113,7 @@ async fn the_calls_that_used_to_be_refused_are_not_any_more() {
     let ws = temp_dir("accept");
     // Yolo: nothing is asked, so anything that still refuses is the guard — and
     // the guard must refuse none of these.
-    let executor = executor(&ws, &[], ApprovalMode::Never, None);
+    let executor = executor(&ws, &[], false, None);
 
     let commands = [
         // `rm -rf /` as a substring of a longer, harmless path.
@@ -171,7 +173,7 @@ async fn the_calls_that_used_to_be_refused_are_not_any_more() {
 #[tokio::test]
 async fn a_write_inside_the_workspace_lands_and_reports_itself() {
     let ws = temp_dir("inside");
-    let executor = executor(&ws, &[], ApprovalMode::Never, None);
+    let executor = executor(&ws, &[], false, None);
 
     let target = ws.join("src").join("main.rs");
     let res = run(
@@ -204,7 +206,7 @@ async fn a_write_inside_the_workspace_lands_and_reports_itself() {
 async fn an_extra_root_is_inside_the_workspace_too() {
     let ws = temp_dir("extra_ws");
     let repo = temp_dir("extra_repo");
-    let executor = executor(&ws, std::slice::from_ref(&repo), ApprovalMode::Never, None);
+    let executor = executor(&ws, std::slice::from_ref(&repo), false, None);
 
     let target = repo.join("Cargo.toml");
     let res = run(
@@ -252,12 +254,7 @@ async fn an_out_of_scope_write_is_a_question_the_user_can_answer() {
         asked: std::sync::Mutex::new(Vec::new()),
     });
     // `Mutations` asks about anything that changes something.
-    let executor = executor(
-        &ws,
-        &[],
-        ApprovalMode::Mutations,
-        Some(ui.clone() as Arc<dyn HostUi>),
-    );
+    let executor = executor(&ws, &[], true, Some(ui.clone() as Arc<dyn HostUi>));
 
     let target = outside.join("probe.txt");
     let res = run(
@@ -295,7 +292,7 @@ async fn an_out_of_scope_write_is_a_question_the_user_can_answer() {
 #[tokio::test]
 async fn a_dangerous_command_is_refused_in_every_mode() {
     let ws = temp_dir("danger");
-    let executor = executor(&ws, &[], ApprovalMode::Never, None);
+    let executor = executor(&ws, &[], false, None);
 
     let res = run(
         &executor,
@@ -331,12 +328,7 @@ async fn repository_metadata_is_off_limits_without_asking() {
     let ui = Arc::new(DenyingUi {
         asked: std::sync::Mutex::new(Vec::new()),
     });
-    let executor = executor(
-        &ws,
-        &[],
-        ApprovalMode::Mutations,
-        Some(ui.clone() as Arc<dyn HostUi>),
-    );
+    let executor = executor(&ws, &[], true, Some(ui.clone() as Arc<dyn HostUi>));
 
     let res = run(
         &executor,

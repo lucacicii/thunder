@@ -153,7 +153,7 @@ async fn test_slash_commands_execution_flow() {
     assert_eq!(app.model.selection_id(), "openai/claude-3-7-sonnet");
 
     // 4. Test /mode
-    app.execute_slash_command("/mode single", tx.clone());
+    app.execute_slash_command("/topology single", tx.clone());
     assert_eq!(app.execution_mode, ExecutionMode::SingleAgent);
 
     // 5. Test /config
@@ -265,12 +265,12 @@ fn test_argument_cycle_walks_fixed_value_commands() {
     );
     // Empty argument: forward starts at the first value, backward at the last.
     assert_eq!(
-        arg_cycle("/mode ", CycleDir::Forward).as_deref(),
-        Some("/mode auto")
+        arg_cycle("/topology ", CycleDir::Forward).as_deref(),
+        Some("/topology auto")
     );
     assert_eq!(
-        arg_cycle("/mode ", CycleDir::Backward).as_deref(),
-        Some("/mode single")
+        arg_cycle("/topology ", CycleDir::Backward).as_deref(),
+        Some("/topology single")
     );
 
     // A partial prefix fills the matching value; the next press then steps from
@@ -284,8 +284,8 @@ fn test_argument_cycle_walks_fixed_value_commands() {
         Some("/think off")
     );
     assert_eq!(
-        arg_cycle("/permission r", CycleDir::Forward).as_deref(),
-        Some("/permission read")
+        arg_cycle("/mode p", CycleDir::Forward).as_deref(),
+        Some("/mode plan")
     );
     assert_eq!(
         arg_cycle("/queue c", CycleDir::Forward).as_deref(),
@@ -333,10 +333,13 @@ fn test_argument_candidates_and_highlight() {
     assert_eq!(arg_highlight(think, "m"), 0);
     assert_eq!(arg_highlight(think, "medium"), 0);
 
-    let permission = lookup_command("perm").expect("alias resolves");
+    // `/mode` now owns the plan/ask/acceptEdits/yolo cycle; the topology
+    // command kept its fixed values under its own name.
+    let mode = lookup_command("mode").expect("mode resolves");
     assert_eq!(
-        arg_candidates(permission, ""),
-        vec!["read", "write", "bash"]
+        arg_candidates(mode, ""),
+        vec!["plan", "ask", "acceptEdits", "yolo"]
     );
+    assert_eq!(arg_highlight(mode, "a"), 0);
     assert_eq!(lookup_command("model").unwrap().arg_options, &[] as &[&str]);
 }

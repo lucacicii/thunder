@@ -76,17 +76,17 @@ async fn test_thunder_root_end_to_end_execution() {
     });
 
     let options = RootRunOptions {
+        mode: Default::default(),
+        mode_plugin: None,
         session_id: Some(session_id.clone()),
         custom_client: Some(custom_client),
         cancellation_token: None,
         forced_plugins: None,
         register_builtins: true,
         thinking_level: None,
-        permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
         steer_queues: None,
         ui: None,
-        policy: None,
         route: None,
     };
 

@@ -109,15 +109,7 @@ async fn test_scratchpad_large_output_and_lossless_retrieval() {
     let mut pipe_reg = ToolRegistry::new(64 * 1024, std::time::Duration::from_secs(5));
     pipe_reg.register(Arc::new(ReadFileTool::default()));
 
-    let pipeline = support::code_pipeline(
-        ws.clone(),
-        &[],
-        pipe_reg,
-        Some(manager.clone()),
-        Permission::Bash,
-        None,
-        None,
-    );
+    let pipeline = thunder_agent_loop::tools::middleware::ToolPipeline::baseline(pipe_reg);
 
     let read_call = ToolCall::new_function(
         "read_pipe_1",
