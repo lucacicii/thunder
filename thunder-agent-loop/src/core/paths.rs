@@ -13,17 +13,16 @@
 //! <root>/config.json           user config
 //! <root>/mcp.json              MCP servers
 //! <root>/THUNDER.md            user-global memory
-//! <root>/bridge/               pi-ai bridge install           (written)
-//! <root>/plugins/              script plugins                 (written)
 //! <root>/skills/               user skills
-//! <root>/scratchpad/           oversized tool output          (written)
-//! <root>/conversations/        session store                  (written)
+//! <root>/logs/                 TUI log file                     (written)
+//! <root>/scratchpad/           oversized tool output            (written)
+//! <root>/conversations/        session store                   (written)
 //! ```
 //!
 //! Resolution order: `$THUNDER_CONFIG_DIR` → `<home>/.thunder` → `<temp>/.thunder`.
 //! The binaries accept `--config-dir <path>`, which they apply by setting the
-//! environment variable before anything else runs — so every layer below,
-//! including the Node bridge child they spawn, sees exactly one value.
+//! environment variable before anything else runs — so every layer below sees
+//! exactly one value.
 //!
 //! **Deliberately not under the root** (use [`real_home_dir`] for these):
 //! `~/.agents`, `~/.pi`, the shell rc that holds API keys, the cross-tool
@@ -78,7 +77,7 @@ pub fn real_home_dir_from(vars: impl Fn(&str) -> Option<String>) -> Option<PathB
         .map(PathBuf::from)
 }
 
-/// A path under the user data root, e.g. `thunder_subdir("bridge")`.
+/// A path under the user data root, e.g. `thunder_subdir("scratchpad")`.
 ///
 /// File *names* stay with the module that owns them; this only owns the root.
 pub fn thunder_subdir(name: &str) -> PathBuf {

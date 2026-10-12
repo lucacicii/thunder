@@ -13,7 +13,7 @@
 - **零端口冲突与天然绑定**：纯 STDIO 管道通信，不监听任何 TCP/HTTP 端口，无端口占用或防火墙拦截风险；当 Electron/父进程退出或崩溃时，STDIN 管道自动触发 EOF，`thunder-daemon` 毫秒级优雅退出，杜绝后台僵尸进程。
 - **并发控制信号量与背压调度**：内置异步任务信号量（`THUNDER_MAX_CONCURRENT_TASKS` 环境变量可调，默认 `8`），限制并发重度推理任务数量，防止本地资源与模型并发配额耗尽。
 - **异步 STDOUT Actor（消息零交错）**：所有事件流推送统一通过专用 STDOUT Actor 与带缓冲的 MPSC Channel 排队发送。在高并发多任务流式输出时，**确保每一行 NDJSON 绝对完整且不出现字符交错**。
-- **权威历史重载与分层轨迹保留**：任务启动前自动从磁盘存储重载最新权威会话历史，保证多端或重连时消息不错乱；内存轨迹采用分层保留策略——高频微增量（`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`）实时推送至 STDOUT 但不落入内存轨迹，杜绝常驻守护进程内存无限增长。
+- **权威历史重载与分层轨迹保留**：任务启动前自动从磁盘存储重载最新权威会话历史，保证多端或重连时消息不错乱；内存轨迹采用分层保留策略——高频微增量（`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`）实时推送至 STDOUT 但**不落入**内存轨迹，而是**计入** `dropped_deltas`（丢弃是计数的，不是静默的），杜绝常驻守护进程内存无限增长。trace 文件另含 `tool_traces`（上限 2000）与 `tool_decisions`（被挤出的记录保留判定本身）。
 - **协作式暂停（Pause）与反问气泡（Ask User）**：
   - `pause_task` 在下一个工具派发边界安全挂起，不中断进行中的写入操作；`resume_task` 恢复运行。
   - `ask_user_question` 允许 Agent 向用户发起阻塞式提问，宿主以气泡卡片渲染并通过 `answer_question` 答复继续任务。
@@ -54,6 +54,8 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"method":"answer_ui","id":"req-10","request_id":"ui_1234_2_100","confirmed":false}
 {"method":"answer_ui","id":"req-11","request_id":"ui_1234_3_101","cancelled":true}
 {"method":"get_permission_state","id":"req-13","session_id":"sess-001"}
+{"method":"set_mode","id":"req-14","session_id":"sess-001","mode":"plan"}
+{"method":"reload_integrations","id":"req-15"}
 ```
 
 ### 2. 守护进程输出（STDOUT）
@@ -78,6 +80,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 {"type":"ui_request","request_id":"ui_1234_2_100","source":"host","ui":"confirm","title":"Proceed?","message":"将写入 3 个文件"}
 {"type":"ui_request","request_id":"...","source":"host","ui":"input","title":"输入值","placeholder":"..."}
 {"type":"ui_request","request_id":"...","source":"host","ui":"editor","title":"编辑","prefill":"..."}
+{"type":"ui_request","request_id":"...","source":"host","ui":"review","title":"Approve this plan?","path":".thunder/plans/sess-001.md","content":"# Plan\n…","options":["Yes, and auto-accept edits","Yes, but ask before each edit","Yes, fully autonomous","No, keep planning"]}
 ```
 
 宿主 → 守护进程（`request_id` 必须原样回传）：
@@ -118,36 +121,53 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ## 🔒 审批模式（Approval Mode）
 
-`permission`（能力档位）与 `mode`（审批策略）是**完全正交**的两层：
+0.4 起，daemon **不再有档位（tier）**。工具始终全量注册，能不能跑由**模式**决定；
+模式的载体是一个可卸载的宿主插件（`ModePlugin`），内核只提供 `ToolGate` 钩子。
 
-- **档位 = 能力天花板**。`read` / `write` / `bash`，决定"什么根本不可能"。
-  由宿主注册哪些工具 + `PermissionGuardMiddleware` 强制执行。daemon 目前固定使用 `bash`（完整能力），不再有角色层来压低档位。
-- **模式 = 什么时候向人类确认**。纯粹关于审批交互策略，绝不篡改或下压档位。
+### 四种模式
 
-### 四种纯净模式
+| `mode` | 读 | 工作区内写 | 工作区外写 | shell | 说明 |
+|--------|:---:|:---:|:---:|:---:|------|
+| **`plan`** | 允许 | **拒绝** | **拒绝** | **询问** | 只读调研 + 写计划文件；`write_plan` / `exit_plan_mode` 是唯一出口 |
+| **`ask`** | 允许 | **询问** | **询问** | **询问** | 标准安全防御：读免问，其余弹窗 |
+| **`acceptEdits`** | 允许 | **允许** | **询问** | **询问** | 工作区内编辑免问，越界与命令仍问 |
+| **`yolo`** | 允许 | 允许 | 允许 | 允许 | 全自动（默认值，与 0.3 的 `never` 行为一致） |
 
-| `mode` | 读 (`Read`) | 写 (`Write`) | 执行 shell (`Exec`) | 说明 |
-|--------|:---:|:---:|:---:|------|
-| **`never`** (或 `yolo`) | 允许 | 允许 | 允许 | **全自动执行**：完全不弹窗，信任模型自主操作（默认值） |
-| **`shell_only`** (或 `accept_edits`) | 允许 | 允许 | **询问** | **自主编写，受控执行**：放行写文件，Shell 命令弹窗询问 |
-| **`mutations`** (或 `ask`) | 允许 | **询问** | **询问** | **标准安全防御**：读代码免问，改写文件与 Shell 均弹窗询问 |
-| **`always`** (或 `manual`) | **询问** | **询问** | **询问** | **全量审计**：调用任何工具均需每步确认 |
+旧名仍可解析：`plan`；`ask` ← `default`/`manual`/`mutations`/`writes`/`always`/`all`；
+`acceptEdits` ← `accept_edits`/`shell_only`/`ask_shell`；
+`yolo` ← `never`/`none`/`bypass`/`bypass_permissions`。
+**注意 `plan` 不再映射到 `never`**（0.3 的那条映射是错的）。
 
 ### 三条硬规则
 
-1. **审批模式永远不影响权限天花板。** 模式只决定是否弹窗，不能越权抬升，也不会下压档位。
-   `{"permission":"read","mode":"never"}` 依然是绝对只读 —— 物理不可越权。
-2. **`never` 只是"不问"，不是"给权限"。** daemon 默认即完整权限（`bash`）。
-3. **询问是 fail-closed 的。** 无面板 / 超时 / 用户关闭 → 一律按**拒绝**处理。
-   拒绝会作为**工具结果**回灌给模型（附带"什么都没发生"的 ground truth），
+1. **守卫不可被覆盖。** 危险命令（`mkfs*`、`dd if=`、`rm -rf /`、fork bomb）与
+   关键路径（凭据库、`.git`、系统目录）在**任何**模式（含 `yolo`）下都拒绝，
+   模式改不了它。
+2. **路径判定只用来放宽，不用来收紧。** 作用域（`ToolScope`）只把"问"降级成"允许"，
+   **永远不会**把"允许"升级成"拒绝" —— 新增判定最多让人多被问一次。
+3. **询问是 fail-closed 的。** 无面板 / 超时 / 用户关闭 / 答复不在选项集内 → 一律按
+   **拒绝**处理。拒绝会作为**工具结果**回灌给模型（附带"什么都没发生"的 ground truth），
    而不是抛异常，避免模型以为成功而反复重试。
 
 ### 默认值是 `yolo`（即"不询问"）
 
 审批门是 **opt-in** 的。原因很实际：门的语义是 fail-closed，
 无面板宿主上每个弹窗都会被判为"取消"＝"拒绝"。若默认 `ask`，
-升级后所有无面板用户的**每一次写文件、每一条 shell、每一个插件工具**都会被静默拒绝。
-所以默认值保持不询问；daemon 不再提供角色层来改写模式。
+升级后所有无面板用户的**每一次写文件、每一条 shell**都会被静默拒绝。
+默认值可被 `.thunder/config.json` 的 `agent.defaultMode` 覆盖。
+
+### 设置模式
+
+```json
+{"method":"set_mode","id":"req-14","session_id":"sess-001","mode":"plan"}
+```
+
+- 响应回 `{"session_id":"...","mode":"plan"}`；未知模式回 `success:false` +
+  `unknown mode '…': expected one of plan | ask | acceptEdits | yolo`，
+  **绝不静默回落到默认模式**。
+- 模式按 `session_id` 记忆（上限 FIFO 淘汰最老的会话），**下一次调用立刻生效**。
+- `run_task` 也接受可选 `mode` 字段，用于一次性的模式覆盖。
+- `get_permission_state` 可查看当前模式与已记住的「always allow」规则。
 
 ### 交互弹窗长这样
 
@@ -158,67 +178,39 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 ```
 
 - 弹窗**串行**投递：同一批并行工具调用不会叠出多个框，避免批准错对象。
-- `Allow once` 只对**当前这一次调用**生效；批准结果绑定 `(tool_call_id, 参数哈希)`，
-  参数变了就失效，无法重放。
+- `Allow once` 只对**当前这一次调用**生效。
 - `Always allow` 只在能推导出**窄规则**时出现（如 `git status`、`src/lib.rs`），
   且规则对 shell 命令做**链接符过滤**：`git status` 永远不会授权
-  `git status && rm -rf /`。插件类工具（参数无可用作用域）**不提供**该选项。
+  `git status && rm -rf /`。没有 `path` 参数的非 shell 工具**不提供**该选项。
 - `Deny with reason` 会追问一句，原因原文回灌给模型。
+- 计划审批走 `ui:"review"`（0.4 新增），携带计划文件路径与正文。
 
 ### 在哪里生效
 
-判定只有**一个**入口：`SessionPolicy::decide`。它外面套的每一层都只负责照做。
+判定只有**一个**入口，而且它在**唯一**的工具执行入口里面
+（`ToolExecutor::run_tool`）：
 
 ```text
-PermissionGuardMiddleware   唯一判定 + 执行 —— 决定 Allow/Deny/Ask，然后照做
-  └─ SecurityGuard / ResourceGuard / Transaction / …
+ToolExecutor::run_tool
+  ├─ 取消检查
+  ├─ 作用域   ToolScope（宿主回答"打到哪儿"）
+  ├─ 守卫     危险命令 + 关键路径  ← 在判定之前，且不咨询判定
+  ├─ 判定     ToolGate::decide（ModePlugin）
+  ├─ 弹窗     内核发起（串行、fail-closed）
+  ├─ 执行     ToolRegistry::execute_tool_call
+  └─ trace    每次调用恰好一条，落盘前脱敏
 ```
 
-这一层的位置是承重的，两条都有测试钉住：
-
-- **档位被拒的调用根本走不到弹窗** —— 用户无法"批准"绕过档位；
-- **被拒的调用不会创建任何临时文件** —— 拒绝发生在事务层之外。
-
-判定顺序本身就是安全属性，同样有测试：**先查档位，再查已记住的规则，最后才看模式**。
-"Always allow"是一次同意的记录，而同意不能扛过天花板被收紧 —— 否则在一个只读 run 里
-`bash(git status)` 的旧规则会继续生效。
+**没有装 gate 时（除守卫外）全部放行** —— 这正是嵌入型无头宿主依赖的红线。
 
 ### 插件也是同一条路径
 
-TypeScript 插件的 `ctx.exec()` / `ctx.fs.*` 不再自己实现 shell 与写入，而是合成为
-`bash` / `write_file` / `read_file` 工具调用后走**同一条 pipeline**。因此：
+Rust 插件的 `ctx.tool_slot().invoke(...)` 不再自己实现能力，而是拼一个
+`ToolExecutionContext`（带 `caller = 插件 id`）后走**同一个 `run_tool`**。因此：
 
-- 插件的调用受**模式**与**已记住的规则**约束，和模型调用一致；
-- 受禁用命令表、路径 jail、事务层约束；
-- 需要审批时，弹窗显示请求方插件名。
-
-代价：插件的写入现在会走事务层（产生 `.thunder/tmp` 影子文件、保留原文件权限），
-比之前的手写版本更严格 —— 与模型的 `write_file` 一直以来的行为一致。
-
-副作用：`mode: ask` 现在真的管住插件了。这正是这次修复的目的。
-
-### 权限判定只有一张表
-
-工具名 → 能力只有一张表（`ToolEffect::of`）。此前有两张，且不一致：
-`Permission::allows_builtin` 对不认识的名字返回 `true`，于是 `apply_patch`
-（会改文件、不在该表里）在一个只读 run 下被放行。现在未分类的工具按
-"需要写权限"处理，不会仅因为"没人认识"就拿到 shell 权限。
-
-`get_permission_state` 可查看当前模式与已记住的规则。
-
----
-
-## 🔒 权限档位
-
-档位与 `mode` 的组合效果见上面的「审批模式」。下面是档位本身：
-
-| 档位 | `read_file` | `write_file` | `bash` | 说明 |
-| :---: | :---: | :---: | :---: | :--- |
-| **`read`** | ✅ | ❌ | ❌ | 只读审查模式；写文件与命令执行工具不注册，TS 插件写操作同样被阻断 |
-| **`write`** | ✅ | ✅ | ❌ | 代码修改模式；允许读写文件，禁止执行任意终端命令 |
-| **`bash`** (默认) | ✅ | ✅ | ✅ | 完全授权模式；开放所有内置与系统工具 |
-
----
+- 插件的调用受**同一条守卫**与**同一个模式**约束；
+- 需要审批时，弹窗标题显示 `Plugin <id> requests: …`，插件无法伪装成助手发起；
+- 插件发起的调用**同样留下 trace**。
 
 ## 🔄 状态机流转与交叉行为
 

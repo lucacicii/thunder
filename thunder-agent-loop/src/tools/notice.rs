@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 /// security interventions, self-healing events, or execution outcomes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemNotice {
-    /// Layer or component emitting this telemetry (e.g. "SecurityGuard", "Transaction", "ProcessGuard", "StreamResilience")
+    /// Component emitting this telemetry (e.g. "Guard", "ToolRegistry", "StreamResilience")
     pub layer: String,
-    /// Action taken by the system (e.g. "Atomic shadow write & rename", "Blocked path traversal", "Execution cancelled by user")
+    /// Action taken by the system (e.g. "Atomic shadow write & rename", "Dangerous command refused", "Execution cancelled by user")
     pub action: String,
-    /// Verified ground truth state of the physical environment (e.g. "Target file untouched, shadow file deleted", "Written 512 bytes")
+    /// Verified ground truth state of the physical environment (e.g. "Nothing was read or written.", "Written 512 bytes")
     pub ground_truth: String,
     /// Explanation of automatic recovery or self-healing performed, if any
     pub self_healed: Option<String>,

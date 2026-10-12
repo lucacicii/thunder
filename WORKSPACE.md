@@ -42,10 +42,11 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 ├── daemon.sh                     # 启动 STDIO Sidecar 守护进程
 ├── test.sh                       # 全工作区测试套件脚本
 ├── .thunder/                       # Thunder 自身配置（用户级 ~/.thunder/ 与项目级同构）
-├── thunder-agent-loop/           # Agent A：单 Agent 闭环执行引擎
+├── thunder-agent-loop/           # Agent 内核：单 Agent 闭环执行引擎 + 工具执行入口 + trace
+├── thunder-agent-pack-code/      # 编码能力包：6 个内建工具 + 路径作用域判定
+├── thunder-agent-runtime/        # 无头运行时：以 JSONL 协议驱动内核
 ├── thunder-agent-providers/      # LLM Catalog、配置解析与进程内流式传输
 ├── thunder-agent-skills/         # Skill 解析、注册与全局缓存
-├── thunder-agent-plugin/         # TypeScript 单文件插件宿主引擎
 ├── thunder-agent-mcp/            # MCP 客户端与动态工具桥接
 ├── thunder-agent-root/           # 微内核 host，按任务动态挂载插件
 ├── thunder-agent-daemon/         # STDIO Sidecar 守护进程（供 Electron / 外部前端集成）
@@ -72,7 +73,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
           │ (Kernel: Unit)             │
           ▼                            │
 ┌──────────────────────────────────────┴─────────────────────────────────┐
-│ 插件/组件生态: skills / plugin / mcp / conversation                          │
+│ 插件/组件生态: skills / mcp / conversation                                    │
 └──────────────────────────────────────┬─────────────────────────────────┘
                                        │
                                        ▼
@@ -97,13 +98,16 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
    - `thunder-agent-loop` 内置的 `LLMClientTrait` 纯契约抽象，不包含任何网络或特定供应商协议库。
    - 生产环境中由 `thunder-agent-providers` 的 `RpiAiClient` 直接发 HTTP 流式请求（`rpi-ai`），不起子进程、不依赖宿主机装 Node；不支持的方言明确报错。
 3. **并发写安全保护**：
-   - 无论宿主并发多任务还是单 Agent 内多工具并发，写文件操作统一通过 `FILE_MUTATION_LOCKS` 按物理路径互斥排队，杜绝竞态破坏。
+   - 无论宿主并发多任务还是单 Agent 内多工具并发，写文件操作统一通过 `FILE_MUTATION_LOCKS`（`thunder-agent-pack-code/src/builtin/fs.rs`）按物理路径互斥排队，杜绝竞态破坏；内核本身不持有这把锁。
 4. **确定性轻量宿主**：
    - `thunder-agent-root` 默认加载通用基线插件（会话、技能与长期记忆），并通过关键字意图动态触发高级插件，杜绝昂贵的二次 LLM 分类时延。
-5. **配置归 .thunder/，不碰 .arp**：
+5. **策略在宿主，不在内核**：
+   - 内核（`thunder-agent-loop`）不带任何审批意见：它只提供**一个**工具执行入口、一个 `ToolGate` 钩子、一个 `ToolScope` 钩子与不可绕过的 guard。未安装 `ToolGate` 即"除 guard 外全放行"，无头宿主因此不需要审批策略也能跑。
+   - 审批模式（`plan` / `ask` / `acceptEdits` / `yolo`）住在 `thunder-agent-root/src/plugins/mode.rs` 的 `ModePlugin` 里，可被宿主卸载。
+6. **配置归 .thunder/，不碰 .arp**：
    - `.arp/` 属于 `agent-resume-panel`（面板配置 + 共享产物），Thunder 不读取其任何内容。
-   - Thunder 自身的项目状态统一在 `.thunder/`：`config.json`（agent 配置）、`mcp.json`（MCP servers）、`THUNDER.md` + `memory/*.md`（长期记忆）、`plugins/`、`tmp/`。用户级 `~/.thunder/` 提供同名默认值，按 用户级 → 项目级 → `*.local.*` 覆盖。
-   - 用户级数据根可用 `THUNDER_CONFIG_DIR`（或 `--config-dir <path>`）整体重定向，默认 `~/.thunder`。它统管 thunder **全部**自有状态 —— 上面这些之外还有 `conversations/`、`scratchpad/`、`bridge/`、`models.json`/`auth.json`/`models_metadata.json` —— 所以宿主能把一个实例完全收进自己的目录。解析规则集中在 `thunder-agent-loop/src/core/paths.rs`，跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 key）不受影响，仍取真实 HOME。
+   - Thunder 自身的项目状态统一在 `.thunder/`：`config.json`（agent 配置）、`mcp.json`（MCP servers）、`THUNDER.md` + `memory/*.md`（长期记忆）、`plans/`（plan 模式产出的计划文件）。用户级 `~/.thunder/` 提供同名默认值，按 用户级 → 项目级 → `*.local.*` 覆盖。
+   - 用户级数据根可用 `THUNDER_CONFIG_DIR`（或 `--config-dir <path>`）整体重定向，默认 `~/.thunder`。它统管 thunder **全部**自有状态 —— 上面这些之外还有 `conversations/`、`scratchpad/`、`logs/`、`models.json`/`auth.json`/`models_metadata.json` —— 所以宿主能把一个实例完全收进自己的目录。解析规则集中在 `thunder-agent-loop/src/core/paths.rs`，跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 key）不受影响，仍取真实 HOME。
 
 ---
 
@@ -111,7 +115,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 
 ### 环境依赖
 - **Rust**: 1.80+
-- **Node.js**: 20+
+- 不需要 Node.js：模型调用在进程内完成
 
 ### 一键脚本
 

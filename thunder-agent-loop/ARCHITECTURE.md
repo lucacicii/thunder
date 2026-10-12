@@ -55,8 +55,10 @@ Rules:
 2. Events are tagged with `agent_id` so a process with many A's can demux.
 3. Scratchpad files are isolated by `agent_id` under the configured `base_dir`.
    A does not delete them unless `auto_cleanup` is explicitly set.
-4. Concurrent file writes across multiple A instances or tools are safely serialized
-   via `FILE_MUTATION_LOCKS` (process-wide physical path mutex in `TransactionMiddleware`).
+4. A holds no write lock of its own. Atomic writes and the process-wide
+   `FILE_MUTATION_LOCKS` mutex belong to the write tool in the capability pack
+   (`thunder-agent-pack-code/src/builtin/fs.rs`) — a capability A installs, not
+   a layer A ships.
 5. A does not install a global `tracing` subscriber. Hosts (CLI or B) do.
 6. A does not know about B: no agent graph, no router, no shared blackboard.
 7. Nested multi-agent (A calling A) is a tool in B (`DelegateTool` wrapping
@@ -68,10 +70,13 @@ Rules:
 - `LLMClientTrait` transport abstraction (implemented in production by `RpiAiClient`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
 - In-memory context pruning with decoupled tool output eviction (`tool_eviction_threshold_tokens`)
-- Process-wide path concurrency locking (`FILE_MUTATION_LOCKS`)
+- One tool-execution funnel (`ToolExecutor::run_tool`) with the guard inside it
+- Three admission/tracing seams a host installs: `ToolScope`, `ToolGate`, `ToolTraceSink`
 - Loop-level repetition / error circuit breaker (bounded default turns = 50)
 - Cancellation via `CancellationToken` and cooperative pausing via `PauseGate`
-- Built-in tools as optional parts (`BashTool`, file tools) — not auto-registered
+
+A ships **no tools and no written-file locking**: those are a capability pack's
+(`thunder-agent-pack-code`). A ships the seam a pack's tools are judged through.
 
 ## What never enters A
 
@@ -79,7 +84,8 @@ Rules:
 - Electron / napi / FFI (separate binding crate if ever needed)
 - Multi-agent topology, routing table, shared memory between agents
 - Host tracing subscriber, host tokio runtime ownership
-- Product policy: workspace sandbox, command approval, API key storage
+- Product policy: workspace sandbox, command approval, API key storage. Approval
+  *modes* live in the host's `ModePlugin`; A only knows the `ToolGate` seam.
 
 ## Dependency direction
 

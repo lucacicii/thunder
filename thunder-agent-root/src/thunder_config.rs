@@ -149,9 +149,10 @@ impl ThunderConfig {
 
     /// Push the config-declared values onto a run's [`AgentConfig`].
     ///
-    /// Deliberately does **not** touch `permission`: the effective capability
-    /// tier is owned by the host's approval `SessionPolicy`, and letting a JSON
-    /// file widen it here would route around that judgement.
+    /// `defaultMode` is read elsewhere: it picks which of the host's approval
+    /// modes a new session starts in, and a mode is only ever one of the four
+    /// the host ships. There is nothing here that could widen a judgement —
+    /// there is no capability tier left to widen.
     pub fn apply_to(&self, cfg: &mut AgentConfig) {
         if let Some(turns) = self.agent.max_turns {
             cfg.max_turns = Some(turns);

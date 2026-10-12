@@ -37,7 +37,13 @@ pub struct ToolTrace {
     /// The host's session, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// The host's task, when there is one.
+    /// The host's name for this run — the daemon's task id, the TUI's run id.
+    ///
+    /// The kernel only knows this as the `route` it was configured with, and
+    /// never interprets it; it is recorded so a trace can be joined against the
+    /// host's own record of the same run. Both first-party hosts pass the same
+    /// string they file the trace under, so the id inside the file is the id of
+    /// the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     /// Which turn of the loop issued the call.

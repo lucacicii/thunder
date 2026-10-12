@@ -113,11 +113,9 @@ async fn test_agent_loop_with_builtins_builder() {
     );
 }
 
-// The atomic write used to be a layer with a switch: `AgentConfig::without_transactions`
-// turned `TransactionMiddleware` off, and every test that wanted the raw tool had
-// to know about it. It is now the write tool's own behaviour, so there is no
-// switch to test — only the write, which `path_scope_test.rs` exercises through
-// the whole stack.
+// The atomic write is the write tool's own behaviour, with no switch and no
+// layer to turn off, so there is nothing here to test — only the write, which
+// `path_scope_test.rs` exercises through the whole funnel.
 
 // ════════════════════════════════════════════════════════════
 // grep / find / ls — embedded ripgrep-core tools

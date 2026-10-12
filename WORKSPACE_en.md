@@ -42,10 +42,11 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── daemon.sh                     # Launch STDIO Sidecar daemon
 ├── test.sh                       # Workspace-wide test suite script
 ├── .thunder/                       # Thunder's own config (user-level ~/.thunder/ mirrors it)
-├── thunder-agent-loop/           # Agent A: Single-agent atomic loop engine
+├── thunder-agent-loop/           # Agent kernel: single-agent loop + tool funnel + tracing
+├── thunder-agent-pack-code/      # Code pack: six built-in tools + path scope classification
+├── thunder-agent-runtime/        # Headless runtime driving the kernel over JSONL
 ├── thunder-agent-providers/      # LLM catalog, config parsing & in-process streaming
 ├── thunder-agent-skills/         # Skill parsing, discovery & global cache
-├── thunder-agent-plugin/         # TypeScript single-file plugin engine
 ├── thunder-agent-mcp/            # MCP client & dynamic tool bridge
 ├── thunder-agent-root/           # Microkernel host for dynamic plugin composition
 ├── thunder-agent-daemon/         # STDIO Sidecar daemon (Electron / desktop integration)
@@ -72,7 +73,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
           │ (Kernel: Unit)             │
           ▼                            │
 ┌──────────────────────────────────────┴─────────────────────────────────┐
-│ Plugin Ecosystem: skills / plugin / mcp / conversation                  │
+│ Plugin ecosystem: skills / mcp / conversation                           │
 └──────────────────────────────────────┬─────────────────────────────────┘
                                        │
                                        ▼
@@ -93,17 +94,20 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 1. **Single-Agent Kernel Boundary**:
    - **Kernel = `thunder-agent-loop`**: Owns atomic execution for a single AgentLoop (multi-turn reasoning, streaming events, tool execution, context pruning). Has no awareness of multi-agent topologies, outer schedulers, or session stores.
    - Hosts (root / daemon / tui) drive the kernel only through `start` / `join` / `cancel`, and never drive the kernel's internal turns.
-2. **Pure Transport Abstraction & Pi-Bridge**:
+2. **Pure Transport Abstraction, In-Process Transport**:
    - `thunder-agent-loop` defines `LLMClientTrait` as a pure transport contract without internal HTTP or dialect dependencies.
    - In production, `thunder-agent-providers`' `RpiAiClient` issues the HTTP stream directly (`rpi-ai`) — no child process, no Node on the host. Dialects it cannot stream are rejected with a clear error.
 3. **Concurrent Mutation Safety**:
-   - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` using process-wide physical path mutexes, preventing silent overwrites.
+   - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` (`thunder-agent-pack-code/src/builtin/fs.rs`) using process-wide physical path mutexes, preventing silent overwrites. The kernel itself holds no such lock.
 4. **Deterministic Lightweight Host**:
    - `thunder-agent-root` maintains standard baseline plugins (conversation, skills and long-term memory) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
-5. **Config lives in .thunder/, never .arp**:
+5. **Policy lives in the host, not the kernel**:
+   - The kernel (`thunder-agent-loop`) carries no approval opinion: it offers **one** tool-execution funnel, a `ToolGate` hook, a `ToolScope` hook, and a guard that cannot be bypassed. With no `ToolGate` installed, everything but the guard runs — which is how a headless host works without an approval policy at all.
+   - The approval modes (`plan` / `ask` / `acceptEdits` / `yolo`) live in `ModePlugin` (`thunder-agent-root/src/plugins/mode.rs`) and can be unloaded by the host.
+6. **Config lives in .thunder/, never .arp**:
    - `.arp/` belongs to `agent-resume-panel` (panel config + shared artifacts); Thunder reads none of it.
-   - Thunder's own project state lives under `.thunder/`: `config.json` (agent config), `mcp.json` (MCP servers), `THUNDER.md` + `memory/*.md` (long-term memory), `plugins/`, `tmp/`. The user-level `~/.thunder/` supplies same-named defaults, overridden by user -> project -> `*.local.*`.
-   - The user-level data root can be relocated wholesale with `THUNDER_CONFIG_DIR` (or `--config-dir <path>`), defaulting to `~/.thunder`. It owns *all* of thunder's own state — the files above plus `conversations/`, `scratchpad/`, `bridge/`, `models.json`/`auth.json`/`models_metadata.json` — so a host can contain one instance inside its own directory. Resolution lives in `thunder-agent-loop/src/core/paths.rs`; cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
+   - Thunder's own project state lives under `.thunder/`: `config.json` (agent config), `mcp.json` (MCP servers), `THUNDER.md` + `memory/*.md` (long-term memory), `plans/` (plan-mode artifacts). The user-level `~/.thunder/` supplies same-named defaults, overridden by user -> project -> `*.local.*`.
+   - The user-level data root can be relocated wholesale with `THUNDER_CONFIG_DIR` (or `--config-dir <path>`), defaulting to `~/.thunder`. It owns *all* of thunder's own state — the files above plus `conversations/`, `scratchpad/`, `logs/`, `models.json`/`auth.json`/`models_metadata.json` — so a host can contain one instance inside its own directory. Resolution lives in `thunder-agent-loop/src/core/paths.rs`; cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
 
 ---
 
@@ -111,7 +115,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 
 ### Prerequisites
 - **Rust**: 1.80+
-- **Node.js**: 20+
+- No Node.js required: model calls happen in-process
 
 ### Scripts
 

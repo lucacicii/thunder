@@ -17,11 +17,11 @@
 - **Bounded Autonomous Loop**: Configured with a default **50 turns ceiling** to safeguard against infinite loops, paired with an explicit `.with_unlimited_turns()` escape hatch where termination is driven purely by model completion (`finish_reason: "stop"` or absence of tool calls).
 - **Pure Transport Decoupling**: Free of HTTP or provider-specific protocol dependencies. Operates over a clean asynchronous stream contract (`LLMClientTrait`). In production it is powered by `thunder-agent-providers`' `RpiAiClient`, which streams in-process (no child process, no Node dependency).
 - **Checkpoint Context Compaction**: Between two compactions the request prefix stays byte-identical (full provider prompt-cache hits). Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) is older history swapped for a single LLM-generated structured checkpoint (Goal / Progress / Key Decisions / Next Steps / Critical Context + read/modified file lists), keeping the last `keep_recent_tokens` verbatim. Summarization requests opt out of cache writes (`cache_retention: "none"`); when summarization is unavailable it degrades to an **emergency trim** (atomically dropping the oldest complete turns, never splitting a tool call from its result); the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
-- **Cross-Agent File Write Mutex (`FILE_MUTATION_LOCKS`)**: Built into `TransactionMiddleware`. Provides process-wide normalized path mutexes so concurrent agents or parallel tools writing to the same file serialize cleanly, eliminating silent overwrites.
+- **One Tool-Execution Funnel**: every tool call (built-in / plugin / MCP / runtime remote) goes through `ToolExecutor::run_tool` — cancellation, scope, guard, admission, prompt, execute, trace. **There is no onion**: the order is written down in one place, and nothing sits between the decision and the execution.
 - **Ultra-Low Latency & Footprint**: Framework scheduling overhead is only **~5.7 µs (0.0057 ms)** per task. Resident memory (RSS) under 10k concurrency is **< 10 MB**, with zero garbage collection pause.
 - **Native Parallel Tool Dispatch**: Executes native functions and non-blocking asynchronous Bash subprocesses concurrently with timeout fuses and head/tail smart truncation.
 - **Observable Event Streaming**: Full-lifecycle backpressured broadcast stream supporting `TurnStart`, `TokenDelta`, `ReasoningDelta`, `ToolExecResult`, and `LoopComplete`.
-- **Permission Tiers & Cooperative Pausing**: Three permission tiers (`Read` ⊂ `Write` ⊂ `Bash`, where unauthorized tools are physically not registered) and non-destructive cooperative pausing (`PauseGate`) at tool scheduling boundaries.
+- **Admission Hooks & a Trace of Every Call**: the kernel offers exactly three named seams — `ToolScope` (the host answers "where does this land"), `ToolGate` (the host answers "may it run"), `ToolTraceSink` (the host takes the record). **No gate installed means everything but the guard runs.** Every call leaves exactly one trace, which records the decision itself (`guard` / `gate` / `answer` / `scope`), redacted before it reaches disk. Tools are **always registered in full**.
 
 ---
 
@@ -132,7 +132,7 @@ config.pruning = ContextPruningConfig {
 
 ### 4. Cross-Agent File Concurrency Lock
 
-When multiple agent units or concurrent tool calls target the same file path, `TransactionMiddleware` acquires `FILE_MUTATION_LOCKS`:
+The lock is **not in the kernel**: `FILE_MUTATION_LOCKS` belongs to the write tool in `thunder-agent-pack-code/src/builtin/fs.rs` — an atomic write is part of what "write a file" *is*, not a layer an assembly could leave out. When multiple agent units or concurrent tool calls target the same file path, the write tool acquires it:
 
 ```rust
 // Process-wide normalized path mutex table
@@ -153,18 +153,30 @@ let _guard = lock.lock().await;
 
 ---
 
-## 🔒 Permissions & Cooperative Pausing
+## 🔒 Admission & Cooperative Pausing
 
-### `Permission` Levels
+### Admission: `ToolGate` / `ToolScope`
+
+The kernel carries **no approval opinion**. It offers two hooks and one guard that cannot be argued with:
 
 ```rust
-pub enum Permission { Read, Write, Bash }   // Hierarchy: Read ⊂ Write ⊂ Bash
+// The host answers "where does this call land" — a classification, never a verdict.
+pub trait ToolScope { fn scope_of(&self, tool: &str, effect: ToolEffect, args: &Value) -> Scope; }
+
+// The host answers "may it run" — it may only tighten; the dialog is the kernel's.
+pub trait ToolGate {
+    fn decide(&self, request: &ToolGateRequest<'_>) -> GateVerdict;
+    fn record_answer(&self, request: &ToolGateRequest<'_>, answer: &ApprovalAnswer) {}
+    fn label(&self) -> &str { "gate" }
+}
 ```
 
-Configured on `AgentConfig` (defaults to `Bash`). Controls which tools are registered. Blocked tools are invisible to the model. `PermissionGuardMiddleware` provides additional defense-in-depth.
+**With neither installed, everything but the guard runs** — that is the headless-host red line. The approval modes (`plan` / `ask` / `acceptEdits` / `yolo`) are implemented by `ModePlugin` in `thunder-agent-root`, and can be unloaded.
 
 ```rust
-let cfg = AgentConfig::new("gpt-4o").with_permission(Permission::Read);
+let agent = AgentLoop::new(cfg)
+    .with_tool_scope(Arc::new(CodeScope::from_agent_config(&cfg, Some(&ws))))
+    .with_tool_gate(Some(mode_plugin as Arc<dyn ToolGate>), Some(ui));
 ```
 
 ### `PauseGate` (Cooperative Pausing)
@@ -191,7 +203,9 @@ src/
 ├── stream/                # Pure LLMClientTrait contract (+ unconfigured placeholder)
 ├── tools/                 # Tool registry, parallel executor, builtin tools
 │   ├── builtin/           # bash, read_file, write_file
-│   └── middleware/        # Middlewares (Security / Resource / Transaction / FILE_MUTATION_LOCKS)
+│   ├── executor.rs        # run_tool: the one entry (guard -> gate -> ask -> execute -> trace)
+│   ├── guard.rs           # Kernel guard: dangerous commands (token-based) + critical paths
+│   └── trace.rs           # ToolTrace, redaction, ToolTraceSink
 └── types/                 # Messages, events, tools, and config definitions
 ```
 

@@ -64,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`conversation`** | 会话持久化 | **基线常驻** | 追踪多轮对话、更新 `index.json` 索引并执行原子落盘 |
 | **`skills`** | 技能库解析 | **基线常驻** | 扫描 `~/.agents/skills`，暴露 `load_skill` / `list_skills` 工具 |
 | **`mcp`** | MCP 客户端 | 触发词动态激活 | 连接外部 MCP 服务器并暴露远程工具 |
-| **`script_plugin`** | TS 脚本引擎 | 触发词动态激活 | 原生执行单文件 TS 插件，支持蓝绿热重载与错误免疫 |
+| **`memory`** | 长期记忆 | 触发词动态激活 | 分层加载 `.thunder` 的 `THUNDER.md` / `memory/*.md`，追加进系统提示 |
+| **`mode`** | 审批模式门 | **宿主显式安装** | 实现 `ToolGate`：`plan` / `ask` / `acceptEdits` / `yolo`，并携带 `write_plan` / `exit_plan_mode` |
 
 ---
 

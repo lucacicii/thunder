@@ -77,20 +77,21 @@ pub struct ToolExecutionContext {
     /// run's* permission tier, host UI and tool pipeline — instead of whichever
     /// run happened to initialise last.
     ///
-    /// This is a correctness field, not a label: the pipeline it selects holds
-    /// the workspace root and the path jail, so misrouting it would let one run's
-    /// plugin write inside another run's workspace.
+    /// This is a correctness field, not a label: it is how a plugin's reverse
+    /// tool call reaches that run's own services — its workspace, its scratchpad,
+    /// its trace — so misrouting it would let one run's plugin act inside
+    /// another run's workspace.
     pub route: Option<String>,
     /// What this call can do to the world, resolved by the executor from the
     /// tool's own [`AgentTool::effect`] declaration.
     ///
-    /// Middlewares judge this instead of re-deriving it from the tool name. A
-    /// name is a convention; the declaration is a contract, and it is the only
-    /// thing that survives a tool called anything at all.
+    /// The guard and the host's gate judge this instead of re-deriving it from
+    /// the tool name. A name is a convention; the declaration is a contract, and
+    /// it is the only thing that survives a tool called anything at all.
     ///
-    /// `None` means nobody resolved it (a hand-built context, a direct
-    /// middleware call); consumers then fall back to the name heuristic rather
-    /// than assuming the call is harmless.
+    /// `None` means nobody resolved it (a hand-built context); consumers then
+    /// fall back to the name heuristic rather than assuming the call is
+    /// harmless.
     pub effect: Option<ToolEffect>,
     /// Sink for business-defined events; see [`ToolEventSink`]. `None` means the
     /// host installed no sink, and a tool that has something to report simply

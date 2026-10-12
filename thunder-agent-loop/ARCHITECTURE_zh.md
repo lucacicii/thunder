@@ -50,7 +50,7 @@ let result = handle.join().await?;
 1. **单个 `AgentLoop` 同一时刻只处理一个任务**：忙碌时再次调用 `start`/`run` 会直接返回 `AgentError::AlreadyRunning`。需要并行时只需 `new` 另一个实例。
 2. **事件均附带 `agent_id` 标签**：多 Agent 进程可通过该标签轻松解复用。
 3. **Scratchpad 临时目录按 `agent_id` 物理隔离**：除非显式设置 `auto_cleanup`，否则 A 不会自动删除。
-4. **跨 Agent 文件写入互斥排队（`FILE_MUTATION_LOCKS`）**：在 `TransactionMiddleware` 中内置进程内全局规范化路径排队锁，多 A 或多工具并发写入同一文件自动排队串行化，杜绝竞态覆盖。
+4. **A 自己不持有写锁**：原子写与进程内全局的 `FILE_MUTATION_LOCKS` 排队锁属于能力包里的写工具（`thunder-agent-pack-code/src/builtin/fs.rs`）——那是 A 安装的**能力**，不是 A 自带的**层**。
 5. **A 不安装全局 `tracing` 订阅者**：由宿主（CLI、Daemon 或 B）统筹安装。
 6. **A 完全不感知 B**：A 内部没有 Agent 图、没有路由器、没有黑板模式。
 7. **嵌套多 Agent（A 调用 A）在 B 中体现为工具**（通过 `DelegateTool` 包裹另一个 `AgentLoop`），严禁在 A 内部衍生运行时拓扑图。
@@ -63,10 +63,13 @@ let result = handle.join().await?;
 - `LLMClientTrait` 传输抽象契约（生产环境由 `RpiAiClient` 实现）
 - 工具注册表、并发工具派发、超时熔断与 UTF-8 截断
 - 内存上下文裁剪，支持解耦工具输出驱逐（`tool_eviction_threshold_tokens`）
-- 全局路径排队锁（`FILE_MUTATION_LOCKS`）
+- 唯一的工具执行入口（`ToolExecutor::run_tool`），守卫就在其中
+- 三个由宿主安装的准入/观测接缝：`ToolScope`、`ToolGate`、`ToolTraceSink`
 - 循环级防死循环熔断器（默认 50 轮上限）
 - 基于 `CancellationToken` 的任务取消与基于 `PauseGate` 的协作式暂停
-- 核心内置工具部件（`BashTool`、`ReadFileTool`、`WriteFileTool`，按需注册）
+
+A **不自带工具，也不写文件锁**：那些属于能力包（`thunder-agent-pack-code`）。
+A 提供的是「能力包的工具经由哪个接缝被判定」。
 
 ---
 
@@ -76,7 +79,7 @@ let result = handle.join().await?;
 - Electron / FFI / Node.js 运行时绑定
 - 多 Agent 拓扑关系、路由表、黑板模式
 - 宿主全局 Tracing 订阅者与 Tokio Runtime 所有权
-- 业务策略：API Key 物理存储、权限规则持久化
+- 业务策略：API Key 物理存储、审批模式（模式住在宿主的 `ModePlugin` 里，A 只认 `ToolGate` 接缝）
 
 ---
 

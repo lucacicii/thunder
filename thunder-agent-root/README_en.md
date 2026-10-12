@@ -64,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`conversation`** | Session Persistence | **Permanent Baseline** | Tracks multi-turn dialogue, updates `index.json`, atomic file writes |
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
-| **`script_plugin`** | TS Script Engine | Dynamic Keyword Triggers | Native TypeScript plugin runner with hot-reload and error immunity |
+| **`memory`** | Long-Term Memory | Dynamic Keyword Triggers | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
+| **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode` |
 
 
 ## 📄 License

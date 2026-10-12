@@ -17,11 +17,11 @@
 - **自主循环与安全兜底**：默认设定 **50 轮安全上限**，防止失控无限死循环；同时提供 `.with_unlimited_turns()` 显式解除限制，由 LLM 自主结论或完成标志（`finish_reason: "stop"` / 无工具调用）驱动终止。
 - **纯契约传输解耦**：完全解耦 HTTP 与特定方言依赖，通过纯异步流式契约 `LLMClientTrait` 对接模型。生产环境由 `thunder-agent-providers` 的 `RpiAiClient` 进程内直连模型（无子进程、无 Node 依赖）。
 - **检查点式上下文压缩（Checkpoint Compaction）**：默认策略下，两次压缩之间请求前缀**字节级稳定**（供应商 Prompt Cache 全量命中）；仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，才一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal / Progress / Key Decisions / Next Steps / Critical Context + 读写文件清单），尾部 `keep_recent_tokens` 原文保留。摘要请求禁用缓存写入（`cache_retention: "none"`）；摘要不可用时退化为**紧急裁剪**（原子地丢弃最老的完整轮次，绝不切断 tool call/result 配对）；压缩前原始轨迹经 `AgentRunResult.raw_messages` 保留。
-- **跨 Agent 文件写入互斥排队锁（`FILE_MUTATION_LOCKS`）**：在 `TransactionMiddleware` 中内置进程内全局规范化路径排队锁。多个 Agent 或多工具并发写入同一文件时排队串行化执行，杜绝静默覆盖。
+- **一个工具执行入口**：全部工具调用（内建 / 插件 / MCP / runtime 远程）都经过 `ToolExecutor::run_tool`——取消 → 作用域 → 守卫 → 准入判定 → 弹窗 → 执行 → 落 trace。**没有洋葱**：判定顺序在代码里写死，不存在「决定之后、执行之前」这种可编排的位置。
 - **极致性能与低开销**：单任务调度框架纯净开销仅 **~5.7 微秒 (0.0057 ms)**，高并发常驻内存 (RSS) **< 10 MB**，零垃圾回收停顿 (No GC)。
 - **原生并行工具调度**：支持异步非阻塞子进程（Bash）与内存函数（Native Tools），内置超时熔断与 Head/Tail 智能文本截断。
 - **可观测性事件广播**：支持订阅从 `TurnStart`、`TokenDelta`、`ReasoningDelta`、`ToolExecResult` 到 `LoopComplete` 的全生命周期背压事件流。
-- **权限分级与协作式暂停**：支持三档权限（`Read` ⊂ `Write` ⊂ `Bash`，未授权工具物理不注册），以及在工具调度边界生效的可恢复暂停（`PauseGate`）。
+- **准入钩子与全量 trace**：内核只提供三个具名接缝——`ToolScope`（宿主回答「打到哪儿」）、`ToolGate`（宿主回答「准不准」）、`ToolTraceSink`（宿主收记录）；**不装 gate 即除守卫外全放行**。每次调用必然留下且只留下一条 trace，记录判定本身（`guard` / `gate` / `answer` / `scope`），落盘前统一脱敏。工具**始终全量注册**。
 
 ---
 
@@ -132,7 +132,7 @@ config.pruning = ContextPruningConfig {
 
 ### 4. 跨 Agent 文件并发写入互斥保护
 
-当多个 Agent 单元或多个异步工具并发向同一文件发起写入时，`TransactionMiddleware` 会自动获取 `FILE_MUTATION_LOCKS`：
+写锁**不在内核里**：`FILE_MUTATION_LOCKS` 属于 `thunder-agent-pack-code/src/builtin/fs.rs` 的写工具——原子写是「写文件」这个能力自身的一部分，不是一个能从装配里漏掉的层。当多个 Agent 单元或多个异步工具并发向同一文件发起写入时，写工具会获取它：
 
 ```rust
 // 内部原理：进程内全局规范化路径互斥表
@@ -154,16 +154,28 @@ let _guard = lock.lock().await;
 
 ## 🔒 权限档与协作式暂停
 
-### `Permission`（能力档位）
+### 准入：`ToolGate` / `ToolScope`
+
+内核**不含任何审批意见**。它只提供两个钩子，以及一个不可绕过的守卫：
 
 ```rust
-pub enum Permission { Read, Write, Bash }   // 递进关系：Read ⊂ Write ⊂ Bash
+// 宿主回答「这次调用打到哪儿」——只返回分类，不返回裁决
+pub trait ToolScope { fn scope_of(&self, tool: &str, effect: ToolEffect, args: &Value) -> Scope; }
+
+// 宿主回答「准不准」——只能收紧；弹窗由内核负责
+pub trait ToolGate {
+    fn decide(&self, request: &ToolGateRequest<'_>) -> GateVerdict;
+    fn record_answer(&self, request: &ToolGateRequest<'_>, answer: &ApprovalAnswer) {}
+    fn label(&self) -> &str { "gate" }
+}
 ```
 
-挂载在 `AgentConfig` 上（默认 `Bash`）。它决定**宿主注册哪些内置工具**，未授予权限的工具在模型视图中**根本不可见**。底层 `PermissionGuardMiddleware` 提供双重防御阻断。
+**两者都不装时，除守卫外全部放行**——这是无头宿主的红线。审批模式（`plan` / `ask` / `acceptEdits` / `yolo`）由 `thunder-agent-root` 的 `ModePlugin` 实现，可卸载。
 
 ```rust
-let cfg = AgentConfig::new("gpt-4o").with_permission(Permission::Read);
+let agent = AgentLoop::new(cfg)
+    .with_tool_scope(Arc::new(CodeScope::from_agent_config(&cfg, Some(&ws))))
+    .with_tool_gate(Some(mode_plugin as Arc<dyn ToolGate>), Some(ui));
 ```
 
 ### `PauseGate`（协作式暂停）
@@ -190,7 +202,9 @@ src/
 ├── stream/                # LLMClientTrait 纯传输契约（含未配置占位实现）
 ├── tools/                 # 工具注册表、并行执行器与内置工具
 │   ├── builtin/           # bash, read_file, write_file
-│   └── middleware/        # 洋葱中间件（Security / Resource / Transaction / FILE_MUTATION_LOCKS）
+│   ├── executor.rs        # run_tool：唯一执行入口（guard → gate → ask → execute → trace）
+│   ├── guard.rs           # 内核守卫：危险命令（token 判定）+ 关键路径
+│   └── trace.rs           # ToolTrace、脱敏与 ToolTraceSink
 └── types/                 # 消息、事件、工具与配置类型定义
 ```
 
