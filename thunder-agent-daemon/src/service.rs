@@ -14,7 +14,7 @@ use thunder_conversation::prelude::*;
 
 #[cfg(feature = "testing-mock")]
 use crate::mock::DaemonMockClient;
-use crate::protocol::{DaemonRequest, DaemonResponse};
+use crate::protocol::{DaemonRequest, DaemonResponse, PROTOCOL_VERSION};
 
 /// Outbound model-request timeout every run is configured with.
 ///
@@ -368,6 +368,11 @@ impl DaemonService {
                     data: Some(serde_json::json!({
                         "pong": true,
                         "version": env!("CARGO_PKG_VERSION"),
+                        // The wire revision, not the release version. A host
+                        // that parses responses needs to tell the two apart:
+                        // `version` moves on every release, this moves only
+                        // when a request or response shape does.
+                        "protocol": PROTOCOL_VERSION,
                     })),
                     error: None,
                 })

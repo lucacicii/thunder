@@ -3,6 +3,15 @@ use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::ui::{NotifyLevel, UiRequest, UiSource};
 use thunder_agent_providers::ModelDescriptor;
 
+/// The revision of the NDJSON protocol on stdin/stdout.
+///
+/// Distinct from the crate version, which moves on every release: this moves
+/// only when a request or response shape a host parses does. A host that
+/// scans `ping` can therefore tell "a newer thunder" from "a thunder that
+/// answers differently" — the two are not the same question, and before 0.4
+/// there was no way to ask the second one.
+pub const PROTOCOL_VERSION: u32 = 2;
+
 /// Incoming command from host (Electron / CLI) via stdin
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]

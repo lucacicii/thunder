@@ -31,6 +31,13 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
     assert_eq!(resp["id"], "req-ping-1");
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["pong"], true);
+    // The wire revision. `version` only ever meant "some newer thunder"; a host
+    // deciding whether it can parse what comes back needs this instead.
+    assert_eq!(
+        resp["data"]["protocol"], 2,
+        "0.4 speaks protocol 2: {}",
+        resp["data"]
+    );
 
     // 2. Test RunTask with Mock
     let run_req = serde_json::json!({
