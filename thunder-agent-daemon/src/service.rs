@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -96,7 +96,97 @@ pub struct DaemonService {
     /// Session-scoped on purpose. A fresh session must not inherit a previous
     /// conversation's "always allow", and a mode switch has to outlive the turn
     /// that issued it.
-    session_policies: Arc<tokio::sync::RwLock<HashMap<String, Arc<SessionPolicy>>>>,
+    session_policies: Arc<tokio::sync::RwLock<SessionPolicies>>,
+}
+
+/// How many sessions keep their approval state before the oldest is dropped.
+const MAX_SESSION_POLICIES: usize = 256;
+
+/// The daemon's per-session approval state, evicted oldest-first.
+///
+/// `HashMap`'s iteration order is arbitrary, and — worse — sticky: `keys().next()`
+/// returns the same unlucky key on every eviction, so a naive cap drops one entry
+/// over and over while the rest live forever. That was survivable while a policy
+/// held nothing but remembered "always allow" rules; it is not once it holds the
+/// user's chosen mode, where the failure is a mode silently reverting to the
+/// default with nothing on screen to explain it. Hence the insertion order.
+#[derive(Default)]
+struct SessionPolicies {
+    by_id: HashMap<String, Arc<SessionPolicy>>,
+    /// Session ids in creation order, oldest first. Every id appears exactly once.
+    order: VecDeque<String>,
+}
+
+impl SessionPolicies {
+    /// The session's policy, creating it — and evicting the oldest session, if
+    /// the cap is reached — on the way in.
+    ///
+    /// An existing session keeps its place in the queue: this is FIFO, not LRU,
+    /// so a long-running session is not kept alive merely by being busy.
+    fn get_or_create(&mut self, session_id: &str, initial: PermissionMode) -> Arc<SessionPolicy> {
+        if let Some(existing) = self.by_id.get(session_id) {
+            return Arc::clone(existing);
+        }
+        if self.by_id.len() >= MAX_SESSION_POLICIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_id.remove(&oldest);
+            }
+        }
+        let policy = SessionPolicy::new(Permission::Bash, initial);
+        self.by_id
+            .insert(session_id.to_string(), Arc::clone(&policy));
+        self.order.push_back(session_id.to_string());
+        policy
+    }
+}
+
+#[cfg(test)]
+mod session_policies_tests {
+    use super::*;
+
+    /// Fill the map to its cap and return it, oldest session first.
+    fn filled() -> SessionPolicies {
+        let mut policies = SessionPolicies::default();
+        for i in 0..MAX_SESSION_POLICIES {
+            policies.get_or_create(&format!("s{i}"), PermissionMode::default());
+        }
+        policies
+    }
+
+    #[test]
+    fn the_oldest_session_is_the_one_evicted() {
+        let mut policies = filled();
+        assert_eq!(policies.by_id.len(), MAX_SESSION_POLICIES);
+
+        policies.get_or_create("newest", PermissionMode::default());
+
+        assert_eq!(policies.by_id.len(), MAX_SESSION_POLICIES, "the cap holds");
+        assert!(!policies.by_id.contains_key("s0"), "s0 was first in");
+        assert!(policies.by_id.contains_key("s1"), "s1 is not collateral");
+        assert!(policies.by_id.contains_key("newest"));
+    }
+
+    #[test]
+    fn using_a_session_again_does_not_spare_it() {
+        // FIFO, not LRU: a session touched a moment ago is still evicted once it
+        // is the oldest, so "busy" and "recent" cannot silently pin state.
+        let mut policies = filled();
+        policies.get_or_create("s0", PermissionMode::default());
+
+        policies.get_or_create("newest", PermissionMode::default());
+
+        assert!(!policies.by_id.contains_key("s0"));
+    }
+
+    #[test]
+    fn a_session_keeps_its_policy_and_its_place() {
+        let mut policies = SessionPolicies::default();
+        let first = policies.get_or_create("s0", PermissionMode::default());
+        let again = policies.get_or_create("s0", PermissionMode::default());
+        assert!(Arc::ptr_eq(&first, &again), "one policy per session");
+        assert_eq!(policies.order.len(), 1);
+        assert_eq!(policies.by_id.len(), policies.order.len());
+    }
 }
 
 /// Resolution of a pending question.
@@ -197,7 +287,7 @@ impl DaemonService {
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_ui,
             host_ui,
-            session_policies: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            session_policies: Arc::new(tokio::sync::RwLock::new(SessionPolicies::default())),
         })
     }
 
@@ -211,22 +301,11 @@ impl DaemonService {
         session_id: &str,
         initial: PermissionMode,
     ) -> Arc<SessionPolicy> {
-        if let Some(existing) = self.session_policies.read().await.get(session_id) {
+        if let Some(existing) = self.session_policies.read().await.by_id.get(session_id) {
             return Arc::clone(existing);
         }
         let mut guard = self.session_policies.write().await;
-        // Bounded capacity: evict oldest entry if size exceeds limit (prevents unbounded memory growth)
-        const MAX_SESSION_POLICIES: usize = 256;
-        if guard.len() >= MAX_SESSION_POLICIES && !guard.contains_key(session_id) {
-            if let Some(oldest_key) = guard.keys().next().cloned() {
-                guard.remove(&oldest_key);
-            }
-        }
-        Arc::clone(
-            guard
-                .entry(session_id.to_string())
-                .or_insert_with(|| SessionPolicy::new(Permission::Bash, initial)),
-        )
+        guard.get_or_create(session_id, initial)
     }
 
     /// Get (or lazily create) the pooled MCP plugin for `workspace`.
