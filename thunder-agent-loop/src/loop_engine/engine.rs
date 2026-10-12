@@ -104,6 +104,14 @@ pub struct AgentLoop {
     pipeline_builder: Option<
         Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
     >,
+    /// Where finished tool traces go, beyond the run's own event stream.
+    ///
+    /// The loop always emits `AgentEvent::ToolTrace`, so a host that drains
+    /// events needs nothing here. A host that would rather receive bytes than
+    /// parse events installs a sink, and both see the same record — the kernel
+    /// serialises and redacts once, so there is no second implementation to
+    /// drift.
+    trace_sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
     /// The host's answer to "where does this call land" — the knowledge half of
     /// the permission system, kept apart from the policy half.
     ///
@@ -150,6 +158,7 @@ impl AgentLoop {
             max_gate_rounds: 3,
             pipeline_builder: None,
             tool_scope: None,
+            trace_sink: None,
         }
     }
 
@@ -176,6 +185,20 @@ impl AgentLoop {
     /// mode is asked on every call, so flipping the mode mid-session takes
     /// effect on the next call without rebuilding anything. Passing `None`
     /// removes the gate — which is what "uninstall the mode plugin" is.
+    /// Install a sink for finished tool traces.
+    ///
+    /// Additive, not an alternative: the run's event stream carries
+    /// `AgentEvent::ToolTrace` whether or not a sink is installed, so a host
+    /// that installs one is saying "also hand me the bytes", not "instead".
+    pub fn with_trace_sink(
+        mut self,
+        sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
+    ) -> Self {
+        self.trace_sink = sink;
+        self.tool_executor = self.refresh_executor();
+        self
+    }
+
     pub fn with_tool_gate(
         mut self,
         gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
@@ -243,6 +266,14 @@ impl AgentLoop {
         }
         if let Some(ui) = &self.host_ui {
             executor = executor.with_host_ui(Arc::clone(ui));
+        }
+        // Identity, so a record can be joined against a host's own log. The
+        // route is the run's id, which for the daemon is the task id and for
+        // the TUI is `tui_<session>`.
+        executor =
+            executor.with_trace_ids(self.config.session_id.clone(), self.config.route.clone());
+        if let Some(sink) = &self.trace_sink {
+            executor = executor.with_trace_sink(Some(Arc::clone(sink)));
         }
         executor
     }
@@ -413,6 +444,18 @@ impl AgentLoop {
         // The run's tools get a sink bound to *this* run's event stream, so a
         // business event a tool emits (a file change, a validation failure)
         // arrives on the same handle the host is already draining.
+        // Every tool call leaves a trace, and the run's stream carries it.
+        // Installed on the slot the unit and every clone of it share, not just
+        // on the run's own clone: the plugin invoker holds a clone taken before
+        // this run existed, and its calls must be recorded too. Cleared when the
+        // run settles (below), so a finished run's event sender does not linger.
+        self.tool_executor
+            .install_run_trace(Arc::new(ChannelTraceSink {
+                agent_id: self.id.clone(),
+                dispatcher: self.event_dispatcher.clone(),
+                event_sender: event_sender.clone(),
+                host: self.trace_sink.clone(),
+            }));
         let tool_executor =
             self.tool_executor
                 .clone()
@@ -1372,6 +1415,10 @@ impl AgentLoop {
             };
             tracker.set_status(terminal);
             status.store(terminal.as_u8(), Ordering::Release);
+            // The run has settled: nothing else will be published through this
+            // sink, and holding it would keep the run's event sender alive in a
+            // slot every later clone of this executor shares.
+            tool_executor.clear_run_trace();
 
             // The run settled: switch any warmer it scheduled to idle economics
             // (15% continuation estimate, 30-minute age cap).
@@ -1499,6 +1546,49 @@ impl ChannelEventSink {
 impl crate::types::tool::ToolEventSink for ChannelEventSink {
     fn emit_custom(&self, kind: &str, payload: serde_json::Value) {
         self.emit(kind, payload);
+    }
+}
+
+/// Bridges finished tool traces onto the run's event stream, and to the host's
+/// own sink when it installed one.
+///
+/// One record, two consumers: the event is what a host draining events sees,
+/// and the sink is what a host that would rather not parse events takes. Both
+/// receive the same value, because the kernel redacts and serialises exactly
+/// once — two implementations of "what is a secret" would eventually disagree.
+struct ChannelTraceSink {
+    agent_id: String,
+    dispatcher: AgentEventDispatcher,
+    event_sender: mpsc::Sender<ObservedEvent>,
+    host: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
+}
+
+impl crate::tools::trace::ToolTraceSink for ChannelTraceSink {
+    fn record(&self, trace: &crate::tools::trace::ToolTrace) {
+        if let Some(host) = &self.host {
+            host.record(trace);
+        }
+
+        let observed = ObservedEvent {
+            agent_id: self.agent_id.clone(),
+            event: AgentEvent::ToolTrace {
+                trace: Box::new(trace.clone()),
+            },
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        self.dispatcher.emit(observed.clone());
+
+        // A trace is structural, not a micro-delta: never drop it. Sent from a
+        // spawned task so a saturated channel cannot stall the tool path, with
+        // the same deadline the other structural events use.
+        let sender = self.event_sender.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(observed))
+                .await;
+        });
     }
 }
 

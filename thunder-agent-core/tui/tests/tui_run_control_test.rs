@@ -421,7 +421,7 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
     let (tx, _rx) = mpsc::unbounded_channel();
     app.submit_prompt("do the thing".to_string(), tx);
     let task_id = app.trace_meta.as_ref().unwrap().task_id.clone();
-    assert!(app.trace_events.is_some());
+    assert!(app.trace.is_some());
 
     app.handle_agent_event(ObservedEvent {
         agent_id: "a".to_string(),

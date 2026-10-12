@@ -223,8 +223,8 @@ pub struct App {
     pub pause_gate: Option<Arc<PauseGate>>,
     /// Interactive question modal state; the agent is blocked while set.
     pub pending_question: Option<PendingQuestion>,
-    /// Filtered event trace being recorded for the current run.
-    pub trace_events: Option<Vec<ObservedEvent>>,
+    /// The current run's events and tool traces, within the shared bounds.
+    pub trace: Option<TraceCollector>,
     /// Metadata of the run currently being traced.
     pub trace_meta: Option<TraceRunMeta>,
     /// Whether the current run is this conversation's first exchange
@@ -391,7 +391,7 @@ impl App {
             ask_user_enabled: true,
             pause_gate: None,
             pending_question: None,
-            trace_events: None,
+            trace: None,
             trace_meta: None,
             run_is_first_exchange: false,
             title_attempted: false,
@@ -1274,7 +1274,7 @@ impl App {
 
     /// Start recording a filtered trace for a new run.
     fn begin_trace(&mut self, prompt: &str) {
-        self.trace_events = Some(Vec::new());
+        self.trace = Some(TraceCollector::new());
         self.trace_meta = Some(TraceRunMeta {
             task_id: format!("run_{}", now_ms()),
             started_at_ms: now_ms(),
@@ -1283,22 +1283,13 @@ impl App {
         });
     }
 
-    /// Tiered retention, mirroring the daemon: streaming micro-deltas never
-    /// reach the in-memory trace (they would blow up long tasks); everything
-    /// else is kept.
+    /// Tiered retention, shared with the daemon: streaming micro-deltas are
+    /// counted rather than kept (they would blow up long tasks), tool traces get
+    /// a budget of their own so event pressure cannot evict a decision, and
+    /// whatever is dropped is reported as a count.
     fn record_trace_event(&mut self, event: ObservedEvent) {
-        let is_micro_delta = matches!(
-            event.event,
-            AgentEvent::TokenDelta { .. }
-                | AgentEvent::ReasoningDelta { .. }
-                | AgentEvent::ToolCallChunk { .. }
-        );
-        if !is_micro_delta {
-            if let Some(events) = self.trace_events.as_mut() {
-                if events.len() < 5000 {
-                    events.push(event);
-                }
-            }
+        if let Some(trace) = self.trace.as_mut() {
+            trace.record(event);
         }
     }
 
@@ -1310,8 +1301,7 @@ impl App {
         final_text: Option<&str>,
         run_stats: Option<&AgentStats>,
     ) {
-        let (Some(events), Some(meta)) = (self.trace_events.as_ref(), self.trace_meta.as_ref())
-        else {
+        let (Some(trace), Some(meta)) = (self.trace.as_ref(), self.trace_meta.as_ref()) else {
             return;
         };
         let Some(store) = self.store.as_ref() else {
@@ -1332,7 +1322,13 @@ impl App {
             "finish_reason": if success { "Done" } else { "Error" },
             "stats": run_stats,
             "final_content": final_text,
-            "events": events,
+            // Additive keys: every field ARP reads keeps its name and shape, and
+            // a reader that does not know these two ignores them.
+            "tool_traces": trace.tool_traces(),
+            "tool_decisions": trace.evicted_decisions(),
+            "dropped_deltas": trace.dropped_deltas(),
+            "dropped_events": trace.dropped_events(),
+            "events": trace.events(),
         });
 
         let root = store.root().to_path_buf();
@@ -4742,7 +4738,7 @@ impl App {
             let trace_text = final_text.clone();
             self.finalize_trace(trace_ok, trace_text.as_deref(), run_stats.as_ref());
         }
-        self.trace_events = None;
+        self.trace = None;
         self.trace_meta = None;
         // `run_is_first_exchange` deliberately survives the run: the auto-title
         // check reads it right after this handler returns, and the next

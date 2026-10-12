@@ -2,7 +2,10 @@ use crate::tools::guard::Guard;
 use crate::tools::middleware::{ToolMiddleware, ToolPipeline};
 use crate::tools::notice::SystemNotice;
 use crate::tools::registry::ToolRegistry;
-use crate::tools::trace::{GuardHit, GuardKind};
+use crate::tools::trace::{
+    redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
+    ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
+};
 use crate::types::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest, ALLOW_ALWAYS,
     ALLOW_ONCE, DENY, DENY_WITH_REASON,
@@ -27,6 +30,11 @@ pub struct ExecutedToolResult {
 /// Default wait for a human answer before failing closed (10 minutes, giving
 /// the user time to review a diff or a command).
 pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How much of a tool's output the trace keeps. The full text is already on
+/// disk where the tool put it; a record that embeds every megabyte is a record
+/// nobody reads.
+const OUTPUT_PREVIEW_CHARS: usize = 2048;
 
 #[derive(Clone)]
 pub struct ToolExecutor {
@@ -66,6 +74,23 @@ pub struct ToolExecutor {
     prompt_lock: Arc<tokio::sync::Mutex<()>>,
     /// How long to wait for a human before refusing.
     approval_timeout: Duration,
+    /// Where finished traces go, and what to stamp them with.
+    ///
+    /// Installed per run by the loop (which is the only thing that knows the
+    /// session and the task), so a trace never has to guess its own identity.
+    trace: Arc<Mutex<TraceSlot>>,
+}
+
+/// The trace output side: a sink, and the run's identity.
+///
+/// `sink` is `None` when a host installed none, which is not a reason to stop
+/// recording — the loop's own per-run sink is always there, so a call that ran
+/// inside a run is always traced.
+#[derive(Clone, Default)]
+struct TraceSlot {
+    sink: Option<Arc<dyn ToolTraceSink>>,
+    session_id: Option<String>,
+    task_id: Option<String>,
 }
 
 impl ToolExecutor {
@@ -80,6 +105,7 @@ impl ToolExecutor {
             host_ui: Arc::new(Mutex::new(None)),
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+            trace: Arc::new(Mutex::new(TraceSlot::default())),
         }
     }
 
@@ -93,7 +119,47 @@ impl ToolExecutor {
             host_ui: Arc::new(Mutex::new(None)),
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+            trace: Arc::new(Mutex::new(TraceSlot::default())),
         }
+    }
+
+    /// Install the sink finished traces go to.
+    ///
+    /// Consuming, like the event sink: the trace output belongs to one run, and
+    /// a shared slot would keep a finished run's sink alive for every later
+    /// clone.
+    pub fn with_trace_sink(mut self, sink: Option<Arc<dyn ToolTraceSink>>) -> Self {
+        let mut slot = self.trace.lock().clone();
+        slot.sink = sink;
+        self.trace = Arc::new(Mutex::new(slot));
+        self
+    }
+
+    /// Install the sink a run's traces go to, on the slot every clone shares.
+    ///
+    /// In place rather than consuming, unlike [`ToolExecutor::with_trace_sink`].
+    /// The difference is what the caller needs: the loop's plugin invoker holds
+    /// a clone taken before the run existed, and a consuming builder would give
+    /// the run's own calls a sink the invoker's calls still could not see — so a
+    /// plugin-initiated call would be the one call in the system with no record.
+    /// The loop clears this again when the run settles, so a finished run's
+    /// event sender does not stay alive in a slot later clones share.
+    pub fn install_run_trace(&self, sink: Arc<dyn ToolTraceSink>) {
+        self.trace.lock().sink = Some(sink);
+    }
+
+    /// Forget the run's sink. Called when the run settles.
+    pub fn clear_run_trace(&self) {
+        self.trace.lock().sink = None;
+    }
+
+    /// Stamp this executor's traces with the run they belong to.
+    pub fn with_trace_ids(mut self, session_id: Option<String>, task_id: Option<String>) -> Self {
+        let mut slot = self.trace.lock().clone();
+        slot.session_id = session_id;
+        slot.task_id = task_id;
+        self.trace = Arc::new(Mutex::new(slot));
+        self
     }
 
     /// Install the host's scope classification.
@@ -202,16 +268,26 @@ impl ToolExecutor {
     /// parses the same string and errors out before any tool sees them. An
     /// unparseable call reaches the gate as `null` arguments, so a rule keyed on
     /// an argument cannot match it by accident.
+    ///
+    /// # The one exit
+    ///
+    /// This method has no early `return` and exactly one place that finishes a
+    /// trace: the work happens in [`ToolExecutor::dispatch`], which returns a
+    /// result *to* here, and the record is closed and published on the way out.
+    /// That is what makes "every call leaves exactly one trace" structural
+    /// rather than a promise — there is no path out of this function that skips
+    /// the record, because no path out of it exists at all.
     pub async fn run_tool(
         &self,
         call: &ToolCall,
         mut ctx: ToolExecutionContext,
         custom_timeout: Option<Duration>,
     ) -> ToolExecutionResult {
-        // Stamp the tool's declared effect and the run's event sink. Both are
-        // the executor's to know, not the caller's: a plugin that builds a
-        // context by hand should still be judged by what the tool *is*, and
-        // should still be able to report events.
+        // Stamp the tool's declared effect, the run's event sink and the panel.
+        // All three are the executor's to know, not the caller's: a plugin that
+        // builds a context by hand should still be judged by what the tool *is*,
+        // should still be able to report events, and should still be able to
+        // ask the user something.
         let effect = self.resolve_effect(&call.function.name);
         ctx.effect = Some(effect);
         if ctx.event_sink.is_none() {
@@ -222,16 +298,56 @@ impl ToolExecutor {
         }
 
         let started = Instant::now();
+        let mut draft = TraceDraft::begin(call, &ctx, effect, started);
+
+        let result = self.dispatch(call, &ctx, custom_timeout, &mut draft).await;
+
+        let ids = {
+            let slot = self.trace.lock();
+            (slot.session_id.clone(), slot.task_id.clone())
+        };
+        let trace = draft.finish(&result, started, ids);
+        self.publish(&trace);
+        result
+    }
+
+    /// Do everything the funnel does, recording each verdict on the way.
+    ///
+    /// Split from [`ToolExecutor::run_tool`] precisely so the refusal paths can
+    /// return early *here*, where returning early cannot skip the record.
+    async fn dispatch(
+        &self,
+        call: &ToolCall,
+        ctx: &ToolExecutionContext,
+        custom_timeout: Option<Duration>,
+        draft: &mut TraceDraft,
+    ) -> ToolExecutionResult {
+        let started = draft.started;
 
         if ctx.cancellation_token.is_cancelled() {
+            draft.decision = Decision::Cancelled;
             return cancelled_refusal(started);
         }
 
         let arguments: serde_json::Value =
             serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
-        let scope = self.scope_of(&call.function.name, effect, &arguments);
+        // The record keeps a redacted copy; the tool keeps the original. A
+        // trace is a durable artifact, and a credential that reached the trace
+        // has reached a file the session's author may never read.
+        draft.arguments = arguments.clone();
+        let redactions = redact_arguments(&mut draft.arguments);
+        draft.redactions = redactions.rules;
+        draft.secrets = redactions.secrets;
 
-        if let Some(hit) = Guard::check(&call.function.name, &arguments, effect, scope) {
+        let scope = self.scope_of(&call.function.name, draft.effect, &arguments);
+        draft.scope = scope;
+
+        if let Some(hit) = Guard::check(&call.function.name, &arguments, draft.effect, scope) {
+            draft.decision = Decision::Deny {
+                reason: guard_reason(&hit),
+                by: DenyBy::Guard,
+            };
+            draft.guard = Some(hit.clone());
             return guard_refusal(&hit, started);
         }
 
@@ -247,32 +363,50 @@ impl ToolExecutor {
         let request = ToolGateRequest {
             tool: &call.function.name,
             arguments: &arguments,
-            effect,
+            effect: draft.effect,
             scope,
             caller: caller.clone(),
             tool_call_id: &call.id,
         };
 
         let decision = gate.as_ref().map(|gate| (gate, gate.decide(&request)));
+        draft.mode = gate.as_ref().map(|gate| gate.label().to_string());
+
+        let deny = |draft: &mut TraceDraft, reason: &str| {
+            draft.decision = Decision::Deny {
+                reason: reason.to_string(),
+                by: DenyBy::Gate,
+            };
+        };
 
         match decision {
-            None => self.pipeline.execute(call, &ctx, custom_timeout).await,
-            Some((_, GateVerdict::Allow)) | Some((_, GateVerdict::AllowByRule { .. })) => {
-                self.pipeline.execute(call, &ctx, custom_timeout).await
+            None | Some((_, GateVerdict::Allow)) => {
+                draft.decision = Decision::Allow;
+                self.via_pipeline(call, ctx, custom_timeout, draft).await
             }
-            Some((gate, GateVerdict::Deny { reason })) => denied_by_gate(
-                gate.label(),
-                &call.function.name,
-                &crate::types::policy::describe_call(&arguments),
-                &reason,
-                caller.plugin_id(),
-                started,
-            ),
+            Some((_, GateVerdict::AllowByRule { rule })) => {
+                draft.decision = Decision::AllowByRule { rule };
+                self.via_pipeline(call, ctx, custom_timeout, draft).await
+            }
+            Some((_, GateVerdict::Deny { reason })) => {
+                deny(draft, &reason);
+                denied_by_gate(
+                    draft.mode.as_deref().unwrap_or("gate"),
+                    &call.function.name,
+                    &crate::types::policy::describe_call(&arguments),
+                    &reason,
+                    caller.plugin_id(),
+                    started,
+                )
+            }
             Some((gate, GateVerdict::Ask(prompt))) => {
-                let answer = self.ask(gate, &request, &prompt, &ctx).await;
+                draft.decision = Decision::Asked;
+                let answer = self.ask(gate, &request, &prompt, ctx, draft).await;
                 match answer {
-                    AskOutcome::Proceed => self.pipeline.execute(call, &ctx, custom_timeout).await,
-                    AskOutcome::Refuse(reason) => denied_by_gate(
+                    AskOutcome::Proceed(_) => {
+                        self.via_pipeline(call, ctx, custom_timeout, draft).await
+                    }
+                    AskOutcome::Refuse { reason, .. } => denied_by_gate(
                         gate.label(),
                         &call.function.name,
                         &crate::types::policy::describe_call(&arguments),
@@ -282,6 +416,31 @@ impl ToolExecutor {
                     ),
                 }
             }
+        }
+    }
+
+    /// Run the tool, timing it for the record.
+    async fn via_pipeline(
+        &self,
+        call: &ToolCall,
+        ctx: &ToolExecutionContext,
+        custom_timeout: Option<Duration>,
+        draft: &mut TraceDraft,
+    ) -> ToolExecutionResult {
+        let started = Instant::now();
+        let result = self.pipeline.execute(call, ctx, custom_timeout).await;
+        draft.timing.exec_ms = started.elapsed().as_millis() as u64;
+        result
+    }
+
+    /// Hand one finished trace to the sink, if a run installed one.
+    ///
+    /// The kernel never writes a trace itself: it does not know where a store
+    /// lives, and a kernel that picked a path would be inventing a host's
+    /// policy. It emits, and a host keeps.
+    fn publish(&self, trace: &ToolTrace) {
+        if let Some(sink) = self.trace.lock().sink.clone() {
+            sink.record(trace);
         }
     }
 
@@ -296,16 +455,36 @@ impl ToolExecutor {
         request: &ToolGateRequest<'_>,
         prompt: &ApprovalPrompt,
         ctx: &ToolExecutionContext,
+        draft: &mut TraceDraft,
     ) -> AskOutcome {
+        let asked_at = Instant::now();
+
         // Serialised, and raced against cancellation so a cancelled run releases
         // the lock instead of holding the rest of the batch hostage.
         let _serialised = tokio::select! {
             biased;
             _ = ctx.cancellation_token.cancelled() => {
-                return AskOutcome::Refuse("the task was cancelled".to_string());
+                draft.answer = Some(AskAnswer::Timeout);
+                draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+                return AskOutcome::Refuse {
+                    answer: AskAnswer::Timeout,
+                    reason: "the task was cancelled".to_string(),
+                };
             }
             guard = self.prompt_lock.lock() => guard,
         };
+
+        // No panel at all is a different situation from a panel that did not
+        // answer, and the record says which: one is a headless host, the other
+        // is a user who walked away. Both refuse.
+        if self.host_ui.lock().is_none() {
+            draft.answer = Some(AskAnswer::NoUi);
+            draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+            return AskOutcome::Refuse {
+                answer: AskAnswer::NoUi,
+                reason: "no user interface is attached to answer it".to_string(),
+            };
+        }
 
         // Name the caller when it is not the model. A plugin acting on its own
         // initiative must not be presentable as something the assistant asked
@@ -350,23 +529,34 @@ impl ToolExecutor {
 
         let choice = match response.text() {
             Some(text) => text.to_string(),
-            None => return AskOutcome::Refuse("no answer (timed out or dismissed)".to_string()),
+            None => {
+                draft.answer = Some(AskAnswer::Timeout);
+                draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+                return AskOutcome::Refuse {
+                    answer: AskAnswer::Timeout,
+                    reason: "no answer (timed out or dismissed)".to_string(),
+                };
+            }
         };
 
-        match choice.as_str() {
-            ALLOW_ONCE => AskOutcome::Proceed,
+        let outcome = match choice.as_str() {
+            ALLOW_ONCE => AskOutcome::Proceed(AskAnswer::AllowOnce),
             ALLOW_ALWAYS if prompt.allow_always => {
                 gate.record_answer(request, &ApprovalAnswer::AllowAlways);
-                AskOutcome::Proceed
+                AskOutcome::Proceed(AskAnswer::AllowAlways)
             }
             // Cannot happen: the option is not offered when `allow_always` is
             // false. Fail closed anyway rather than trust the renderer.
-            ALLOW_ALWAYS => {
-                AskOutcome::Refuse("no safe 'always allow' rule exists for this call".to_string())
-            }
+            ALLOW_ALWAYS => AskOutcome::Refuse {
+                answer: AskAnswer::Unrecognised,
+                reason: "no safe 'always allow' rule exists for this call".to_string(),
+            },
             DENY => {
                 gate.record_answer(request, &ApprovalAnswer::Deny);
-                AskOutcome::Refuse("the user declined".to_string())
+                AskOutcome::Refuse {
+                    answer: AskAnswer::Denied,
+                    reason: "the user declined".to_string(),
+                }
             }
             DENY_WITH_REASON => {
                 let reason = self
@@ -385,7 +575,10 @@ impl ToolExecutor {
                     .to_string();
                 if reason.trim().is_empty() {
                     gate.record_answer(request, &ApprovalAnswer::Deny);
-                    AskOutcome::Refuse("the user declined without giving a reason".to_string())
+                    AskOutcome::Refuse {
+                        answer: AskAnswer::Denied,
+                        reason: "the user declined without giving a reason".to_string(),
+                    }
                 } else {
                     let reason = reason.trim().to_string();
                     gate.record_answer(
@@ -394,13 +587,23 @@ impl ToolExecutor {
                             reason: reason.clone(),
                         },
                     );
-                    AskOutcome::Refuse(format!("the user declined: {reason}"))
+                    AskOutcome::Refuse {
+                        answer: AskAnswer::Denied,
+                        reason: format!("the user declined: {reason}"),
+                    }
                 }
             }
             // An answer outside the offered set is a refusal: a surprising value
             // must never widen access.
-            _ => AskOutcome::Refuse(format!("unrecognised answer: {choice}")),
-        }
+            _ => AskOutcome::Refuse {
+                answer: AskAnswer::Unrecognised,
+                reason: format!("unrecognised answer: {choice}"),
+            },
+        };
+
+        draft.answer = Some(outcome.answer());
+        draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+        outcome
     }
 
     /// Execute a single call through the full pipeline.
@@ -468,8 +671,164 @@ impl ToolExecutor {
 
 /// What a dialog came to.
 enum AskOutcome {
-    Proceed,
-    Refuse(String),
+    /// The user said yes — once, or with a standing rule.
+    Proceed(AskAnswer),
+    /// Anything else, including silence.
+    Refuse { answer: AskAnswer, reason: String },
+}
+
+impl AskOutcome {
+    /// What the record says the user answered.
+    fn answer(&self) -> AskAnswer {
+        match self {
+            AskOutcome::Proceed(answer) | AskOutcome::Refuse { answer, .. } => *answer,
+        }
+    }
+}
+
+/// The refusal a guard hit is worth putting in the record.
+fn guard_reason(hit: &GuardHit) -> String {
+    format!(
+        "refused by the kernel's guard: this call matches '{}'",
+        hit.pattern
+    )
+}
+
+/// The record under construction, filled in as the funnel makes its decisions.
+///
+/// Deliberately not the record itself: a [`ToolTrace`] is the finished artifact,
+/// and everything here is what is known *before* the call has ended.
+struct TraceDraft {
+    trace_id: String,
+    turn: usize,
+    tool_call_id: String,
+    tool: String,
+    caller: Caller,
+    effect: ToolEffect,
+    mode: Option<String>,
+    scope: Scope,
+    arguments: serde_json::Value,
+    decision: Decision,
+    guard: Option<GuardHit>,
+    answer: Option<AskAnswer>,
+    redactions: Vec<String>,
+    /// Literal values the arguments declared secret, withheld from anything
+    /// derived from them.
+    secrets: Vec<String>,
+    timing: TraceTiming,
+    started: Instant,
+    started_at_ms: u64,
+}
+
+impl TraceDraft {
+    fn begin(
+        call: &ToolCall,
+        ctx: &ToolExecutionContext,
+        effect: ToolEffect,
+        started: Instant,
+    ) -> Self {
+        Self {
+            trace_id: trace_id(&call.id, started),
+            turn: ctx.turn,
+            tool_call_id: call.id.clone(),
+            tool: call.function.name.clone(),
+            caller: match ctx.caller.as_deref() {
+                Some(id) => Caller::Plugin(id.to_string()),
+                None => Caller::Model,
+            },
+            effect,
+            mode: None,
+            scope: Scope::Unknown,
+            arguments: serde_json::Value::Null,
+            // Overwritten by every path below; a draft that somehow survived
+            // would record a call that was allowed, which is the wrong way to
+            // fail for a record nobody can re-derive.
+            decision: Decision::Allow,
+            guard: None,
+            answer: None,
+            redactions: Vec::new(),
+            secrets: Vec::new(),
+            timing: TraceTiming::default(),
+            started,
+            started_at_ms: crate::tools::trace::now_ms(),
+        }
+    }
+
+    /// Close the record. `result` is what the model was told.
+    fn finish(
+        mut self,
+        result: &ToolExecutionResult,
+        started: Instant,
+        ids: (Option<String>, Option<String>),
+    ) -> ToolTrace {
+        let output = &result.output;
+        let (preview, output_rules) =
+            crate::tools::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
+        // A credential the arguments declared secret is withheld from the
+        // output too: a tool that echoes what it was given would otherwise put
+        // the value back with the key that named it stripped away, which is
+        // exactly where a key-based rule cannot reach.
+        let (output_preview, withheld) = withhold(&preview, &self.secrets);
+        if withheld > 0 {
+            self.redactions.push("echoed_secret".to_string());
+        }
+        self.redactions.extend(output_rules);
+        self.redactions.sort();
+        self.redactions.dedup();
+
+        // The gate/guard/scope time is whatever is left once the ask and the
+        // tool are accounted for — measured rather than inferred, because the
+        // three are separated by awaits, not by branches.
+        self.timing.decision_ms = started
+            .elapsed()
+            .as_millis()
+            .saturating_sub(u128::from(self.timing.ask_ms) + u128::from(self.timing.exec_ms))
+            as u64;
+        self.timing.total_ms = started.elapsed().as_millis() as u64;
+
+        let trace = ToolTrace {
+            schema: TRACE_SCHEMA,
+            trace_id: self.trace_id,
+            session_id: ids.0,
+            task_id: ids.1,
+            turn: self.turn,
+            tool_call_id: self.tool_call_id,
+            tool: self.tool,
+            caller: self.caller,
+            effect: self.effect,
+            mode: self.mode,
+            scope: self.scope,
+            arguments: self.arguments,
+            decision: self.decision,
+            guard: self.guard,
+            answer: self.answer,
+            result: TraceResult {
+                is_error: result.is_error,
+                truncated: result.truncated,
+                original_bytes: result.original_bytes,
+                result_bytes: output.len(),
+                output_preview,
+                output_digest: crate::tools::trace::stable_digest(output.as_bytes()),
+            },
+            redactions: self.redactions,
+            timing: self.timing,
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: crate::tools::trace::now_ms(),
+        };
+        trace
+    }
+}
+
+/// An id unique to this call: the provider's id when there is one, plus the
+/// start instant so two runs of the same conversation cannot collide.
+fn trace_id(call_id: &str, started: Instant) -> String {
+    format!(
+        "{}-{:x}",
+        if call_id.is_empty() { "call" } else { call_id },
+        started.elapsed().as_nanos()
+            ^ crate::tools::trace::now_ms() as u128
+            ^ u128::from(std::process::id())
+    )
 }
 
 /// The refusal a cancelled call gets: nothing ran, and saying so is the point.

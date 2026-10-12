@@ -1505,7 +1505,7 @@ impl DaemonService {
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
                     let selection = handle.selection.clone();
-                    let collected_events = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+                    let collected_events = Arc::new(tokio::sync::Mutex::new(TraceCollector::new()));
                     let collected_for_stream = Arc::clone(&collected_events);
 
                     // Stream fine-grained observed events (tokens, tool execution, etc.)
@@ -1523,18 +1523,10 @@ impl DaemonService {
                                 // Filter out high-frequency streaming micro-deltas (TokenDelta, ReasoningDelta, ToolCallChunk)
                                 // from in-memory trace storage to prevent unbounded memory growth on long tasks, while
                                 // still streaming 100% of all events live over stdout for the caller UI.
-                                let is_micro_delta = matches!(
-                                    event.event,
-                                    AgentEvent::TokenDelta { .. }
-                                        | AgentEvent::ReasoningDelta { .. }
-                                        | AgentEvent::ToolCallChunk { .. }
-                                );
-                                if !is_micro_delta {
-                                    let mut collected = collected_for_stream.lock().await;
-                                    if collected.len() < 5000 {
-                                        collected.push(event.clone());
-                                    }
-                                }
+                                // Retention (and what counts as noise) is the collector's
+                                // business, shared with the TUI so both hosts keep a trace
+                                // file that means the same thing.
+                                collected_for_stream.lock().await.record(event.clone());
 
                                 let res = DaemonResponse::ObservedEvent {
                                     task_id: tid.clone(),
@@ -1667,7 +1659,7 @@ impl DaemonService {
                             }
 
                             // Save full end-to-end task trace
-                            let events = collected_events.lock().await.clone();
+                            let collected = collected_events.lock().await;
                             let finished_at_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
@@ -1691,7 +1683,14 @@ impl DaemonService {
                                 "finish_reason": finish_reason,
                                 "stats": res.run_result.stats,
                                 "final_content": final_content,
-                                "events": events,
+                                // Additive keys: every field ARP reads keeps its
+                                // name and shape, and a reader that does not know
+                                // these ignores them.
+                                "tool_traces": collected.tool_traces(),
+                                "tool_decisions": collected.evicted_decisions(),
+                                "dropped_deltas": collected.dropped_deltas(),
+                                "dropped_events": collected.dropped_events(),
+                                "events": collected.events(),
                             });
                             save_task_trace(
                                 store.root(),

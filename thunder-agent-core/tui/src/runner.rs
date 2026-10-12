@@ -56,6 +56,9 @@ impl TuiRunner {
                 LeaveAlternateScreen,
                 DisableMouseCapture
             );
+            // Leave evidence before the terminal is handed back: a panic in a
+            // full-screen app otherwise destroys its own output.
+            tracing::error!(panic = %info, "TUI panicked; restoring the terminal");
             default_hook(info);
         }));
 

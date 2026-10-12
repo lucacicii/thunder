@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_conversation::prelude::FsConversationStore;
 use thunder_tui::prelude::*;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,6 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::process::exit(2);
     }
+
+    // Before anything else can log. Without this the kernel's own `info!` and
+    // `warn!` go nowhere, which is why a TUI failure used to leave no evidence
+    // at all.
+    let log_path = init_tracing();
+    tracing::info!(
+        log = %log_path.display(),
+        version = env!("CARGO_PKG_VERSION"),
+        cwd = %env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(),
+        "Thunder TUI starting"
+    );
 
     let registry = ProviderRegistry::load_default().await.unwrap_or_default();
     let available = registry.list_available();
@@ -49,8 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_store(store)
         .with_provider_registry(registry);
 
-    // Workspace root (also the security jail root): `--workspace <path>` beats
-    // `THUNDER_WORKSPACE`, which beats the current directory.
+    // Workspace root: `--workspace <path>` beats `THUNDER_WORKSPACE`, which
+    // beats the current directory.
     match resolve_workspace_override(&args, env::var("THUNDER_WORKSPACE").ok().as_deref()) {
         Ok(Some(dir)) => app.workspace_dir = dir,
         Ok(None) => {}
@@ -62,8 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Persist initial session so it is immediately registered in the sidebar
     app.save_current_conversation().await;
-    // Make the jail root visible: it is the cwd unless overridden, and writes
-    // outside it (and `/roots add` grants) are refused.
+    // Make the working area visible: it is the cwd unless overridden, and a
+    // path outside it (or a shell command) is what the approval dialog asks
+    // about.
     app.set_status_message(format!("Workspace: {}", app.workspace_dir.display()));
 
     // Optional specific session arg: --session <id>
@@ -77,6 +90,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.run(app).await?;
 
     Ok(())
+}
+
+/// Send logs to a file, and return where.
+///
+/// Not to stdout: the runner owns the alternate screen, and a log line written
+/// there tears the layout apart. Not to nothing either — that was the state
+/// before, and it made every failure in a shipped TUI unreportable.
+///
+/// Default level is `warn`: a terminal session does not want the kernel's
+/// per-turn chatter on disk, but a warning or an error should leave a trace.
+/// `RUST_LOG` overrides it for a debugging session.
+fn init_tracing() -> PathBuf {
+    let dir = thunder_agent_loop::core::paths::thunder_config_dir().join("logs");
+    let path = dir.join("tui.log");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    // A session that cannot open its log file still has to run: the panel is
+    // the product, the log is only the evidence.
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .try_init();
+    }
+    path
 }
 
 /// Resolve an explicit workspace override.
@@ -109,6 +153,15 @@ fn resolve_workspace_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The log lives under the data root, not in the workspace: a trace of the
+    /// terminal must not appear in the user's project.
+    #[test]
+    fn the_log_is_named_and_placed_predictably() {
+        let dir = thunder_agent_loop::core::paths::thunder_config_dir().join("logs");
+        assert!(dir.join("tui.log").starts_with(&dir));
+        assert!(dir.ends_with("logs"));
+    }
 
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

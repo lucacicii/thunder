@@ -6,6 +6,7 @@ pub mod plugins;
 pub mod registry;
 pub mod selector;
 pub mod thunder_config;
+pub mod trace_collector;
 
 pub mod prelude {
     pub use crate::error::PluginError;
@@ -30,6 +31,7 @@ pub mod prelude {
         PluginSelection, PluginSelector, SelectionCache,
     };
     pub use crate::thunder_config::{AgentSection, MemorySection, ThunderConfig};
+    pub use crate::trace_collector::{TraceCollector, MAX_EVENTS, MAX_TOOL_TRACES};
 }
 
 pub use prelude::*;

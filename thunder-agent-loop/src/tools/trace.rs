@@ -21,6 +21,7 @@
 use crate::types::policy::{Caller, ToolEffect};
 use crate::types::scope::Scope;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 /// Version of the trace layout. Bumped when a field changes meaning, so a reader
 /// can tell an old record from a new one.
@@ -203,6 +204,228 @@ pub struct TraceTiming {
     /// Wrapper entry to exit.
     #[serde(default)]
     pub total_ms: u64,
+}
+
+// ─────────────────────────────── redaction ───────────────────────────────
+//
+// A trace is a durable artifact: it outlives the conversation and lands on
+// disk, where it may be read by someone who never saw the session. The model's
+// own context is deliberately *not* filtered this way — a model that cannot see
+// the truth cannot work — so this is the one place secrets are removed, and it
+// runs on the way into the record.
+
+/// What a value under a secret-looking key is replaced with.
+pub const REDACTED_KEY: &str = "[redacted:key]";
+
+/// What a secret-looking substring is replaced with.
+pub const REDACTED: &str = "[redacted]";
+
+/// Argument keys whose value is a credential. Case-insensitive, substring.
+const SECRET_KEYS: [&str; 11] = [
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "cookie",
+    "private_key",
+    "access_key",
+    "client_secret",
+];
+
+/// Argument keys whose value is a document, not a command. The value is kept as
+/// a digest plus a short preview: the full text is already on disk where it was
+/// written, and a trace that embeds every file the agent has ever written is a
+/// trace nobody reads.
+const DOCUMENT_KEYS: [&str; 2] = ["content", "preview"];
+
+/// How much of a document key's value is kept.
+const DOCUMENT_PREVIEW_CHARS: usize = 200;
+
+/// Secret shapes recognisable without knowing the key they travelled under.
+///
+/// The output side is where this matters most: `env`, `cat ~/.zshrc` and a read
+/// of `.env` all hand a credential to a tool, and the tool's output is what
+/// lands in the trace. Bash only scrubs its own child environment, which does
+/// nothing for a file that was read.
+static SECRET_PATTERNS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::new(|| {
+    let build = |name, pattern: &str| {
+        (
+            name,
+            regex::Regex::new(pattern).expect("built-in secret pattern compiles"),
+        )
+    };
+    vec![
+        build("github_token", r"gh[pousr]_[A-Za-z0-9]{20,}"),
+        build("api_key", r"sk-[A-Za-z0-9_-]{20,}"),
+        build("aws_access_key_id", r"AKIA[0-9A-Z]{16}"),
+        build(
+            "jwt",
+            r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+        ),
+        build(
+            "private_key",
+            r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        ),
+        // `Authorization: Bearer <token>` and the `user:password@host` shape of
+        // a credentialed URL.
+        build("bearer_token", r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
+        build(
+            "url_credentials",
+            r"(?i)\b[a-z][a-z0-9+.-]*://[^/:\s]+:[^/@\s]+@",
+        ),
+    ]
+});
+
+/// Replace every secret-shaped substring in `text`.
+///
+/// Returns the redacted text and the names of the rules that fired, so a reader
+/// can tell "there was no secret" from "a secret was removed".
+pub fn redact_text(text: &str) -> (String, Vec<String>) {
+    let mut out = text.to_string();
+    let mut fired = Vec::new();
+    for (name, pattern) in SECRET_PATTERNS.iter() {
+        if pattern.is_match(&out) {
+            // A credentialed URL keeps its scheme and host, which is what makes
+            // the line readable at all; the userinfo is what goes.
+            let replacement = match *name {
+                "url_credentials" => "$scheme://[redacted]@",
+                _ => REDACTED,
+            };
+            out = pattern.replace_all(&out, replacement).to_string();
+            fired.push((*name).to_string());
+        }
+    }
+    (out, fired)
+}
+
+/// A short, redacted head of `text`, cut on a character boundary.
+pub fn preview_text(text: &str, max_chars: usize) -> String {
+    redact_preview(text, max_chars).0
+}
+
+/// [`preview_text`], plus the rules that fired inside it.
+pub fn redact_preview(text: &str, max_chars: usize) -> (String, Vec<String>) {
+    let head: String = text.chars().take(max_chars).collect();
+    let (redacted, fired) = redact_text(&head);
+    let preview = if text.chars().count() > max_chars {
+        format!("{redacted}… (truncated)")
+    } else {
+        redacted
+    };
+    (preview, fired)
+}
+
+/// What redacting a call's arguments removed, and why.
+#[derive(Debug, Default, Clone)]
+pub struct Redactions {
+    /// Rule names that fired, so a reader can tell "there was no secret" from
+    /// "a secret was removed".
+    pub rules: Vec<String>,
+    /// The literal values a secret-named key held.
+    ///
+    /// Kept so they can be withheld from everything *derived* from the call.
+    /// A tool that echoes its arguments — or that puts one in an error message —
+    /// would otherwise put the value back into the record with the key that
+    /// named it stripped away, which is the one place the key rule cannot see.
+    pub secrets: Vec<String>,
+}
+
+impl Redactions {
+    fn finish(mut self) -> Self {
+        self.rules.sort();
+        self.rules.dedup();
+        self.secrets.sort();
+        self.secrets.dedup();
+        self
+    }
+}
+
+/// The shortest value worth withholding from derived text.
+///
+/// Below this, a withheld value would start eating ordinary words: the point of
+/// the rule is a credential, and a credential that fits in five characters is
+/// not one.
+const MIN_WITHHOLDABLE_CHARS: usize = 6;
+
+/// Redact a call's arguments in place.
+///
+/// Three passes, because a credential reaches an argument three ways: under a
+/// key that names it, as a document whose body has to be hashed rather than
+/// kept, or inside free text.
+pub fn redact_arguments(arguments: &mut serde_json::Value) -> Redactions {
+    let mut fired = Redactions::default();
+    redact_value(arguments, None, &mut fired);
+    fired.finish()
+}
+
+/// Replace `secrets` wherever they appear in `text`.
+///
+/// Returns the text and how many occurrences went.
+pub fn withhold(text: &str, secrets: &[String]) -> (String, usize) {
+    let mut out = text.to_string();
+    let mut count = 0;
+    for secret in secrets {
+        if secret.chars().count() < MIN_WITHHOLDABLE_CHARS {
+            continue;
+        }
+        if out.contains(secret.as_str()) {
+            count += out.matches(secret.as_str()).count();
+            out = out.replace(secret.as_str(), REDACTED);
+        }
+    }
+    (out, count)
+}
+
+fn redact_value(value: &mut serde_json::Value, key: Option<&str>, fired: &mut Redactions) {
+    if let Some(name) = key {
+        let lower = name.to_ascii_lowercase();
+        if SECRET_KEYS.iter().any(|secret| lower.contains(secret)) {
+            if let serde_json::Value::String(secret) = value {
+                fired.secrets.push(secret.clone());
+            }
+            *value = serde_json::Value::String(REDACTED_KEY.to_string());
+            fired.rules.push(format!("key:{name}"));
+            return;
+        }
+        if let serde_json::Value::String(text) = value {
+            if DOCUMENT_KEYS.contains(&lower.as_str()) {
+                let (preview, nested) = redact_text(text);
+                fired.rules.extend(nested);
+                *value = serde_json::json!({
+                    "digest": stable_digest(text.as_bytes()),
+                    "bytes": text.len(),
+                    "preview": preview_text(&preview, DOCUMENT_PREVIEW_CHARS),
+                });
+                fired.rules.push(format!("document:{name}"));
+                return;
+            }
+        }
+    }
+
+    match value {
+        serde_json::Value::String(text) => {
+            let (redacted, nested) = redact_text(text);
+            if !nested.is_empty() {
+                *text = redacted;
+                fired.rules.extend(nested);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_value(item, None, fired);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let k = k.clone();
+                redact_value(v, Some(&k), fired);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A host's sink for finished traces.
