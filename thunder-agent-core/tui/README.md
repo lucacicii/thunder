@@ -11,7 +11,7 @@
 ## 🚀 核心特性
 
 - **Claude Code 风格无框全宽布局**：
-  - **顶部状态栏 (Header)**：实时显示连接模型、执行模式、思考档位与运行状态（Idle / Thinking / Streaming / Tool）。
+  - **顶部状态栏 (Header)**：实时显示连接模型、执行拓扑、思考档位与运行状态（Idle / Thinking / Streaming / Tool）。**底部常驻审批模式徽标**（`plan` / `ask` / `acceptEdits` / `yolo`），可用 `Shift+Tab` 循环切换。
   - **底部会话栏 (Footer)**：输入框正下方常驻一行显示当前会话标题（标题还是占位符时显示 session id，自动生成标题后立即更新）；临时状态消息（`✔`、队列、暂停）临时叠在它上方一行。
   - **全宽对话流 (Chat Stream)**：
     - Markdown 格式化排版渲染与打字机效果（`TokenDelta`）。
@@ -42,7 +42,11 @@
 | **`/resume`** | `[# \| id]` | 列出全部历史会话，或按编号/ID恢复会话 |
 | **`/help`** | | 呼出所有命令与快捷键参考 |
 | **`/model`** | `[name]` | 查看当前模型或热切换模型（如 `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`） |
-| **`/mode`** | `[auto \| single]` | 切换执行模式（插件宿主 / 单 Agent 直连） |
+| **`/topology`** | `[auto \| single]` | 切换执行拓扑（插件宿主 / 单 Agent 直连） |
+| **`/mode`** | `[plan \| ask \| acceptEdits \| yolo]` | 查看或设置本会话的审批模式（工具调用据此判定） |
+| **`/roots`** | `[add <path> \| remove <p\|#> \| clear]` | 增删额外工作区根（多仓库任务） |
+| **`/ask`** | `[on \| off]` | 挂载 / 卸载 `ask_user_question` 工具 |
+| **`/trace`** | `[list \| <task_id>]` | 列出会话轨迹或查看某次运行的详细信息 |
 | **`/skills`** | `[list \| load \| scan]` | 浏览技能库目录、读取 Playbook 提示词或重新扫描目录 |
 | **`/mcp`** | `[list \| servers \| reload]` | 列出已连接的 MCP 服务及动态工具，或重载配置 |
 | **`/compact`** | | 自动压缩历史上下文，提取会话摘要并裁剪老旧轮次 |
@@ -53,9 +57,6 @@
 | **`/clear`** | | 清空当前对话流并创建全新空白会话 |
 | **`/health`** | | 运行多智能体与环境健康检查探针 |
 | **`/timeline`** | `[on \| off]` | 显示 / 隐藏对话区右缘的 turn 时间轴轨道 |
-| **`/pipeline`** | `<task>` | 直接以串行流水线模式运行任务（Planner ➔ Coder） |
-| **`/parallel`** | `<task>` | 直接以多角色并行评审模式运行任务（Planner + Reviewer） |
-| **`/fanout`** | `<task>` | 直接以子任务拆解分片模式并发运行任务 |
 | **`/quit`** | | 优雅退出 Thunder TUI |
 
 ---
