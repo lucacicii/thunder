@@ -10,7 +10,7 @@ use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_agent_loop::types::invoke::{
-    empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
+    empty_tool_invoker_slot, ExecutorToolInvoker, ToolInvokerSlot,
 };
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
@@ -519,7 +519,6 @@ impl ThunderRoot {
         // knows none of that.
         let mut agent = AgentLoop::new(agent_cfg)
             .with_id(format!("root_{}", session_id))
-            .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline))
             .with_tool_scope(Arc::new(
                 thunder_agent_pack_code::CodeScope::from_agent_config(
                     &self.config,
@@ -585,7 +584,7 @@ impl ThunderRoot {
         {
             let mut slot = tool_slot.write().await;
             *slot = Some(Arc::new(
-                PipelineToolInvoker::new(agent.tool_executor().clone())
+                ExecutorToolInvoker::new(agent.tool_executor().clone())
                     .with_turn(1)
                     .with_cancellation(cancel.clone())
                     .with_ui(Arc::clone(&ui)),

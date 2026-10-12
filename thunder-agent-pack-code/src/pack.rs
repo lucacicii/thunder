@@ -1,7 +1,6 @@
 //! One-call installation of the code capability pack onto a loop.
 
 use crate::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
-use crate::pipeline::build_code_pipeline;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 
@@ -27,22 +26,17 @@ impl Default for CodePackConfig {
 /// Install the code pack onto a loop: its pipeline, its scope, and its built-in
 /// tools.
 ///
-/// The pipeline builder is registered first so the built-ins registered after
-/// it are picked up on the next rebuild, and every later `register_tool` keeps
-/// running through the pack's layers. The scope comes along because a pipeline
-/// that asks the user about a path and a kernel that does not know where that
-/// path is would be answering two different questions.
+/// The scope comes along with the tools because a question about a path and a
+/// kernel that does not know where that path is would be answering two
+/// different questions.
 ///
 /// Each tool gets the workspace as its default directory, so a relative path in
-/// a call means "relative to the workspace". That is the meaning the host's own
-/// assembly gives it, and the meaning a write had before the transaction layer
-/// was folded into the tool — the layer joined the workspace root, and a bare
-/// tool would resolve against the process working directory instead.
+/// a call means "relative to the workspace" — the meaning it had when the
+/// transaction layer joined the workspace root, and the meaning a bare tool
+/// would lose by resolving against the process working directory instead.
 pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
     let scope = crate::scope::CodeScope::from_agent_config(agent.config(), None);
-    agent = agent
-        .with_pipeline_builder(Arc::new(build_code_pipeline))
-        .with_tool_scope(Arc::new(scope));
+    agent = agent.with_tool_scope(Arc::new(scope));
 
     if config.register_builtins {
         let ws = agent.config().workspace_dir.clone();

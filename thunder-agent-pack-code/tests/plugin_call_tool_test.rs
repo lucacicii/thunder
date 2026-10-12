@@ -46,8 +46,8 @@ fn executor(
     executor
 }
 
-fn invoker(executor: ToolExecutor, turn: usize) -> Arc<PipelineToolInvoker> {
-    Arc::new(PipelineToolInvoker::new(executor).with_turn(turn))
+fn invoker(executor: ToolExecutor, turn: usize) -> Arc<ExecutorToolInvoker> {
+    Arc::new(ExecutorToolInvoker::new(executor).with_turn(turn))
 }
 
 fn ctx(plugin: &str) -> ToolInvocationContext {
@@ -305,7 +305,7 @@ async fn cancellation_propagates_to_plugin_invocations() {
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let inv = Arc::new(
-        PipelineToolInvoker::new(executor(None, None, ws))
+        ExecutorToolInvoker::new(executor(None, None, ws))
             .with_turn(1)
             .with_cancellation(cancel.clone()),
     );

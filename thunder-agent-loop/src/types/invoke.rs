@@ -1,28 +1,27 @@
 //! Calling a tool on someone else's initiative.
 //!
 //! The loop executes tools when the *model* asks. A plugin sometimes needs to
-//! reach a tool of its own — the TypeScript side's `ctx.callTool` is exactly
-//! this. That is a privileged capability, and the design goal here is that it is
-//! **not** a way around anything.
+//! reach a tool of its own — the Rust side's `ctx.tool_slot().invoke(...)` is
+//! exactly this. That is a privileged capability, and the design goal here is
+//! that it is **not** a way around anything.
 //!
 //! # Why this is not a registry lookup
 //!
 //! The tempting implementation is "find the tool in the registry and call it".
-//! That would route plugin calls around the onion, so a plugin could write a
-//! file or run a shell command with no path jail, no transaction, and — critically
-//! — no approval prompt. [`PipelineToolInvoker`] instead runs the call through
-//! the *same* pipeline as a model-initiated one, so:
+//! That would skip the kernel's guard, the host's gate and the user's approval.
+//! [`ExecutorToolInvoker`] instead runs the call through the *same* funnel as a
+//! model-initiated one — [`crate::tools::executor::ToolExecutor::run_tool`] — so:
 //!
-//! * the capability tier still applies (a read-only run cannot be escalated);
+//! * the kernel's guard still applies, and cannot be argued with;
 //! * the approval gate still applies, and now names the plugin;
-//! * path jail, transaction and resource guards all still apply.
+//! * the call still leaves exactly one trace.
 //!
 //! # What a plugin cannot do
 //!
-//! * call a tool the run's tier forbids;
+//! * run a call the guard would refuse;
 //! * get a privileged call approved without the user seeing that a *plugin* is
 //!   asking ([`crate::types::tool::ToolExecutionContext::caller`]);
-//! * bypass the jail or the transaction layer.
+//! * act untraced.
 //!
 //! What it can do is spend the run's own authority — which is the honest
 //! description of "a plugin running inside the agent".
@@ -108,13 +107,17 @@ pub fn empty_tool_invoker_slot() -> ToolInvokerSlot {
     Arc::new(tokio::sync::RwLock::new(None))
 }
 
-/// Runs plugin-initiated calls through a real pipeline.
+/// Runs plugin-initiated calls through the executor's funnel.
 ///
 /// A snapshot of the executor taken once every tool is registered. Registering a
 /// tool *after* this is created is not reflected — hosts build this at the end of
 /// setup, so that is not a reachable case, but it is why this type is not
 /// exposed for mid-run mutation.
-pub struct PipelineToolInvoker {
+///
+/// Named for what it reaches, not for what used to be there: a plugin's call
+/// goes through `ToolExecutor::run_tool` exactly like the model's, so it is
+/// guarded, judged, asked about and traced the same way.
+pub struct ExecutorToolInvoker {
     executor: crate::tools::executor::ToolExecutor,
     turn: usize,
     timeout: Option<Duration>,
@@ -125,7 +128,7 @@ pub struct PipelineToolInvoker {
     counter: std::sync::atomic::AtomicU64,
 }
 
-impl PipelineToolInvoker {
+impl ExecutorToolInvoker {
     pub fn new(executor: crate::tools::executor::ToolExecutor) -> Self {
         Self {
             executor,
@@ -163,7 +166,7 @@ impl PipelineToolInvoker {
 }
 
 #[async_trait]
-impl ToolInvoker for PipelineToolInvoker {
+impl ToolInvoker for ExecutorToolInvoker {
     async fn invoke(
         &self,
         tool: &str,
@@ -205,9 +208,9 @@ impl ToolInvoker for PipelineToolInvoker {
             self.executor.run_tool(&call, tool_ctx, self.timeout).await;
 
         if result.is_error {
-            // Surface the layer's own message. It already explains *why* (tier,
-            // jail, user refusal) and carries the telemetry notice, so inventing
-            // a second explanation here would only blur the cause.
+            // Surface the funnel's own message. It already explains *why* (the
+            // guard, the gate, a refusal) and carries the telemetry notice, so
+            // inventing a second explanation here would only blur the cause.
             return Err(result.output);
         }
 

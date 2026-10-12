@@ -1,5 +1,4 @@
 use crate::tools::guard::Guard;
-use crate::tools::middleware::{ToolMiddleware, ToolPipeline};
 use crate::tools::notice::SystemNotice;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::trace::{
@@ -39,7 +38,6 @@ const OUTPUT_PREVIEW_CHARS: usize = 2048;
 #[derive(Clone)]
 pub struct ToolExecutor {
     registry: ToolRegistry,
-    pipeline: ToolPipeline,
     /// Per-run event sink, installed by the loop before it executes anything.
     ///
     /// Held behind a lock rather than cloned into each call because the loop
@@ -95,24 +93,8 @@ struct TraceSlot {
 
 impl ToolExecutor {
     pub fn new(registry: ToolRegistry) -> Self {
-        let pipeline = ToolPipeline::from_registry(registry.clone());
         Self {
             registry,
-            pipeline,
-            event_sink: Arc::new(Mutex::new(None)),
-            tool_scope: Arc::new(Mutex::new(None)),
-            tool_gate: Arc::new(Mutex::new(None)),
-            host_ui: Arc::new(Mutex::new(None)),
-            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
-            approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
-            trace: Arc::new(Mutex::new(TraceSlot::default())),
-        }
-    }
-
-    pub fn with_pipeline(registry: ToolRegistry, pipeline: ToolPipeline) -> Self {
-        Self {
-            registry,
-            pipeline,
             event_sink: Arc::new(Mutex::new(None)),
             tool_scope: Arc::new(Mutex::new(None)),
             tool_gate: Arc::new(Mutex::new(None)),
@@ -231,21 +213,8 @@ impl ToolExecutor {
             .unwrap_or_else(|| crate::types::policy::ToolEffect::of(tool_name))
     }
 
-    pub fn with_middleware(mut self, mw: Arc<dyn ToolMiddleware>) -> Self {
-        self.pipeline.add_middleware(mw);
-        self
-    }
-
-    pub fn add_middleware(&mut self, mw: Arc<dyn ToolMiddleware>) {
-        self.pipeline.add_middleware(mw);
-    }
-
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
-    }
-
-    pub fn pipeline(&self) -> &ToolPipeline {
-        &self.pipeline
     }
 
     /// Run one call through everything a call must pass.
@@ -262,7 +231,7 @@ impl ToolExecutor {
     ///    This method renders the dialog: serialised, with a host that cannot
     ///    answer treated as a refusal, and the answer reported back to the gate
     ///    so it can remember what the user agreed to;
-    /// 5. **the tool** — only now, through the pipeline.
+    /// 5. **the tool** — only now, and only through the registry.
     ///
     /// Arguments that do not parse are not a way round the guard: the registry
     /// parses the same string and errors out before any tool sees them. An
@@ -382,11 +351,11 @@ impl ToolExecutor {
         match decision {
             None | Some((_, GateVerdict::Allow)) => {
                 draft.decision = Decision::Allow;
-                self.via_pipeline(call, ctx, custom_timeout, draft).await
+                self.execute_tool(call, ctx, custom_timeout, draft).await
             }
             Some((_, GateVerdict::AllowByRule { rule })) => {
                 draft.decision = Decision::AllowByRule { rule };
-                self.via_pipeline(call, ctx, custom_timeout, draft).await
+                self.execute_tool(call, ctx, custom_timeout, draft).await
             }
             Some((_, GateVerdict::Deny { reason })) => {
                 deny(draft, &reason);
@@ -404,7 +373,7 @@ impl ToolExecutor {
                 let answer = self.ask(gate, &request, &prompt, ctx, draft).await;
                 match answer {
                     AskOutcome::Proceed(_) => {
-                        self.via_pipeline(call, ctx, custom_timeout, draft).await
+                        self.execute_tool(call, ctx, custom_timeout, draft).await
                     }
                     AskOutcome::Refuse { reason, .. } => denied_by_gate(
                         gate.label(),
@@ -420,7 +389,15 @@ impl ToolExecutor {
     }
 
     /// Run the tool, timing it for the record.
-    async fn via_pipeline(
+    ///
+    /// Straight to the registry: sanitising, spilling oversized output to the
+    /// scratchpad, truncating and the timeout all happen inside
+    /// [`ToolRegistry::execute_tool_call`], which every call reaches anyway.
+    /// There used to be an onion of layers here; a layer to repeat what the
+    /// registry already does is a second ceiling nobody could reason about, and
+    /// anything that *judges* a call now runs before this point, in
+    /// [`ToolExecutor::dispatch`].
+    async fn execute_tool(
         &self,
         call: &ToolCall,
         ctx: &ToolExecutionContext,
@@ -428,7 +405,10 @@ impl ToolExecutor {
         draft: &mut TraceDraft,
     ) -> ToolExecutionResult {
         let started = Instant::now();
-        let result = self.pipeline.execute(call, ctx, custom_timeout).await;
+        let result = self
+            .registry
+            .execute_tool_call(call, ctx.clone(), custom_timeout)
+            .await;
         draft.timing.exec_ms = started.elapsed().as_millis() as u64;
         result
     }
@@ -606,7 +586,7 @@ impl ToolExecutor {
         outcome
     }
 
-    /// Execute a single call through the full pipeline.
+    /// Execute a single call through the funnel.
     ///
     /// Same funnel as [`ToolExecutor::execute_all`], minus the batch — which is
     /// exactly why a plugin can use this without becoming a way around it.

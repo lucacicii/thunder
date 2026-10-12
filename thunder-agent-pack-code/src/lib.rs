@@ -7,8 +7,8 @@
 //! Installing the pack gives an [`AgentLoop`](thunder_agent_loop::AgentLoop):
 //!
 //! * the built-in tools (`bash`, `read_file`, `write_file`, `grep`, `find`, `ls`);
-//! * the code pipeline: human approval, plus truncation/spill to the scratchpad
-//!   (which the registry does for every call, pack or no pack);
+//! * truncation/spill to the scratchpad — which the registry does for every
+//!   call, pack or no pack, so the pack does not wrap the registry at all;
 //! * [`CodeScope`] — the host's answer to where a call lands, so the policy half
 //!   can tell an in-workspace write from a reaching-out one;
 //! * atomic writes with process-wide per-path locking — a property of
@@ -24,12 +24,10 @@
 pub mod builtin;
 pub mod file_change;
 pub mod pack;
-pub mod pipeline;
 pub mod prompt;
 pub mod scope;
 
 pub use file_change::FILE_CHANGE;
 pub use pack::{install_code_pack, CodePackConfig};
-pub use pipeline::{build_code_pipeline, CodePipelineConfig};
 pub use prompt::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 pub use scope::CodeScope;

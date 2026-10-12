@@ -1272,6 +1272,22 @@ impl App {
 
     // ── Traces ─────────────────────────────────────────────────────────────
 
+    /// The identity of the run in flight: the name its trace is saved under and
+    /// the route its plugin calls are attributed to.
+    ///
+    /// One run, one name. The daemon already works this way — its `route` is the
+    /// task id — and the kernel records the route as `ToolTrace::task_id`, so a
+    /// second name here would file tool traces under an id that does not match
+    /// the file they are in.
+    fn run_id(&self) -> String {
+        match self.trace_meta.as_ref() {
+            Some(meta) => meta.task_id.clone(),
+            // A run launched without `begin_trace` still needs an identity to be
+            // attributable at all; the session is the only one available.
+            None => format!("tui_{}", self.conversation.id),
+        }
+    }
+
     /// Start recording a filtered trace for a new run.
     fn begin_trace(&mut self, prompt: &str) {
         self.trace = Some(TraceCollector::new());
@@ -4137,7 +4153,12 @@ impl App {
         let run_mode = self.mode_plugin.mode();
         // Captured before the move: a plugin call must be attributable to this
         // run, and the sidecar refuses calls that carry no route.
-        let run_route = format!("tui_{}", session_id);
+        //
+        // The route *is* the trace's task id. The two are one run under two
+        // names, and the tool traces inside `traces/<task_id>.json` say which
+        // run they belong to — so a second name here would put a `task_id` in
+        // the file that does not match the file's own name.
+        let run_route = self.run_id();
 
         tokio::spawn(async move {
             // Smart baseline set instead of blanket forcing (mirrors the daemon):
@@ -4272,6 +4293,9 @@ impl App {
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
         let mode_plugin = Arc::clone(&self.mode_plugin);
         let ws = self.workspace_dir.clone();
+        // One run, one name: the same id the trace is filed under. This path
+        // builds no `ThunderRoot`, so nothing else would set it.
+        config.route = Some(self.run_id());
         // Direct mode builds no `ThunderRoot`, so nothing else binds the plan
         // file's location — without this, plan mode would have nowhere to write.
         mode_plugin.bind_session(Some(ws.clone()), &self.conversation.id);
@@ -4284,7 +4308,6 @@ impl App {
             // with the App so /mode flips take effect mid-session.
             let ui = Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()));
             let mut agent = agent
-                .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline))
                 .with_tool_scope(Arc::new(
                     thunder_agent_pack_code::CodeScope::from_agent_config(
                         &config,

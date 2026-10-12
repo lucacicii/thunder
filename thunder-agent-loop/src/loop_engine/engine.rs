@@ -39,25 +39,6 @@ pub struct AgentRunResult {
     pub finish_reason: FinishReason,
 }
 
-/// Everything a capability pack needs to assemble a tool pipeline for a run.
-///
-/// The pack owns the *shape* of its stack; the loop owns the registry the pack
-/// must wrap, and the scratchpad/ui state the pack's layers may need. Judging
-/// is not here any more: it lives in the executor's funnel, driven by the
-/// host's [`ToolGate`](crate::types::gate::ToolGate), so a pipeline can no
-/// longer be assembled without it.
-pub struct PipelineContext {
-    /// The run's configuration. Carries the workspace roots, which are pack
-    /// inputs rather than loop inputs.
-    pub config: crate::types::config::AgentConfig,
-    /// The live tool registry to wrap.
-    pub registry: crate::tools::registry::ToolRegistry,
-    /// Scratchpad for oversized tool output, when the run has one.
-    pub scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-    /// The panel a pack's layers may prompt through, when the host installed one.
-    pub ui: Option<Arc<dyn crate::types::ui::HostUi>>,
-}
-
 /// A complete single-agent unit.
 ///
 /// One instance runs at most one task at a time. Parallel work requires
@@ -94,16 +75,6 @@ pub struct AgentLoop {
     /// How many times the gate may send the run back before the loop gives up.
     /// Ignored when `completion_gate` is `None`.
     max_gate_rounds: usize,
-    /// Host-supplied assembly of the tool pipeline.
-    ///
-    /// The kernel does not build a code pipeline: it does not know what a
-    /// workspace, a path jail or an atomic file write is. A capability pack
-    /// hands over a builder that assembles *its* stack around the registry the
-    /// loop owns, and the loop replays that builder every time it rebuilds the
-    /// executor (a new tool, a new gate) so the pack's layers are never lost.
-    pipeline_builder: Option<
-        Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
-    >,
     /// Where finished tool traces go, beyond the run's own event stream.
     ///
     /// The loop always emits `AgentEvent::ToolTrace`, so a host that drains
@@ -133,12 +104,7 @@ impl AgentLoop {
         )
         .with_scratchpad(scratchpad.clone());
 
-        // The kernel installs only its own baseline pipeline. A capability pack
-        // replaces it via `with_pipeline_builder` after construction.
-        let tool_executor = ToolExecutor::with_pipeline(
-            tool_registry.clone(),
-            crate::tools::middleware::ToolPipeline::baseline(tool_registry.clone()),
-        );
+        let tool_executor = ToolExecutor::new(tool_registry.clone());
 
         Self {
             id,
@@ -156,7 +122,6 @@ impl AgentLoop {
             host_ui: None,
             completion_gate: None,
             max_gate_rounds: 3,
-            pipeline_builder: None,
             tool_scope: None,
             trace_sink: None,
         }
@@ -212,20 +177,6 @@ impl AgentLoop {
         self
     }
 
-    /// Install the host's pipeline assembly and rebuild the executor with it.
-    ///
-    /// Called by a capability pack after construction. The builder is replayed
-    /// on every later rebuild, so a tool registered afterwards still runs
-    /// through the pack's layers.
-    pub fn with_pipeline_builder(
-        mut self,
-        build: Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
-    ) -> Self {
-        self.pipeline_builder = Some(build);
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
     /// Install the host's classification of where a call lands.
     ///
     /// Advisory in one direction only: a scope can earn a call an automatic
@@ -239,25 +190,15 @@ impl AgentLoop {
         self
     }
 
-    /// Reassemble the pipeline from the current registrations.
+    /// Rebuild the executor around the current registrations.
     ///
-    /// Uses the host's builder when one is installed, and the kernel's own
-    /// baseline pipeline otherwise. Called after anything that changes what the
-    /// executor must see — a new gate, a new scope, a tool registered later —
-    /// because the executor holds a snapshot of the registry, and a snapshot
-    /// taken before a registration does not contain it.
+    /// Called after anything that changes what the executor must see — a new
+    /// gate, a new scope, a tool registered later — because the executor holds a
+    /// snapshot of the registry, and a snapshot taken before a registration
+    /// does not contain it.
     fn refresh_executor(&self) -> ToolExecutor {
         let registry = self.tool_registry.clone();
-        let pipeline = match &self.pipeline_builder {
-            Some(build) => build(PipelineContext {
-                config: self.config.clone(),
-                registry: registry.clone(),
-                scratchpad: Some(self.scratchpad.clone()),
-                ui: self.host_ui.clone(),
-            }),
-            None => crate::tools::middleware::ToolPipeline::baseline(registry.clone()),
-        };
-        let mut executor = ToolExecutor::with_pipeline(registry, pipeline);
+        let mut executor = ToolExecutor::new(registry);
         if let Some(scope) = &self.tool_scope {
             executor = executor.with_tool_scope(Arc::clone(scope));
         }
