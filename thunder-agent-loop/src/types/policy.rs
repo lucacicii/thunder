@@ -108,7 +108,13 @@ impl ApprovalMode {
 ///
 /// Classification is by tool name, so an unregistered name is [`ToolEffect::Write`]
 /// rather than "unknown" — an unrecognised tool must never be assumed harmless.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The serialized spellings (`read`/`write`/`exec`/`other`) are a wire contract:
+/// they are what a remote tool declares its effect as, and what the trace
+/// records. `thunder-agent-runtime`'s `parse_effect` accepts the same three
+/// meaningful words, so a trace and a remote declaration agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ToolEffect {
     /// Cannot change anything outside the read-only tools' own scratch files.
     Read,

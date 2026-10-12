@@ -4917,6 +4917,11 @@ fn format_trace_event(event: &ObservedEvent) -> Option<String> {
         | AgentEvent::ReasoningDelta { .. }
         | AgentEvent::ToolCallChunk { .. }
         | AgentEvent::ToolCallReady { .. } => None,
+        // The trace is the kernel's audit record, not a transcript line: it
+        // repeats what `ToolExecStart`/`ToolExecResult` already show, and its
+        // own decision summary belongs on the `/trace` view rather than in the
+        // timeline. It still reaches the trace file, via `record_trace_event`.
+        AgentEvent::ToolTrace { .. } => None,
     }
 }
 
