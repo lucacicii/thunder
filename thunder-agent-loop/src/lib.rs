@@ -39,6 +39,11 @@ pub mod prelude {
     pub use crate::tools::scratchpad::{
         Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager,
     };
+    pub use crate::tools::trace::{
+        AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace, ToolTraceSink, TraceResult,
+        TraceTiming, TRACE_SCHEMA,
+    };
+    pub use crate::tools::Guard;
     pub use crate::types::config::{
         AgentConfig, ContextPruningConfig, LoopGuardConfig, MiddlewareConfig, Permission,
     };
@@ -54,6 +59,7 @@ pub mod prelude {
         ApprovalRequest, Caller, PermissionMode, SessionPolicy, ToolEffect, Verdict, ALLOW_ALWAYS,
         ALLOW_ONCE, DENY, DENY_WITH_REASON,
     };
+    pub use crate::types::scope::{Scope, ToolScope, UnknownScope};
     pub use crate::types::tool::{
         AgentTool, FunctionDefinition, ToolDefinition, ToolEventSink, ToolExecutionContext,
         ToolExecutionResult,

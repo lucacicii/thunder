@@ -114,7 +114,7 @@ impl PermissionGuardMiddleware {
         }
     }
 
-    /// Attach the jail's allowed roots for rejection guidance.
+    /// Attach the roots the host declared, for the guidance in a refusal.
     pub fn with_workspace_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.workspace_roots = roots;
         self

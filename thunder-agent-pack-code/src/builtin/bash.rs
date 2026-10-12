@@ -6,6 +6,8 @@ use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionCo
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
+use crate::file_change;
+
 pub struct BashTool {
     max_buffer_bytes: usize,
     default_cwd: Option<PathBuf>,
@@ -68,6 +70,22 @@ impl AgentTool for BashTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter 'command'".to_string())?;
 
+        let effective_cwd = args
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .or_else(|| self.default_cwd.clone());
+
+        // A shell command's file effects are invisible from its arguments, so the
+        // only way to report them is to look before and after. Taken here rather
+        // than around the call: a command the guard refuses never gets this far,
+        // and a snapshot pair for a call that never ran is two wasted `git status`
+        // invocations.
+        let before = match (&ctx.event_sink, &effective_cwd) {
+            (Some(_), Some(cwd)) => Some(file_change::git_status_snapshot(cwd).await),
+            _ => None,
+        };
+
         let timeout_duration = args
             .get("timeout_ms")
             .and_then(|v| v.as_u64())
@@ -92,13 +110,7 @@ impl AgentTool for BashTool {
             .env("PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0");
 
-        let effective_cwd = args
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .or_else(|| self.default_cwd.clone());
-
-        if let Some(cwd) = effective_cwd {
+        if let Some(cwd) = &effective_cwd {
             cmd.current_dir(cwd);
         }
 
@@ -178,7 +190,11 @@ impl AgentTool for BashTool {
 
         let (status, stdout_buf, stderr_buf) = match result {
             Ok(tuple) => tuple,
-            Err(err_msg) => return Err(err_msg),
+            Err(err_msg) => {
+                // A killed or timed-out command may still have written files.
+                emit_changes(ctx, &effective_cwd, before).await;
+                return Err(err_msg);
+            }
         };
 
         let stdout_str = String::from_utf8_lossy(&stdout_buf);
@@ -206,6 +222,8 @@ impl AgentTool for BashTool {
             };
         }
 
+        emit_changes(ctx, &effective_cwd, before).await;
+
         if status.success() {
             Ok(combined)
         } else {
@@ -215,6 +233,21 @@ impl AgentTool for BashTool {
                 combined
             ))
         }
+    }
+}
+
+/// Report what this command changed, when anyone is listening.
+///
+/// Reported whether or not the command succeeded: `git add` followed by a failed
+/// `git commit` still moved the workspace, and a UI that only hears about the
+/// successful commands shows a stale tree.
+async fn emit_changes(
+    ctx: &ToolExecutionContext,
+    cwd: &Option<PathBuf>,
+    before: Option<std::collections::HashSet<String>>,
+) {
+    if let (Some(sink), Some(cwd), Some(before)) = (ctx.event_sink.as_ref(), cwd.as_ref(), before) {
+        file_change::emit_bash_changes(sink.as_ref(), cwd, &before).await;
     }
 }
 

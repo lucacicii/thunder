@@ -4274,9 +4274,16 @@ impl App {
         tokio::spawn(async move {
             let agent = AgentLoop::new(config.clone()).with_id("tui_agent");
             // The TUI is a coding agent: install the code capability pack so the
-            // shell/file tools run behind the workspace jail and atomic writes.
-            let mut agent =
-                agent.with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
+            // shell/file tools run behind the approval dialog and atomic writes,
+            // and the scope that tells the kernel which paths are in the project.
+            let mut agent = agent
+                .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline))
+                .with_tool_scope(Arc::new(
+                    thunder_agent_pack_code::CodeScope::from_agent_config(
+                        &config,
+                        Some(ws.as_path()),
+                    ),
+                ));
 
             // Resolve the transport: injected factory (tests/embedders) first,
             // then the provider registry. Never proceed without a client — a

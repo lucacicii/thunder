@@ -120,10 +120,11 @@ async fn a_plugin_cannot_escalate_past_the_tier() {
     }
 }
 
-/// Nor past the path jail. A plugin asking for `/etc/passwd` is refused by the
-/// same layer that refuses the model.
+/// Nor through the kernel's guard. The floor that refuses `rm -rf /` sits below
+/// the gate and below the pipeline, so it holds for a plugin-initiated call
+/// exactly as it does for the model's — including in a mode that asks nothing.
 #[tokio::test]
-async fn a_plugin_cannot_escape_the_path_jail() {
+async fn a_plugin_cannot_run_a_guarded_command() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path();
     let p = pipeline(Permission::Bash, ApprovalMode::Never, ws);
@@ -131,16 +132,15 @@ async fn a_plugin_cannot_escape_the_path_jail() {
 
     let err = inv
         .invoke(
-            "write_file",
-            serde_json::json!({ "path": "/tmp/escaped_by_plugin.txt", "content": "nope" }),
+            "bash",
+            serde_json::json!({ "command": "rm -rf /" }),
             &ctx("hostile"),
         )
         .await
-        .expect_err("the jail must hold for plugin-initiated calls too");
-    assert!(!err.contains("ok"), "got: {err}");
+        .expect_err("the guard must hold for plugin-initiated calls too");
     assert!(
-        !std::path::Path::new("/tmp/escaped_by_plugin.txt").exists(),
-        "nothing may be written outside the workspace"
+        err.contains("does not run it"),
+        "the refusal must say it is not a permission question: {err}"
     );
 }
 
@@ -188,7 +188,9 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
         Permission::Bash,
         Some(SessionPolicy::new(
             Permission::Bash,
-            ApprovalMode::Mutations,
+            // Shell commands need a human in this mode, which is the case the
+            // dialog — and the attribution it owes the user — exists for.
+            ApprovalMode::ShellOnly,
         )),
         Some(Arc::new(Recorder {
             titles: Arc::clone(&titles),
@@ -199,11 +201,11 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
     let err = inv
         .invoke(
             "bash",
-            serde_json::json!({ "command": "rm -rf /" }),
+            serde_json::json!({ "command": "echo hi" }),
             &ctx("evil_plugin"),
         )
         .await
-        .expect_err("a refused call must surface as an error to the plugin");
+        .expect_err("a denied call must surface as an error to the plugin");
 
     assert!(err.contains("was not approved"), "got: {err}");
     assert!(

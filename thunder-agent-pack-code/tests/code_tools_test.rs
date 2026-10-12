@@ -125,13 +125,13 @@ async fn test_turn_off_transactions_without_modifying_code() {
     cfg2.middleware.enable_transaction = false;
     assert!(!cfg2.middleware.enable_transaction);
 
-    // Option 4: Disabling all middlewares for bare-metal execution
-    let cfg_bare =
-        thunder_agent_loop::types::config::AgentConfig::new("mock-model").without_middlewares();
-    assert!(!cfg_bare.middleware.enable_transaction);
-    assert!(!cfg_bare.middleware.enable_security_guard);
-    assert!(!cfg_bare.middleware.enable_resource_guard);
-    assert!(!cfg_bare.middleware.enable_output_post_processor);
+    // There is no third option any more: the security, resource and output
+    // layers were deleted, so the only switch left is the atomic write.
+    assert!(
+        thunder_agent_loop::types::config::AgentConfig::new("mock-model")
+            .middleware
+            .enable_transaction
+    );
 }
 
 // ════════════════════════════════════════════════════════════

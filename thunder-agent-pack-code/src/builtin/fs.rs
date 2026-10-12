@@ -147,7 +147,7 @@ impl AgentTool for WriteFileTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> Result<String, String> {
         let path_str = args
             .get("path")
@@ -158,6 +158,26 @@ impl AgentTool for WriteFileTool {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'content' parameter")?;
 
+        let outcome = self.write(path_str, content).await;
+        if let Some(sink) = ctx.event_sink.as_ref() {
+            crate::file_change::emit_write(
+                sink.as_ref(),
+                path_str,
+                Some(content.len()),
+                outcome.is_err(),
+            );
+        }
+        outcome
+    }
+}
+
+impl WriteFileTool {
+    /// Write `content` to `path`, parent directories included.
+    ///
+    /// The tool's own write core, shared with anything else that must land bytes
+    /// the same way — a plan file, for instance, which has the same need for
+    /// atomicity and the same reason not to go through a tool.
+    pub async fn write(&self, path_str: &str, content: &str) -> Result<String, String> {
         let p = Path::new(path_str);
         let path = if p.is_relative() {
             if let Some(ref cwd) = self.default_cwd {

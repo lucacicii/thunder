@@ -155,10 +155,11 @@ fn a_pipeline_without_a_policy_still_has_the_judge() {
         None,
     );
     assert!(pipeline.has_middleware(PermissionGuardMiddleware::NAME));
+    let order: Vec<&str> = pipeline.middlewares().iter().map(|m| m.name()).collect();
     assert_eq!(
-        pipeline.middlewares().len(),
-        6,
-        "the stack is otherwise intact"
+        order,
+        vec![PermissionGuardMiddleware::NAME, "TransactionMiddleware"],
+        "the judge, then the atomic write, and nothing else"
     );
 }
 

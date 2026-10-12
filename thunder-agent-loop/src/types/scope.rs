@@ -10,6 +10,12 @@
 //! runs without a prompt); it may never be used to turn a call the gate would
 //! allow into a refusal. Every new path heuristic therefore costs the user at
 //! most one extra prompt, never a silent failure.
+//!
+//! [`Scope::Critical`] is the one exception, and it is deliberately narrow: it is
+//! the host telling the kernel "this target is not a question for the user, it is
+//! off limits". A host that overuses it rebuilds the problem this design exists to
+//! remove, so it belongs only on targets where asking would be *wrong* rather than
+//! merely inconvenient — a repository's `.git` directory, a credential store.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,13 +28,13 @@ pub enum Scope {
     /// Outside it. The call is not thereby refused — it just does not earn the
     /// automatic allowance that an in-scope target does.
     OutOfScope,
-    /// Somewhere the kernel refuses unconditionally, whatever the mode: a
-    /// repository's `.git` directory, a system directory, a credential store.
+    /// Off limits: the kernel refuses this call unconditionally, in every mode,
+    /// without asking.
     ///
-    /// The kernel decides this itself through its guard and does not consult the
-    /// host for it; a host returning `Critical` can only make a call *more*
-    /// restricted, so the variant is an extra channel for tightening, not a way
-    /// to opt out.
+    /// The host names it (a repository's `.git` directory, a credential store),
+    /// the kernel enforces it — see the module docs for why this is the one
+    /// classification that is not merely a location. Excepted from it, always:
+    /// the guard's own dangerous-command list, which the host cannot loosen.
     Critical,
     /// The host cannot tell — a shell command, a path built from a variable, a
     /// tool it does not recognise.
@@ -51,10 +57,19 @@ pub enum Scope {
 pub trait ToolScope: Send + Sync {
     /// Where `tool`'s call, with these already-parsed `arguments`, will land.
     ///
+    /// `effect` is passed because the answer depends on it: writing `/etc/hosts`
+    /// and reading it are not the same act. It is the tool's own declared effect,
+    /// so a host never has to infer direction from a tool's name.
+    ///
     /// Deliberately not `async`: this is a pure classification of data the kernel
     /// already holds, and a scope that needs to ask the user something is a gate
     /// in the wrong place.
-    fn scope_of(&self, tool: &str, arguments: &serde_json::Value) -> Scope;
+    fn scope_of(
+        &self,
+        tool: &str,
+        effect: crate::types::policy::ToolEffect,
+        arguments: &serde_json::Value,
+    ) -> Scope;
 }
 
 /// A [`ToolScope`] that knows nothing, for tests and for hosts that have no
@@ -63,7 +78,12 @@ pub trait ToolScope: Send + Sync {
 pub struct UnknownScope;
 
 impl ToolScope for UnknownScope {
-    fn scope_of(&self, _tool: &str, _arguments: &serde_json::Value) -> Scope {
+    fn scope_of(
+        &self,
+        _tool: &str,
+        _effect: crate::types::policy::ToolEffect,
+        _arguments: &serde_json::Value,
+    ) -> Scope {
         Scope::Unknown
     }
 }
@@ -77,7 +97,11 @@ mod tests {
     fn unknown_is_the_default_answer() {
         assert_eq!(Scope::default(), Scope::Unknown);
         assert_eq!(
-            UnknownScope.scope_of("write_file", &json!({ "path": "/etc/hosts" })),
+            UnknownScope.scope_of(
+                "write_file",
+                crate::types::policy::ToolEffect::Write,
+                &json!({ "path": "/etc/hosts" })
+            ),
             Scope::Unknown
         );
     }

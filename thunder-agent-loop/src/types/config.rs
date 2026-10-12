@@ -76,14 +76,16 @@ impl Default for LoopGuardConfig {
     }
 }
 
-/// Dynamic toggles for the 4-layer Onion Middleware Pipeline.
-/// Allows cleanly disabling transactions, security, or resources in test/benchmark environments.
+/// Dynamic toggles for the code pack's remaining layers.
+///
+/// The security, resource and output layers are gone: the first two duplicated
+/// checks that live below them, and the third is what
+/// [`crate::tools::registry::ToolRegistry::execute_tool_call`] already does for
+/// every call. What is left is the atomic write, which is a genuine capability
+/// rather than a check — and it is on its way out too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareConfig {
-    pub enable_security_guard: bool,
-    pub enable_resource_guard: bool,
     pub enable_transaction: bool,
-    pub enable_output_post_processor: bool,
 }
 
 impl Default for MiddlewareConfig {
@@ -91,15 +93,9 @@ impl Default for MiddlewareConfig {
         let disable_tx = std::env::var("THUNDER_DISABLE_TX")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let disable_sec = std::env::var("THUNDER_DISABLE_SECURITY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
 
         Self {
-            enable_security_guard: !disable_sec,
-            enable_resource_guard: true,
             enable_transaction: !disable_tx,
-            enable_output_post_processor: true,
         }
     }
 }
@@ -203,7 +199,7 @@ pub struct AgentConfig {
     pub prompt_cache_warm: Option<PromptCacheWarmSettings>,
     /// Additional workspace roots (e.g. repositories referenced by the task)
     /// granted the same read/write standing as the primary workspace. The
-    /// security guard jails paths to the union of primary root + these roots.
+    /// the host's scope treats them as inside the working area.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_workspace_roots: Vec<PathBuf>,
     pub middleware: MiddlewareConfig,
@@ -278,7 +274,7 @@ impl AgentConfig {
     }
 
     /// Grant additional workspace roots the same read/write standing as the
-    /// primary workspace (multi-root jail).
+    /// primary workspace.
     pub fn with_extra_workspace_roots(
         mut self,
         roots: impl IntoIterator<Item = impl Into<PathBuf>>,
@@ -296,15 +292,6 @@ impl AgentConfig {
     /// Disables atomic transaction middleware (e.g. for testing raw tool behavior)
     pub fn without_transactions(mut self) -> Self {
         self.middleware.enable_transaction = false;
-        self
-    }
-
-    /// Disables all onion middlewares for a zero-overhead raw execution pipeline
-    pub fn without_middlewares(mut self) -> Self {
-        self.middleware.enable_security_guard = false;
-        self.middleware.enable_resource_guard = false;
-        self.middleware.enable_transaction = false;
-        self.middleware.enable_output_post_processor = false;
         self
     }
 

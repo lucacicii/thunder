@@ -1,8 +1,6 @@
-pub mod output;
 pub mod permission_guard;
 
 pub use crate::tools::notice::SystemNotice;
-pub use output::OutputPostProcessorMiddleware;
 pub use permission_guard::PermissionGuardMiddleware;
 
 use crate::tools::registry::ToolRegistry;
@@ -11,10 +9,6 @@ use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Default cap for a single tool result before it is truncated or spilled to
-/// the scratchpad.
-pub const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// An Onion Middleware wrapping around tool execution.
 ///
@@ -114,27 +108,19 @@ impl ToolPipeline {
         Self::new(Arc::new(RegistryTerminalHandler::new(registry)))
     }
 
-    /// The kernel's own pipeline: dispatch straight to the registry, with the
-    /// output post-processor on top when a scratchpad is available.
+    /// The kernel's own pipeline: dispatch straight to the registry.
+    ///
+    /// Sanitizing, spilling to the scratchpad and truncating already happen in
+    /// [`crate::tools::registry::ToolRegistry::execute_tool_call`], which every
+    /// call passes through, so a layer here to repeat them would be a second
+    /// ceiling nobody could reason about.
     ///
     /// Nothing here knows what a workspace, a shell or a file is. Capability
-    /// packs assemble their own stack (path jail, atomic writes, change
-    /// detection) on top of [`ToolPipeline::from_registry`] and hand it to the
-    /// loop through [`crate::loop_engine::engine::AgentLoop::with_pipeline_builder`].
-    pub fn baseline(
-        registry: ToolRegistry,
-        scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-    ) -> Self {
-        let terminal: Arc<dyn ToolHandler> =
-            Arc::new(RegistryTerminalHandler::new(registry.clone()));
-        let mut pipeline = Self::new(terminal);
-        if scratchpad.is_some() {
-            pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(
-                DEFAULT_MAX_TOOL_OUTPUT_BYTES,
-                scratchpad,
-            )));
-        }
-        pipeline
+    /// packs assemble their own stack on top of
+    /// [`ToolPipeline::from_registry`] and hand it to the loop through
+    /// [`crate::loop_engine::engine::AgentLoop::with_pipeline_builder`].
+    pub fn baseline(registry: ToolRegistry) -> Self {
+        Self::from_registry(registry)
     }
 
     pub fn with_middleware(mut self, mw: Arc<dyn ToolMiddleware>) -> Self {

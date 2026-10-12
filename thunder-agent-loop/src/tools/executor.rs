@@ -1,11 +1,16 @@
+use crate::tools::guard::Guard;
 use crate::tools::middleware::{ToolMiddleware, ToolPipeline};
+use crate::tools::notice::SystemNotice;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::trace::{GuardHit, GuardKind};
 use crate::types::message::ToolCall;
+use crate::types::policy::ToolEffect;
+use crate::types::scope::{Scope, ToolScope};
 use crate::types::tool::{ToolEventSink, ToolExecutionContext, ToolExecutionResult};
 use futures_util::future::join_all;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -24,6 +29,13 @@ pub struct ToolExecutor {
     /// sets it once per run, after this executor was built, and a run has
     /// exactly one sink for its whole lifetime.
     event_sink: Arc<Mutex<Option<Arc<dyn ToolEventSink>>>>,
+    /// The host's answer to "where does this call land".
+    ///
+    /// Held the same way as the sink, and for the same reason: the host installs
+    /// it once per run, after the executor exists, and every clone must see it.
+    /// `None` — no host, or a host with no working area to speak of — means every
+    /// call is [`Scope::Unknown`], which is what the headless runtime relies on.
+    tool_scope: Arc<Mutex<Option<Arc<dyn ToolScope>>>>,
 }
 
 impl ToolExecutor {
@@ -33,6 +45,7 @@ impl ToolExecutor {
             registry,
             pipeline,
             event_sink: Arc::new(Mutex::new(None)),
+            tool_scope: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -41,6 +54,24 @@ impl ToolExecutor {
             registry,
             pipeline,
             event_sink: Arc::new(Mutex::new(None)),
+            tool_scope: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Install the host's scope classification.
+    ///
+    /// Consuming, like [`ToolExecutor::with_event_sink`], so a scope cannot leak
+    /// from one run into the next through a clone.
+    pub fn with_tool_scope(mut self, scope: Arc<dyn ToolScope>) -> Self {
+        self.tool_scope = Arc::new(Mutex::new(Some(scope)));
+        self
+    }
+
+    /// Where this call lands, as the host sees it.
+    fn scope_of(&self, tool: &str, effect: ToolEffect, arguments: &serde_json::Value) -> Scope {
+        match self.tool_scope.lock().as_ref() {
+            Some(scope) => scope.scope_of(tool, effect, arguments),
+            None => Scope::Unknown,
         }
     }
 
@@ -98,10 +129,33 @@ impl ToolExecutor {
         // the executor's to know, not the caller's: a plugin that builds a
         // context by hand should still be judged by what the tool *is*, and
         // should still be able to report events.
-        ctx.effect = Some(self.resolve_effect(&call.function.name));
+        let effect = self.resolve_effect(&call.function.name);
+        ctx.effect = Some(effect);
         if ctx.event_sink.is_none() {
             ctx.event_sink = self.event_sink.lock().clone();
         }
+
+        let started = Instant::now();
+
+        // A call whose run was cancelled must not start. Checked here, before
+        // anything else, so no later layer can begin work on a dead run.
+        if ctx.cancellation_token.is_cancelled() {
+            return cancelled_refusal(started);
+        }
+
+        // The guard: the refusals no mode, rule or dialog can reach. It runs
+        // before the pile so that nothing below it — not the approval dialog,
+        // not the tool — ever sees a call it would have refused.
+        //
+        // Arguments that do not parse are not a way round it: the registry
+        // parses the same string and errors out before any tool sees them.
+        if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+            let scope = self.scope_of(&call.function.name, effect, &arguments);
+            if let Some(hit) = Guard::check(&call.function.name, &arguments, effect, scope) {
+                return guard_refusal(&hit, started);
+            }
+        }
+
         self.pipeline.execute(call, &ctx, custom_timeout).await
     }
 
@@ -168,4 +222,52 @@ impl ToolExecutor {
 
         join_all(futures).await
     }
+}
+
+/// The refusal a cancelled call gets: nothing ran, and saying so is the point.
+fn cancelled_refusal(started: Instant) -> ToolExecutionResult {
+    let notice = SystemNotice::new(
+        "Guard",
+        "Tool execution cancelled before launch",
+        "Invocation halted immediately by the cancellation signal; nothing ran.",
+    )
+    .with_guidance("You may safely formulate a new prompt or retry.");
+    ToolExecutionResult::error(
+        "Tool execution cancelled by user signal".to_string(),
+        started.elapsed(),
+    )
+    .with_telemetry(notice)
+}
+
+/// The refusal a guard hit gets, written for the model that will read it.
+///
+/// The guidance has to be actionable, because the model's next move depends on
+/// it: a refusal that reads as "try again, differently" produces a retry loop,
+/// and this is exactly the shape of refusal the model cannot retry past.
+fn guard_refusal(hit: &GuardHit, started: Instant) -> ToolExecutionResult {
+    let (action, reason, ground_truth, guidance) = match hit.kind {
+        GuardKind::DangerousCommand => (
+            "Dangerous command refused",
+            format!(
+                "Refused: this command matches '{}'. The agent does not run it at any permission \
+                 level or in any mode, and changing the mode will not change that.",
+                hit.pattern
+            ),
+            "The command was intercepted before reaching the shell; nothing ran.",
+            "If it is genuinely needed, ask the user to run it themselves. Otherwise take a \
+             different approach.",
+        ),
+        GuardKind::CriticalPath => (
+            "Critical path refused",
+            format!(
+                "Refused: '{}' is off limits — protected regardless of mode or approval.",
+                hit.detail
+            ),
+            "Nothing was read or written.",
+            "Choose another target. Asking the user to approve this will not help.",
+        ),
+    };
+
+    let notice = SystemNotice::new("Guard", action, ground_truth).with_guidance(guidance);
+    ToolExecutionResult::error(reason, started.elapsed()).with_telemetry(notice)
 }

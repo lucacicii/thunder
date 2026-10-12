@@ -102,6 +102,14 @@ pub struct AgentLoop {
     pipeline_builder: Option<
         Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
     >,
+    /// The host's answer to "where does this call land" — the knowledge half of
+    /// the permission system, kept apart from the policy half.
+    ///
+    /// The kernel cannot tell whether a path is inside the project without being
+    /// told what the project is, and must not try: guessing is what produced an
+    /// over-broad jail. So the host classifies, and the kernel decides what a
+    /// classification means.
+    tool_scope: Option<Arc<dyn crate::types::scope::ToolScope>>,
 }
 
 impl AgentLoop {
@@ -119,10 +127,7 @@ impl AgentLoop {
         // replaces it via `with_pipeline_builder` after construction.
         let tool_executor = ToolExecutor::with_pipeline(
             tool_registry.clone(),
-            crate::tools::middleware::ToolPipeline::baseline(
-                tool_registry.clone(),
-                Some(scratchpad.clone()),
-            ),
+            crate::tools::middleware::ToolPipeline::baseline(tool_registry.clone()),
         );
 
         Self {
@@ -142,6 +147,7 @@ impl AgentLoop {
             completion_gate: None,
             max_gate_rounds: 3,
             pipeline_builder: None,
+            tool_scope: None,
         }
     }
 
@@ -192,6 +198,19 @@ impl AgentLoop {
         self
     }
 
+    /// Install the host's classification of where a call lands.
+    ///
+    /// Advisory in one direction only: a scope can earn a call an automatic
+    /// allowance, and can mark a target off limits, but it can never make the
+    /// kernel refuse something the guard would have allowed it to ask about.
+    /// Held by the unit and replayed on every executor rebuild, like the
+    /// pipeline, so a tool registered later is classified the same way.
+    pub fn with_tool_scope(mut self, scope: Arc<dyn crate::types::scope::ToolScope>) -> Self {
+        self.tool_scope = Some(scope);
+        self.tool_executor = self.rebuild_executor();
+        self
+    }
+
     /// Reassemble the pipeline from the current registrations.
     ///
     /// Uses the host's builder when one is installed, and the kernel's own
@@ -206,12 +225,13 @@ impl AgentLoop {
                 policy: self.policy.clone(),
                 ui: self.host_ui.clone(),
             }),
-            None => crate::tools::middleware::ToolPipeline::baseline(
-                registry.clone(),
-                Some(self.scratchpad.clone()),
-            ),
+            None => crate::tools::middleware::ToolPipeline::baseline(registry.clone()),
         };
-        ToolExecutor::with_pipeline(registry, pipeline)
+        let mut executor = ToolExecutor::with_pipeline(registry, pipeline);
+        if let Some(scope) = &self.tool_scope {
+            executor = executor.with_tool_scope(Arc::clone(scope));
+        }
+        executor
     }
 
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).

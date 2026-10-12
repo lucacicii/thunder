@@ -24,13 +24,19 @@ impl Default for CodePackConfig {
     }
 }
 
-/// Install the code pack onto a loop: its pipeline, and its built-in tools.
+/// Install the code pack onto a loop: its pipeline, its scope, and its built-in
+/// tools.
 ///
 /// The pipeline builder is registered first so the built-ins registered after
 /// it are picked up on the next rebuild, and every later `register_tool` keeps
-/// running through the pack's layers.
+/// running through the pack's layers. The scope comes along because a pipeline
+/// that asks the user about a path and a kernel that does not know where that
+/// path is would be answering two different questions.
 pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
-    agent = agent.with_pipeline_builder(Arc::new(build_code_pipeline));
+    let scope = crate::scope::CodeScope::from_agent_config(agent.config(), None);
+    agent = agent
+        .with_pipeline_builder(Arc::new(build_code_pipeline))
+        .with_tool_scope(Arc::new(scope));
 
     if config.register_builtins {
         agent.register_tool(Arc::new(BashTool::default()));

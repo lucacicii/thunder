@@ -173,23 +173,6 @@ impl ToolEffect {
     }
 }
 
-/// Destructive command patterns that can never be executed under any
-/// circumstances or approved by any dialog.
-pub fn is_forbidden_destructive_call(tool: &str, args: &serde_json::Value) -> Option<&'static str> {
-    let lower = tool.to_ascii_lowercase();
-    if lower == "bash" || lower == "shell" || lower == "powershell" || lower.contains("exec") {
-        if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-            let trimmed = cmd.trim();
-            for pattern in &["rm -rf /", "rm -rf /*", ":(){ :|:& };:", "mkfs", "dd if="] {
-                if trimmed.contains(pattern) {
-                    return Some(pattern);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Options offered by the approval dialog, in display order.
 pub const ALLOW_ONCE: &str = "Allow once";
 pub const ALLOW_ALWAYS: &str = "Always allow";

@@ -1,13 +1,9 @@
 //! Assembles the coding pipeline the kernel used to build for itself.
 
-use crate::middleware::{
-    FileChangeMiddleware, ResourceGuardMiddleware, SecurityGuardMiddleware, TransactionMiddleware,
-};
+use crate::middleware::TransactionMiddleware;
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_loop::tools::middleware::{
-    OutputPostProcessorMiddleware, PermissionGuardMiddleware, ToolPipeline,
-};
+use thunder_agent_loop::tools::middleware::{PermissionGuardMiddleware, ToolPipeline};
 use thunder_agent_loop::types::config::{AgentConfig, MiddlewareConfig, Permission};
 use thunder_agent_loop::types::ui::{HostUi, NullHostUi};
 use thunder_agent_loop::PipelineContext;
@@ -40,35 +36,35 @@ impl CodePipelineConfig {
     }
 }
 
-/// Build the full code stack around the loop's tool registry.
+/// Build the code stack around the loop's tool registry.
 ///
-/// Layer order, outermost first:
-///   1. `PermissionGuardMiddleware` — capability ceiling + human approval
-///   2. `SecurityGuardMiddleware`  — path jail, forbidden commands
-///   3. `ResourceGuardMiddleware`  — OOM defense for large reads
-///   4. `TransactionMiddleware`    — atomic shadow writes, per-path locking
-///   5. `OutputPostProcessorMiddleware` — scratchpad spill + truncation
-///   6. `FileChangeMiddleware`     — `file_change` custom event
-///   7. `RegistryTerminalHandler`  — the actual tool
+/// One layer, outermost first:
+///   1. `PermissionGuardMiddleware` — human approval
+///   2. `TransactionMiddleware`    — atomic shadow writes, per-path locking
+///   3. `RegistryTerminalHandler`  — the actual tool
 ///
-/// `FileChangeMiddleware` sits innermost on purpose: it reports what the tool
-/// did, so it must see the real result and not a refusal from a layer above.
+/// Three layers used to sit here and no longer do. `SecurityGuardMiddleware` was
+/// the path jail: it answered "is this path inside the workspace" with a refusal,
+/// and refused a great deal of ordinary work in the process. Its knowledge moved
+/// to [`crate::scope::CodeScope`], where it classifies instead of judging, and
+/// its one real rule — never run *this* command — moved to the kernel's guard,
+/// which is where a rule no mode can override has to live.
+/// `ResourceGuardMiddleware` and `OutputPostProcessorMiddleware` were both
+/// second copies of checks made below them (in the read tool and in
+/// `ToolRegistry::execute_tool_call`), and two ceilings for one behaviour is one
+/// ceiling too many.
 pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     let cfg = CodePipelineConfig::from_agent_config(&inputs.config);
     let registry = inputs.registry.clone();
 
     let mut all_roots = vec![cfg.workspace_root.clone()];
     all_roots.extend(cfg.extra_workspace_roots.iter().cloned());
-    let mut extra_roots = cfg.extra_workspace_roots.clone();
-    // The scratchpad holds spilled tool output; the model must be able to read
-    // it back, so it is part of the jail even though it is outside the workspace.
+    // Spilled tool output lives outside the workspace; the approval dialog names
+    // it as a granted root so the model is told the truth about where it may work.
     if let Some(ref sp) = inputs.scratchpad {
         let sp_dir = sp.session_dir().to_path_buf();
         if !all_roots.contains(&sp_dir) {
-            all_roots.push(sp_dir.clone());
-        }
-        if !extra_roots.contains(&sp_dir) {
-            extra_roots.push(sp_dir);
+            all_roots.push(sp_dir);
         }
     }
 
@@ -77,7 +73,6 @@ pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     let mut pipeline = ToolPipeline::new(terminal);
 
     // Add order is outermost-first (see `ToolPipeline::execute`).
-    // Outermost gate: a denied capability never reaches the workspace.
     let guard = match inputs.policy.clone() {
         Some(policy) => PermissionGuardMiddleware::new(
             policy,
@@ -91,29 +86,9 @@ pub fn build_code_pipeline(inputs: PipelineContext) -> ToolPipeline {
     .with_workspace_roots(all_roots);
     pipeline.add_middleware(Arc::new(guard));
 
-    if cfg.middleware.enable_security_guard {
-        pipeline.add_middleware(Arc::new(
-            SecurityGuardMiddleware::new(&cfg.workspace_root).with_extra_roots(extra_roots),
-        ));
-    }
-    if cfg.middleware.enable_resource_guard {
-        pipeline.add_middleware(Arc::new(ResourceGuardMiddleware::new(&cfg.workspace_root)));
-    }
     if cfg.middleware.enable_transaction {
         pipeline.add_middleware(Arc::new(TransactionMiddleware::new(&cfg.workspace_root)));
     }
-    if cfg.middleware.enable_output_post_processor {
-        pipeline.add_middleware(Arc::new(OutputPostProcessorMiddleware::new(
-            thunder_agent_loop::tools::middleware::DEFAULT_MAX_TOOL_OUTPUT_BYTES,
-            inputs.scratchpad.clone(),
-        )));
-    }
-
-    // Innermost of our own layers: it must observe the tool's real outcome, so
-    // it sits closest to the terminal handler.
-    pipeline.add_middleware(Arc::new(FileChangeMiddleware::new(
-        cfg.workspace_root.clone(),
-    )));
 
     pipeline
 }

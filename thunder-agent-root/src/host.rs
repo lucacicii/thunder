@@ -123,7 +123,7 @@ pub struct ThunderRoot {
     selector: PluginSelector,
     workspace_root: Option<PathBuf>,
     /// Extra roots (e.g. referenced repositories) sharing the workspace's
-    /// read/write standing in the security jail.
+    /// read/write standing, alongside the primary workspace.
     extra_roots: Vec<PathBuf>,
     scratch_root: PathBuf,
     provider_registry: ProviderRegistry,
@@ -448,8 +448,9 @@ impl ThunderRoot {
             ));
             if self.extra_roots.is_empty() {
                 base_prompt.push_str(
-                    "All file paths and shell write targets must stay within the primary workspace \
-                     unless the user explicitly instructs otherwise.",
+                    "Work inside the primary workspace. A path outside it is not forbidden — the \
+                     user is asked before anything outside the working area is written — so prefer \
+                     a path inside the workspace whenever there is a choice.",
                 );
             } else {
                 base_prompt
@@ -458,8 +459,10 @@ impl ThunderRoot {
                     base_prompt.push_str(&format!("- {}\n", root.display()));
                 }
                 base_prompt.push_str(
-                    "All file paths and shell write targets must stay within the primary workspace or one of the \
-                     referenced repositories above, unless the user explicitly instructs otherwise. \n\
+                    "Work inside the primary workspace or one of the referenced repositories above. \
+                     Paths outside them are not forbidden — the user is asked before anything \
+                     outside the working area is written — so prefer a path inside one of them \
+                     whenever there is a choice. \n\
                      When working in a repository, address files by absolute path (read_file / write_file) or pass its \
                      directory as `cwd` for shell commands; prefer write_file over shell redirections for edits.",
                 );
@@ -507,11 +510,18 @@ impl ThunderRoot {
         }
 
         // Install the code capability pack: this host is a coding agent, so it
-        // gets the shell/file tools, the workspace path jail and atomic writes.
-        // The generic loop knows none of that.
+        // gets the shell/file tools, the atomic writes, and the scope that tells
+        // the kernel which paths are inside the working area. The generic loop
+        // knows none of that.
         let mut agent = AgentLoop::new(agent_cfg)
             .with_id(format!("root_{}", session_id))
-            .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
+            .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline))
+            .with_tool_scope(Arc::new(
+                thunder_agent_pack_code::CodeScope::from_agent_config(
+                    &self.config,
+                    self.workspace_root.as_deref(),
+                ),
+            ));
 
         // The judge. Always installed, including in `yolo`: the mode stops the
         // *prompting*, not the tier check, and one code path for every mode means
@@ -592,7 +602,7 @@ impl ThunderRoot {
         //   * the snapshot is taken here because `register_tool` rebuilds the
         //     pipeline, so an earlier snapshot would miss later registrations;
         //   * dispatching through the pipeline — not the bare registry — is what
-        //     makes a plugin-initiated call subject to the same tier, jail,
+        //     makes a plugin-initiated call subject to the same approval,
         //     transaction and approval gate as a model-initiated one.
         {
             let mut slot = tool_slot.write().await;
