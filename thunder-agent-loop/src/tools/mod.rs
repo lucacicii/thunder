@@ -1,11 +1,13 @@
 pub mod executor;
 pub mod middleware;
+pub mod notice;
 pub mod registry;
 pub mod sanitizer;
 pub mod scratchpad;
 
 pub use executor::*;
 pub use middleware::*;
+pub use notice::*;
 pub use registry::*;
 pub use sanitizer::*;
 pub use scratchpad::*;

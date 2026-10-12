@@ -1,5 +1,5 @@
-use crate::tools::middleware::telemetry::SystemNotice;
 use crate::tools::middleware::{ToolHandler, ToolMiddleware};
+use crate::tools::notice::SystemNotice;
 use crate::types::config::Permission;
 use crate::types::message::ToolCall;
 use crate::types::policy::{

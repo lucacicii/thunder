@@ -1,10 +1,9 @@
 pub mod output;
 pub mod permission_guard;
-pub mod telemetry;
 
+pub use crate::tools::notice::SystemNotice;
 pub use output::OutputPostProcessorMiddleware;
 pub use permission_guard::PermissionGuardMiddleware;
-pub use telemetry::SystemNotice;
 
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;

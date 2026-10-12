@@ -1,3 +1,16 @@
+//! Structured notices that a tool result can carry back to the model.
+//!
+//! A notice is the *model-facing* half of telemetry: it explains what the system
+//! did on the model's behalf when the outcome differs from a plain success or
+//! error — a refusal, an atomic write, a self-healing recovery. It rides on
+//! [`crate::types::tool::ToolExecutionResult::with_telemetry`] and is rendered
+//! into the tool output the model reads.
+//!
+//! The *human-facing* half is the kernel trace (`crate::tools::trace`), which
+//! records the same events plus the decision that produced them. The two are
+//! deliberately separate: the model needs ground truth to keep working, while a
+//! durable audit artifact needs redaction and structure.
+
 use serde::{Deserialize, Serialize};
 
 /// Structured omniscient telemetry notice informing the LLM of physical realities,

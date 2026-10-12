@@ -142,7 +142,7 @@ pub struct ToolExecutionResult {
     pub original_bytes: usize,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<crate::tools::middleware::telemetry::SystemNotice>,
+    pub telemetry: Option<crate::tools::notice::SystemNotice>,
 }
 
 impl ToolExecutionResult {
@@ -171,10 +171,7 @@ impl ToolExecutionResult {
     }
 
     /// Appends a structured telemetry notice so the LLM is informed with ground truth.
-    pub fn with_telemetry(
-        mut self,
-        notice: crate::tools::middleware::telemetry::SystemNotice,
-    ) -> Self {
+    pub fn with_telemetry(mut self, notice: crate::tools::notice::SystemNotice) -> Self {
         let md = notice.format_markdown();
         if self.output.trim().is_empty() {
             self.output = md;

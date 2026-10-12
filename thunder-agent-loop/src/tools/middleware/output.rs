@@ -36,7 +36,7 @@ impl OutputPostProcessorMiddleware {
         output: String,
         is_error: bool,
         duration: Duration,
-        telemetry: Option<crate::tools::middleware::telemetry::SystemNotice>,
+        telemetry: Option<crate::tools::notice::SystemNotice>,
     ) -> ToolExecutionResult {
         let original_bytes = output.len();
         if original_bytes <= self.max_output_bytes {
