@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, info, warn};
 
@@ -17,6 +17,14 @@ pub struct StdioTransport {
     stdin_tx: mpsc::Sender<String>,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
     is_alive: Arc<AtomicBool>,
+    /// The spawned server process, held for as long as the transport lives.
+    ///
+    /// This must be stored, not a local: `kill_on_drop(true)` is set on the
+    /// `Command`, so the `Child` handle *is* the server's lifetime. Dropping it
+    /// kills the process — which is what makes `close()` and a dropped
+    /// transport both shut the server down, and what made the previous
+    /// never-stored handle SIGKILL every server the instant `spawn` returned.
+    child: Arc<Mutex<Option<Child>>>,
 }
 
 impl StdioTransport {
@@ -136,6 +144,7 @@ impl StdioTransport {
             stdin_tx,
             pending_requests,
             is_alive,
+            child: Arc::new(Mutex::new(Some(child))),
         })
     }
 }
@@ -205,8 +214,23 @@ impl McpTransport for StdioTransport {
         self.is_alive.load(Ordering::SeqCst)
     }
 
+    /// Shut the server down and reap it.
+    ///
+    /// Idempotent: the handle is taken, so a second call is a no-op and a
+    /// transport that was already dropped has nothing left to kill. `Child::kill`
+    /// both signals (SIGKILL) and waits, so by the time this returns the process
+    /// is gone rather than a zombie.
     async fn close(&self) -> Result<(), McpError> {
         self.is_alive.store(false, Ordering::SeqCst);
+        if let Some(mut child) = self.child.lock().await.take() {
+            // An already-exited child makes `kill` return an error; that is the
+            // outcome we wanted, not a failure of the shutdown.
+            if let Err(e) = child.kill().await {
+                debug!(server = %self.server_name, error = %e, "MCP server was already gone at close");
+            } else {
+                info!(server = %self.server_name, "MCP server process terminated");
+            }
+        }
         Ok(())
     }
 }

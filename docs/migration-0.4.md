@@ -227,6 +227,8 @@ TUI 的操作方式：`Shift+Tab` 循环模式（当命令行参数补全未激�
 
 附带收益：被拒绝的 `bash` 不再白跑两次 `git status`。
 
+> ⚠️ **"契约保活"不等于"你的代码是对的"**：线上形状自 0.3.0 起就是 `{"type":"custom","kind":"file_change","payload":{path,action,bytes,tool}}`——`type` 是 **`custom`**，字段在 **`payload`** 里且叫 **`tool`**。按 `type === "file_change"` + `tool_name` 匹配的消费方（ARP 就是，见 §8.1）在 0.3 上就已经收不到它了。0.4 只是继续原样发出。
+
 ### 7.2 不变的东西（逐条）
 
 | 契约 | 状态 |
@@ -267,6 +269,8 @@ TUI 的操作方式：`Shift+Tab` 循环模式（当命令行参数补全未激�
 | 模式 / tier / 插件 | **零交互**（`active_plugins` 仅透传） | 无；若日后要暴露模式，用 `SetMode`/`GetPermissionState` |
 
 **要做的**：① 若关心协议修订，读 `ping` 的 `protocol`；② 其余零改动。**不要**顺手改 crate/目录名——ARP 硬编码了它们。
+
+**另有一个与 0.4 无关的既有缺陷，升级时顺手修掉**：ARP 匹配 `ev.type === "file_change"` 且读 `ev.tool_name`（`apps/desktop/src/main/thunder/thunderProtocol.ts:78`、`apps/desktop/src/renderer-react/features/chat/useTraceCollector.ts:243,437`）。但如 §7.1 所述，自 thunder 0.3.0 起这个事件的 `type` 就是 **`custom`**、字段在 `payload` 里且叫 **`tool`** —— 也就是说 ARP 的实时「文件变更」popover 从 0.3 起就一直是空的，现在看到的记录来自 `useThunderChat.ts` 对会话 `tool_executions` 的回填（`write_file` 那条路径），`bash` 的变更根本进不来。修法是消费侧两行：`ev.type === "custom" && ev.kind === "file_change"`，字段读 `ev.payload.tool`。**PS 写对了**（`agent-bridge.ts:1179`），可作参照。
 
 ### 8.2 prototype-edit-llm (PS)
 
