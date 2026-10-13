@@ -41,6 +41,12 @@ jobs:
         # last step with no earlier signal.
         run: cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
 
+      - name: Check workspace version consistency
+        # Every release is identified by its tag and by the version compiled into
+        # the binaries; this is what refuses a tree where those two disagree.
+        # Same script as release.yml, on purpose: one implementation, no drift.
+        run: python3 scripts/check-version.py
+
   test:
     name: Workspace Test Suite
     runs-on: ubuntu-latest

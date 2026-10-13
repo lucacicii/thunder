@@ -34,6 +34,12 @@ echo -e "Rust Version:  $(rustc --version)"
 echo -e "Cargo Version: $(cargo --version)"
 echo ""
 
+# Version consistency first: it is seconds of work, and a release prepared from a
+# tree whose crates disagree on the version is one that has to be redone.
+echo -e "${BLUE}▶ Checking workspace version consistency...${NC}"
+python3 "$SCRIPT_DIR/scripts/check-version.py"
+echo ""
+
 echo -e "${BLUE}▶ Running cargo test --workspace (Unified Target)...${NC}"
 # --no-fail-fast: cargo stops at the first failing test target by default, so a
 # red run would hide every failure in the crates after it (which is exactly how
