@@ -34,14 +34,21 @@ cd thunder
 thunder/                          # Git Monorepo 根目录与 Cargo Workspace 根
 ├── README.md                     # 中文主页说明
 ├── README_en.md                  # 英文主页说明
-├── WORKSPACE.md                  # 中文工作区规范
+├── WORKSPACE.md                  # 中文工作区规范（本文件）
 ├── WORKSPACE_en.md               # 英文工作区规范
+├── LICENSE
 ├── Cargo.toml                    # 统一工作区配置（10 个成员包）
 ├── Cargo.lock                    # 统一共享锁文件
+├── rust-toolchain.toml           # 固定构建链（1.98.0，与 CI 同步 pin）
 ├── run.sh                        # 启动 TUI 终端
 ├── daemon.sh                     # 启动 STDIO Sidecar 守护进程
 ├── test.sh                       # 全工作区测试套件脚本
-├── .thunder/                       # Thunder 自身配置（用户级 ~/.thunder/ 与项目级同构）
+├── .github/workflows/            # CI（fmt / clippy / check-version / test）与 release
+├── .thunder/                     # Thunder 自身配置（用户级 ~/.thunder/ 与项目级同构）
+├── .arp/                         # 归 agent-resume-panel（面板配置 + 跨会话共享产物），Thunder 不读
+├── docs/                         # architecture.md、permission-structure.md、migration-0.4.md
+├── examples/electron/            # Electron 侧车集成示例
+├── scripts/check-version.py      # 版本一致性门禁（CI / release / test.sh 三处调用）
 ├── thunder-agent-loop/           # Agent 内核：单 Agent 闭环执行引擎 + 工具执行入口 + trace
 ├── thunder-agent-pack-code/      # 编码能力包：6 个内建工具 + 路径作用域判定
 ├── thunder-agent-runtime/        # 无头运行时：以 JSONL 协议驱动内核
@@ -61,33 +68,22 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 
 全工作区所有包之间均使用 **Path 依赖**，严禁使用 git URL 交叉引用。
 
-```text
-                       ┌─────────────────────────┐
-                       │  thunder-agent-providers│ (RpiAiClient: 进程内 HTTP)
-                       └────────────┬────────────┘
-                                    │ implements LLMClientTrait
-                                    ▼
-┌────────────────────┐   ┌───────────────────────────┐
-│ thunder-agent-loop │ ◄─┤  thunder-agent-providers  │
-└─────────┬──────────┘   └─────────────┬─────────────┘
-          │ (Kernel: Unit)             │
-          ▼                            │
-┌──────────────────────────────────────┴─────────────────────────────────┐
-│ 插件/组件生态: skills / mcp / conversation                                    │
-└──────────────────────────────────────┬─────────────────────────────────┘
-                                       │
-                                       ▼
-                             ┌────────────────────┐
-                             │ thunder-agent-root │ (Host: Microkernel)
-                             └─────────┬──────────┘
-                                       │
-                      ┌────────────────┴────────────────┐
-                      ▼                                 ▼
-              ┌───────────────┐               ┌──────────────────────┐
-              │  thunder-tui  │               │ thunder-agent-daemon │
-              │ (Terminal UI) │               │   (STDIO Sidecar)    │
-              └───────────────┘               └──────────────────────┘
-```
+各 crate 直接依赖的**内部** crate（逐条抄自各自的 `Cargo.toml`；`loop` 一栏为空是硬约束，不是遗漏）：
+
+| Crate | 依赖的内部 crate |
+|---|---|
+| `thunder-agent-loop` | —（内核不依赖任何宿主） |
+| `thunder-agent-pack-code` | `loop` |
+| `thunder-agent-providers` | `loop` |
+| `thunder-agent-skills` | `loop` |
+| `thunder-agent-mcp` | `loop` |
+| `thunder-conversation` | `loop` |
+| `thunder-agent-runtime` | `loop`、`providers` |
+| `thunder-agent-root` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation` |
+| `thunder-agent-daemon` | `loop`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+| `thunder-tui` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+
+> 这张表取代了早先的手绘箭头图：那张图把 `root` / `daemon` / `tui` 画成只依赖 `loop`（和 `root`），漏掉了 `pack-code`、`providers`、`skills`、`mcp`、`conversation` 这几条真实存在的边。分层结论不变——`loop` 是叶子，`root` 是微内核宿主，`tui`/`daemon` 是并列的两个最上层二进制。
 
 ### 核心设计原则
 
@@ -114,7 +110,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 ## 4. 运行与测试
 
 ### 环境依赖
-- **Rust**: 1.80+
+- **Rust**: 最低 1.80（`Cargo.toml` 的 `rust-version`）；仓库用 `rust-toolchain.toml` 固定 **1.98.0**，与 CI 及 lint 门禁同步
 - 不需要 Node.js：模型调用在进程内完成
 
 ### 一键脚本
@@ -145,4 +141,4 @@ cargo build --workspace --release
 
 - **单一仓库原则**：所有开发任务统一在工作区根目录提交，杜绝在各子目录建立独立的 `.git`。
 - **提交规范**：采用 Conventional Commits 规范，统一使用英文动词（如 `feat(root): ...`, `refactor(loop): ...`）。
-- **CI 门禁**：提交前确保运行 `./test.sh` 全量通过。
+- **CI 门禁**：提交前确保本地跑过 `./test.sh`（全量测试）；CI 另有 fmt → clippy → `scripts/check-version.py` 三道 lint 门禁。

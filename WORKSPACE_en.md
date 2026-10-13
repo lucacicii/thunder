@@ -35,13 +35,20 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── README.md                     # Chinese entry document
 ├── README_en.md                  # English entry document
 ├── WORKSPACE.md                  # Chinese workspace guide
-├── WORKSPACE_en.md               # English workspace guide
+├── WORKSPACE_en.md               # English workspace guide (this file)
+├── LICENSE
 ├── Cargo.toml                    # Unified workspace config (10 crates)
 ├── Cargo.lock                    # Unified lockfile
+├── rust-toolchain.toml           # Pinned toolchain (1.98.0, in step with CI)
 ├── run.sh                        # Launch TUI terminal
 ├── daemon.sh                     # Launch STDIO Sidecar daemon
 ├── test.sh                       # Workspace-wide test suite script
-├── .thunder/                       # Thunder's own config (user-level ~/.thunder/ mirrors it)
+├── .github/workflows/            # CI (fmt / clippy / check-version / test) and release
+├── .thunder/                     # Thunder's own config (user-level ~/.thunder/ mirrors it)
+├── .arp/                         # Owned by agent-resume-panel; Thunder never reads it
+├── docs/                         # architecture.md, permission-structure.md, migration-0.4.md
+├── examples/electron/            # Electron sidecar integration example
+├── scripts/check-version.py      # Version-consistency gate (CI / release / test.sh)
 ├── thunder-agent-loop/           # Agent kernel: single-agent loop + tool funnel + tracing
 ├── thunder-agent-pack-code/      # Code pack: six built-in tools + path scope classification
 ├── thunder-agent-runtime/        # Headless runtime driving the kernel over JSONL
@@ -61,33 +68,22 @@ thunder/                          # Git monorepo root & Cargo workspace root
 
 All workspace crates utilize **Path dependencies**. Git URLs or external repository links between internal crates are strictly prohibited.
 
-```text
-                       ┌─────────────────────────┐
-                       │  thunder-agent-providers│ (RpiAiClient: in-process HTTP)
-                       └────────────┬────────────┘
-                                    │ implements LLMClientTrait
-                                    ▼
-┌────────────────────┐   ┌───────────────────────────┐
-│ thunder-agent-loop │ ◄─┤  thunder-agent-providers  │
-└─────────┬──────────┘   └─────────────┬─────────────┘
-          │ (Kernel: Unit)             │
-          ▼                            │
-┌──────────────────────────────────────┴─────────────────────────────────┐
-│ Plugin ecosystem: skills / mcp / conversation                           │
-└──────────────────────────────────────┬─────────────────────────────────┘
-                                       │
-                                       ▼
-                             ┌────────────────────┐
-                             │ thunder-agent-root │ (Host: Microkernel)
-                             └─────────┬──────────┘
-                                       │
-                      ┌────────────────┴────────────────┐
-                      ▼                                 ▼
-              ┌───────────────┐               ┌──────────────────────┐
-              │  thunder-tui  │               │ thunder-agent-daemon │
-              │ (Terminal UI) │               │   (STDIO Sidecar)    │
-              └───────────────┘               └──────────────────────┘
-```
+The **internal** crates each crate depends on directly (copied one by one from its `Cargo.toml`; an empty `loop` row is a hard constraint, not an omission):
+
+| Crate | Internal crates it depends on |
+|---|---|
+| `thunder-agent-loop` | — (the kernel depends on no host) |
+| `thunder-agent-pack-code` | `loop` |
+| `thunder-agent-providers` | `loop` |
+| `thunder-agent-skills` | `loop` |
+| `thunder-agent-mcp` | `loop` |
+| `thunder-conversation` | `loop` |
+| `thunder-agent-runtime` | `loop`, `providers` |
+| `thunder-agent-root` | `loop`, `pack-code`, `providers`, `skills`, `mcp`, `conversation` |
+| `thunder-agent-daemon` | `loop`, `providers`, `skills`, `mcp`, `conversation`, `root` |
+| `thunder-tui` | `loop`, `pack-code`, `providers`, `skills`, `mcp`, `conversation`, `root` |
+
+> This table replaces an earlier hand-drawn arrow diagram, which drew `root` / `daemon` / `tui` as depending only on `loop` (and `root`) and missed the real `pack-code`, `providers`, `skills`, `mcp` and `conversation` edges. The layering conclusion is unchanged: `loop` is the leaf, `root` is the microkernel host, and `tui` / `daemon` are the two top-level binaries side by side.
 
 ### Core Design Principles
 
@@ -114,7 +110,7 @@ All workspace crates utilize **Path dependencies**. Git URLs or external reposit
 ## 4. Running & Testing
 
 ### Prerequisites
-- **Rust**: 1.80+
+- **Rust**: 1.80 minimum (`rust-version` in `Cargo.toml`); the repo pins **1.98.0** via `rust-toolchain.toml`, in step with CI and the lint gate
 - No Node.js required: model calls happen in-process
 
 ### Scripts
@@ -145,4 +141,4 @@ cargo build --workspace --release
 
 - **Single Repository**: All development is committed to the workspace root. Never create nested `.git` repositories in subpackages.
 - **Commit Format**: Conventional Commits in English (e.g. `feat(root): ...`, `refactor(loop): ...`).
-- **Continuous Integration**: Ensure `./test.sh` passes 100% locally before pushing.
+- **Continuous Integration**: Run `./test.sh` (full suite) locally before pushing; CI adds three lint gates — fmt → clippy → `scripts/check-version.py`.
