@@ -12,10 +12,11 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
-| **`/resume`** | `/sessions`, `/load_session` | `[# \| id]` | **List all saved sessions or resume by index/ID** |
+| **`/resume`** | `/sessions`, `/load_session`, `/switch` | `[# \| id]` | **List all saved sessions or resume by index/ID** |
 | **`/help`** | `/?` | | Show command reference and keyboard shortcut overlay |
 | **`/model`** | `/m` | `[name]` | View active model or hot-switch models (e.g. `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`) |
-| **`/mode`** | `/topology` | `[auto \| single]` | Switch execution mode (plugin host / direct single agent) |
+| **`/mode`** | | `[plan \| ask \| acceptEdits \| yolo]` | Switch the approval mode (no argument shows the current one) |
+| **`/topology`** | | `[auto \| single]` | Switch execution topology (plugin host / direct single agent) |
 | **`/skills`** | `/skill`, `/sk` | `[list \| load <name> \| scan]` | Browse skill directory, load playbook instructions, or trigger rescan |
 | **`/mcp`** | `/server`, `/tools` | `[list \| servers \| reload]` | List connected MCP servers & tools, or reload configuration |
 | **`/compact`** | `/prune`, `/compress` | | Manually compress context, extract summary, and prune older turns |
@@ -27,9 +28,6 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`/health`** | `/doctor`, `/status` | | Execute multi-agent and environment health check probes |
 | **`/timeline`** | `/rail` | `[on \| off]` | Show or hide the turn rail on the right of the transcript (bare = toggle) |
 | **`/details`** | `/verbose` | `[on \| off]` | Expand or collapse thinking and tool details (summaries by default; bare = toggle) |
-| **`/pipeline`** | `/seq` | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
-| **`/parallel`** | `/par`, `/council` | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
-| **`/fanout`** | `/decompose` | `<task>` | Run task directly in decomposed subtask fan-out mode |
 | **`/quit`** | `/exit`, `/q` | | Cleanly exit Thunder TUI |
 
 ---
@@ -41,6 +39,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`Enter`** | **Send / Submit** | Submit input prompt or execute slash command |
 | **`Shift + Enter`** | **New line** | Start a new line in the input box, which grows with the prompt. Use **`Ctrl + J`** when the terminal cannot report the modifier |
 | **`Tab`** | **Auto-complete / Focus** | Auto-complete slash command; otherwise cycle focus Input ➔ Chat ➔ timeline rail |
+| **`Shift + Tab`** | **Cycle approval mode** | With no command argument being edited, cycle `plan ➔ ask ➔ acceptEdits ➔ yolo`; a pending argument keeps priority (same as `/mode`) |
 | **`↑ / ↓`** | **Select / History** | Navigate candidate list in slash popup; browse prompt history in normal state |
 | **`Ctrl + N`** | **New Session** | Clear chat stream and create a fresh blank session |
 | **`Ctrl + P`** | **Cycle Mode** | Fast-cycle execution mode: `Auto ➔ Single` |

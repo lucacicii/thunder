@@ -89,13 +89,21 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Config,
     ),
     SlashCommand::new(
-        "mode",
-        &["topology"],
+        "topology",
+        &[],
         "[auto | single]",
-        "Switch execution mode (plugin host or direct single agent)",
+        "Switch execution topology (plugin host or direct single agent)",
         CommandCategory::Config,
     )
     .with_args(&["auto", "single"]),
+    SlashCommand::new(
+        "mode",
+        &[],
+        "[plan | ask | acceptEdits | yolo]",
+        "View or set the approval mode this conversation's tool calls are judged in",
+        CommandCategory::Config,
+    )
+    .with_args(&["plan", "ask", "acceptEdits", "yolo"]),
     SlashCommand::new(
         "think",
         &["thinking"],
@@ -104,14 +112,6 @@ pub static ALL_COMMANDS: &[SlashCommand] = &[
         CommandCategory::Config,
     )
     .with_args(&["off", "low", "medium", "high"]),
-    SlashCommand::new(
-        "permission",
-        &["perm"],
-        "[read | write | bash]",
-        "View or set the tool capability tier",
-        CommandCategory::Config,
-    )
-    .with_args(&["read", "write", "bash"]),
     SlashCommand::new(
         "roots",
         &["root", "shared"],

@@ -22,12 +22,13 @@ Thunder 自身的用户级与项目级配置目录。
 ├── THUNDER.md                       # ★ 用户级长期记忆
 ├── prompts/                         # ★ 用户级提示模板
 │   └── system.md                    #    系统提示追加段
-├── plugins/                         # 既有：全局 TypeScript 插件
+├── plugins/                         # 遗留目录（0.4 起无消费者，可删）
 ├── skills/                          # 既有：全局技能
-├── scratchpad/  bridge/  conversations/   # 运行时产物
+├── logs/                            # TUI 日志文件（tui.log）
+├── scratchpad/  conversations/      # 运行时产物
 
 <workspace>/.thunder/                # 项目级（可提交）
-├── models.json                      # provider 项目覆盖（已有）
+├── models.json                      # provider 项目覆盖（读时**不**覆盖用户级，见下）
 ├── auth.json                        # 项目密钥（gitignore）
 ├── config.json                      # ★ 项目 agent 配置（覆盖用户级）
 ├── config.local.json                # ★ 本机覆盖（gitignore）
@@ -38,8 +39,8 @@ Thunder 自身的用户级与项目级配置目录。
 │   └── *.md
 ├── prompts/                         # ★ 提示模板 / 自定义 slash
 │   └── *.md
-├── plugins/                         # 项目 TypeScript 插件
-└── tmp/                             # 写事务影子目录（运行时，gitignore）
+├── plugins/                         # 遗留目录（0.4 起无消费者，可删）
+└── plans/                           # plan 模式产出的计划文件（运行时，gitignore）
 ```
 
 **优先级**（后者覆盖前者）：内置默认 → `~/.thunder` → `<ws>/.thunder` →
@@ -65,13 +66,21 @@ Schema 版本 `1`。**未声明的分组/字段表示"未配置"，不是空覆�
       "enabled": true,
       // 额外记忆文件，相对 `<ws>/.thunder/`。
       "files": ["extra/notes.md"]
-    }
+    },
+    // 新会话默认落在哪个审批模式。
+    // plan | ask | acceptEdits | yolo（旧名亦可）；未设 = yolo。
+    "defaultMode": "ask"
   }
 }
 ```
 
-`agent.permission` **刻意不支持**：能力档位由宿主的审批策略
-（`SessionPolicy`）持有，让配置文件直接放宽会绕过该判定。
+**没有 `agent.permission`**：能力档位（tier）在 0.4 已删除，工具始终全量注册。
+能不能跑由 `agent.defaultMode` 选的模式决定，模式本身住在宿主可卸载的
+`ModePlugin` 里——配置文件只能选一个**已有**的模式，不能发明放宽规则。
+
+`plans/` 目录由 plan 模式使用：计划文件写到
+`<ws>/.thunder/plans/<session>.md`，文件名里的 session 会被消毒成
+`[A-Za-z0-9._-]`。
 
 ---
 

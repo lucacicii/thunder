@@ -65,17 +65,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let options = RootRunOptions {
+        mode: Default::default(),
+        mode_plugin: None,
         session_id: Some(session_id),
         custom_client: None,
         cancellation_token: None,
         forced_plugins: None,
         register_builtins: true,
         thinking_level: thinking,
-        permission: thunder_agent_loop::types::config::Permission::default(),
         pause_gate: None,
         steer_queues: None,
         ui: None,
-        policy: None,
         route: None,
     };
 

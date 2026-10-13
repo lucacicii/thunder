@@ -59,6 +59,7 @@ fn app_with_two_turns() -> App {
     app.handle_agent_event(observed(AgentEvent::TurnStart {
         turn: 1,
         timestamp: 1,
+        estimated_prompt_tokens: 10,
     }));
     app.handle_agent_event(observed(AgentEvent::ReasoningDelta {
         turn: 1,
@@ -92,6 +93,7 @@ fn app_with_two_turns() -> App {
     app.handle_agent_event(observed(AgentEvent::TurnStart {
         turn: 2,
         timestamp: 2,
+        estimated_prompt_tokens: 20,
     }));
     app.handle_agent_event(observed(AgentEvent::TokenDelta {
         turn: 2,

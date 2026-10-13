@@ -62,10 +62,33 @@ fn a_long_title_is_cut_with_an_ellipsis() {
     let rows = render_rows(&mut app, 40, 20);
     let last = rows.last().unwrap().trim_end();
 
-    assert!(last.ends_with('…'), "truncated: {last:?}");
+    // The name is cut with an ellipsis; the mode badge, which is what the right
+    // edge is reserved for, survives intact.
+    assert!(last.contains('…'), "truncated: {last:?}");
+    assert!(
+        last.contains("⏸") || last.contains("⚡") || last.contains("✎") || last.contains("✋"),
+        "the badge keeps its place: {last:?}"
+    );
     assert!(
         unicode_width::UnicodeWidthStr::width(last) <= 39,
         "must fit the pane: {last:?}",
+    );
+}
+
+/// The mode is the one setting that changes what the agent may do without
+/// asking, so the footer states it at all times — not only while it is being
+/// changed.
+#[test]
+fn the_footer_names_the_mode() {
+    let mut app = titled("planning a refactor");
+    app.mode_plugin
+        .set_mode(thunder_agent_root::plugins::mode::Mode::Plan);
+    let rows = render_rows(&mut app, 100, 20);
+    let last = rows.last().unwrap();
+    assert!(last.contains("plan"), "the mode is visible: {last:?}");
+    assert!(
+        last.contains("planning a refactor"),
+        "and the name is not lost to it: {last:?}"
     );
 }
 

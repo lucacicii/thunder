@@ -1,6 +1,8 @@
 use crate::error::PluginError;
 use crate::instructions::discover_context_files;
 use crate::plugin::PluginContext;
+use crate::plugins::metrics::{MetricsPlugin, MetricsSnapshot, METRICS_UPDATE_EVENT_KIND};
+use crate::plugins::mode::{Mode, ModePlugin};
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
@@ -8,11 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::invoke::{
-    empty_tool_invoker_slot, PipelineToolInvoker, ToolInvokerSlot,
+    empty_tool_invoker_slot, ExecutorToolInvoker, ToolInvokerSlot,
 };
-use thunder_agent_loop::types::policy::SessionPolicy;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
@@ -34,9 +34,9 @@ pub struct RootRunOptions {
     pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
-    /// Tool capability tier (read ⊂ write ⊂ bash). Defaults to the widest tier;
-    /// hosts may narrow it explicitly.
-    pub permission: Permission,
+    /// The mode this run is judged in. Hosts that did not choose default to
+    /// `yolo`, which is what "no gate installed" has always meant.
+    pub mode: Mode,
     /// Optional cooperative pause gate forwarded to the agent unit, letting the
     /// host freeze the run at a tool boundary and resume it later.
     pub pause_gate: Option<Arc<thunder_agent_loop::core::pause::PauseGate>>,
@@ -53,10 +53,10 @@ pub struct RootRunOptions {
     /// in logs and panel routing. It must be unique among *concurrent* runs: it
     /// is the key that decides which run's authority a plugin call spends.
     pub route: Option<String>,
-    /// Session-scoped approval state. Hosts pass the *same* policy across every
+    /// Session-scoped mode state. Hosts pass the *same* plugin across every
     /// run of a session so "always allow" rules and mid-session mode switches
     /// survive a turn; `None` creates a fresh one for this run only.
-    pub policy: Option<Arc<SessionPolicy>>,
+    pub mode_plugin: Option<Arc<ModePlugin>>,
 }
 
 impl Default for RootRunOptions {
@@ -68,12 +68,12 @@ impl Default for RootRunOptions {
             forced_plugins: None,
             register_builtins: true,
             thinking_level: None,
-            permission: Permission::default(),
+            mode: Mode::default(),
+            mode_plugin: None,
             pause_gate: None,
             steer_queues: None,
             ui: None,
             route: None,
-            policy: None,
         }
     }
 }
@@ -83,6 +83,7 @@ pub struct RootRunResult {
     pub final_content: Option<String>,
     pub selection: PluginSelection,
     pub run_result: AgentRunResult,
+    pub metrics: Option<MetricsSnapshot>,
 }
 
 pub struct RootRunHandle {
@@ -91,25 +92,120 @@ pub struct RootRunHandle {
     pub handle: AgentHandle,
     pub active_set: ActivePluginSet,
     pub ctx: PluginContext,
+    /// Signalled when the event proxy has drained the loop's stream and
+    /// finished dispatching every event to the active plugins.
+    ///
+    /// [`Self::join`] awaits it: a plugin's `on_event` may write (the
+    /// conversation plugin checkpoints the session on `TurnEnd`), and returning
+    /// from `join` before that write lands would let a host's own read-modify-
+    /// write of the same store race it.
+    dispatch_drained: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl RootRunHandle {
+    /// Take the observed event stream.
+    ///
+    /// Events flow through a non-blocking proxy that dispatches
+    /// [`ActivePluginSet::dispatch_event`] to all active plugins (including
+    /// [`MetricsPlugin`] and [`ConversationPlugin`]) and emits live
+    /// `AgentEvent::Custom { kind: "metrics_update" }` snapshots for downstream
+    /// hosts (TUI, daemon, desktop panel).
     pub fn take_events(&mut self) -> Option<mpsc::Receiver<ObservedEvent>> {
-        self.handle.take_events()
+        let mut inner_rx = self.handle.take_events()?;
+        let (tx, rx) = mpsc::channel(512);
+        let (drained_tx, drained_rx) = tokio::sync::oneshot::channel();
+        self.dispatch_drained = Some(drained_rx);
+        let active_set = self.active_set.clone();
+        let ctx = self.ctx.clone();
+        let metrics_plugin = self.ctx.metrics_plugin().cloned();
+        let session_id = self.ctx.session_id.clone();
+
+        tokio::spawn(async move {
+            while let Some(observed) = inner_rx.recv().await {
+                active_set.dispatch_event(&observed, &ctx).await;
+                let snap = metrics_plugin
+                    .as_ref()
+                    .and_then(|mp| mp.snapshot(&session_id));
+                let agent_id = observed.agent_id.clone();
+                let ts = observed.timestamp_ms;
+                let is_relevant = matches!(
+                    &observed.event,
+                    thunder_agent_loop::types::event::AgentEvent::TurnStart { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ReasoningDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ToolExecStart { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ToolExecResult { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ContextCompacted { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::TurnEnd { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::LoopComplete { .. }
+                );
+                let is_micro = matches!(
+                    &observed.event,
+                    thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ReasoningDelta { .. }
+                );
+
+                if tx.send(observed).await.is_err() {
+                    break;
+                }
+
+                if is_relevant {
+                    if let Some(snapshot) = snap {
+                        if let Ok(payload) = serde_json::to_value(&snapshot) {
+                            let custom = ObservedEvent {
+                                agent_id,
+                                event: thunder_agent_loop::types::event::AgentEvent::Custom {
+                                    kind: METRICS_UPDATE_EVENT_KIND.to_string(),
+                                    payload,
+                                },
+                                timestamp_ms: ts,
+                            };
+                            if is_micro {
+                                let _ = tx.try_send(custom);
+                            } else if tx.send(custom).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // The loop's stream is closed and every event has been dispatched:
+            // release `join`, which is waiting on exactly this.
+            let _ = drained_tx.send(());
+        });
+
+        Some(rx)
     }
 
-    pub async fn join(self) -> Result<RootRunResult, AgentError> {
+    pub fn metrics_snapshot(&self) -> Option<MetricsSnapshot> {
+        self.ctx
+            .metrics_plugin()
+            .and_then(|mp| mp.snapshot(&self.ctx.session_id))
+    }
+
+    pub async fn join(mut self) -> Result<RootRunResult, AgentError> {
         let run_result = self.handle.join().await?;
+        // The loop is done, but its event proxy may still be dispatching the
+        // tail of the stream to plugins. Wait for that before `on_finish`, so
+        // both halves of the same run settle in order.
+        if let Some(drained) = self.dispatch_drained.take() {
+            let _ = drained.await;
+        }
         let _ = self
             .active_set
             .dispatch_finish(&run_result, &self.ctx)
             .await;
+        let metrics = self
+            .ctx
+            .metrics_plugin()
+            .and_then(|mp| mp.snapshot(&self.ctx.session_id));
 
         Ok(RootRunResult {
             agent_id: self.agent_id,
             final_content: run_result.final_content.clone(),
             selection: self.selection,
             run_result,
+            metrics,
         })
     }
 }
@@ -123,7 +219,7 @@ pub struct ThunderRoot {
     selector: PluginSelector,
     workspace_root: Option<PathBuf>,
     /// Extra roots (e.g. referenced repositories) sharing the workspace's
-    /// read/write standing in the security jail.
+    /// read/write standing, alongside the primary workspace.
     extra_roots: Vec<PathBuf>,
     scratch_root: PathBuf,
     provider_registry: ProviderRegistry,
@@ -133,8 +229,9 @@ pub struct ThunderRoot {
     /// Defaults to `NullHostUi`: no panel, every dialog cancelled, every caller
     /// degrades to its safe branch.
     host_ui: Arc<dyn HostUi>,
+    metrics_plugin: Option<MetricsPlugin>,
+    initial_session_total_tokens: Option<usize>,
 }
-
 impl ThunderRoot {
     pub fn new(config: AgentConfig) -> Self {
         let scratch_root = std::env::temp_dir().join("thunder_root_scratch");
@@ -162,6 +259,8 @@ impl ThunderRoot {
             provider_registry: ProviderRegistry::default(),
             active_model,
             host_ui: Arc::new(thunder_agent_loop::types::ui::NullHostUi),
+            metrics_plugin: None,
+            initial_session_total_tokens: None,
         }
     }
 
@@ -203,6 +302,20 @@ impl ThunderRoot {
 
     pub fn provider_registry(&self) -> &ProviderRegistry {
         &self.provider_registry
+    }
+
+    /// Attach a shared [`MetricsPlugin`] so session telemetry (token rates,
+    /// cache hit rates, context occupancy, durations) persists across runs.
+    pub fn with_metrics_plugin(mut self, plugin: MetricsPlugin) -> Self {
+        self.metrics_plugin = Some(plugin.clone());
+        self.registry.register(plugin);
+        self
+    }
+
+    /// Seed the cumulative billed tokens for the session prior to this run.
+    pub fn with_initial_session_total_tokens(mut self, total: usize) -> Self {
+        self.initial_session_total_tokens = Some(total);
+        self
     }
 
     pub fn with_plugin<P: crate::plugin::ThunderPlugin + 'static>(mut self, plugin: P) -> Self {
@@ -345,48 +458,94 @@ impl ThunderRoot {
             "ThunderRoot executing prompt"
         );
 
-        let active_set = self
+        let mut active_set = self
             .registry
             .create_active_set(&selection.active_plugin_ids);
 
-        // 1b. Resolve the approval policy for this run.
+        // 1b. Resolve the mode this run is judged in.
         //
-        // A host-supplied policy is reused across the session (so remembered
-        // rules and any host-chosen approval mode survive); a fresh one defaults
-        // to `Never` (no prompting). The tier is this run's capability ceiling.
-        let effective_permission = options.permission;
-        let policy = options
-            .policy
+        // A host-supplied plugin is reused across the session (so remembered
+        // rules and mid-session mode switches survive); a fresh one runs in the
+        // mode the options named. The gate always installs — the mode is what
+        // decides whether it ever asks.
+        let mode_plugin = options
+            .mode_plugin
             .clone()
-            .unwrap_or_else(|| SessionPolicy::new(options.permission, Default::default()));
-        policy.set_tier(options.permission).await;
-        let mode = policy.mode().await;
+            .unwrap_or_else(|| ModePlugin::new(options.mode));
+        mode_plugin.set_mode(options.mode);
+        // Bind the plan file's location and name. The plugin is shared across a
+        // session's runs, so the binding is refreshed per run rather than only
+        // at construction — otherwise a session that changed workspace would
+        // still plan into the first one's directory.
+        mode_plugin.bind_session(self.workspace_root.clone(), &session_id);
         let ui = options
             .ui
             .clone()
             .unwrap_or_else(|| Arc::clone(&self.host_ui));
 
+        // The mode plugin is the host's own, not a registry selection, so it has
+        // to be added to the active set explicitly: the gate it provides judges
+        // every call, and the plan tools it carries are how the model leaves
+        // plan mode at all.
+        active_set.push(Arc::clone(&mode_plugin) as Arc<dyn crate::plugin::ThunderPlugin>);
+
+        // Install the telemetry / token-speed plugin so every run tracks live
+        // tok/s, context occupancy, prompt-cache hit rates, and wall-clock time.
+        let metrics_plugin = self.metrics_plugin.clone().unwrap_or_default();
+        let initial_ctx_tokens = match &context_input {
+            ContextInput::Text(t) => {
+                thunder_agent_loop::core::token_estimator::estimate_token_count(t)
+            }
+            ContextInput::Messages(msgs) => msgs
+                .iter()
+                .filter_map(|m| m.content_str())
+                .map(thunder_agent_loop::core::token_estimator::estimate_token_count)
+                .sum(),
+            ContextInput::Buffer(buf) => buf.estimated_tokens(),
+        };
+        let resolved_spec = self.provider_registry.resolve_ref(&self.active_model);
+        let context_window_limit = resolved_spec
+            .map(|s| s.context_window)
+            .filter(|&w| w > 0)
+            .or_else(|| {
+                let w = self.config.pruning.max_context_tokens;
+                (w > 0).then_some(w)
+            });
+        let effective_thinking = options
+            .thinking_level
+            .clone()
+            .or_else(|| self.config.thinking_level.clone());
+        metrics_plugin.configure_session(
+            &session_id,
+            Some(self.active_model.selection_id()),
+            effective_thinking,
+            context_window_limit,
+            initial_ctx_tokens,
+            self.initial_session_total_tokens.unwrap_or(0),
+        );
+        if !selection.active_plugin_ids.iter().any(|id| id == "metrics") {
+            active_set
+                .push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
+        }
+
         info!(
             session_id = %session_id,
-            tier = ?options.permission,
-            mode = mode.as_str(),
-            effective_tier = ?effective_permission,
-            "Resolved permission policy"
+            mode = options.mode.as_str(),
+            "Resolved mode"
         );
 
         // 2. Prepare Plugin Context
-        // The permission tier is carried here so every plugin — including the
-        // TypeScript sidecar, whose `ctx.exec()` / `ctx.fs.writeFile()` bypass
-        // the loop's tool pipeline — inherits the *run's* ceiling instead of a
-        // process-wide default.
+        // The mode is carried here so a plugin that frames guidance to the
+        // model can speak of the mode the user chose.
         // Filled in after the agent exists — see the note at the fill site.
         let tool_slot: ToolInvokerSlot = empty_tool_invoker_slot();
         let mut ctx = PluginContext::new(&session_id)
             .with_cancellation(cancel.clone())
-            .with_permission(effective_permission)
+            .with_mode(options.mode)
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
-            .with_policy(Arc::clone(&policy))
+            .with_mode_plugin(Arc::clone(&mode_plugin))
+            .with_metrics_plugin(metrics_plugin)
             .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
@@ -448,8 +607,9 @@ impl ThunderRoot {
             ));
             if self.extra_roots.is_empty() {
                 base_prompt.push_str(
-                    "All file paths and shell write targets must stay within the primary workspace \
-                     unless the user explicitly instructs otherwise.",
+                    "Work inside the primary workspace. A path outside it is not forbidden — the \
+                     user is asked before anything outside the working area is written — so prefer \
+                     a path inside the workspace whenever there is a choice.",
                 );
             } else {
                 base_prompt
@@ -458,8 +618,10 @@ impl ThunderRoot {
                     base_prompt.push_str(&format!("- {}\n", root.display()));
                 }
                 base_prompt.push_str(
-                    "All file paths and shell write targets must stay within the primary workspace or one of the \
-                     referenced repositories above, unless the user explicitly instructs otherwise. \n\
+                    "Work inside the primary workspace or one of the referenced repositories above. \
+                     Paths outside them are not forbidden — the user is asked before anything \
+                     outside the working area is written — so prefer a path inside one of them \
+                     whenever there is a choice. \n\
                      When working in a repository, address files by absolute path (read_file / write_file) or pass its \
                      directory as `cwd` for shell commands; prefer write_file over shell redirections for edits.",
                 );
@@ -475,7 +637,6 @@ impl ThunderRoot {
         // Tags every tool call, which is how a plugin's reverse RPC finds this
         // run's services instead of another run's.
         agent_cfg.route = Some(route.clone());
-        agent_cfg.permission = effective_permission;
         agent_cfg.system_prompt = Some(combined_system_prompt);
         if let Some(ref tl) = options.thinking_level {
             agent_cfg.thinking_level = Some(tl.clone());
@@ -507,16 +668,22 @@ impl ThunderRoot {
         }
 
         // Install the code capability pack: this host is a coding agent, so it
-        // gets the shell/file tools, the workspace path jail and atomic writes.
-        // The generic loop knows none of that.
+        // gets the shell/file tools, the atomic writes, and the scope that tells
+        // the kernel which paths are inside the working area. The generic loop
+        // knows none of that.
         let mut agent = AgentLoop::new(agent_cfg)
             .with_id(format!("root_{}", session_id))
-            .with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
+            .with_tool_scope(Arc::new(
+                thunder_agent_pack_code::CodeScope::from_agent_config(
+                    &self.config,
+                    self.workspace_root.as_deref(),
+                ),
+            ));
 
-        // The judge. Always installed, including in `yolo`: the mode stops the
-        // *prompting*, not the tier check, and one code path for every mode means
-        // there is no configuration in which the ceiling is skipped.
-        agent = agent.with_policy(Arc::clone(&policy), ui.clone());
+        // The judge. Always installed, including in `yolo`: the mode is what
+        // decides whether a call asks, and one code path for every mode means
+        // there is no configuration in which the floor is the only check.
+        agent = agent.with_tool_gate(Some(Arc::clone(&mode_plugin) as _), Some(ui.clone()));
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);
@@ -528,55 +695,29 @@ impl ThunderRoot {
         }
 
         if options.register_builtins {
-            let perm = options.permission;
+            // Every tool, every run. Registration is no longer a capability
+            // decision: the gate decides what a call may do, and a tool absent
+            // from the model's list is a tool the model cannot even ask to use.
             let ws = self.workspace_root.clone();
-            // Gate by capability tier: a denied tool is never registered, so it
-            // never reaches the model's tool list in the first place.
-            if perm.allows_read() {
-                let tool = ReadFileTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
+            let mut tools: Vec<Arc<dyn thunder_agent_loop::types::tool::AgentTool>> = Vec::new();
+            macro_rules! push {
+                ($tool:expr) => {{
+                    let tool = $tool;
+                    let tool = match &ws {
+                        Some(dir) => tool.with_default_cwd(dir.clone()),
+                        None => tool,
+                    };
+                    tools.push(Arc::new(tool));
+                }};
             }
-            if perm.allows_write() {
-                let tool = WriteFileTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
-            }
-            if perm.allows_exec() {
-                let tool = BashTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => tool.with_default_cwd(dir.clone()),
-                    None => tool,
-                }));
-            }
-            // Read-only lookup tools share the read capability tier.
-            if perm.allows_read() {
-                let grep = GrepTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => grep.with_default_cwd(dir.clone()),
-                    None => grep,
-                }));
-                let find = FindTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => find.with_default_cwd(dir.clone()),
-                    None => find,
-                }));
-                let ls = ListDirTool::default();
-                agent.register_tool(Arc::new(match &ws {
-                    Some(dir) => ls.with_default_cwd(dir.clone()),
-                    None => ls,
-                }));
-            }
-            if perm != Permission::Bash {
-                info!(
-                    session_id = %session_id,
-                    permission = %perm.describe(),
-                    "Built-in tools restricted by permission tier"
-                );
+            push!(ReadFileTool::default());
+            push!(WriteFileTool::default());
+            push!(BashTool::default());
+            push!(GrepTool::default());
+            push!(FindTool::default());
+            push!(ListDirTool::default());
+            for tool in tools {
+                agent.register_tool(tool);
             }
         }
 
@@ -592,12 +733,12 @@ impl ThunderRoot {
         //   * the snapshot is taken here because `register_tool` rebuilds the
         //     pipeline, so an earlier snapshot would miss later registrations;
         //   * dispatching through the pipeline — not the bare registry — is what
-        //     makes a plugin-initiated call subject to the same tier, jail,
+        //     makes a plugin-initiated call subject to the same approval,
         //     transaction and approval gate as a model-initiated one.
         {
             let mut slot = tool_slot.write().await;
             *slot = Some(Arc::new(
-                PipelineToolInvoker::new(agent.tool_executor().clone())
+                ExecutorToolInvoker::new(agent.tool_executor().clone())
                     .with_turn(1)
                     .with_cancellation(cancel.clone())
                     .with_ui(Arc::clone(&ui)),
@@ -631,6 +772,7 @@ impl ThunderRoot {
             handle,
             active_set,
             ctx,
+            dispatch_drained: None,
         })
     }
 

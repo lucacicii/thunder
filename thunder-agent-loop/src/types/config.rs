@@ -76,104 +76,6 @@ impl Default for LoopGuardConfig {
     }
 }
 
-/// Dynamic toggles for the 4-layer Onion Middleware Pipeline.
-/// Allows cleanly disabling transactions, security, or resources in test/benchmark environments.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiddlewareConfig {
-    pub enable_security_guard: bool,
-    pub enable_resource_guard: bool,
-    pub enable_transaction: bool,
-    pub enable_output_post_processor: bool,
-}
-
-impl Default for MiddlewareConfig {
-    fn default() -> Self {
-        let disable_tx = std::env::var("THUNDER_DISABLE_TX")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let disable_sec = std::env::var("THUNDER_DISABLE_SECURITY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        Self {
-            enable_security_guard: !disable_sec,
-            enable_resource_guard: true,
-            enable_transaction: !disable_tx,
-            enable_output_post_processor: true,
-        }
-    }
-}
-
-/// Tool capability tier for an agent unit.
-///
-/// Progression: `Read` ⊂ `Write` ⊂ `Bash`.
-/// This is enforced by the host (which tools are registered) and by
-/// [`crate::tools::middleware::permission_guard::PermissionGuardMiddleware`]
-/// (defense in depth). It never leaks into the loop's dialogue logic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Permission {
-    /// Read-only: `read_file` only.
-    Read,
-    /// Read + mutate workspace: adds `write_file`.
-    Write,
-    /// Full: adds `bash`.
-    Bash,
-}
-
-impl Permission {
-    pub fn allows_read(self) -> bool {
-        // Every tier may read.
-        true
-    }
-
-    pub fn allows_write(self) -> bool {
-        matches!(self, Self::Write | Self::Bash)
-    }
-
-    pub fn allows_exec(self) -> bool {
-        matches!(self, Self::Bash)
-    }
-
-    /// Whether this tier permits a privileged built-in tool by name.
-    ///
-    /// Unknown names return `true`: non-builtin tools (plugin / MCP) are gated
-    /// by their own layers, not by this ladder.
-    pub fn allows_builtin(self, tool_name: &str) -> bool {
-        match tool_name {
-            "read_file" => self.allows_read(),
-            "write_file" => self.allows_write(),
-            "bash" => self.allows_exec(),
-            _ => true,
-        }
-    }
-
-    /// Lowercase identifier used in configs, JSONL role files, and IPC payloads.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-            Self::Bash => "bash",
-        }
-    }
-
-    /// Human-readable summary injected into prompts / telemetry.
-    pub fn describe(self) -> &'static str {
-        match self {
-            Self::Read => "read-only (fs_write=off, bash=off)",
-            Self::Write => "read+write (fs_write=on, bash=off)",
-            Self::Bash => "full (fs_write=on, bash=on)",
-        }
-    }
-}
-
-impl Default for Permission {
-    /// `Bash` preserves the historical behaviour of every existing caller.
-    fn default() -> Self {
-        Self::Bash
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub model: String,
@@ -203,15 +105,12 @@ pub struct AgentConfig {
     pub prompt_cache_warm: Option<PromptCacheWarmSettings>,
     /// Additional workspace roots (e.g. repositories referenced by the task)
     /// granted the same read/write standing as the primary workspace. The
-    /// security guard jails paths to the union of primary root + these roots.
+    /// the host's scope treats them as inside the working area.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_workspace_roots: Vec<PathBuf>,
-    pub middleware: MiddlewareConfig,
     pub pruning: ContextPruningConfig,
     pub scratchpad: ScratchpadConfig,
     pub loop_guard: LoopGuardConfig,
-    /// Tool capability tier for this unit (defaults to `Bash`).
-    pub permission: Permission,
     /// Identifies this run for services shared across runs (see
     /// [`crate::types::tool::ToolExecutionContext::route`]).
     ///
@@ -239,11 +138,9 @@ impl Default for AgentConfig {
             session_id: None,
             prompt_cache_warm: None,
             extra_workspace_roots: Vec::new(),
-            middleware: MiddlewareConfig::default(),
             pruning: ContextPruningConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             loop_guard: LoopGuardConfig::default(),
-            permission: Permission::default(),
             route: None,
         }
     }
@@ -278,7 +175,7 @@ impl AgentConfig {
     }
 
     /// Grant additional workspace roots the same read/write standing as the
-    /// primary workspace (multi-root jail).
+    /// primary workspace.
     pub fn with_extra_workspace_roots(
         mut self,
         roots: impl IntoIterator<Item = impl Into<PathBuf>>,
@@ -290,21 +187,6 @@ impl AgentConfig {
 
     pub fn with_max_stream_retries(mut self, retries: usize) -> Self {
         self.max_stream_retries = retries;
-        self
-    }
-
-    /// Disables atomic transaction middleware (e.g. for testing raw tool behavior)
-    pub fn without_transactions(mut self) -> Self {
-        self.middleware.enable_transaction = false;
-        self
-    }
-
-    /// Disables all onion middlewares for a zero-overhead raw execution pipeline
-    pub fn without_middlewares(mut self) -> Self {
-        self.middleware.enable_security_guard = false;
-        self.middleware.enable_resource_guard = false;
-        self.middleware.enable_transaction = false;
-        self.middleware.enable_output_post_processor = false;
         self
     }
 
@@ -332,12 +214,6 @@ impl AgentConfig {
 
     pub fn with_loop_guard(mut self, loop_guard: LoopGuardConfig) -> Self {
         self.loop_guard = loop_guard;
-        self
-    }
-
-    /// Set the tool capability tier for this unit.
-    pub fn with_permission(mut self, permission: Permission) -> Self {
-        self.permission = permission;
         self
     }
 

@@ -1,7 +1,6 @@
 //! One-call installation of the code capability pack onto a loop.
 
 use crate::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
-use crate::pipeline::build_code_pipeline;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 
@@ -24,21 +23,43 @@ impl Default for CodePackConfig {
     }
 }
 
-/// Install the code pack onto a loop: its pipeline, and its built-in tools.
+/// Install the code pack onto a loop: its pipeline, its scope, and its built-in
+/// tools.
 ///
-/// The pipeline builder is registered first so the built-ins registered after
-/// it are picked up on the next rebuild, and every later `register_tool` keeps
-/// running through the pack's layers.
+/// The scope comes along with the tools because a question about a path and a
+/// kernel that does not know where that path is would be answering two
+/// different questions.
+///
+/// Each tool gets the workspace as its default directory, so a relative path in
+/// a call means "relative to the workspace" — the meaning it had when the
+/// transaction layer joined the workspace root, and the meaning a bare tool
+/// would lose by resolving against the process working directory instead.
 pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
-    agent = agent.with_pipeline_builder(Arc::new(build_code_pipeline));
+    let scope = crate::scope::CodeScope::from_agent_config(agent.config(), None);
+    agent = agent.with_tool_scope(Arc::new(scope));
 
     if config.register_builtins {
-        agent.register_tool(Arc::new(BashTool::default()));
-        agent.register_tool(Arc::new(ReadFileTool::default()));
-        agent.register_tool(Arc::new(WriteFileTool::default()));
-        agent.register_tool(Arc::new(GrepTool::default()));
-        agent.register_tool(Arc::new(FindTool::default()));
-        agent.register_tool(Arc::new(ListDirTool::default()));
+        let ws = agent.config().workspace_dir.clone();
+        let mut bash = BashTool::default();
+        let mut read = ReadFileTool::default();
+        let mut write = WriteFileTool::default();
+        let mut grep = GrepTool::default();
+        let mut find = FindTool::default();
+        let mut ls = ListDirTool::default();
+        if let Some(ref dir) = ws {
+            bash = bash.with_default_cwd(dir.clone());
+            read = read.with_default_cwd(dir.clone());
+            write = write.with_default_cwd(dir.clone());
+            grep = grep.with_default_cwd(dir.clone());
+            find = find.with_default_cwd(dir.clone());
+            ls = ls.with_default_cwd(dir.clone());
+        }
+        agent.register_tool(Arc::new(bash));
+        agent.register_tool(Arc::new(read));
+        agent.register_tool(Arc::new(write));
+        agent.register_tool(Arc::new(grep));
+        agent.register_tool(Arc::new(find));
+        agent.register_tool(Arc::new(ls));
     }
 
     agent

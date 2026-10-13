@@ -75,6 +75,7 @@ async fn test_app_streaming_event_ingestion() {
         event: AgentEvent::TurnStart {
             turn: 1,
             timestamp: 100,
+            estimated_prompt_tokens: 10,
         },
         timestamp_ms: 0,
     });
@@ -677,6 +678,36 @@ async fn a_tool_result_that_arrives_after_the_stop_still_lands() {
         1,
         "results arriving twice are recorded once"
     );
+}
+
+/// Shift+Tab is the fast path to the mode: with no argument slot to walk, it
+/// cycles the approval mode, and the argument walk keeps priority while it has
+/// something to do.
+#[tokio::test]
+async fn shift_tab_cycles_the_mode_when_no_argument_is_being_edited() {
+    use thunder_agent_root::plugins::mode::Mode;
+    let mut app = App::new("gpt-4o");
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    app.mode_plugin.set_mode(Mode::Plan);
+    for expected in [Mode::Ask, Mode::AcceptEdits, Mode::Yolo, Mode::Plan] {
+        app.handle_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+            tx.clone(),
+        );
+        assert_eq!(app.mode_plugin.mode(), expected);
+    }
+
+    // Inside an argument slot the walk wins: the value changes, the mode does
+    // not. Losing a typed argument to a mode change would be a silent edit.
+    app.mode_plugin.set_mode(Mode::Plan);
+    app.set_input("/thinking ".to_string());
+    app.handle_key(
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+        tx.clone(),
+    );
+    assert_eq!(app.input, "/thinking high", "Shift+Tab still walks values");
+    assert_eq!(app.mode_plugin.mode(), Mode::Plan, "and does not cycle");
 }
 
 #[tokio::test]

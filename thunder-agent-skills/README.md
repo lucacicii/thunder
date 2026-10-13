@@ -16,8 +16,8 @@
    - 结构化 JSON 与 YAML 配置文件。
    - XML 标签语法（`<skill>...<instructions>...</skill>`）。
 2. **自动化目录扫描与全局缓存（120s TTL）**：
-   - 递归扫描工程工作区（`.agents/skills`、`.pi/skills`）与用户全局目录（`~/.agents/skills`）。
-   - 内置 `DEFAULT_SKILLS_CACHE` 全局缓存，TTL 设为 120 秒，避免多轮高频对话下反复遍历文件系统造成的 I/O 阻塞与性能毛刺。
+   - 递归扫描工程工作区（`.agents/skills`、`.pi/skills`、`skills`）与用户全局目录（`~/.agents/skills`、`~/.pi/agent/skills`、`~/.pi/skills`）以及数据根下的 `skills`。
+   - 扫描结果的全局缓存（TTL 设为 120 秒）由宿主技能插件 `thunder-agent-root` 的 `DEFAULT_SKILLS_CACHE` 提供，避免多轮高频对话下反复遍历文件系统造成的 I/O 阻塞与性能毛刺。
 3. **意图触发词快速匹配**：
    - 对用户输入的 Prompt 进行毫秒级关键词、标签与意图匹配，精准筛选与任务相关的 Playbook。
 4. **动态运行时工具集成**：

@@ -35,7 +35,7 @@ use thunder_conversation::prelude::*;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Initialize file-system store
-    let store = FsConversationStore::new("~/.thunder/conversations").await?;
+    let store = FsConversationStore::new(FsConversationStore::default_store_root()).await?;
     let manager = ConversationManager::new(store);
 
     // 2. Create conversation

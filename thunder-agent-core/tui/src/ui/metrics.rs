@@ -154,13 +154,23 @@ pub fn shorten_path(path: &Path, max: usize) -> String {
 pub struct Metrics {
     /// Show the bar. Off restores the row to the transcript.
     pub enabled: bool,
-    /// Delta events seen this run. The panel counts events the same way, so the
-    /// two surfaces report the same figure for the same stream.
+    /// Estimated tokens streamed this run (answer + reasoning), matching the
+    /// desktop panel's live counter.
     pub live_tokens: usize,
     pub live_reasoning: usize,
-    /// When the first delta of this run arrived; the tps clock starts here, not
-    /// at submit, so queueing and prompt processing are not billed as latency
-    /// the model did not have.
+    completed_tokens: usize,
+    completed_reasoning: usize,
+    turn_text: String,
+    turn_reasoning: String,
+    turn_text_tokens: usize,
+    turn_reasoning_tokens: usize,
+    turn_gen_settled: bool,
+    /// Active generation time accumulated from earlier turns in this run,
+    /// excluding tool execution and prompt prefill wait.
+    completed_gen_secs: f64,
+    /// When the first delta of the current turn arrived; the tps clock starts
+    /// here, not at submit, so queueing and prompt processing are not billed
+    /// as latency the model did not have.
     first_token_at: Option<Instant>,
     /// Wall clock from submit to the run finishing, matching the panel's
     /// total-time figure (which includes tool execution and queueing).
@@ -168,9 +178,47 @@ pub struct Metrics {
     pub last_run_wall_ms: Option<u64>,
     pub last_run: Option<AgentStats>,
     pub last_turn: Option<TurnStats>,
+    /// The last authoritative snapshot's gauges. They advance *during* a turn —
+    /// context occupancy creeps up with the answer and the cumulative counter
+    /// with it — which the local per-turn figures cannot: those only move at a
+    /// turn boundary. Preferring them is what keeps this bar and the desktop
+    /// panel reporting the same numbers.
+    snapshot_context: Option<usize>,
+    snapshot_session_total: Option<usize>,
+    snapshot_live_tps: Option<f64>,
 }
-
 impl Metrics {
+    /// Update directly from an authoritative [`MetricsSnapshot`] produced by
+    /// `thunder-agent-root`'s `MetricsPlugin`.
+    pub fn apply_snapshot(&mut self, snap: &thunder_agent_root::plugins::MetricsSnapshot) {
+        self.live_tokens = snap.live_tokens;
+        self.live_reasoning = snap.live_reasoning_tokens;
+        self.snapshot_live_tps = Some(snap.live_tps);
+        if snap.context_tokens > 0 {
+            self.snapshot_context = Some(snap.context_tokens);
+        }
+        self.snapshot_session_total = Some(snap.session_total_tokens);
+        if let Some(avg) = snap.avg_tps {
+            if let Some(last) = &mut self.last_run {
+                last.avg_tokens_per_second = Some(avg);
+            } else {
+                self.last_run = Some(AgentStats {
+                    avg_tokens_per_second: Some(avg),
+                    total_prompt_tokens: snap.prompt_tokens.unwrap_or(0),
+                    total_completion_tokens: snap.completion_tokens.unwrap_or(0),
+                    total_cached_tokens: snap.cached_tokens,
+                    total_reasoning_tokens: snap.reasoning_tokens.unwrap_or(0),
+                    ..Default::default()
+                });
+            }
+        }
+        if snap.context_tokens > 0 {
+            if let Some(turn) = &mut self.last_turn {
+                turn.completion_tokens = snap.completion_tokens;
+                turn.prompt_tokens = snap.prompt_tokens;
+            }
+        }
+    }
     pub fn new() -> Self {
         Self {
             enabled: true,
@@ -183,22 +231,87 @@ impl Metrics {
     pub fn begin_run(&mut self) {
         self.live_tokens = 0;
         self.live_reasoning = 0;
+        self.completed_tokens = 0;
+        self.completed_reasoning = 0;
+        self.turn_text.clear();
+        self.turn_reasoning.clear();
+        self.turn_text_tokens = 0;
+        self.turn_reasoning_tokens = 0;
+        self.turn_gen_settled = false;
+        self.completed_gen_secs = 0.0;
         self.first_token_at = None;
         self.run_started_at = Some(Instant::now());
         self.last_run_wall_ms = None;
     }
 
     pub fn count_token_delta(&mut self) {
+        self.count_token_delta_str("x");
+    }
+
+    pub fn count_token_delta_str(&mut self, delta: &str) {
         self.first_token_at.get_or_insert_with(Instant::now);
-        self.live_tokens += 1;
+        self.turn_text.push_str(delta);
+        self.turn_text_tokens =
+            thunder_agent_loop::core::token_estimator::estimate_token_count(&self.turn_text);
+        self.sync_live_counts();
     }
 
     pub fn count_reasoning_delta(&mut self) {
+        self.count_reasoning_delta_str("x");
+    }
+
+    pub fn count_reasoning_delta_str(&mut self, delta: &str) {
         self.first_token_at.get_or_insert_with(Instant::now);
-        self.live_reasoning += 1;
+        self.turn_reasoning.push_str(delta);
+        self.turn_reasoning_tokens =
+            thunder_agent_loop::core::token_estimator::estimate_token_count(&self.turn_reasoning);
+        self.sync_live_counts();
+    }
+
+    /// Pause the live generation clock while tools execute so tool wall-clock
+    /// time does not dilute live tok/s.
+    pub fn pause_generation_for_tools(&mut self) {
+        if let Some(started) = self.first_token_at.take() {
+            self.completed_gen_secs += started.elapsed().as_secs_f64();
+            self.turn_gen_settled = true;
+        }
+    }
+
+    fn sync_live_counts(&mut self) {
+        self.live_tokens =
+            self.completed_tokens + self.turn_text_tokens + self.turn_reasoning_tokens;
+        self.live_reasoning = self.completed_reasoning + self.turn_reasoning_tokens;
     }
 
     pub fn record_turn(&mut self, stats: &TurnStats) {
+        if let Some(started) = self.first_token_at.take() {
+            self.completed_gen_secs += started.elapsed().as_secs_f64();
+        } else if !self.turn_gen_settled {
+            let ct = stats.completion_tokens.unwrap_or(0);
+            if let Some(tps) = stats.tokens_per_second.filter(|&t| t > 0.0) {
+                if ct > 0 {
+                    self.completed_gen_secs += ct as f64 / tps;
+                }
+            } else if stats.duration_ms > 0 && ct > 0 {
+                self.completed_gen_secs += stats.duration_ms as f64 / 1000.0;
+            }
+        }
+        let turn_comp = stats
+            .completion_tokens
+            .filter(|&c| c > 0)
+            .unwrap_or(self.turn_text_tokens + self.turn_reasoning_tokens);
+        let turn_reas = stats
+            .reasoning_tokens
+            .filter(|&r| r > 0)
+            .unwrap_or(self.turn_reasoning_tokens);
+        self.completed_tokens += turn_comp;
+        self.completed_reasoning += turn_reas;
+        self.turn_text.clear();
+        self.turn_reasoning.clear();
+        self.turn_text_tokens = 0;
+        self.turn_reasoning_tokens = 0;
+        self.turn_gen_settled = false;
+        self.sync_live_counts();
         self.last_turn = Some(stats.clone());
     }
 
@@ -207,11 +320,23 @@ impl Metrics {
     pub fn reset_for_session(&mut self) {
         self.live_tokens = 0;
         self.live_reasoning = 0;
+        self.completed_tokens = 0;
+        self.completed_reasoning = 0;
+        self.turn_text.clear();
+        self.turn_reasoning.clear();
+        self.turn_text_tokens = 0;
+        self.turn_reasoning_tokens = 0;
+        self.turn_gen_settled = false;
+        self.completed_gen_secs = 0.0;
         self.first_token_at = None;
         self.run_started_at = None;
         self.last_run_wall_ms = None;
         self.last_run = None;
         self.last_turn = None;
+        // Authoritative figures belong to the conversation that produced them.
+        self.snapshot_context = None;
+        self.snapshot_session_total = None;
+        self.snapshot_live_tps = None;
     }
 
     pub fn finish_run(&mut self, stats: Option<&AgentStats>) {
@@ -227,25 +352,36 @@ impl Metrics {
 
     /// Tokens/second for the live stream. Zero until the stream has run long
     /// enough to mean anything (the panel uses the same 0.2s floor).
+    ///
+    /// The snapshot's figure wins when there is one: it comes from the plugin's
+    /// own clock (first delta of the turn, tool time excluded), so this bar and
+    /// the desktop panel report the same number instead of two estimates.
     pub fn live_tps(&self) -> f64 {
-        let Some(started) = self.first_token_at else {
-            return 0.0;
-        };
+        if let Some(tps) = self.snapshot_live_tps.filter(|t| *t > 0.0) {
+            return tps;
+        }
         if self.live_tokens == 0 {
             return 0.0;
         }
-        let elapsed = started.elapsed().as_secs_f64();
+        let current_secs = self
+            .first_token_at
+            .map(|s| s.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let elapsed = self.completed_gen_secs + current_secs;
         if elapsed <= 0.2 {
             return 0.0;
         }
         self.live_tokens as f64 / elapsed
     }
-
-    /// Context occupancy: the last turn's provider-reported volume, falling back
-    /// to the working-context estimate before any turn has completed. This is
-    /// the panel's figure, which is why a compacted session can differ from the
-    /// message-list estimate.
+    /// Context occupancy: the authoritative snapshot while a run is under way
+    /// (it advances during a turn), else the last turn's provider-reported
+    /// volume, else the working-context estimate before any turn has completed.
+    /// This is the panel's figure, which is why a compacted session can differ
+    /// from the message-list estimate.
     pub fn context_tokens(&self, estimated: usize) -> usize {
+        if let Some(ctx) = self.snapshot_context {
+            return ctx;
+        }
         match &self.last_turn {
             Some(turn) => match (turn.prompt_tokens, turn.completion_tokens) {
                 (None, None) => estimated,
@@ -253,6 +389,13 @@ impl Metrics {
             },
             None => estimated,
         }
+    }
+
+    /// Cumulative billed usage for the session: the snapshot's counter while a
+    /// run is under way (it advances during a turn), else the conversation
+    /// store's own figure.
+    pub fn billed_total(&self, fallback: usize) -> usize {
+        self.snapshot_session_total.unwrap_or(fallback)
     }
 }
 
@@ -473,7 +616,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
     segments.push(Segment::new(vec![
         Span::styled("Total ", label),
         Span::styled(
-            format_token_count(app.conversation.stats.total_used_tokens),
+            format_token_count(metric.billed_total(app.conversation.stats.total_used_tokens)),
             value,
         ),
     ]));
@@ -709,16 +852,67 @@ mod tests {
         assert_eq!(m.live_tps(), 0.0, "too early to mean anything");
     }
 
+    /// The snapshot is the shared figure: this bar must not report a second,
+    /// differently-derived estimate when the plugin has one. Its gauges also
+    /// advance *during* a turn, which the local per-turn values cannot.
+    #[test]
+    fn the_snapshot_wins_over_the_local_figures() {
+        let mut m = Metrics::new();
+        m.begin_run();
+        m.record_turn(&TurnStats {
+            prompt_tokens: Some(1_000),
+            completion_tokens: Some(200),
+            ..Default::default()
+        });
+        assert_eq!(
+            m.context_tokens(50),
+            1_200,
+            "local figure before a snapshot"
+        );
+        assert_eq!(
+            m.billed_total(7_000),
+            7_000,
+            "conversation store before a snapshot"
+        );
+
+        m.apply_snapshot(&thunder_agent_root::plugins::MetricsSnapshot {
+            session_id: "s".to_string(),
+            live_tps: 42.5,
+            live_tokens: 100,
+            live_reasoning_tokens: 10,
+            context_tokens: 3_000,
+            session_total_tokens: 9_000,
+            ..Default::default()
+        });
+        assert_eq!(
+            m.live_tps(),
+            42.5,
+            "the snapshot's rate, not a locally derived one"
+        );
+        assert_eq!(
+            m.context_tokens(50),
+            3_000,
+            "the in-flight request's occupancy, which grows mid-turn"
+        );
+        assert_eq!(m.billed_total(7_000), 9_000, "the snapshot's counter wins");
+
+        // A different conversation must not inherit any of it.
+        m.reset_for_session();
+        assert_eq!(m.live_tps(), 0.0);
+        assert_eq!(m.context_tokens(50), 50);
+        assert_eq!(m.billed_total(7_000), 7_000);
+    }
+
     #[test]
     fn live_counters_track_the_two_streams() {
         let mut m = Metrics::new();
         m.begin_run();
-        for _ in 0..3 {
-            m.count_token_delta();
-        }
-        m.count_reasoning_delta();
-        assert_eq!(m.live_tokens, 3);
-        assert_eq!(m.live_reasoning, 1);
+        m.count_token_delta_str("Hello world from thunder");
+        let text_toks = m.live_tokens;
+        assert!(text_toks >= 4);
+        m.count_reasoning_delta_str("thinking step");
+        assert!(m.live_reasoning >= 1);
+        assert_eq!(m.live_tokens, text_toks + m.live_reasoning);
         // A new run starts the counters over.
         m.begin_run();
         assert_eq!(m.live_tokens, 0);

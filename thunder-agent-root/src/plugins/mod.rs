@@ -4,12 +4,13 @@ pub mod conversation;
 pub mod mcp;
 #[cfg(feature = "conversation")]
 pub mod memory;
-#[cfg(feature = "script-plugin")]
-pub mod script_plugin;
+pub mod metrics;
+pub mod mode;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "conversation")]
 pub mod standard;
+pub mod web;
 
 #[cfg(feature = "conversation")]
 pub use conversation::ConversationPlugin;
@@ -17,9 +18,12 @@ pub use conversation::ConversationPlugin;
 pub use mcp::McpPlugin;
 #[cfg(feature = "conversation")]
 pub use memory::MemoryPlugin;
-#[cfg(feature = "script-plugin")]
-pub use script_plugin::ScriptPlugin;
+pub use metrics::{
+    MetricsPlugin, MetricsSnapshot, SessionMetricsTracker, METRICS_UPDATE_EVENT_KIND,
+};
+pub use mode::{AllowRule, Mode, ModePlugin};
 #[cfg(feature = "skills")]
 pub use skills::SkillsPlugin;
 #[cfg(feature = "conversation")]
-pub use standard::{baseline_forced_plugins, has_ts_plugins, StandardHostBuilder};
+pub use standard::{baseline_forced_plugins, StandardHostBuilder};
+pub use web::WebPlugin;

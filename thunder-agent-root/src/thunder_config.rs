@@ -58,6 +58,11 @@ pub struct AgentSection {
     /// Long-term memory configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemorySection>,
+    /// The mode new sessions start in (`plan` / `ask` / `acceptEdits` /
+    /// `yolo`; the pre-0.4 names parse too). `None` = `yolo`, which is what
+    /// the pre-0.4 default (`never`) asked of nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<String>,
 }
 
 /// The `agent.memory` group.
@@ -140,13 +145,17 @@ impl ThunderConfig {
         if b.memory.is_some() {
             self.agent.memory = b.memory;
         }
+        if b.default_mode.is_some() {
+            self.agent.default_mode = b.default_mode;
+        }
     }
 
     /// Push the config-declared values onto a run's [`AgentConfig`].
     ///
-    /// Deliberately does **not** touch `permission`: the effective capability
-    /// tier is owned by the host's approval `SessionPolicy`, and letting a JSON
-    /// file widen it here would route around that judgement.
+    /// `defaultMode` is read elsewhere: it picks which of the host's approval
+    /// modes a new session starts in, and a mode is only ever one of the four
+    /// the host ships. There is nothing here that could widen a judgement —
+    /// there is no capability tier left to widen.
     pub fn apply_to(&self, cfg: &mut AgentConfig) {
         if let Some(turns) = self.agent.max_turns {
             cfg.max_turns = Some(turns);
@@ -176,6 +185,7 @@ mod tests {
         let mut base = ThunderConfig::default();
         base.agent.max_turns = Some(10);
         base.agent.thinking_level = Some("high".to_string());
+        base.agent.default_mode = Some("plan".to_string());
 
         let mut overlay = ThunderConfig::default();
         overlay.agent.thinking_level = Some("low".to_string());
@@ -183,6 +193,18 @@ mod tests {
         base.merge(overlay);
         assert_eq!(base.agent.max_turns, Some(10), "unset field must survive");
         assert_eq!(base.agent.thinking_level.as_deref(), Some("low"));
+        assert_eq!(
+            base.agent.default_mode.as_deref(),
+            Some("plan"),
+            "an overlay that declares no mode must not clear one"
+        );
+
+        // ...and one that does declare a mode replaces it, which is the half
+        // the daemon reads to seed a new session.
+        let mut overlay = ThunderConfig::default();
+        overlay.agent.default_mode = Some("ask".to_string());
+        base.merge(overlay);
+        assert_eq!(base.agent.default_mode.as_deref(), Some("ask"));
     }
 
     #[test]

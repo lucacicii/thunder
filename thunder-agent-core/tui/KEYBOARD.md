@@ -12,10 +12,11 @@ Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全
 
 | 命令 | 别名 | 参数 | 功能说明 |
 | :--- | :--- | :--- | :--- |
-| **`/resume`** | `/sessions`, `/load_session` | `[# \| id]` | **列出所有历史会话，或按序号/ID一键恢复继续对话** |
+| **`/resume`** | `/sessions`, `/load_session`, `/switch` | `[# \| id]` | **列出所有历史会话，或按序号/ID一键恢复继续对话** |
 | **`/help`** | `/?` | | 呼出命令参考与键盘快捷键说明 |
 | **`/model`** | `/m` | `[name]` | 查看当前模型或热切换模型（如 `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`） |
-| **`/mode`** | `/topology` | `[auto \| single]` | 切换执行模式（插件宿主 / 单 Agent 直连） |
+| **`/mode`** | | `[plan \| ask \| acceptEdits \| yolo]` | 切换权限模式（留空则显示当前模式） |
+| **`/topology`** | | `[auto \| single]` | 切换执行拓扑（插件宿主 / 单 Agent 直连） |
 | **`/skills`** | `/skill`, `/sk` | `[list \| load <name> \| scan]` | 浏览技能库目录、读取 Playbook 提示词或重新扫描外部目录 |
 | **`/mcp`** | `/server`, `/tools` | `[list \| servers \| reload]` | 列出已连接的 MCP 服务及动态工具，或重载 MCP 配置文件 |
 | **`/compact`**| `/prune`, `/compress` | | 自动压缩历史上下文，提取会话摘要并裁剪老旧轮次以节约 Token |
@@ -27,9 +28,6 @@ Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全
 | **`/health`** | `/doctor`, `/status` | | 运行多智能体与环境健康检查探针 |
 | **`/timeline`** | `/rail` | `[on \| off]` | 显示 / 隐藏对话区右缘的 turn 时间轴轨道（裸调用 = 切换） |
 | **`/details`** | `/verbose` | `[on \| off]` | 展开 / 收起思考过程与工具调用详情（默认只显示概要，裸调用 = 切换） |
-| **`/pipeline`**| `/seq` | `<task>` | 直接以串行流水线模式运行任务（Planner ➔ Coder） |
-| **`/parallel`**| `/par`, `/council` | `<task>` | 直接以多角色并行评审模式运行任务（Planner + Reviewer） |
-| **`/fanout`** | `/decompose` | `<task>` | 直接以子任务拆解分片模式并发运行任务 |
 | **`/quit`** | `/exit`, `/q` | | 优雅退出 Thunder TUI |
 
 ---
@@ -41,6 +39,7 @@ Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全
 | **`Enter`** | **发送 / 提交** | 提交输入框中的 Prompt，或执行斜杠命令 |
 | **`Shift + Enter`** | **换行** | 在输入框中换行（输入框会随行数变高）。终端不支持该组合键时用 **`Ctrl + J`** 换行 |
 | **`Tab`** | **自动补全 / 切换焦点** | 在输入 `/` 时自动补全命令；其他时候在 Input ➔ Chat ➔ 时间轴轨道之间切换焦点 |
+| **`Shift + Tab`** | **轮转权限模式** | 输入框内没有正在编辑的命令参数时，在 `plan ➔ ask ➔ acceptEdits ➔ yolo` 之间轮转；有参数候选时优先切换参数值（与 `/mode` 等价） |
 | **`↑ / ↓`** | **选择候选 / 历史命令** | 在命令补全弹窗中上下选择；在普通状态下浏览输入历史记录 |
 | **`Ctrl + N`** | **新建会话** | 清空当前对话流，创建并初始化一个新的空白 Session |
 | **`Ctrl + P`** | **轮转执行模式** | 在 `Auto ➔ Single` 之间快速轮转 |

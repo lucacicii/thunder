@@ -1,12 +1,13 @@
 use crate::error::PluginError;
+use crate::plugins::metrics::MetricsPlugin;
+use crate::plugins::mode::{Mode, ModePlugin};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::ObservedEvent;
+use thunder_agent_loop::types::gate::ToolGate;
 use thunder_agent_loop::types::invoke::ToolInvokerSlot;
-use thunder_agent_loop::types::policy::{PermissionMode, SessionPolicy};
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::AgentRunResult;
@@ -112,13 +113,11 @@ pub struct PluginContext {
     pub workspace_dir: Option<PathBuf>,
     pub scratch_dir: Option<PathBuf>,
     pub cancellation_token: CancellationToken,
-    /// Capability tier of the run this context belongs to.
+    /// The mode of the run this context belongs to.
     ///
-    /// The host is the authority on permissions; plugins inherit. Anything a
-    /// plugin does outside the loop's tool pipeline (a TypeScript plugin's
-    /// `ctx.exec()` / `ctx.fs.writeFile()`) is gated by this value, so it must
-    /// reflect the *current* run rather than a process-wide default.
-    pub permission: Permission,
+    /// The host is the authority on modes; plugins inherit, so a plugin that
+    /// frames its own guidance to the model can mention what the user chose.
+    pub mode: Mode,
     /// The host's user-interaction surface for this run.
     ///
     /// Defaults to [`thunder_agent_loop::types::ui::NullHostUi`], so an embedded
@@ -131,12 +130,12 @@ pub struct PluginContext {
     /// keyed by this, so a plugin call is authorised against the run that made
     /// it rather than whichever run registered last.
     pub route: Option<String>,
-    /// The run's permission policy.
+    /// The run's mode plugin, when the host installed one.
     ///
-    /// Plugins that can reach execution need the whole policy, not a tier: the
-    /// tier alone would leave `ctx.exec` outside the mode and the remembered
-    /// rules, which is the split this refactor exists to close.
-    pub policy: Option<Arc<SessionPolicy>>,
+    /// Held by the context so a plugin that can reach execution (through
+    /// `tools`, above) shares the *session's* rules and mode rather than a
+    /// per-call snapshot.
+    pub mode_plugin: Option<Arc<ModePlugin>>,
     /// The user input this run was started with, flattened to text.
     ///
     /// The user's turn never appears in the event stream, so a plugin that
@@ -155,6 +154,7 @@ pub struct PluginContext {
     /// Wrapped so the derived `Debug` keeps working — a trait object is not
     /// `Debug`.
     pub tools: ToolInvokerHandle,
+    pub metrics_plugin: Option<MetricsPlugin>,
 }
 
 /// Newtype over [`ToolInvokerSlot`], excluded from `Debug` like [`HostUiHandle`].
@@ -174,12 +174,13 @@ impl PluginContext {
             workspace_dir: None,
             scratch_dir: None,
             cancellation_token: CancellationToken::new(),
-            permission: Permission::default(),
+            mode: Mode::default(),
             ui: HostUiHandle(Arc::new(thunder_agent_loop::types::ui::NullHostUi)),
             route: None,
-            policy: None,
+            mode_plugin: None,
             prompt: None,
             tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
+            metrics_plugin: None,
         }
     }
 
@@ -198,9 +199,9 @@ impl PluginContext {
         self
     }
 
-    /// Set the capability tier inherited by this run's plugins.
-    pub fn with_permission(mut self, permission: Permission) -> Self {
-        self.permission = permission;
+    /// Set the mode inherited by this run's plugins.
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -210,19 +211,23 @@ impl PluginContext {
         self
     }
 
-    /// Attach the run's permission policy.
-    pub fn with_policy(mut self, policy: Arc<SessionPolicy>) -> Self {
-        self.policy = Some(policy);
+    /// Attach the run's mode plugin.
+    pub fn with_mode_plugin(mut self, mode_plugin: Arc<ModePlugin>) -> Self {
+        self.mode_plugin = Some(mode_plugin);
         self
     }
 
-    /// The run's policy, defaulting to a permissive one for embedders that have
-    /// not adopted it. Constructed fresh per call so the tier and mode are never
-    /// shared between two plugins of the same run by accident.
-    pub fn policy(&self) -> Arc<SessionPolicy> {
-        self.policy
+    /// The run's mode plugin, defaulting to a permissive one.
+    ///
+    /// Deliberately `Yolo`, not `Mode::default()`: this fallback serves hosts
+    /// that installed no mode plugin at all, and for such a host the honest
+    /// default is what the kernel would do with no gate — allow everything the
+    /// guard allows. Defaulting to a mode that asks, combined with a null UI,
+    /// would lock every plugin's call behind a dialog nobody can answer.
+    pub fn gate(&self) -> Arc<ModePlugin> {
+        self.mode_plugin
             .clone()
-            .unwrap_or_else(|| SessionPolicy::new(Permission::Bash, PermissionMode::default()))
+            .unwrap_or_else(|| ModePlugin::new(Mode::Yolo))
     }
 
     /// Attach the tool-invoker slot this run's plugins dispatch through.
@@ -257,6 +262,15 @@ impl PluginContext {
     pub fn ui(&self) -> Arc<dyn HostUi> {
         Arc::clone(&self.ui.0)
     }
+
+    pub fn with_metrics_plugin(mut self, metrics_plugin: MetricsPlugin) -> Self {
+        self.metrics_plugin = Some(metrics_plugin);
+        self
+    }
+
+    pub fn metrics_plugin(&self) -> Option<&MetricsPlugin> {
+        self.metrics_plugin.as_ref()
+    }
 }
 
 #[async_trait]
@@ -271,6 +285,16 @@ pub trait ThunderPlugin: Send + Sync {
 
     /// Optional system prompt fragment to inject into the core context.
     fn system_prompt_contribution(&self) -> Option<String> {
+        None
+    }
+
+    /// The gate this plugin wants tool calls judged by, if any.
+    ///
+    /// The kernel consults at most one gate per run: the first plugin that
+    /// provides one wins, and a host that wants to combine opinions combines
+    /// them inside its own gate. Returning `None` (the default) keeps the run
+    /// gate-less — everything the kernel's guard allows runs.
+    fn tool_gate(&self) -> Option<Arc<dyn ToolGate>> {
         None
     }
 

@@ -65,6 +65,15 @@ pub enum AgentEvent {
     TurnStart {
         turn: usize,
         timestamp: u64,
+        /// Estimated size of the prompt this turn is about to send — the whole
+        /// thing, system prompt and tool definitions included.
+        ///
+        /// Carried so a telemetry consumer can report context occupancy (and the
+        /// cost the request is about to incur) from a turn's first frame, rather
+        /// than waiting for the provider's usage report at its end. Estimated,
+        /// and replaced by the exact figure at `TurnEnd`.
+        #[serde(default)]
+        estimated_prompt_tokens: usize,
     },
     /// Streaming token for user-visible answer content
     TokenDelta {
@@ -98,6 +107,17 @@ pub enum AgentEvent {
         tool_call_id: String,
         name: String,
         result: ToolExecutionResult,
+    },
+    /// One tool call's trace, emitted for every call however it ended.
+    ///
+    /// Not routed through [`AgentEvent::Custom`]: `Custom` is opaque to the
+    /// kernel by definition, and this is the kernel's own record — a host has to
+    /// be able to read the fields to persist, filter or render them.
+    ///
+    /// Boxed: a trace dwarfs every other variant, and events are cloned once per
+    /// subscriber.
+    ToolTrace {
+        trace: Box<crate::tools::trace::ToolTrace>,
     },
     TelemetryNotice {
         turn: usize,
@@ -188,5 +208,48 @@ mod tests {
         .expect("old events deserialize");
 
         assert_eq!(event.timestamp_ms, 0);
+    }
+
+    #[test]
+    fn a_tool_trace_event_rides_under_its_own_tag() {
+        // A trace is the largest thing on this wire, so it gets its own typed
+        // variant rather than a `Custom` payload. Hosts written before it exists
+        // simply never see one.
+        let wire = serde_json::json!({
+            "type": "tool_trace",
+            "trace": {
+                "schema": 1,
+                "trace_id": "t-1",
+                "turn": 1,
+                "tool_call_id": "call_1",
+                "tool": "bash",
+                "caller": { "caller": "model" },
+                "effect": "exec",
+                "scope": "unknown",
+                "arguments": { "command": "ls" },
+                "decision": { "decision": "allow" },
+                "result": {
+                    "is_error": false,
+                    "truncated": false,
+                    "original_bytes": 3,
+                    "result_bytes": 3,
+                    "output_preview": "ok\n",
+                    "output_digest": "cbf29ce484222325"
+                },
+                "timing": {},
+                "started_at_ms": 7,
+                "finished_at_ms": 8
+            }
+        });
+
+        let event: AgentEvent = serde_json::from_value(wire).expect("traces deserialize");
+        let AgentEvent::ToolTrace { trace } = &event else {
+            panic!("expected a tool trace, got {event:?}");
+        };
+        assert_eq!(trace.tool, "bash");
+
+        let back = serde_json::to_value(&event).unwrap();
+        assert_eq!(back["type"], serde_json::json!("tool_trace"));
+        assert_eq!(back["trace"]["effect"], serde_json::json!("exec"));
     }
 }

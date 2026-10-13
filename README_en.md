@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-Thunder is a modern AI Agent ecosystem built in Rust. Managed under a single Git monorepo and a unified Cargo workspace, it provides an end-to-end architecture spanning ultra-fast single-agent execution units, unified LLM transport, and dynamic microkernel plugin composition (conversation, skills, MCP, TS script plugins).
+Thunder is a modern AI Agent ecosystem built in Rust. Managed under a single Git monorepo and a unified Cargo workspace, it provides an end-to-end architecture spanning ultra-fast single-agent execution units, unified LLM transport, and dynamic microkernel plugin composition (conversation, skills, MCP).
 
 Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorepo layout, architecture dependencies, and development conventions, see **[WORKSPACE.md](WORKSPACE.md)** (or **[WORKSPACE_en.md](WORKSPACE_en.md)**).
 
@@ -29,25 +29,29 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 6. **Project Config & Long-Term Memory (`.thunder/`)**:
    - Thunder reads its own `.thunder/` project config, fully isolated from `.arp` (owned by the panel): `config.json` is merged by layer (user / project / local) and can append a system-prompt file and cap turns; `THUNDER.md` and `memory/*.md` are injected as long-term memory; `mcp.json` auto-registers MCP servers.
    - The memory block sits in the request prefix and is read once per host init, keeping the provider-side prompt cache prefix stable.
-   - **The user data root is host-relocatable**: `THUNDER_CONFIG_DIR` (or the `--config-dir <path>` binary flag) owns all of thunder's user-level state — `models.json`, `auth.json`, `models_metadata.json`, `bridge/`, `plugins/`, `scratchpad/`, `conversations/`, `config.json`, `mcp.json`, `THUNDER.md`, `skills/` — defaulting to `~/.thunder`. Point it at a private directory and an embedding host (Electron, a scheduler) gets a fully isolated instance. The variable's meaning was promoted from "config file directory" to "full data root": **anyone already setting it will see conversations, scratchpad and the rest move there too**. Cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
-7. **Production-Grade STDIO Sidecar Daemon (`thunder-agent-daemon`)**:
+   - **The user data root is host-relocatable**: `THUNDER_CONFIG_DIR` (or the `--config-dir <path>` binary flag) owns all of thunder's user-level state — `models.json`, `auth.json`, `models_metadata.json`, `scratchpad/`, `logs/`, `conversations/`, `config.json`, `mcp.json`, `THUNDER.md`, `skills/` — defaulting to `~/.thunder`. Point it at a private directory and an embedding host (Electron, a scheduler) gets a fully isolated instance. The variable's meaning was promoted from "config file directory" to "full data root": **anyone already setting it will see conversations, scratchpad and the rest move there too**. Cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
+7. **One Tool-Execution Funnel, a Trace of Every Call, and an Unloadable Approval-Mode Plugin**:
+   - The kernel has exactly **one** way to run a tool, `ToolExecutor::run_tool`: cancellation → guard → scope → admission → prompt → execute → trace. Built-in tools, Rust plugin tools, MCP tools and runtime remote tools all pass through it, so **no tool can run untraced**.
+   - A trace is produced at **every exit of every step**, and records the *decision* itself — who refused, which scope the call landed in, what the user answered — redacted before it reaches disk (secret key names, secret shapes, document bodies reduced to a digest and a preview). It cannot be turned off.
+   - The approval policy (`plan` / `ask` / `acceptEdits` / `yolo`) lives in an **unloadable host plugin**; the kernel keeps only a `ToolGate` hook, and **no plugin installed means everything but the guard is allowed** — the headless-host red line holds structurally.
+8. **Production-Grade STDIO Sidecar Daemon (`thunder-agent-daemon`)**:
    - Zero port conflicts and lifecycle naturally bound to the parent process (Electron/desktop UI). Features concurrency semaphore scheduling, backpressured ordered STDOUT streaming, cooperative pausing, and human-in-the-loop question bubbles (`ask_user_question`).
 
 ---
 
-## 📦 Workspace Package Matrix (9 Workspace Crates)
+## 📦 Workspace Package Matrix (10 Workspace Crates)
 
 | Crate | Path | Description |
 | :--- | :--- | :--- |
 | **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent A**: Single-agent atomic loop engine with decoupled tool output eviction and cross-agent file write mutex |
+| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **Code Pack**: Six built-in tools (`bash`/`read_file`/`write_file`/`grep`/`find`/`ls`), atomic writes, and path scope classification (`CodeScope`) |
+| **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **Headless Runtime**: Drives `AgentLoop` over a JSONL protocol for embedding hosts with no UI |
 | **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **Model Catalog**: Loads `models.json` / `auth.json`, manages model specifications and thinking level mappings |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **Skills Engine**: Discovers and parses Playbooks / SKILL.md with intent trigger matching and 120s TTL global cache |
-| **`thunder-agent-plugin`** | [`thunder-agent-plugin`](thunder-agent-plugin) | **TS Plugin Host**: Single-file TypeScript plugin runner with native execution, blue-green reload, and error immunity |
 | **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP Client**: Standard JSON-RPC 2.0 client for discovering and bridging remote Model Context Protocol tools |
 | **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **Microkernel Host**: Dynamic plugin assembler with trigger routing, executing prompts into structured run results |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with permission tiers, concurrency semaphores, pause, and ask-user |
+| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with approval modes (plan / ask / acceptEdits / yolo), concurrency semaphores, pause, and ask-user |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Conversation Store**: Atomic filesystem and in-memory session persistence, `index.json` fast index, and multi-topology tracking |
-| **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Session Store**: Atomic Fs storage with in-memory dual mode, `index.json` fast indexing, and topology stage tracking |
 | **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming and reasoning fold |
 
 ---

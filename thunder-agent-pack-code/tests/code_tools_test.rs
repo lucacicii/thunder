@@ -113,26 +113,9 @@ async fn test_agent_loop_with_builtins_builder() {
     );
 }
 
-#[tokio::test]
-async fn test_turn_off_transactions_without_modifying_code() {
-    // Option 1: Using AgentConfig builder
-    let cfg1 =
-        thunder_agent_loop::types::config::AgentConfig::new("mock-model").without_transactions();
-    assert!(!cfg1.middleware.enable_transaction);
-
-    // Option 2: Using direct boolean toggle in config
-    let mut cfg2 = thunder_agent_loop::types::config::AgentConfig::new("mock-model");
-    cfg2.middleware.enable_transaction = false;
-    assert!(!cfg2.middleware.enable_transaction);
-
-    // Option 4: Disabling all middlewares for bare-metal execution
-    let cfg_bare =
-        thunder_agent_loop::types::config::AgentConfig::new("mock-model").without_middlewares();
-    assert!(!cfg_bare.middleware.enable_transaction);
-    assert!(!cfg_bare.middleware.enable_security_guard);
-    assert!(!cfg_bare.middleware.enable_resource_guard);
-    assert!(!cfg_bare.middleware.enable_output_post_processor);
-}
+// The atomic write is the write tool's own behaviour, with no switch and no
+// layer to turn off, so there is nothing here to test — only the write, which
+// `path_scope_test.rs` exercises through the whole funnel.
 
 // ════════════════════════════════════════════════════════════
 // grep / find / ls — embedded ripgrep-core tools

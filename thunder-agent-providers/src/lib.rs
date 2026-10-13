@@ -12,6 +12,7 @@ pub mod convert;
 pub mod error;
 pub mod model;
 pub mod naming;
+pub mod oneshot;
 pub mod probe;
 pub mod source;
 
@@ -99,5 +100,6 @@ pub mod prelude {
     pub use crate::has_available_model;
     pub use crate::model::{ModelCost, ModelDescriptor, ModelPromptCache};
     pub use crate::naming::{clamp_title, clean_generated_title, generate_title, TitleGenError};
+    pub use crate::oneshot::one_shot_text;
     pub use crate::source::ConfigSource;
 }

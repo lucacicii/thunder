@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 /// Bumped when the wire format changes in a way a host must notice.
-pub const PROTOCOL_VERSION: &str = "1";
+pub const PROTOCOL_VERSION: &str = "2";
 
 pub struct Runtime {
     out: mpsc::UnboundedSender<RuntimeEvent>,

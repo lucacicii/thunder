@@ -11,13 +11,12 @@
 ## 🚀 Key Features
 
 - **Claude Code Frameless Full-Width Layout**:
-  - **Header Bar**: Displays the active model, execution mode, thinking level and run status (Idle / Thinking / Streaming / Tool).
+  - **Header Bar**: Displays the active model, execution topology, thinking level and run status (Idle / Thinking / Streaming / Tool). The footer carries an always-visible **approval-mode badge** (`plan` / `ask` / `acceptEdits` / `yolo`), cycled with `Shift+Tab`.
   - **Footer Session Line**: A permanent row right under the input box names the current session (its id while the title is still a placeholder, the generated title as soon as it lands); transient status messages (`✔`, queue, pause) stack on the row above it.
   - **Chat Stream**:
     - Markdown formatted rendering with smooth typewriter token streaming (`TokenDelta`).
     - Collapsible deep reasoning chains (`ReasoningDelta`, supporting DeepSeek-R1, o1, etc.).
     - Tool invocation and execution result cards (`BashTool`, `ReadFileTool`, `WriteFileTool`, `McpToolBridge`).
-    - **Multi-Agent Synthesis Report Rendering**: In `Parallel` or `FanOut` topologies, prominently renders `### 📝 Synthesized Report` at the top with expandable per-role execution details.
   - **Interactive `❯` Input Line & Slash Auto-completion**: Type `/` to open the command palette popup with `Tab` completion and `↑/↓` selection.
   - **Session Resume & Persistence (`/resume`)**: List all saved sessions and restore any session by index or ID instantly.
   - **Turn timeline rail**: A minimal rail floats on the transcript's right edge, one tick per user turn. Hover for details (state, tool calls, duration, prompt excerpt); click or press `Enter` to scroll that turn to the top. `Ctrl + T` toggles it, and narrow terminals hide it automatically.
@@ -42,7 +41,11 @@
 | **`/resume`** | `[# \| id]` | List saved sessions or restore by index/ID |
 | **`/help`** | | Display command reference and keyboard shortcuts |
 | **`/model`** | `[name]` | View active model or hot-switch models (e.g. `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`) |
-| **`/mode`** | `[auto \| single]` | Switch execution mode (plugin host / direct single agent) |
+| **`/topology`** | `[auto \| single]` | Switch execution topology (plugin host / direct single agent) |
+| **`/mode`** | `[plan \| ask \| acceptEdits \| yolo]` | View or set the approval mode this conversation's tool calls are judged in |
+| **`/roots`** | `[add <path> \| remove <p\|#> \| clear]` | Grant or revoke extra workspace roots (multi-repo tasks) |
+| **`/ask`** | `[on \| off]` | Mount/unmount the `ask_user_question` tool |
+| **`/trace`** | `[list \| <task_id>]` | List the session's traces or inspect one run |
 | **`/skills`** | `[list \| load \| scan]` | Browse skill directory, load playbook instructions, or rescan |
 | **`/mcp`** | `[list \| servers \| reload]` | List connected MCP servers and tools, or reload configs |
 | **`/compact`** | | Compress context, extract conversation summary, and trim older turns |
@@ -53,9 +56,6 @@
 | **`/clear`** | | Clear current chat stream and create a fresh session |
 | **`/health`** | | Run local agent and environment diagnostics |
 | **`/timeline`** | `[on \| off]` | Show or hide the turn rail on the right of the transcript |
-| **`/pipeline`** | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
-| **`/parallel`** | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
-| **`/fanout`** | `<task>` | Run task directly in decomposed subtask fan-out mode |
 | **`/quit`** | | Cleanly exit Thunder TUI |
 
 ---

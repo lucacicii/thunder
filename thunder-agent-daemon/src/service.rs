@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -8,12 +8,13 @@ use tracing::{error, info, warn};
 use thunder_agent_loop::prelude::*;
 use thunder_agent_providers::catalog::resolve_thinking_levels;
 use thunder_agent_providers::prelude::*;
+use thunder_agent_root::plugins::mode::{Mode, ModePlugin};
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
 
 #[cfg(feature = "testing-mock")]
 use crate::mock::DaemonMockClient;
-use crate::protocol::{DaemonRequest, DaemonResponse};
+use crate::protocol::{DaemonRequest, DaemonResponse, PROTOCOL_VERSION};
 
 /// Outbound model-request timeout every run is configured with.
 ///
@@ -77,7 +78,6 @@ pub struct DaemonService {
     /// process. Bounded so a long-lived daemon cannot leak server processes.
     mcp_plugins:
         Arc<tokio::sync::Mutex<HashMap<PathBuf, Arc<thunder_agent_root::plugins::McpPlugin>>>>,
-    script_plugin: Arc<ScriptPlugin>,
     /// Optional client factory (tests / embedders). `None` = provider registry.
     client_factory: Option<ClientFactory>,
     /// Pending `ask_user_question` calls, keyed by `task_id:question_id`.
@@ -96,7 +96,99 @@ pub struct DaemonService {
     /// Session-scoped on purpose. A fresh session must not inherit a previous
     /// conversation's "always allow", and a mode switch has to outlive the turn
     /// that issued it.
-    session_policies: Arc<tokio::sync::RwLock<HashMap<String, Arc<SessionPolicy>>>>,
+    session_modes: Arc<tokio::sync::RwLock<SessionModes>>,
+    /// Shared telemetry & token-speed plugin across all sessions/tasks.
+    metrics_plugin: thunder_agent_root::plugins::MetricsPlugin,
+}
+
+/// How many sessions keep their approval state before the oldest is dropped.
+const MAX_SESSION_POLICIES: usize = 256;
+
+/// The daemon's per-session approval state, evicted oldest-first.
+///
+/// `HashMap`'s iteration order is arbitrary, and — worse — sticky: `keys().next()`
+/// returns the same unlucky key on every eviction, so a naive cap drops one entry
+/// over and over while the rest live forever. That was survivable while a policy
+/// held nothing but remembered "always allow" rules; it is not once it holds the
+/// user's chosen mode, where the failure is a mode silently reverting to the
+/// default with nothing on screen to explain it. Hence the insertion order.
+#[derive(Default)]
+struct SessionModes {
+    by_id: HashMap<String, Arc<ModePlugin>>,
+    /// Session ids in creation order, oldest first. Every id appears exactly once.
+    order: VecDeque<String>,
+}
+
+impl SessionModes {
+    /// The session's policy, creating it — and evicting the oldest session, if
+    /// the cap is reached — on the way in.
+    ///
+    /// An existing session keeps its place in the queue: this is FIFO, not LRU,
+    /// so a long-running session is not kept alive merely by being busy.
+    fn get_or_create(&mut self, session_id: &str, initial: Mode) -> Arc<ModePlugin> {
+        if let Some(existing) = self.by_id.get(session_id) {
+            return Arc::clone(existing);
+        }
+        if self.by_id.len() >= MAX_SESSION_POLICIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_id.remove(&oldest);
+            }
+        }
+        let plugin = ModePlugin::new(initial);
+        self.by_id
+            .insert(session_id.to_string(), Arc::clone(&plugin));
+        self.order.push_back(session_id.to_string());
+        plugin
+    }
+}
+
+#[cfg(test)]
+mod session_modes_tests {
+    use super::*;
+
+    /// Fill the map to its cap and return it, oldest session first.
+    fn filled() -> SessionModes {
+        let mut modes = SessionModes::default();
+        for i in 0..MAX_SESSION_POLICIES {
+            modes.get_or_create(&format!("s{i}"), Mode::default());
+        }
+        modes
+    }
+
+    #[test]
+    fn the_oldest_session_is_the_one_evicted() {
+        let mut modes = filled();
+        assert_eq!(modes.by_id.len(), MAX_SESSION_POLICIES);
+
+        modes.get_or_create("newest", Mode::default());
+
+        assert_eq!(modes.by_id.len(), MAX_SESSION_POLICIES, "the cap holds");
+        assert!(!modes.by_id.contains_key("s0"), "s0 was first in");
+        assert!(modes.by_id.contains_key("s1"), "s1 is not collateral");
+        assert!(modes.by_id.contains_key("newest"));
+    }
+
+    #[test]
+    fn using_a_session_again_does_not_spare_it() {
+        // FIFO, not LRU: a session touched a moment ago is still evicted once it
+        // is the oldest, so "busy" and "recent" cannot silently pin state.
+        let mut modes = filled();
+        modes.get_or_create("s0", Mode::default());
+
+        modes.get_or_create("newest", Mode::default());
+
+        assert!(!modes.by_id.contains_key("s0"));
+    }
+
+    #[test]
+    fn a_session_keeps_its_policy_and_its_place() {
+        let mut modes = SessionModes::default();
+        let first = modes.get_or_create("s0", Mode::default());
+        let again = modes.get_or_create("s0", Mode::default());
+        assert!(Arc::ptr_eq(&first, &again), "one mode plugin per session");
+        assert_eq!(modes.order.len(), 1);
+        assert_eq!(modes.by_id.len(), modes.order.len());
+    }
 }
 
 /// Resolution of a pending question.
@@ -147,7 +239,6 @@ impl DaemonService {
         spawn_thinking_level_probe();
         let store_root = FsConversationStore::default_store_root();
         let store = FsConversationStore::new(store_root).await?;
-        let script_plugin = Arc::new(ScriptPlugin::new().with_workspace(default_workspace.clone()));
 
         let max_tasks = std::env::var("THUNDER_MAX_CONCURRENT_TASKS")
             .ok()
@@ -192,41 +283,25 @@ impl DaemonService {
             concurrency_semaphore,
             default_workspace,
             mcp_plugins: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            script_plugin,
             client_factory: None,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_ui,
             host_ui,
-            session_policies: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            session_modes: Arc::new(tokio::sync::RwLock::new(SessionModes::default())),
+            metrics_plugin: thunder_agent_root::plugins::MetricsPlugin::new(),
         })
     }
 
     /// The approval policy for a session, created on first use.
     ///
-    /// The tier passed to `SessionPolicy::new` is only a seed: every run writes
-    /// its own via `set_tier`. Until then the policy enforces the widest tier, so a request
-    /// arriving before any run cannot be judged too narrowly.
-    async fn session_policy(
-        &self,
-        session_id: &str,
-        initial: PermissionMode,
-    ) -> Arc<SessionPolicy> {
-        if let Some(existing) = self.session_policies.read().await.get(session_id) {
+    /// A request arriving before any run still gets a real plugin, seeded with
+    /// the session's mode rather than a process-wide default.
+    async fn session_mode(&self, session_id: &str, initial: Mode) -> Arc<ModePlugin> {
+        if let Some(existing) = self.session_modes.read().await.by_id.get(session_id) {
             return Arc::clone(existing);
         }
-        let mut guard = self.session_policies.write().await;
-        // Bounded capacity: evict oldest entry if size exceeds limit (prevents unbounded memory growth)
-        const MAX_SESSION_POLICIES: usize = 256;
-        if guard.len() >= MAX_SESSION_POLICIES && !guard.contains_key(session_id) {
-            if let Some(oldest_key) = guard.keys().next().cloned() {
-                guard.remove(&oldest_key);
-            }
-        }
-        Arc::clone(
-            guard
-                .entry(session_id.to_string())
-                .or_insert_with(|| SessionPolicy::new(Permission::Bash, initial)),
-        )
+        let mut guard = self.session_modes.write().await;
+        guard.get_or_create(session_id, initial)
     }
 
     /// Get (or lazily create) the pooled MCP plugin for `workspace`.
@@ -296,6 +371,11 @@ impl DaemonService {
                     data: Some(serde_json::json!({
                         "pong": true,
                         "version": env!("CARGO_PKG_VERSION"),
+                        // The wire revision, not the release version. A host
+                        // that parses responses needs to tell the two apart:
+                        // `version` moves on every release, this moves only
+                        // when a request or response shape does.
+                        "protocol": PROTOCOL_VERSION,
                     })),
                     error: None,
                 })
@@ -406,6 +486,7 @@ impl DaemonService {
                 thinking_level,
                 attachments,
                 headless,
+                mode,
             } => {
                 self.handle_run_task(
                     id,
@@ -420,6 +501,7 @@ impl DaemonService {
                     thinking_level,
                     attachments,
                     headless,
+                    mode,
                 )
                 .await;
             }
@@ -666,22 +748,51 @@ impl DaemonService {
             }
 
             DaemonRequest::GetPermissionState { id, session_id } => {
-                let policy = self
-                    .session_policy(&session_id, PermissionMode::default())
-                    .await;
-                let mode = policy.mode().await;
+                let plugin = self.session_mode(&session_id, Mode::default()).await;
                 self.send_response(DaemonResponse::Response {
                     id,
                     success: true,
                     data: Some(serde_json::json!({
                         "session_id": session_id,
-                        "mode": mode.as_str(),
-                        "rules": policy.rules().await,
+                        "mode": plugin.mode().as_str(),
+                        "rules": plugin.rules(),
                     })),
                     error: None,
                 })
                 .await;
             }
+
+            DaemonRequest::SetMode {
+                id,
+                session_id,
+                mode,
+            } => match Mode::parse(&mode) {
+                Some(mode) => {
+                    let plugin = self.session_mode(&session_id, mode).await;
+                    plugin.set_mode(mode);
+                    self.send_response(DaemonResponse::Response {
+                        id,
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "session_id": session_id,
+                            "mode": plugin.mode().as_str(),
+                        })),
+                        error: None,
+                    })
+                    .await;
+                }
+                None => {
+                    self.send_response(DaemonResponse::Response {
+                        id,
+                        success: false,
+                        data: None,
+                        error: Some(format!(
+                            "unknown mode '{mode}': expected one of plan | ask | acceptEdits | yolo"
+                        )),
+                    })
+                    .await;
+                }
+            },
 
             DaemonRequest::CancelTask { id, task_id } => {
                 let mut tasks = self.active_tasks.lock().await;
@@ -712,9 +823,7 @@ impl DaemonService {
                 .await;
             }
 
-            DaemonRequest::ReloadPlugins { id, path } => {
-                let p = path.map(PathBuf::from);
-                self.script_plugin.reload(p).await;
+            DaemonRequest::ReloadIntegrations { id } => {
                 // Drop and close every pooled MCP connection: the workspace
                 // server set may have changed on disk.
                 {
@@ -891,6 +1000,22 @@ impl DaemonService {
                 })
                 .await;
             }
+
+            DaemonRequest::GetMetrics { id, session_id } => {
+                let snapshot = self.metrics_plugin.snapshot(&session_id);
+                let found = snapshot.is_some();
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: found,
+                    data: snapshot.and_then(|s| serde_json::to_value(s).ok()),
+                    error: if !found {
+                        Some("Metrics snapshot not found for session".to_string())
+                    } else {
+                        None
+                    },
+                })
+                .await;
+            }
         }
     }
 
@@ -908,6 +1033,7 @@ impl DaemonService {
         thinking_level: Option<String>,
         attachments: Option<Vec<crate::protocol::Attachment>>,
         headless: bool,
+        mode: Option<String>,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -1135,15 +1261,25 @@ impl DaemonService {
                     .map(|spec| spec.default_thinking_level.clone())
             });
 
-        // Unconstrained execution: all tools (read, write, bash) are always
-        // available; the model self-governs through its system prompt.
-        let chosen_permission = Permission::Bash;
-
-        // The session policy is reused across runs so remembered "always
-        // allow" rules survive a turn.
-        let policy = self
-            .session_policy(&effective_session_id, PermissionMode::default())
-            .await;
+        // The session's mode plugin is reused across runs so remembered
+        // "always allow" rules and a mid-session mode switch survive a turn.
+        // A request may pin this run's mode; old names still parse.
+        let default_mode = thunder_agent_root::thunder_config::ThunderConfig::load(Some(
+            std::path::Path::new(&chosen_workspace),
+        ))
+        .await
+        .agent
+        .default_mode
+        .as_deref()
+        .and_then(Mode::parse)
+        .unwrap_or_default();
+        let session_plugin = self.session_mode(&effective_session_id, default_mode).await;
+        let chosen_mode = mode
+            .as_deref()
+            .and_then(Mode::parse)
+            .unwrap_or_else(|| session_plugin.mode());
+        session_plugin.set_mode(chosen_mode);
+        let policy = Arc::clone(&session_plugin);
 
         // Bind model, workspace, and thinking_level permanently to this conversation
         conversation.model = Some(chosen_model.clone());
@@ -1275,11 +1411,7 @@ impl DaemonService {
         let workspace_has_mcp_config = ws_dir.join(".thunder").join("mcp.json").exists()
             || ws_dir.join("mcp_servers.json").exists()
             || ws_dir.join(".mcp.json").exists();
-        // A workspace with no plugin files must not pay for a Node sidecar, and
-        // one with plugin files must actually get them.
-        let workspace_has_ts_plugins = has_ts_plugins(Some(&ws_dir));
         let mcp_plugin = self.mcp_plugin_for(&ws_dir).await;
-        let script_plugin = (*self.script_plugin).clone();
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
         let steer_queues_for_run = Arc::clone(&steer_queues);
@@ -1288,7 +1420,8 @@ impl DaemonService {
         let run_task_id = task_id.clone();
         let run_session_id = effective_session_id.clone();
         let run_policy = Arc::clone(&policy);
-
+        let metrics_plugin = self.metrics_plugin.clone();
+        let prior_used_tokens = conversation.stats.total_used_tokens;
         // Spawn async task runner
         tokio::spawn(async move {
             let _permit = permit;
@@ -1327,12 +1460,13 @@ impl DaemonService {
             let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
                 .with_extra_roots(chosen_shared_roots.iter().map(PathBuf::from).collect())
-                .with_provider_registry(registry.clone());
+                .with_provider_registry(registry.clone())
+                .with_initial_session_total_tokens(prior_used_tokens);
             // Baseline capability set is assembled centrally so every host
-            // exposes the same plugins (conversation + skills + mcp + script host).
+            // exposes the same plugins (conversation + metrics + skills + mcp).
             let mut root = StandardHostBuilder::new(store.clone())
                 .with_mcp_plugin((*mcp_plugin).clone())
-                .with_script_plugin(script_plugin)
+                .with_metrics_plugin(metrics_plugin)
                 .build(root);
 
             // Headless clients cannot answer `user_question`. Omitting the tool
@@ -1371,13 +1505,10 @@ impl DaemonService {
                 // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
                 // - mcp: only when this workspace actually configures MCP servers
                 // Anything else stays keyword-routed and lightweight.
-                forced_plugins: Some(baseline_forced_plugins(
-                    workspace_has_mcp_config,
-                    workspace_has_ts_plugins,
-                )),
+                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
-                permission: chosen_permission,
+                mode: chosen_mode,
                 pause_gate: Some(pause_gate_for_run),
                 steer_queues: Some(steer_queues_for_run),
                 // Tag every dialog this run raises with its task/session, so a
@@ -1388,7 +1519,7 @@ impl DaemonService {
                 // `task_id` is unique per run and readable in panel logs, and it
                 // is the key a plugin's reverse RPC is authorised against.
                 route: Some(run_task_id),
-                policy: Some(run_policy),
+                mode_plugin: Some(run_policy),
             };
 
             let initial_messages_count = conversation.messages.len();
@@ -1401,7 +1532,7 @@ impl DaemonService {
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
                     let selection = handle.selection.clone();
-                    let collected_events = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+                    let collected_events = Arc::new(tokio::sync::Mutex::new(TraceCollector::new()));
                     let collected_for_stream = Arc::clone(&collected_events);
 
                     // Stream fine-grained observed events (tokens, tool execution, etc.)
@@ -1419,18 +1550,10 @@ impl DaemonService {
                                 // Filter out high-frequency streaming micro-deltas (TokenDelta, ReasoningDelta, ToolCallChunk)
                                 // from in-memory trace storage to prevent unbounded memory growth on long tasks, while
                                 // still streaming 100% of all events live over stdout for the caller UI.
-                                let is_micro_delta = matches!(
-                                    event.event,
-                                    AgentEvent::TokenDelta { .. }
-                                        | AgentEvent::ReasoningDelta { .. }
-                                        | AgentEvent::ToolCallChunk { .. }
-                                );
-                                if !is_micro_delta {
-                                    let mut collected = collected_for_stream.lock().await;
-                                    if collected.len() < 5000 {
-                                        collected.push(event.clone());
-                                    }
-                                }
+                                // Retention (and what counts as noise) is the collector's
+                                // business, shared with the TUI so both hosts keep a trace
+                                // file that means the same thing.
+                                collected_for_stream.lock().await.record(event.clone());
 
                                 let res = DaemonResponse::ObservedEvent {
                                     task_id: tid.clone(),
@@ -1563,7 +1686,7 @@ impl DaemonService {
                             }
 
                             // Save full end-to-end task trace
-                            let events = collected_events.lock().await.clone();
+                            let collected = collected_events.lock().await;
                             let finished_at_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
@@ -1574,6 +1697,11 @@ impl DaemonService {
                             // Distinct from `duration_ms`, which is the agent-loop's
                             // internal duration (used for tokens-per-second math).
                             let wall_duration_ms = finished_at_ms.saturating_sub(start_time_ms);
+                            let mut metrics_snap = res.metrics.clone();
+                            if let Some(snap) = &mut metrics_snap {
+                                snap.wall_duration_ms = Some(wall_duration_ms);
+                                snap.session_total_tokens = conversation.stats.total_used_tokens;
+                            }
                             let trace_data = serde_json::json!({
                                 "task_id": task_id,
                                 "session_id": effective_session_id,
@@ -1586,8 +1714,15 @@ impl DaemonService {
                                 "wall_duration_ms": wall_duration_ms,
                                 "finish_reason": finish_reason,
                                 "stats": res.run_result.stats,
+                                "metrics": metrics_snap,
                                 "final_content": final_content,
-                                "events": events,
+                                // name and shape, and a reader that does not know
+                                // these ignores them.
+                                "tool_traces": collected.tool_traces(),
+                                "tool_decisions": collected.evicted_decisions(),
+                                "dropped_deltas": collected.dropped_deltas(),
+                                "dropped_events": collected.dropped_events(),
+                                "events": collected.events(),
                             });
                             save_task_trace(
                                 store.root(),

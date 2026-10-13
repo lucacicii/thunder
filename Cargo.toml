@@ -8,14 +8,13 @@ members = [
     "thunder-agent-skills",
     "thunder-agent-mcp",
     "thunder-agent-root",
-    "thunder-agent-plugin",
     "thunder-agent-daemon",
     "thunder-agent-core/conversation",
     "thunder-agent-core/tui",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["thunder-luc"]
@@ -35,7 +34,6 @@ thunder-agent-pack-code = { path = "thunder-agent-pack-code" }
 thunder-agent-providers = { path = "thunder-agent-providers" }
 thunder-agent-skills = { path = "thunder-agent-skills" }
 thunder-agent-mcp = { path = "thunder-agent-mcp" }
-thunder-agent-plugin = { path = "thunder-agent-plugin" }
 thunder-agent-root = { path = "thunder-agent-root" }
 thunder-conversation = { path = "thunder-agent-core/conversation" }
 
@@ -64,6 +62,9 @@ ratatui = "0.29"
 unicode-width = "0.2"
 crossterm = { version = "0.28", features = ["event-stream"] }
 libc = "0.2"
+htmd = "0.5"
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
 
 # ────────────────────────────────────────────────────────────
 # Workspace-wide lint baseline. Crates opt in via `[lints] workspace = true`.

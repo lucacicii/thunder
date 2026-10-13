@@ -26,13 +26,13 @@
 
 ---
 
-## 📡 支持的供应商 API（经由 `@earendil-works/pi-ai`）
+## 📡 支持的供应商 API（遵循 `pi-ai` 的方言命名）
 
 | API 协议 | 覆盖供应商 |
 | :--- | :--- |
+| `openai-responses` | OpenAI Responses API |
 | `openai-completions` | OpenAI、DeepSeek、OpenRouter、Qwen、Moonshot、zAI、Groq、Ollama 等 |
 | `anthropic-messages` | Anthropic Claude 3.5 / 3.7 |
-| `google-generative-ai` | Google Gemini |
 
 ---
 

@@ -15,9 +15,10 @@
 //! - `memory`       — always (no-ops when no `THUNDER.md` / `memory/*.md`)
 //! - `skills`       — always, unless the caller supplies a preloaded one
 //! - `mcp`          — always (no-ops when the workspace configures no servers)
-//! - `script_plugin` — **opt-in**, because it spawns a Node sidecar; a host
-//!   that wants single-file TypeScript plugins declares so explicitly rather
-//!   than getting them by accident.
+//!
+//! The TypeScript plugin host used to be the fifth member, opt-in because it
+//! spawned a Node sidecar. It is gone: plugins are Rust now, so there is no
+//! sidecar to opt into and nothing to force-active.
 //!
 //! Host-specific capabilities that need host-owned resources (e.g. the daemon's
 //! `ask_user` plugin, which needs its NDJSON writer) are appended after
@@ -28,8 +29,6 @@ use crate::host::ThunderRoot;
 use crate::plugins::ConversationPlugin;
 #[cfg(feature = "conversation")]
 use crate::plugins::MemoryPlugin;
-#[cfg(feature = "script-plugin")]
-use crate::plugins::ScriptPlugin;
 #[cfg(feature = "skills")]
 use crate::plugins::SkillsPlugin;
 #[cfg(feature = "conversation")]
@@ -49,8 +48,7 @@ pub struct StandardHostBuilder {
     skills: Option<SkillsPlugin>,
     #[cfg(feature = "mcp")]
     mcp: Option<crate::plugins::McpPlugin>,
-    #[cfg(feature = "script-plugin")]
-    script: Option<ScriptPlugin>,
+    metrics: Option<crate::plugins::MetricsPlugin>,
 }
 
 #[cfg(feature = "conversation")]
@@ -63,11 +61,16 @@ impl StandardHostBuilder {
             skills: None,
             #[cfg(feature = "mcp")]
             mcp: None,
-            #[cfg(feature = "script-plugin")]
-            script: None,
+            metrics: None,
         }
     }
 
+    /// Use `metrics` instead of a fresh `MetricsPlugin` (e.g. to share a
+    /// session-wide telemetry tracker across runs).
+    pub fn with_metrics_plugin(mut self, metrics: crate::plugins::MetricsPlugin) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
     /// Use `skills` instead of the default `SkillsPlugin` (e.g. to preload an
     /// active skill or add search paths).
     #[cfg(feature = "skills")]
@@ -83,24 +86,23 @@ impl StandardHostBuilder {
         self
     }
 
-    /// Enable the single-file TypeScript plugin host.
-    ///
-    /// Pass a ready-made [`ScriptPlugin`] so a host that also drives
-    /// `reload` keeps sharing the same sidecar handle; the plugin's internal
-    /// locks are `Arc`-backed, so clones refer to one engine.
-    #[cfg(feature = "script-plugin")]
-    pub fn with_script_plugin(mut self, script: ScriptPlugin) -> Self {
-        self.script = Some(script);
-        self
-    }
-
     /// Register the assembled set onto `root`.
     pub fn build(self, mut root: ThunderRoot) -> ThunderRoot {
         root = root.with_plugin(ConversationPlugin::new(self.store));
-
+        root = root.with_metrics_plugin(self.metrics.unwrap_or_default());
         // Long-term memory rides the baseline set: it contributes nothing when
         // no `THUNDER.md` exists, so every host gets it for free.
         root = root.with_plugin(MemoryPlugin::new());
+
+        {
+            // The provider registry carries the utility model `web_fetch`
+            // summarises with, so the plugin is built from the root the caller
+            // already configured. `with_provider_registry` must run before
+            // `build` — the doc comment on `StandardHostBuilder` says so — or
+            // the tool silently loses its summariser and returns raw markdown.
+            let registry = root.provider_registry().clone();
+            root = root.with_plugin(crate::plugins::web::WebPlugin::new(registry));
+        }
 
         #[cfg(feature = "skills")]
         {
@@ -112,13 +114,6 @@ impl StandardHostBuilder {
             root = root.with_plugin(self.mcp.unwrap_or_default());
         }
 
-        #[cfg(feature = "script-plugin")]
-        {
-            if let Some(script) = self.script {
-                root = root.with_plugin(script);
-            }
-        }
-
         root
     }
 }
@@ -126,21 +121,12 @@ impl StandardHostBuilder {
 /// Convenience: the plugin IDs a host should force-active for a normal run.
 ///
 /// Mirrors the assembly above so the *forced* set and the *registered* set
-/// cannot drift apart. Two plugins are conditional:
-///
-/// * `mcp` — only when the workspace actually configures servers;
-/// * `script_plugin` — only when a loadable plugin file exists.
-///
-/// Both are opt-in by design rather than an oversight. Selecting a plugin
-/// dispatches `on_init`, and the script host spawns a Node process on first use,
-/// so forcing it unconditionally would tax every user who has no plugins. The
-/// flip side is worse: a user who *has* plugins must not silently not get them.
+/// cannot drift apart. `mcp` is conditional — only when the workspace actually
+/// configures servers — because dispatching `on_init` is not free, and forcing
+/// it unconditionally would tax every user who has none.
 #[cfg(feature = "conversation")]
-pub fn baseline_forced_plugins(
-    workspace_has_mcp_config: bool,
-    workspace_has_ts_plugins: bool,
-) -> Vec<String> {
-    let mut ids = vec!["conversation".to_string()];
+pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
+    let mut ids = vec!["conversation".to_string(), "metrics".to_string()];
     #[cfg(feature = "skills")]
     {
         ids.push("skills".to_string());
@@ -148,32 +134,5 @@ pub fn baseline_forced_plugins(
     if workspace_has_mcp_config {
         ids.push("mcp".to_string());
     }
-    if workspace_has_ts_plugins {
-        ids.push("script_plugin".to_string());
-    }
     ids
-}
-
-/// Whether any single-file plugin exists to load.
-///
-/// Global scope (`~/.thunder/plugins`) plus the workspace scope, mirroring the
-/// sidecar's own discovery order. Two directory reads, cheap enough per run.
-pub fn has_ts_plugins(workspace_dir: Option<&std::path::Path>) -> bool {
-    fn any_plugin(dir: std::path::PathBuf) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        entries.flatten().any(|e| {
-            e.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && matches!(
-                    e.path().extension().and_then(|x| x.to_str()),
-                    Some("ts") | Some("js")
-                )
-        })
-    }
-
-    if any_plugin(thunder_agent_loop::core::paths::thunder_subdir("plugins")) {
-        return true;
-    }
-    workspace_dir.is_some_and(|ws| any_plugin(ws.join(".thunder").join("plugins")))
 }

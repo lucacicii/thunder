@@ -1,12 +1,12 @@
-//! Run-control feature tests: pause/unpause, thinking level, permission tier,
-//! extra roots, ask_user modal flow, manual titles, and trace persistence.
+//! Run-control feature tests: pause/unpause, thinking level, mode, extra
+//! roots, ask_user modal flow, manual titles, and trace persistence.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 use tempfile::tempdir;
-use thunder_agent_loop::types::config::Permission;
 use thunder_agent_loop::types::event::{AgentEvent, AgentStats, ObservedEvent};
 use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_root::plugins::mode::Mode;
 use thunder_conversation::prelude::*;
 use thunder_tui::app::App;
 use thunder_tui::ask_user::{AskOption, AskQuestion, IncomingQuestion};
@@ -79,23 +79,28 @@ async fn think_command_binds_the_level_to_the_conversation() {
 // ── /permission ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn permission_command_sets_the_capability_tier() {
+async fn mode_command_sets_the_approval_mode() {
     let mut app = App::new("gpt-4o");
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    assert_eq!(app.permission, Permission::Bash, "default tier is Bash");
+    assert_eq!(app.mode_plugin.mode(), Mode::default());
 
-    assert!(app.execute_slash_command("/permission read", tx.clone()));
-    assert_eq!(app.permission, Permission::Read);
+    assert!(app.execute_slash_command("/mode plan", tx.clone()));
+    assert_eq!(app.mode_plugin.mode(), Mode::Plan);
 
-    app.execute_slash_command("/perm write", tx.clone());
-    assert_eq!(app.permission, Permission::Write);
+    app.execute_slash_command("/mode acceptEdits", tx.clone());
+    assert_eq!(app.mode_plugin.mode(), Mode::AcceptEdits);
 
-    app.execute_slash_command("/perm bash", tx.clone());
-    assert_eq!(app.permission, Permission::Bash);
+    // An old name still parses — a config habit is not a break.
+    app.execute_slash_command("/mode never", tx.clone());
+    assert_eq!(app.mode_plugin.mode(), Mode::Yolo);
 
-    app.execute_slash_command("/perm nonsense", tx.clone());
-    assert_eq!(app.permission, Permission::Bash, "invalid tier is ignored");
+    app.execute_slash_command("/mode nonsense", tx.clone());
+    assert_eq!(
+        app.mode_plugin.mode(),
+        Mode::Yolo,
+        "an unknown mode is ignored"
+    );
 }
 
 // ── /roots ────────────────────────────────────────────────────────────────
@@ -167,18 +172,6 @@ fn noop_factory() -> thunder_tui::app::ClientFactory {
 }
 
 // ── /permission (manual capability tier) ───────────────────────────────────
-
-#[tokio::test]
-async fn permission_command_sets_the_tier() {
-    let mut app = App::new("gpt-4o");
-    let (tx, _rx) = mpsc::unbounded_channel();
-
-    assert_eq!(app.permission, Permission::Bash, "default is the full tier");
-    assert!(app.execute_slash_command("/permission read", tx.clone()));
-    assert_eq!(app.permission, Permission::Read);
-    assert!(app.execute_slash_command("/permission bash", tx.clone()));
-    assert_eq!(app.permission, Permission::Bash);
-}
 
 // ── ask_user modal flow ───────────────────────────────────────────────────
 
@@ -428,13 +421,14 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
     let (tx, _rx) = mpsc::unbounded_channel();
     app.submit_prompt("do the thing".to_string(), tx);
     let task_id = app.trace_meta.as_ref().unwrap().task_id.clone();
-    assert!(app.trace_events.is_some());
+    assert!(app.trace.is_some());
 
     app.handle_agent_event(ObservedEvent {
         agent_id: "a".to_string(),
         event: AgentEvent::TurnStart {
             turn: 1,
             timestamp: 1,
+            estimated_prompt_tokens: 10,
         },
         timestamp_ms: 0,
     });

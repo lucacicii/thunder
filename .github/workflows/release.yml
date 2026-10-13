@@ -42,6 +42,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The version gate compares the released version against every existing
+          # tag; a shallow checkout would only show the tag being built and let a
+          # stale version number through.
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         # Pinned the same way as ci.yml: an unpinned stable makes release
@@ -64,6 +69,21 @@ jobs:
             # workflow_dispatch on a branch: still build so artifacts are
             # downloadable, but name them with a placeholder version.
             echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check workspace version consistency
+        shell: bash
+        # The gate: a `vX.Y.Z` tag must equal the workspace version, because the
+        # binaries report that version and the archives are named from the tag.
+        # A tag that does not match is refused *before* anything is built, so a
+        # mislabelled artifact cannot reach the release page. `workflow_dispatch`
+        # has no tag: check the tree's own consistency and skip the tag half.
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            python3 scripts/check-version.py --tag "${GITHUB_REF_NAME}"
+          else
+            python3 scripts/check-version.py
           fi
 
       - name: Build release binaries

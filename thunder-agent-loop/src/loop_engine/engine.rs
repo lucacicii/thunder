@@ -39,25 +39,6 @@ pub struct AgentRunResult {
     pub finish_reason: FinishReason,
 }
 
-/// Everything a capability pack needs to assemble a tool pipeline for a run.
-///
-/// The pack owns the *shape* of its stack (path jail, atomic writes, change
-/// detection); the loop only owns the registry the pack must wrap, and the
-/// scratchpad/policy/ui state the pack's layers may need.
-pub struct PipelineContext {
-    /// The run's configuration. Carries the host's layer toggles and the
-    /// workspace roots, which are pack inputs rather than loop inputs.
-    pub config: crate::types::config::AgentConfig,
-    /// The live tool registry to wrap.
-    pub registry: crate::tools::registry::ToolRegistry,
-    /// Scratchpad for oversized tool output, when the run has one.
-    pub scratchpad: Option<crate::tools::scratchpad::ScratchpadManager>,
-    /// The session's approval policy, when the host adopted one.
-    pub policy: Option<Arc<crate::types::policy::SessionPolicy>>,
-    /// The panel approval dialogs may use, when the host installed one.
-    pub ui: Option<Arc<dyn crate::types::ui::HostUi>>,
-}
-
 /// A complete single-agent unit.
 ///
 /// One instance runs at most one task at a time. Parallel work requires
@@ -78,12 +59,14 @@ pub struct AgentLoop {
     /// Steering and follow-up queues; shared with any handle that wants to
     /// inject user input into a run already in flight.
     steer_queues: Arc<crate::core::steer::SteerQueues>,
-    /// The judge's inputs, threaded into every pipeline rebuild.
+    /// The host's judge, threaded into every executor rebuild.
     ///
-    /// `None` means "no policy adopted": the guard then enforces only the static
-    /// tier. `ui` of `None` inside a policy means every dialog is declined, so a
-    /// headless host refuses rather than assuming consent.
-    policy: Option<Arc<crate::types::policy::SessionPolicy>>,
+    /// `None` means "no gate installed": everything the guard allows runs. That
+    /// is not a weakened default — it is the contract of headless embedders,
+    /// stated rather than approximated. Hosts that want asking install a gate.
+    tool_gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
+    /// The panel approval dialogs render through. `None` means every `Ask`
+    /// refuses, which is what fail-closed means for a host with no panel.
     host_ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     /// Host-supplied check on whether a finished run may actually finish.
     ///
@@ -92,16 +75,22 @@ pub struct AgentLoop {
     /// How many times the gate may send the run back before the loop gives up.
     /// Ignored when `completion_gate` is `None`.
     max_gate_rounds: usize,
-    /// Host-supplied assembly of the tool pipeline.
+    /// Where finished tool traces go, beyond the run's own event stream.
     ///
-    /// The kernel does not build a code pipeline: it does not know what a
-    /// workspace, a path jail or an atomic file write is. A capability pack
-    /// hands over a builder that assembles *its* stack around the registry the
-    /// loop owns, and the loop replays that builder every time it rebuilds the
-    /// executor (a new tool, a new policy) so the pack's layers are never lost.
-    pipeline_builder: Option<
-        Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
-    >,
+    /// The loop always emits `AgentEvent::ToolTrace`, so a host that drains
+    /// events needs nothing here. A host that would rather receive bytes than
+    /// parse events installs a sink, and both see the same record — the kernel
+    /// serialises and redacts once, so there is no second implementation to
+    /// drift.
+    trace_sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
+    /// The host's answer to "where does this call land" — the knowledge half of
+    /// the permission system, kept apart from the policy half.
+    ///
+    /// The kernel cannot tell whether a path is inside the project without being
+    /// told what the project is, and must not try: guessing is what produced an
+    /// over-broad jail. So the host classifies, and the kernel decides what a
+    /// classification means.
+    tool_scope: Option<Arc<dyn crate::types::scope::ToolScope>>,
 }
 
 impl AgentLoop {
@@ -115,15 +104,7 @@ impl AgentLoop {
         )
         .with_scratchpad(scratchpad.clone());
 
-        // The kernel installs only its own baseline pipeline. A capability pack
-        // replaces it via `with_pipeline_builder` after construction.
-        let tool_executor = ToolExecutor::with_pipeline(
-            tool_registry.clone(),
-            crate::tools::middleware::ToolPipeline::baseline(
-                tool_registry.clone(),
-                Some(scratchpad.clone()),
-            ),
-        );
+        let tool_executor = ToolExecutor::new(tool_registry.clone());
 
         Self {
             id,
@@ -137,11 +118,12 @@ impl AgentLoop {
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
             steer_queues: crate::core::steer::SteerQueues::new_shared(),
-            policy: None,
+            tool_gate: None,
             host_ui: None,
             completion_gate: None,
             max_gate_rounds: 3,
-            pipeline_builder: None,
+            tool_scope: None,
+            trace_sink: None,
         }
     }
 
@@ -161,57 +143,80 @@ impl AgentLoop {
         self
     }
 
-    /// Install the permission policy and the panel it may prompt through.
+    /// Install the host's judge and the panel its dialogs render through.
     ///
-    /// Both are held by the unit and travel with every pipeline rebuild, so a
-    /// tool registered later is still judged by the same policy. The policy
-    /// carries the live mode and remembered rules, so flipping the mode
-    /// mid-session takes effect on the next call without rebuilding anything.
-    pub fn with_policy(
+    /// Both are held by the unit and travel with every executor rebuild, so a
+    /// tool registered later is judged the same way. A gate that carries a live
+    /// mode is asked on every call, so flipping the mode mid-session takes
+    /// effect on the next call without rebuilding anything. Passing `None`
+    /// removes the gate — which is what "uninstall the mode plugin" is.
+    /// Install a sink for finished tool traces.
+    ///
+    /// Additive, not an alternative: the run's event stream carries
+    /// `AgentEvent::ToolTrace` whether or not a sink is installed, so a host
+    /// that installs one is saying "also hand me the bytes", not "instead".
+    pub fn with_trace_sink(
         mut self,
-        policy: Arc<crate::types::policy::SessionPolicy>,
-        ui: Arc<dyn crate::types::ui::HostUi>,
+        sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
     ) -> Self {
-        self.policy = Some(policy);
-        self.host_ui = Some(ui);
-        self.tool_executor = self.rebuild_executor();
+        self.trace_sink = sink;
+        self.tool_executor = self.refresh_executor();
         self
     }
 
-    /// Install the host's pipeline assembly and rebuild the executor with it.
-    ///
-    /// Called by a capability pack after construction. The builder is replayed
-    /// on every later rebuild, so a tool registered afterwards still runs
-    /// through the pack's layers.
-    pub fn with_pipeline_builder(
+    pub fn with_tool_gate(
         mut self,
-        build: Arc<dyn Fn(PipelineContext) -> crate::tools::middleware::ToolPipeline + Send + Sync>,
+        gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
+        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     ) -> Self {
-        self.pipeline_builder = Some(build);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_gate = gate;
+        if ui.is_some() {
+            self.host_ui = ui;
+        }
+        self.tool_executor = self.refresh_executor();
         self
     }
 
-    /// Reassemble the pipeline from the current registrations.
+    /// Install the host's classification of where a call lands.
     ///
-    /// Uses the host's builder when one is installed, and the kernel's own
-    /// baseline pipeline otherwise.
-    fn rebuild_executor(&self) -> ToolExecutor {
+    /// Advisory in one direction only: a scope can earn a call an automatic
+    /// allowance, and can mark a target off limits, but it can never make the
+    /// kernel refuse something the guard would have allowed it to ask about.
+    /// Held by the unit and replayed on every executor rebuild, like the
+    /// pipeline, so a tool registered later is classified the same way.
+    pub fn with_tool_scope(mut self, scope: Arc<dyn crate::types::scope::ToolScope>) -> Self {
+        self.tool_scope = Some(scope);
+        self.tool_executor = self.refresh_executor();
+        self
+    }
+
+    /// Rebuild the executor around the current registrations.
+    ///
+    /// Called after anything that changes what the executor must see — a new
+    /// gate, a new scope, a tool registered later — because the executor holds a
+    /// snapshot of the registry, and a snapshot taken before a registration
+    /// does not contain it.
+    fn refresh_executor(&self) -> ToolExecutor {
         let registry = self.tool_registry.clone();
-        let pipeline = match &self.pipeline_builder {
-            Some(build) => build(PipelineContext {
-                config: self.config.clone(),
-                registry: registry.clone(),
-                scratchpad: Some(self.scratchpad.clone()),
-                policy: self.policy.clone(),
-                ui: self.host_ui.clone(),
-            }),
-            None => crate::tools::middleware::ToolPipeline::baseline(
-                registry.clone(),
-                Some(self.scratchpad.clone()),
-            ),
-        };
-        ToolExecutor::with_pipeline(registry, pipeline)
+        let mut executor = ToolExecutor::new(registry);
+        if let Some(scope) = &self.tool_scope {
+            executor = executor.with_tool_scope(Arc::clone(scope));
+        }
+        if let Some(gate) = &self.tool_gate {
+            executor = executor.with_tool_gate(Some(Arc::clone(gate)));
+        }
+        if let Some(ui) = &self.host_ui {
+            executor = executor.with_host_ui(Arc::clone(ui));
+        }
+        // Identity, so a record can be joined against a host's own log. The
+        // route is the run's id, which for the daemon is the task id and for
+        // the TUI is `tui_<session>`.
+        executor =
+            executor.with_trace_ids(self.config.session_id.clone(), self.config.route.clone());
+        if let Some(sink) = &self.trace_sink {
+            executor = executor.with_trace_sink(Some(Arc::clone(sink)));
+        }
+        executor
     }
 
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).
@@ -220,7 +225,7 @@ impl AgentLoop {
         self.id = id.into();
         self.scratchpad = ScratchpadManager::new(&self.id, self.config.scratchpad.clone());
         self.tool_registry.set_scratchpad(self.scratchpad.clone());
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -275,7 +280,7 @@ impl AgentLoop {
 
     pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
         self.tool_registry.register(tool);
-        self.tool_executor = self.rebuild_executor();
+        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -380,6 +385,18 @@ impl AgentLoop {
         // The run's tools get a sink bound to *this* run's event stream, so a
         // business event a tool emits (a file change, a validation failure)
         // arrives on the same handle the host is already draining.
+        // Every tool call leaves a trace, and the run's stream carries it.
+        // Installed on the slot the unit and every clone of it share, not just
+        // on the run's own clone: the plugin invoker holds a clone taken before
+        // this run existed, and its calls must be recorded too. Cleared when the
+        // run settles (below), so a finished run's event sender does not linger.
+        self.tool_executor
+            .install_run_trace(Arc::new(ChannelTraceSink {
+                agent_id: self.id.clone(),
+                dispatcher: self.event_dispatcher.clone(),
+                event_sender: event_sender.clone(),
+                host: self.trace_sink.clone(),
+            }));
         let tool_executor =
             self.tool_executor
                 .clone()
@@ -550,6 +567,7 @@ impl AgentLoop {
                     .emit(AgentEvent::TurnStart {
                         turn,
                         timestamp: now_ts,
+                        estimated_prompt_tokens: context.estimated_tokens(),
                     })
                     .await;
 
@@ -606,7 +624,7 @@ impl AgentLoop {
                 let mut had_tool_chunks;
                 let mut continuation_prompts_injected = 0;
                 let mut completed_chunk = None;
-
+                let mut first_token_at: Option<Instant> = None;
                 loop {
                     let request_opts = ChatRequestOptions {
                         messages: context.get_messages(),
@@ -686,22 +704,26 @@ impl AgentLoop {
                     reasoning_content.clear();
                     had_tool_chunks = false;
                     completed_chunk = None;
+                    first_token_at = None;
                     let mut stream_failed_overflow = None;
                     let mut stream_interrupted_error = None;
 
                     while let Some(chunk_res) = stream_rx.recv().await {
                         match chunk_res {
                             Ok(LLMStreamChunk::Token(delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 assistant_content.push_str(&delta);
                                 emitter.emit(AgentEvent::TokenDelta { turn, delta }).await;
                             }
                             Ok(LLMStreamChunk::ReasoningToken(delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 reasoning_content.push_str(&delta);
                                 emitter
                                     .emit(AgentEvent::ReasoningDelta { turn, delta })
                                     .await;
                             }
                             Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 had_tool_chunks = true;
                                 emitter
                                     .emit(AgentEvent::ToolCallChunk {
@@ -894,7 +916,14 @@ impl AgentLoop {
 
                 let has_tool_calls = !tool_calls.is_empty();
                 let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
-
+                // Generation time starts when the first token arrives so TTFT
+                // (prompt prefill / network queueing) is not billed as decode
+                // time. If a turn completed without streaming deltas (e.g. a
+                // tool-call-only turn whose chunks arrived on the terminal
+                // event), fall back to `turn_duration_ms`.
+                let generation_duration_ms = first_token_at
+                    .map(|t| (t.elapsed().as_millis() as u64).max(1))
+                    .unwrap_or(turn_duration_ms);
                 // Reasoning-token breakdown: prefer the provider-reported subset
                 // (`completion_tokens_details.reasoning_tokens` / Gemini `thoughtsTokenCount`);
                 // otherwise estimate from the accumulated thinking text (Anthropic and
@@ -942,9 +971,9 @@ impl AgentLoop {
                     }
                 };
 
-                let tps = if turn_duration_ms > 0 && effective_completion_tokens.is_some() {
+                let tps = if generation_duration_ms > 0 && effective_completion_tokens.is_some() {
                     effective_completion_tokens
-                        .map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
+                        .map(|ct| (ct as f64) / (generation_duration_ms as f64 / 1000.0))
                 } else {
                     None
                 };
@@ -1339,6 +1368,10 @@ impl AgentLoop {
             };
             tracker.set_status(terminal);
             status.store(terminal.as_u8(), Ordering::Release);
+            // The run has settled: nothing else will be published through this
+            // sink, and holding it would keep the run's event sender alive in a
+            // slot every later clone of this executor shares.
+            tool_executor.clear_run_trace();
 
             // The run settled: switch any warmer it scheduled to idle economics
             // (15% continuation estimate, 30-minute age cap).
@@ -1466,6 +1499,49 @@ impl ChannelEventSink {
 impl crate::types::tool::ToolEventSink for ChannelEventSink {
     fn emit_custom(&self, kind: &str, payload: serde_json::Value) {
         self.emit(kind, payload);
+    }
+}
+
+/// Bridges finished tool traces onto the run's event stream, and to the host's
+/// own sink when it installed one.
+///
+/// One record, two consumers: the event is what a host draining events sees,
+/// and the sink is what a host that would rather not parse events takes. Both
+/// receive the same value, because the kernel redacts and serialises exactly
+/// once — two implementations of "what is a secret" would eventually disagree.
+struct ChannelTraceSink {
+    agent_id: String,
+    dispatcher: AgentEventDispatcher,
+    event_sender: mpsc::Sender<ObservedEvent>,
+    host: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
+}
+
+impl crate::tools::trace::ToolTraceSink for ChannelTraceSink {
+    fn record(&self, trace: &crate::tools::trace::ToolTrace) {
+        if let Some(host) = &self.host {
+            host.record(trace);
+        }
+
+        let observed = ObservedEvent {
+            agent_id: self.agent_id.clone(),
+            event: AgentEvent::ToolTrace {
+                trace: Box::new(trace.clone()),
+            },
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        self.dispatcher.emit(observed.clone());
+
+        // A trace is structural, not a micro-delta: never drop it. Sent from a
+        // spawned task so a saturated channel cannot stall the tool path, with
+        // the same deadline the other structural events use.
+        let sender = self.event_sender.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(observed))
+                .await;
+        });
     }
 }
 

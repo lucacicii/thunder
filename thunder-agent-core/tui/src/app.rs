@@ -210,20 +210,21 @@ pub struct App {
     /// Resolution order mirrors the daemon: manual override → conversation
     /// binding → the model's default level.
     pub thinking_level: Option<String>,
-    /// Tool capability tier: the manual `/permission` tier (default: full Bash).
-    pub permission: Permission,
+    /// The session's mode plugin: the judge every tool call of this session is
+    /// asked through, held so a mode switch mid-session sticks across runs.
+    pub mode_plugin: Arc<thunder_agent_root::plugins::mode::ModePlugin>,
     /// Extra workspace roots granted the same read/write standing as the
     /// primary workspace (mirrored into `conversation.shared_roots` on submit).
     pub extra_roots: Vec<PathBuf>,
     /// Whether the ask_user_question tool is mounted. Default on, matching the
-    /// daemon (the Intent Gate asks when a request is ambiguous).
+    /// daemon (the engineering prompt asks when a request is ambiguous).
     pub ask_user_enabled: bool,
     /// Cooperative pause gate for the running task, if any.
     pub pause_gate: Option<Arc<PauseGate>>,
     /// Interactive question modal state; the agent is blocked while set.
     pub pending_question: Option<PendingQuestion>,
-    /// Filtered event trace being recorded for the current run.
-    pub trace_events: Option<Vec<ObservedEvent>>,
+    /// The current run's events and tool traces, within the shared bounds.
+    pub trace: Option<TraceCollector>,
     /// Metadata of the run currently being traced.
     pub trace_meta: Option<TraceRunMeta>,
     /// Whether the current run is this conversation's first exchange
@@ -383,12 +384,14 @@ impl App {
             active_skill: None,
             pending_raw_transcript: None,
             thinking_level: None,
-            permission: Permission::default(),
+            mode_plugin: thunder_agent_root::plugins::mode::ModePlugin::new(
+                thunder_agent_root::plugins::mode::Mode::default(),
+            ),
             extra_roots: Vec::new(),
             ask_user_enabled: true,
             pause_gate: None,
             pending_question: None,
-            trace_events: None,
+            trace: None,
             trace_meta: None,
             run_is_first_exchange: false,
             title_attempted: false,
@@ -1269,9 +1272,25 @@ impl App {
 
     // ── Traces ─────────────────────────────────────────────────────────────
 
+    /// The identity of the run in flight: the name its trace is saved under and
+    /// the route its plugin calls are attributed to.
+    ///
+    /// One run, one name. The daemon already works this way — its `route` is the
+    /// task id — and the kernel records the route as `ToolTrace::task_id`, so a
+    /// second name here would file tool traces under an id that does not match
+    /// the file they are in.
+    fn run_id(&self) -> String {
+        match self.trace_meta.as_ref() {
+            Some(meta) => meta.task_id.clone(),
+            // A run launched without `begin_trace` still needs an identity to be
+            // attributable at all; the session is the only one available.
+            None => format!("tui_{}", self.conversation.id),
+        }
+    }
+
     /// Start recording a filtered trace for a new run.
     fn begin_trace(&mut self, prompt: &str) {
-        self.trace_events = Some(Vec::new());
+        self.trace = Some(TraceCollector::new());
         self.trace_meta = Some(TraceRunMeta {
             task_id: format!("run_{}", now_ms()),
             started_at_ms: now_ms(),
@@ -1280,22 +1299,13 @@ impl App {
         });
     }
 
-    /// Tiered retention, mirroring the daemon: streaming micro-deltas never
-    /// reach the in-memory trace (they would blow up long tasks); everything
-    /// else is kept.
+    /// Tiered retention, shared with the daemon: streaming micro-deltas are
+    /// counted rather than kept (they would blow up long tasks), tool traces get
+    /// a budget of their own so event pressure cannot evict a decision, and
+    /// whatever is dropped is reported as a count.
     fn record_trace_event(&mut self, event: ObservedEvent) {
-        let is_micro_delta = matches!(
-            event.event,
-            AgentEvent::TokenDelta { .. }
-                | AgentEvent::ReasoningDelta { .. }
-                | AgentEvent::ToolCallChunk { .. }
-        );
-        if !is_micro_delta {
-            if let Some(events) = self.trace_events.as_mut() {
-                if events.len() < 5000 {
-                    events.push(event);
-                }
-            }
+        if let Some(trace) = self.trace.as_mut() {
+            trace.record(event);
         }
     }
 
@@ -1307,8 +1317,7 @@ impl App {
         final_text: Option<&str>,
         run_stats: Option<&AgentStats>,
     ) {
-        let (Some(events), Some(meta)) = (self.trace_events.as_ref(), self.trace_meta.as_ref())
-        else {
+        let (Some(trace), Some(meta)) = (self.trace.as_ref(), self.trace_meta.as_ref()) else {
             return;
         };
         let Some(store) = self.store.as_ref() else {
@@ -1329,7 +1338,13 @@ impl App {
             "finish_reason": if success { "Done" } else { "Error" },
             "stats": run_stats,
             "final_content": final_text,
-            "events": events,
+            // Additive keys: every field ARP reads keeps its name and shape, and
+            // a reader that does not know these two ignores them.
+            "tool_traces": trace.tool_traces(),
+            "tool_decisions": trace.evicted_decisions(),
+            "dropped_deltas": trace.dropped_deltas(),
+            "dropped_events": trace.dropped_events(),
+            "events": trace.events(),
         });
 
         let root = store.root().to_path_buf();
@@ -1728,14 +1743,21 @@ impl App {
                 }
                 self.cycle_focus();
             }
-            // Shift+Tab walks argument values backwards. It has no other
-            // binding in the input pane, so it stays inert elsewhere.
+            // Shift+Tab walks argument values backwards; with no value to walk
+            // it cycles the approval mode instead, which is where the binding
+            // is most useful. Argument cycling wins while it has something to
+            // do, so a command's argument is never silently discarded for a
+            // mode change.
             KeyCode::BackTab => {
-                if self.focus == FocusPane::Input {
+                if self.focus == FocusPane::Input && !self.rename_mode {
                     if let Some(next) =
                         crate::commands::arg_cycle(&self.input, crate::commands::CycleDir::Backward)
                     {
                         self.set_input(next);
+                    } else {
+                        let next = self.mode_plugin.mode().next();
+                        self.mode_plugin.set_mode(next);
+                        self.set_status_message(format!("Mode: {}", next.as_str()));
                     }
                 }
             }
@@ -2594,7 +2616,7 @@ impl App {
                 };
                 self.execution_mode = new_mode;
                 self.conversation
-                    .add_user_message(format!("/mode {}", item.id));
+                    .add_user_message(format!("/topology {}", item.id));
                 self.conversation.add_assistant_message(
                     Some(format!(
                         "✔ Execution mode switched to **`{}`** ({})",
@@ -3096,8 +3118,8 @@ impl App {
                 true
             }
 
-            // 4. /mode [auto | single]
-            "mode" | "topology" => {
+            // 4. /topology [auto | single]
+            "topology" => {
                 if let Some(m_str) = args.first() {
                     self.conversation.add_user_message(raw_cmd);
                     let new_mode = match m_str.to_lowercase().as_str() {
@@ -3407,8 +3429,8 @@ impl App {
                         self.workspace_dir.display()
                     ));
                     out.push_str(&format!(
-                        "| `permission` | `{}` | Tool capability tier |\n",
-                        self.permission.describe()
+                        "| `mode` | `{}` | Approval mode (plan / ask / acceptEdits / yolo) |\n",
+                        self.mode_plugin.mode().as_str()
                     ));
                     out.push_str(&format!(
                         "| `thinking` | `{}` | Reasoning effort |\n",
@@ -3763,38 +3785,36 @@ impl App {
                 true
             }
 
-            // /permission [read|write|bash] — manual capability tier
-            "permission" | "perm" => {
+            // /mode [plan|ask|acceptEdits|yolo] — the approval mode this
+            // session's calls are judged in
+            "mode" => {
+                use thunder_agent_root::plugins::mode::Mode;
                 self.conversation.add_user_message(raw_cmd);
-                let tier = match args.first().map(|a| a.to_lowercase()).as_deref() {
-                    Some("read" | "readonly" | "ro") => Some(Permission::Read),
-                    Some("write" | "readwrite" | "rw") => Some(Permission::Write),
-                    Some("bash" | "full") => Some(Permission::Bash),
-                    Some(other) => {
+                let parsed = args
+                    .first()
+                    .map(|a| a.to_lowercase())
+                    .as_deref()
+                    .and_then(Mode::parse);
+                match parsed {
+                    Some(mode) => {
+                        self.mode_plugin.set_mode(mode);
                         self.conversation.add_assistant_message(
                             Some(format!(
-                                "❌ Unknown permission tier `{other}`. Available: `read`, `write`, `bash`"
+                                "✔ Mode set to **`{}`** — {}",
+                                mode.as_str(),
+                                mode.describe()
                             )),
                             None,
                         );
-                        None
+                        self.set_status_message(format!("Mode: {}", mode.as_str()));
                     }
                     None => {
                         let out = format!(
-                            "### 🔐 Permission Tier\n\n- Current: **{}**\n\n*Set with `/permission <read|write|bash>`*",
-                            self.permission.describe()
+                            "### 🎚 Mode\n\n- Current: **{}**\n\n*Set with `/mode <plan|ask|acceptEdits|yolo>`*",
+                            self.mode_plugin.mode().as_str()
                         );
                         self.conversation.add_assistant_message(Some(out), None);
-                        None
                     }
-                };
-                if let Some(tier) = tier {
-                    self.permission = tier;
-                    self.conversation.add_assistant_message(
-                        Some(format!("✔ Permission tier set to **{}**", tier.describe())),
-                        None,
-                    );
-                    self.set_status_message(format!("Permission: {}", tier.describe()));
                 }
                 self.save_and_refresh();
                 true
@@ -4129,10 +4149,16 @@ impl App {
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&base_cfg));
         let workspace_dir = self.workspace_dir.clone();
-        let permission = self.permission;
+        let mode_plugin = Arc::clone(&self.mode_plugin);
+        let run_mode = self.mode_plugin.mode();
         // Captured before the move: a plugin call must be attributable to this
         // run, and the sidecar refuses calls that carry no route.
-        let run_route = format!("tui_{}", session_id);
+        //
+        // The route *is* the trace's task id. The two are one run under two
+        // names, and the tool traces inside `traces/<task_id>.json` say which
+        // run they belong to — so a second name here would put a `task_id` in
+        // the file that does not match the file's own name.
+        let run_route = self.run_id();
 
         tokio::spawn(async move {
             // Smart baseline set instead of blanket forcing (mirrors the daemon):
@@ -4147,12 +4173,11 @@ impl App {
                 session_id: Some(session_id),
                 custom_client: factory_client,
                 cancellation_token: Some(cancel),
-                // The TUI does not register the script host, so TS plugins are never forced
-                // here even when files exist; the daemon is the interactive path.
-                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config, false)),
+                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: None,
-                permission,
+                mode: run_mode,
+                mode_plugin: Some(mode_plugin),
                 pause_gate: Some(pause_gate),
                 steer_queues: Some(steer_queues),
                 // Forward terminal-native HostUi so approval dialogs (mode: ask / manual)
@@ -4161,7 +4186,6 @@ impl App {
                 // The TUI is single-run, but a route is still required: the
                 // plugin sidecar refuses calls that cannot be attributed.
                 route: Some(run_route),
-                policy: None,
             };
 
             match root.execute(context_input, options).await {
@@ -4255,8 +4279,7 @@ impl App {
             config.prompt_cache_warm =
                 spec.prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }
-        // Capability tier + multi-root jail mirror the host path.
-        config.permission = self.permission;
+        // Multi-root workspaces mirror the host path.
         config.extra_workspace_roots = self.extra_roots.clone();
         if let Some(handle) = &self.active_skill {
             let fragment = handle.system_prompt_fragment();
@@ -4268,15 +4291,34 @@ impl App {
 
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
-        let perm = self.permission;
+        let mode_plugin = Arc::clone(&self.mode_plugin);
         let ws = self.workspace_dir.clone();
+        // One run, one name: the same id the trace is filed under. This path
+        // builds no `ThunderRoot`, so nothing else would set it.
+        config.route = Some(self.run_id());
+        // Direct mode builds no `ThunderRoot`, so nothing else binds the plan
+        // file's location — without this, plan mode would have nowhere to write.
+        mode_plugin.bind_session(Some(ws.clone()), &self.conversation.id);
 
         tokio::spawn(async move {
             let agent = AgentLoop::new(config.clone()).with_id("tui_agent");
-            // The TUI is a coding agent: install the code capability pack so the
-            // shell/file tools run behind the workspace jail and atomic writes.
-            let mut agent =
-                agent.with_pipeline_builder(Arc::new(thunder_agent_pack_code::build_code_pipeline));
+            // The TUI is a coding agent: install the code capability pack and
+            // the scope that tells the kernel which paths are in the project,
+            // and the mode plugin that judges every call. The gate is shared
+            // with the App so /mode flips take effect mid-session.
+            let ui = Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()));
+            let mut agent = agent
+                .with_tool_scope(Arc::new(
+                    thunder_agent_pack_code::CodeScope::from_agent_config(
+                        &config,
+                        Some(ws.as_path()),
+                    ),
+                ))
+                .with_tool_gate(
+                    Some(Arc::clone(&mode_plugin)
+                        as Arc<dyn thunder_agent_loop::types::gate::ToolGate>),
+                    Some(ui),
+                );
 
             // Resolve the transport: injected factory (tests/embedders) first,
             // then the provider registry. Never proceed without a client — a
@@ -4308,25 +4350,25 @@ impl App {
             if let Some(client) = client {
                 agent = agent.with_custom_client(client);
             }
-            // Gate by capability tier, exactly like the host path: a denied
-            // tool is never registered, so it never reaches the model.
-            if perm.allows_read() {
-                agent.register_tool(Arc::new(
-                    ReadFileTool::default().with_default_cwd(ws.clone()),
-                ));
-                agent.register_tool(Arc::new(GrepTool::default().with_default_cwd(ws.clone())));
-                agent.register_tool(Arc::new(FindTool::default().with_default_cwd(ws.clone())));
-                agent.register_tool(Arc::new(
-                    ListDirTool::default().with_default_cwd(ws.clone()),
-                ));
-            }
-            if perm.allows_write() {
-                agent.register_tool(Arc::new(
-                    WriteFileTool::default().with_default_cwd(ws.clone()),
-                ));
-            }
-            if perm.allows_exec() {
-                agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
+            // Every tool, every run: the mode plugin decides what a call may
+            // do, and a tool missing from the list is a tool the model cannot
+            // even ask to use.
+            agent.register_tool(Arc::new(
+                ReadFileTool::default().with_default_cwd(ws.clone()),
+            ));
+            agent.register_tool(Arc::new(GrepTool::default().with_default_cwd(ws.clone())));
+            agent.register_tool(Arc::new(FindTool::default().with_default_cwd(ws.clone())));
+            agent.register_tool(Arc::new(
+                ListDirTool::default().with_default_cwd(ws.clone()),
+            ));
+            agent.register_tool(Arc::new(
+                WriteFileTool::default().with_default_cwd(ws.clone()),
+            ));
+            agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
+            // The mode plugin judges every call *and* carries the plan tools:
+            // without them, plan mode would be a mode with no way out.
+            for tool in thunder_agent_root::plugin::ThunderPlugin::tools(&*mode_plugin) {
+                agent.register_tool(tool);
             }
             agent = agent.with_pause_gate(pause_gate);
             agent = agent.with_steer_queues(steer_queues);
@@ -4401,7 +4443,7 @@ impl App {
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 self.agent_status = AgentStatus::Streaming;
-                self.metrics.count_token_delta();
+                self.metrics.count_token_delta_str(&delta);
                 self.streaming_delta.push_str(&delta);
                 push_live_segment(&mut self.live_segments, LiveKind::Text, delta.len());
             }
@@ -4452,7 +4494,7 @@ impl App {
                 ));
             }
             AgentEvent::ReasoningDelta { delta, .. } => {
-                self.metrics.count_reasoning_delta();
+                self.metrics.count_reasoning_delta_str(&delta);
                 self.reasoning_delta.push_str(&delta);
                 push_live_segment(&mut self.live_segments, LiveKind::Reasoning, delta.len());
             }
@@ -4468,6 +4510,7 @@ impl App {
                 });
             }
             AgentEvent::ToolExecStart { name, .. } => {
+                self.metrics.pause_generation_for_tools();
                 self.agent_status = AgentStatus::ExecutingTool {
                     name,
                     duration_ms: 0,
@@ -4558,6 +4601,15 @@ impl App {
                     "🗜 Context compacted: ~{} → ~{} tokens (older history summarized)",
                     tokens_before, tokens_after
                 ));
+            }
+            AgentEvent::Custom { kind, payload }
+                if kind == thunder_agent_root::plugins::METRICS_UPDATE_EVENT_KIND =>
+            {
+                if let Ok(snap) =
+                    serde_json::from_value::<thunder_agent_root::plugins::MetricsSnapshot>(payload)
+                {
+                    self.metrics.apply_snapshot(&snap);
+                }
             }
             _ => {}
         }
@@ -4719,7 +4771,7 @@ impl App {
             let trace_text = final_text.clone();
             self.finalize_trace(trace_ok, trace_text.as_deref(), run_stats.as_ref());
         }
-        self.trace_events = None;
+        self.trace = None;
         self.trace_meta = None;
         // `run_is_first_exchange` deliberately survives the run: the auto-title
         // check reads it right after this handler returns, and the next
@@ -4917,6 +4969,11 @@ fn format_trace_event(event: &ObservedEvent) -> Option<String> {
         | AgentEvent::ReasoningDelta { .. }
         | AgentEvent::ToolCallChunk { .. }
         | AgentEvent::ToolCallReady { .. } => None,
+        // The trace is the kernel's audit record, not a transcript line: it
+        // repeats what `ToolExecStart`/`ToolExecResult` already show, and its
+        // own decision summary belongs on the `/trace` view rather than in the
+        // timeline. It still reaches the trace file, via `record_trace_event`.
+        AgentEvent::ToolTrace { .. } => None,
     }
 }
 
