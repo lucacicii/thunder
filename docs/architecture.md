@@ -188,7 +188,7 @@ loop {
   6. pruner.prune(...)          → 事件 ContextCompacted                 engine.rs:521
   7. max_tokens_budget 检查      → FinishReason::BudgetExceeded          engine.rs:545
   8. tracker.next_turn() + 事件 TurnStart                                engine.rs:558
-  9. 排空 steer/follow_up 队列 → push 进上下文 + 事件 SteerAccepted      engine.rs:581-613
+  9. 排空 steer 队列 → push 进上下文 + 事件 SteerAccepted（follow_up 只在第 17 步的无工具分支排空，两者不同时）  engine.rs:582-613
  10. ┌ 内层流式循环 ───────────────────────────────────────────────┐
      │ llm_client.stream_chat(ChatRequestOptions)                    │
      │   ├ Err + 上下文溢出 + retry<2 → update_max_tokens + 压缩 + 重试 │
@@ -204,8 +204,8 @@ loop {
  12. 注入的续写提示词从上下文尾部弹出，保持历史洁净                     engine.rs:860-862
  13. 取消 → 保留 partial answer → Cancelled                            engine.rs:864
  14. token 记账 + 回退估算（completion/prompt/reasoning/tps）           engine.rs:920-1005
- 15. Prompt Cache 保温调度（每轮替换上一代）                            engine.rs:972-993
- 16. push assistant 消息 + 事件 TurnEnd                                 engine.rs:1008-1038
+ 15. Prompt Cache 保温调度（每轮替换上一代）                            engine.rs:981-1005
+ 16. push assistant 消息 + 事件 TurnEnd                                 engine.rs:1020-1050
  17. 无工具调用 → 队列 → CompletionGate → Done / retry / fail            engine.rs:1052-1176
  18. 有工具调用 → 状态 ExecutingTools                                   engine.rs:1178
  19. 逐个发 ToolCallReady / ToolExecStart                              engine.rs:1181-1204
@@ -382,7 +382,7 @@ pub enum DenyBy { Guard, Gate }
 - 脱敏在入口做：密钥键名 + 密钥形态文本 + 文档正文摘要化（`executor.rs:307-309`）；
 - `output_digest` 是完整**未脱敏**输出的稳定摘要，足以判断两次调用是否同产物而不留字节（`trace.rs:187-189`）。
 
-两个出口共用一条记录（`engine.rs:1493-1534`）：`AgentEvent::ToolTrace` 给排事件的宿主，`ToolTraceSink` 给不想解析事件的宿主；**内核只序列化、只脱敏一次**。
+两个出口共用一条记录（`engine.rs:1519-1545`）：`AgentEvent::ToolTrace` 给排事件的宿主，`ToolTraceSink` 给不想解析事件的宿主；**内核只序列化、只脱敏一次**。
 
 ---
 
@@ -391,7 +391,7 @@ pub enum DenyBy { Guard, Gate }
 ### 4.1 压缩触发
 
 `should_compact(estimated) = estimated > max_context_tokens - reserve_tokens`（`pruning/strategy.rs:52-58`）。
-默认 `max_context_tokens = 128_000`、`reserve_tokens = 16_384`、`keep_recent_tokens = 20_000`（`types/config.rs:45-56`）。宿主会用模型真实窗口覆盖 `max_context_tokens`（`root/src/host.rs:494`）。
+默认 `max_context_tokens = 128_000`、`reserve_tokens = 16_384`、`keep_recent_tokens = 20_000`（`types/config.rs:45-56`）。宿主会用模型真实窗口覆盖 `max_context_tokens`（`root/src/host.rs:647`）。
 
 **未越线时 `prune` 是 no-op**——这正是"两次压缩之间请求前缀字节级稳定"（prompt cache 全命中）的实现方式（`strategy.rs:60-78`）。
 
@@ -418,7 +418,7 @@ pub enum DenyBy { Guard, Gate }
 
 `cache/warmer.rs` 是 pi-coding-agent `CacheWarmer` 的移植：
 
-- 每轮成功后被重新调度（替换上一代），`generation` 递增防串台（`warmer.rs:170-225`）；
+- 每轮**确实命中缓存时**才被重新调度（替换上一代，要求 `cached_tokens + cache_write_tokens > 0`），`generation` 递增防串台（`engine.rs:984-989`、`warmer.rs:170-225`）；
 - 刷新时延 = `TTL × 90%`，且至少留 10s 余量（`warmer.rs:82-90`）；
 - 经济性闸门：`expected = probability × miss_cost − warm_cost`，`≥ $0.05` 才刷（`warmer.rs:98-130`）；
 - 空转概率常数 **0.15**，空转时长上限 **30 分钟**（`warmer.rs:39-46`）；
@@ -432,7 +432,7 @@ pub enum DenyBy { Guard, Gate }
 | 原语 | 类型 | 语义 | 检查点 |
 |---|---|---|---|
 | 取消 | `tokio_util::sync::CancellationToken` | 不可逆 | 每轮开头、流式、工具执行、弹窗 |
-| 暂停 | `PauseGate`（`AtomicBool` + `Notify`） | 可恢复 | **工具边界**，绝不打断在途工具（`engine.rs:1194-1208`） |
+| 暂停 | `PauseGate`（`AtomicBool` + `Notify`） | 可恢复 | **工具边界**，绝不打断在途工具（`engine.rs:1206-1220`） |
 | 转向 | `SteerQueues::steering` | 本轮工具调用后、下轮请求前进入 | 轮次边界 |
 | 追问 | `SteerQueues::follow_up` | 仅当 run 无事可做时进入 | 收尾处 |
 | 队列模式 | `QueueMode::All` / `OneAtATime`（默认） | 单轮投递几条 | `steer.rs:44-73` |
@@ -451,12 +451,12 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 
 `AgentEvent` 全部变体（`types/event.rs:62-187`）：`TurnStart`、`TokenDelta`、`ReasoningDelta`、`ToolCallChunk`、`ToolCallReady`、`ToolExecStart`、`ToolExecResult`、`ToolTrace`（boxed）、`TelemetryNotice`、`TurnEnd`、`LoopComplete`、`ContextCompacted`、`SteerAccepted`、`Error`、`Custom`、`GateResult`。
 
-两条投递路径（`engine.rs:1417-1448`）：
+两条投递路径（`engine.rs:1430-1460`）：
 
 | 事件类别 | 通道 | 策略 |
 |---|---|---|
 | 微增量（`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`） | broadcast + mpsc | `try_send`，**绝不阻塞引擎** |
-| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | `spawn` + **5 秒** `timeout(send)`，不丢 |
+| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被静默丢弃（见 §18.5） |
 
 `AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。
 
@@ -492,7 +492,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 | 路径 | 读取者 |
 |---|---|
 | `config.json` / `config.local.json` | `thunder_config.rs:100-101` |
-| `mcp.json` | `mcp/src/config.rs:130`（候选表第一项） |
+| `mcp.json` | `mcp/src/config.rs:129`（候选表第一项） |
 | `memory/*.md` | `root/plugins/memory.rs:156,210`（由 `agent.memory` 声明，路径必须落在 `.thunder/` 内） |
 | `plans/<session>.md` | `root/plugins/mode.rs:157`（plan 模式唯一可写目标，`<session>` 消毒成 `[A-Za-z0-9._-]`） |
 | `models.json` / `auth.json` | 见下：**写**路径把项目级排第一，**读**路径不是 |
@@ -1466,6 +1466,9 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
 | ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
 | 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-86,70-74` | 系统提示里出现意外技能条目 |
+| 结构化事件送达超过 5s 即被静默丢弃 | 低 | `engine.rs:1452-1459` 的 `let _ = timeout(5s, send(..)).await` | 消费者被压满超过 5 秒时，`TurnEnd`/`LoopComplete`/trace 等结构性事件会凭空消失，宿主无从得知（`§6` 曾写作"不丢"，已改） |
+| 审批弹窗不带"到底要跑什么" | 中 | 门算出 `detail = describe_call(args)`（`plugins/mode.rs:416`），但内核只把 `title/options/timeout_ms` 塞进 `UiRequest::Select`（`executor.rs:497-507`）；`ApprovalPrompt.detail`（`types/gate.rs:85`）在弹窗路径上无消费者 | 用户看到的是 `Run bash` 而不是那条命令，等于在不知道内容的情况下点"允许" |
+| TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现 | 低 | `ALL_COMMANDS` 表里 `export` 带 `save`、`timeline` 带 `rail`、`health` 带 `status`（`commands.rs:69-302`），但 `execute_slash_command` 的分派分支只认 `"export" \| "dump"`、`"timeline"`、`"health" \| "doctor"`（`app.rs:3515,3651,3694`） | 这三个别名会进补全与 `/help`，敲下去却落到"未知命令" |
 
 ---
 
