@@ -1405,8 +1405,8 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `4096` | `loop/types/config.rs:41-43` | `summarizer_max_tokens` |
 | `3` | `loop/engine.rs:124` | `max_gate_rounds` |
 | `512` | `loop/engine.rs:316` | 每 run 事件通道深度 |
-| `128` | `loop/hooks.rs:12` | broadcast 旁路容量 |
-| `2` | `loop/engine.rs:615` | 上下文溢出自动重试次数 |
+| `128` | `loop/hooks.rs:13` | broadcast 旁路容量 |
+| `2` | `loop/engine.rs:616` | 上下文溢出自动重试次数 |
 | `2` | `loop/types/config.rs:135` | `max_stream_retries` |
 | `600s` | `loop/tools/executor.rs:31` | 审批弹窗默认超时 |
 | `2048` | `loop/tools/executor.rs:36` | trace 输出预览字符数 |
@@ -1416,16 +1416,16 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `2000` / `200` | `loop/pruning/checkpoint.rs:27-28` | 摘要输入的 tool result / args 截断 |
 | `0.15` / `$0.05` / `30min` | `loop/cache/warmer.rs:39-46` | 空转概率 / 最小预期节省 / 空转年龄上限 |
 | `10` / `3` / `5` / `5` | `loop/types/config.rs:68-77` | LoopGuard 四阈值 |
-| `5s` | `loop/engine.rs:1443` | 结构化事件投递超时 |
+| `5s` | `loop/engine.rs:1455` | 结构化事件投递超时 |
 | `10MB` | `pack-code/builtin/fs.rs:83` | 单次 read_file 上限 |
 | `1000` / `50KB` | `pack-code/builtin/fs_ext.rs:15-17` | find 条数 / 输出上限 |
 | `100` / `500` / `50KB` | `pack-code/builtin/search.rs:20-26` | grep 匹配数 / 行宽 / 输出上限 |
 | `120s` | `pack-code/builtin/bash.rs:93` | bash 默认超时 |
 | `10` / `5MiB` | `loop/core/images.rs:15-17` | 单消息图片数 / 单图字节 |
-| `8` | `daemon/service.rs:241-246` | 并发任务上限（`THUNDER_MAX_CONCURRENT_TASKS`） |
+| `8` | `daemon/service.rs:243-247` | 并发任务上限（`THUNDER_MAX_CONCURRENT_TASKS`） |
 | `120_000` | `daemon/service.rs:24` | 请求超时（双处一致） |
-| `1024` / `64KB` | `daemon/service.rs:248-258` | stdout 通道深度 / 批写阈值 |
-| `256` / `16` | `daemon/service.rs:103,327` | 会话模式上限 / MCP 池上限 |
+| `1024` / `64KB` | `daemon/service.rs:250,260` | stdout 通道深度 / 批写阈值 |
+| `256` / `16` | `daemon/service.rs:105,330` | 会话模式上限 / MCP 池上限 |
 | `1800s` / `60s` | `daemon/ask_user.rs:24` / loop `types/ui.rs:28` | 提问超时 / 弹窗超时 |
 | `120s` | root `plugins/skills.rs:88,95` | 技能目录 TTL |
 | `5` / `256KB` | root `plugins/memory.rs` | 导入深度 / 渲染预算 |
@@ -1435,20 +1435,22 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 ### 18.3 文档漂移
 
-- `thunder-agent-root/README.md:26,43` 仍写 `with_standard_plugins()` 与 `ScriptPlugin`，0.4 都不存在（TS 插件宿主已删）。
-- `KEYBOARD.md:31-33` 记录 `/pipeline`、`/parallel`、`/fanout`，但三者都不在 `ALL_COMMANDS` 也没有执行分支。
-- `commands.rs:52` 的注释写"27-command table"，实际 31 条。
-- `KEYBOARD.md` 未记录 `Ctrl+B`（侧栏），而 `app.rs:1666` 与 `/help` 都实现了它。
-- `providers/README` 的方言表与代码不符（代码只支持三种方言，其它一律报错）。
-- daemon 默认 `EnvFilter` 里的 target `thunder_daemon` 与本 crate 名 `thunder_agent_daemon` 不匹配，该 debug 过滤实际不生效。`[INFERENCE]`
+> 2026-10-13 做过一轮全仓文档同步，下列前三条已修；余下几条仍是现存漂移。
+
+- ~~`thunder-agent-root/README.md` 仍写 `with_standard_plugins()` 与 `ScriptPlugin`~~ **已修**（0.4 就删掉了 TS 插件宿主，README 已改写）。
+- ~~`KEYBOARD.md` 记录 `/pipeline`、`/parallel`、`/fanout`~~ **已修**（三者既不在 `ALL_COMMANDS` 也没有执行分支，已从表里删净）。
+- ~~`providers/README` 的方言表与代码不符~~ **已修**（表里补上了 `openai-responses`，与 `client.rs:86-104` 的三种方言一致）。
+- `commands.rs:52` 的注释写"27-command table"，实际 31 条（代码注释，未动）。
+- `KEYBOARD.md` 未记录 `Ctrl + B`（侧栏），而 `app.rs:1666` 与 `/help` 都实现了它。
+- daemon 默认 `EnvFilter` 里的 target `thunder_daemon` 与本 crate 名 `thunder_agent_daemon` 不匹配（`main.rs:22`），该 debug 过滤实际不生效。`[INFERENCE]`
 
 ### 18.4 已实现但无生产调用方（死接线）
 
 | 接口 | 定义处 | 状态 |
 |---|---|---|
-| ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:121`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化随之生效 |
-| `ThunderPlugin::tool_gate` | `root/plugin.rs:285` | `execute` 忽略它，只装 mode 插件 |
-| `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:584-592` 填充 |
+| ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:113`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化随之生效 |
+| `ThunderPlugin::tool_gate` | `root/plugin.rs:297` | `execute` 忽略它，只装 mode 插件 |
+| `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:737-745` 填充 |
 | `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
 | `render_sidebar` | `tui/ui/sidebar.rs:9` | `draw` 从不调用 |
 以上四项是"接线存在、无人拉"；`thunder-runtime` 是独立二进制、`MemoryConversationStore` 由 TUI 的 `StandardHostBuilder` 正常使用，**不属于**死接线。（`McpServerConfig::timeout_ms` 曾在此列，已在 §15.2.2 接上消费者，移出。）
@@ -1460,10 +1462,10 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | ~~**stdio MCP server 在 spawn 返回时即被 SIGKILL**~~ | ~~阻断~~ **已修复** | 根因与修复见 §15.2.1；回归测试 `mcp/tests/stdio_lifecycle_test.rs` | 修复前 stdio MCP 完全不可用且静默（`McpPlugin::on_init` fail-open + 测试只用 `MockTransport`） |
 | ~~`tools/call` 无超时 + pending 表泄漏~~ | ~~高~~ **已修复** | 根因与修复见 §15.2.2；回归测试 2 条 | 修复前一个不响应的 server 会永久挂住工具调用，且每次超时留一条 pending 残留 |
 | 忽略 `nextCursor` | 中 | `protocol.rs:144` 解析、无人读取 | 多页工具列表被截断 |
-| MCP 图片内容被丢弃 | 中 | `protocol.rs:183-187` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
+| MCP 图片内容被丢弃 | 中 | `protocol.rs:184-188` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
 | `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
 | ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
-| 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-89,72-75` | 系统提示里出现意外技能条目 |
+| 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-86,70-74` | 系统提示里出现意外技能条目 |
 
 ---
 
@@ -1488,14 +1490,14 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 
 | Crate | 集成测试文件 | 覆盖重点 |
 |---|---|---|
-| loop | 17 个（`tests/*.rs`） | 单元契约（并行/忙/取消隔离）、完整生命周期、流中断三分支、checkpoint 压缩与紧急裁剪、溢出自动修复、pause/steer、trace 的 14 条出口、UTF-8 安全、缓存保温 |
-| pack-code | 6 个 | 工具行为、守卫、路径作用域、权限层、插件调用、安全守卫 |
-| root | 15 个 | 模式矩阵 15 格、plan 模式端到端、host UI 两阶段、记忆写入 jail、配置分层、选择缓存、无 gate 全放行 |
+| loop | 14 个（`tests/*.rs`） | 单元契约（并行/忙/取消隔离）、完整生命周期、流中断三分支、checkpoint 压缩与紧急裁剪、溢出自动修复、pause/steer、trace 的 14 条出口、UTF-8 安全、缓存保温 |
+| pack-code | 8 个 | 工具行为、守卫、路径作用域、权限层、插件调用、安全守卫 |
+| root | 17 个 | 模式矩阵 15 格、plan 模式端到端、host UI 两阶段、记忆写入 jail、配置分层、选择缓存、无 gate 全放行 |
 | daemon | 3 个 | 真实二进制的 IPC（`CARGO_BIN_EXE_thunder-daemon`）、模式协议、数据根隔离 |
-| conversation | 6 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
+| conversation | 5 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
 | tui | 20 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker |
 | providers | 2 个 | 目录解析、思考档位、compat/cost 透传、保温推导、元数据缓存 |
-| skills / mcp / runtime | 各 1-3 个 | 解析/发现/桥接、JSON-RPC 往返、JSONL 协议；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留** |
+| skills / mcp / runtime | 1 / 2 / 0 个 | 解析/发现/桥接、JSON-RPC 往返；**`runtime` 没有 `tests/` 集成测试文件**（其 JSONL 协议只由 crate 内单测覆盖）；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留** |
 
 ### 19.3 关键回归测试（行为契约）
 
@@ -1516,7 +1518,7 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 | `conversation/tests/durability_test.rs::fs_store_refuses_a_conversation_without_a_user_turn` | 持久化门禁（连目录都不建） |
 | `conversation/tests/store_concurrency_test.rs::concurrent_new_on_a_clean_root_succeeds` | 构造竞态重试 |
 | `tui/tests/transcript_order_test.rs::thinking_survives_the_authoritative_replacement` | thinking 重新附着 |
-| `tui/tests/links.rs::dangerous_schemes_are_rejected` | `javascript:`/`data:` 等被丢弃 |
+| `tui/src/links.rs::dangerous_schemes_are_rejected`（模块内单测） | `javascript:`/`data:` 等被丢弃 |
 | `mcp/tests/stdio_lifecycle_test.rs::a_real_stdio_server_survives_spawn_and_serves_requests` | 真实 stdio server 在 spawn 后存活，且 `close()` 真的终止进程（`pgrep` 归零） |
 | `mcp/tests/stdio_lifecycle_test.rs::a_silent_server_times_out_and_leaves_no_pending_entry` | 静默 server 不挂住调用（可配置时限），且超时不留 pending 残留 |
 | `mcp/tests/stdio_lifecycle_test.rs::an_explicit_zero_timeout_opts_out_of_the_bound` | `timeout_ms = 0` 真的放弃时限；`close()` 释放所有 parked 请求 |
@@ -1557,9 +1559,9 @@ cargo clippy -p thunder-agent-mcp --all-targets -- -D warnings  # 通过（exit 
 | 加一个审批策略 | 实现 `ToolGate`（`loop/types/gate.rs:118-142`），在宿主 `with_tool_gate` 安装 |
 | 让某路径免问 | 实现/扩展 `ToolScope`（`loop/types/scope.rs:57-73`），注意它只能放宽 |
 | 收 trace 到自定义存储 | 实现 `ToolTraceSink`（`loop/tools/trace.rs`）或排 `AgentEvent::ToolTrace` |
-| 加一个插件 | 实现 `ThunderPlugin`（`root/plugin.rs:264-316`）→ `ThunderRoot::with_plugin` |
+| 加一个插件 | 实现 `ThunderPlugin`（`root/plugin.rs:277-328`）→ `ThunderRoot::with_plugin` |
 | 加一个斜杠命令 | `tui/commands.rs:69` 的表 + `tui/app.rs:2965` 的 match（两处都要改） |
 | 加一个 UI 模块 | `tui/ui/mod.rs` 的 `draw` 里插一段布局 |
 | 换模型方言 | `providers/convert.rs::SUPPORTED_APIS` + `client.rs::with_model` 的 match |
 | 换会话存储后端 | 实现 `ConversationStore`（`conversation/store/mod.rs:11-37`） |
-| 加一个 MCP 配置位置 | `mcp/config.rs:119-155` 的候选列表 |
+| 加一个 MCP 配置位置 | `mcp/config.rs:127-161` 的候选列表 |

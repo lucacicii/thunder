@@ -44,7 +44,7 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 | Crate | 路径 | 说明 |
 | :--- | :--- | :--- |
 | **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent 内核**：单 Agent 闭环执行引擎，极致轻量与低延迟，支持检查点式上下文压缩与跨 Agent 文件写入安全锁 |
-| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **编码能力包**：读写/编辑/搜索/bash 六个内建工具、原子写入与路径作用域判定（`CodeScope`） |
+| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **编码能力包**：`bash`/`read_file`/`write_file`/`grep`/`find`/`ls` 六个内建工具、原子写入与路径作用域判定（`CodeScope`） |
 | **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **无头运行时**：以 JSONL 协议驱动 `AgentLoop`，供无 UI 的嵌入式宿主使用 |
 | **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **模型目录 + 流式传输**：加载与解析 `models.json` / `auth.json`，并以 `RpiAiClient` 进程内直连模型 |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **技能引擎**：扫描并解析 Playbook / SKILL.md，支持意图触发匹配与 120s TTL 全局文件缓存 |

@@ -26,10 +26,11 @@
 
 ---
 
-## 📡 Supported Provider APIs (via `@earendil-works/pi-ai`)
+## 📡 Supported Provider APIs (following `pi-ai`'s dialect names)
 
 | API Protocol | Covered Providers |
 | :--- | :--- |
+| `openai-responses` | OpenAI Responses API |
 | `openai-completions` | OpenAI, DeepSeek, OpenRouter, Qwen, Moonshot, zAI, Groq, Ollama, etc. |
 | `anthropic-messages` | Anthropic Claude 3.5 / 3.7 |
 

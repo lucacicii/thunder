@@ -44,7 +44,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 | Crate | Path | Description |
 | :--- | :--- | :--- |
 | **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent A**: Single-agent atomic loop engine with decoupled tool output eviction and cross-agent file write mutex |
-| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **Code Pack**: Six built-in tools (read/write/edit/search/bash), atomic writes, and path scope classification (`CodeScope`) |
+| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **Code Pack**: Six built-in tools (`bash`/`read_file`/`write_file`/`grep`/`find`/`ls`), atomic writes, and path scope classification (`CodeScope`) |
 | **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **Headless Runtime**: Drives `AgentLoop` over a JSONL protocol for embedding hosts with no UI |
 | **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **Model Catalog**: Loads `models.json` / `auth.json`, manages model specifications and thinking level mappings |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **Skills Engine**: Discovers and parses Playbooks / SKILL.md with intent trigger matching and 120s TTL global cache |
