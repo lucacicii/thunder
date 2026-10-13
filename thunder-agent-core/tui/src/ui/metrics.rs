@@ -178,6 +178,14 @@ pub struct Metrics {
     pub last_run_wall_ms: Option<u64>,
     pub last_run: Option<AgentStats>,
     pub last_turn: Option<TurnStats>,
+    /// The last authoritative snapshot's gauges. They advance *during* a turn —
+    /// context occupancy creeps up with the answer and the cumulative counter
+    /// with it — which the local per-turn figures cannot: those only move at a
+    /// turn boundary. Preferring them is what keeps this bar and the desktop
+    /// panel reporting the same numbers.
+    snapshot_context: Option<usize>,
+    snapshot_session_total: Option<usize>,
+    snapshot_live_tps: Option<f64>,
 }
 impl Metrics {
     /// Update directly from an authoritative [`MetricsSnapshot`] produced by
@@ -185,6 +193,11 @@ impl Metrics {
     pub fn apply_snapshot(&mut self, snap: &thunder_agent_root::plugins::MetricsSnapshot) {
         self.live_tokens = snap.live_tokens;
         self.live_reasoning = snap.live_reasoning_tokens;
+        self.snapshot_live_tps = Some(snap.live_tps);
+        if snap.context_tokens > 0 {
+            self.snapshot_context = Some(snap.context_tokens);
+        }
+        self.snapshot_session_total = Some(snap.session_total_tokens);
         if let Some(avg) = snap.avg_tps {
             if let Some(last) = &mut self.last_run {
                 last.avg_tokens_per_second = Some(avg);
@@ -320,6 +333,10 @@ impl Metrics {
         self.last_run_wall_ms = None;
         self.last_run = None;
         self.last_turn = None;
+        // Authoritative figures belong to the conversation that produced them.
+        self.snapshot_context = None;
+        self.snapshot_session_total = None;
+        self.snapshot_live_tps = None;
     }
 
     pub fn finish_run(&mut self, stats: Option<&AgentStats>) {
@@ -335,7 +352,14 @@ impl Metrics {
 
     /// Tokens/second for the live stream. Zero until the stream has run long
     /// enough to mean anything (the panel uses the same 0.2s floor).
+    ///
+    /// The snapshot's figure wins when there is one: it comes from the plugin's
+    /// own clock (first delta of the turn, tool time excluded), so this bar and
+    /// the desktop panel report the same number instead of two estimates.
     pub fn live_tps(&self) -> f64 {
+        if let Some(tps) = self.snapshot_live_tps.filter(|t| *t > 0.0) {
+            return tps;
+        }
         if self.live_tokens == 0 {
             return 0.0;
         }
@@ -349,11 +373,15 @@ impl Metrics {
         }
         self.live_tokens as f64 / elapsed
     }
-    /// Context occupancy: the last turn's provider-reported volume, falling back
-    /// to the working-context estimate before any turn has completed. This is
-    /// the panel's figure, which is why a compacted session can differ from the
-    /// message-list estimate.
+    /// Context occupancy: the authoritative snapshot while a run is under way
+    /// (it advances during a turn), else the last turn's provider-reported
+    /// volume, else the working-context estimate before any turn has completed.
+    /// This is the panel's figure, which is why a compacted session can differ
+    /// from the message-list estimate.
     pub fn context_tokens(&self, estimated: usize) -> usize {
+        if let Some(ctx) = self.snapshot_context {
+            return ctx;
+        }
         match &self.last_turn {
             Some(turn) => match (turn.prompt_tokens, turn.completion_tokens) {
                 (None, None) => estimated,
@@ -361,6 +389,13 @@ impl Metrics {
             },
             None => estimated,
         }
+    }
+
+    /// Cumulative billed usage for the session: the snapshot's counter while a
+    /// run is under way (it advances during a turn), else the conversation
+    /// store's own figure.
+    pub fn billed_total(&self, fallback: usize) -> usize {
+        self.snapshot_session_total.unwrap_or(fallback)
     }
 }
 
@@ -581,7 +616,7 @@ fn build_segments(app: &App, theme: &Theme, width: usize) -> Vec<Segment> {
     segments.push(Segment::new(vec![
         Span::styled("Total ", label),
         Span::styled(
-            format_token_count(app.conversation.stats.total_used_tokens),
+            format_token_count(metric.billed_total(app.conversation.stats.total_used_tokens)),
             value,
         ),
     ]));
@@ -815,6 +850,49 @@ mod tests {
         m.count_token_delta();
         // The clock just started, so the panel (and this) reports 0.
         assert_eq!(m.live_tps(), 0.0, "too early to mean anything");
+    }
+
+    /// The snapshot is the shared figure: this bar must not report a second,
+    /// differently-derived estimate when the plugin has one. Its gauges also
+    /// advance *during* a turn, which the local per-turn values cannot.
+    #[test]
+    fn the_snapshot_wins_over_the_local_figures() {
+        let mut m = Metrics::new();
+        m.begin_run();
+        m.record_turn(&TurnStats {
+            prompt_tokens: Some(1_000),
+            completion_tokens: Some(200),
+            ..Default::default()
+        });
+        assert_eq!(m.context_tokens(50), 1_200, "local figure before a snapshot");
+        assert_eq!(m.billed_total(7_000), 7_000, "conversation store before a snapshot");
+
+        m.apply_snapshot(&thunder_agent_root::plugins::MetricsSnapshot {
+            session_id: "s".to_string(),
+            live_tps: 42.5,
+            live_tokens: 100,
+            live_reasoning_tokens: 10,
+            context_tokens: 3_000,
+            session_total_tokens: 9_000,
+            ..Default::default()
+        });
+        assert_eq!(
+            m.live_tps(),
+            42.5,
+            "the snapshot's rate, not a locally derived one"
+        );
+        assert_eq!(
+            m.context_tokens(50),
+            3_000,
+            "the in-flight request's occupancy, which grows mid-turn"
+        );
+        assert_eq!(m.billed_total(7_000), 9_000, "the snapshot's counter wins");
+
+        // A different conversation must not inherit any of it.
+        m.reset_for_session();
+        assert_eq!(m.live_tps(), 0.0);
+        assert_eq!(m.context_tokens(50), 50);
+        assert_eq!(m.billed_total(7_000), 7_000);
     }
 
     #[test]

@@ -1271,7 +1271,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `TurnEnd` | 记 metrics、把 thinking 存进 `run_thinking`（每轮一条）、写 assistant 消息 |
 | `Error` | `last_error` + `Error` 状态 |
 | `ContextCompacted` | 仅状态提示 |
-| `Custom { kind: "metrics_update" }` | 反序列化 `MetricsSnapshot` 直接刷新遥测条（`Metrics::apply_snapshot`）——权威值优先；`/single` 直连路径不建 `ThunderRoot`、收不到该事件，退化为本地计数 |
+| `Custom { kind: "metrics_update" }` | 反序列化 `MetricsSnapshot` 直接刷新遥测条（`Metrics::apply_snapshot`）——速率、上下文占用、累计消耗一律以它为准（本地计数只在没有快照时兜底，例如 `/single` 直连路径不建 `ThunderRoot`） |
 `handle_agent_finished`（`app.rs:4608-4769`）三分支：取消（保留 partial answer、无错误）、成功（采纳引擎权威消息 + `reattach_run_thinking`）、失败（合成 `❌ …` 消息）。随后无条件清理运行态、`metrics.finish_run`、**加法式**折 `run_stats` 进会话统计、`finalize_trace`。
 
 **thinking 的重新附着**（`app.rs:968-1066,4870-4875`）：引擎的权威消息列表**不带 reasoning**，所以宿主用 assistant 消息的"身份键"（`call:{首个 tool_call_id}` 或 `text:{内容}`）索引 thinking；权威替换后按位置**从尾部对齐**配对，因为引擎重建的正文可能有一个字节的漂移。
@@ -1284,7 +1284,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `ui/chat.rs` | 941 | transcript：`TranscriptKey` 命中才重建；`Stream` 维护行 + 屏幕行映射 + 链接 span + turn 标记；每帧重发链接 hitbox |
 | `ui/markdown.rs` | 1257 | 自研**宽松**渲染器：块级（围栏/ATX 标题/分隔线/引用/表格/列表/段落）+ 行内 `Frag`；**每行恰好一个屏幕行**（换行在这里做，绝不交给 `Paragraph`）；表格列宽上限 40 格 |
 | `ui/timeline.rs` | 288 | 右侧悬浮 turn 轨道：宽度 < 100 列时不画；高亮窗口 `rail_window`；悬停浮出单行提示；每帧重发 hitbox |
-| `ui/metrics.rs` | 956 | 遥测条：9 类 segment 按重要性贪心打包（**绝不拆开一个 segment**），`bar_height` 用同一算法量高度；上下文占用 ≥ 80% 变红。数值优先取 `MetricsPlugin` 的 `metrics_update` 快照，本地计数仅作无 root 路径的回退 |
+| `ui/metrics.rs` | 1022 | 遥测条：9 类 segment 按重要性贪心打包（**绝不拆开一个 segment**），`bar_height` 用同一算法量高度；上下文占用 ≥ 80% 变红。速率 / 上下文占用 / 累计消耗优先取 `MetricsPlugin` 的 `metrics_update`（`Metrics::apply_snapshot`，轮内也在前进），本地计数只在无快照时兜底 |
 | `ui/status_bar.rs` | 469 | 提示框 + 底栏：输入按显式换行与软换行切行（不切宽字符），上限 `MAX_INPUT_ROWS = 6`；底栏**永远画会话行**，瞬时状态叠在它上面 |
 | `ui/help.rs` | 553 | 帮助弹窗：`help_lines` 静态表与渲染分离，好让 `help_max_scroll` 用同一段落量高度 |
 | `ui/command_popup.rs` | 241 | 斜杠命令补全：命令名补全后若该命令有固定首参，切换为参数候选渲染；上限 8 条 |
