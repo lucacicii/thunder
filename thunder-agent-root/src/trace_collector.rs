@@ -47,13 +47,23 @@ impl TraceCollector {
     /// nothing downstream reconstructs a transcript from them.
     pub fn record(&mut self, event: ObservedEvent) {
         let is_micro_delta = matches!(
-            event.event,
+            &event.event,
             AgentEvent::TokenDelta { .. }
                 | AgentEvent::ReasoningDelta { .. }
                 | AgentEvent::ToolCallChunk { .. }
         );
         if is_micro_delta {
             self.dropped_deltas += 1;
+            return;
+        }
+        // Live `metrics_update` custom events are high-frequency telemetry
+        // snapshots derived from the stream; the final snapshot is persisted at
+        // the top level of the trace file, so individual updates are not kept in
+        // `events` nor counted as dropped deltas.
+        if matches!(
+            &event.event,
+            AgentEvent::Custom { kind, .. } if kind == crate::plugins::metrics::METRICS_UPDATE_EVENT_KIND
+        ) {
             return;
         }
         // A tool trace arrives as an event too. It is kept as a record of its

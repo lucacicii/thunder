@@ -4,7 +4,7 @@
 
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-root` is the microkernel host built on top of [`thunder-agent-loop`](../thunder-agent-loop). It dynamically composes the single-agent loop engine with multi-turn session persistence, external skill discovery, MCP remote tools, and TypeScript script plugins, exposing a unified host execution entry point.
+`thunder-agent-root` is the microkernel host built on top of [`thunder-agent-loop`](../thunder-agent-loop). It dynamically composes the single-agent loop engine with multi-turn session persistence, external skill discovery, MCP remote tools, and model telemetry, exposing a unified host execution entry point.
 
 ---
 
@@ -16,32 +16,33 @@
      - **`MemoryPlugin`**: Layers `.thunder` long-term memory (`THUNDER.md` / `memory/*.md`) into the system prompt.
      - **`SkillsPlugin`**: Playbook directory discovery, prompt injection, and dynamic skill inspection tools.
      - **`McpPlugin`**: Model Context Protocol connections and remote tool bridging.
-     - **`ScriptPlugin`**: Native TypeScript single-file plugin execution with blue-green hot reload.
+     - **`MetricsPlugin`**: Model telemetry — live/average tok/s, token breakdown, prompt-cache hit rate, context occupancy, and durations; streamed as `metrics_update` custom events without touching the kernel.
 2. **Deterministic Zero-LLM Latency Activation**:
    - Replaces sluggish secondary LLM intent classification (which added 1~2s latency per turn).
-   - `PluginSelector` enforces a **deterministic baseline**: conversation and skills plugins are permanently active for all runs;
+   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills and telemetry plugins are permanently active for all runs;
    - Complex plugins (MCP, etc.) are activated selectively via keyword intent triggers, ensuring **zero added latency, minimal token consumption, and maximal extensibility**.
 3. **Global Skills Scan Cache (120s TTL)**:
    - Features `DEFAULT_SKILLS_CACHE` with a 120-second TTL over skill directories, eliminating redundant disk walks and filesystem bottlenecks during multi-turn interactions.
-4. **Convenient Standard Configuration (`with_standard_plugins`)**:
-   - A one-line builder that mounts the standard skills and MCP plugins out of the box; the conversation plugin can be appended as needed.
+4. **One-line Standard Assembly (`StandardHostBuilder`)**:
+   - The canonical assembly entry point: mounts conversation, telemetry, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_plugin`.
 
 ---
 
 ## 🛠️ Quickstart
 
 ```rust
+use std::sync::Arc;
 use thunder_agent_loop::AgentConfig;
 use thunder_agent_root::prelude::*;
+use thunder_conversation::prelude::MemoryConversationStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_cfg = AgentConfig::new("deepseek-chat");
 
-    // Assemble standard plugin suite (skills, mcp); append more plugins as needed
-    let mut root = ThunderRoot::new(base_cfg)
-        .with_standard_plugins()
-        .with_plugin(ConversationPlugin::with_memory_store());
+    // Standard plugin suite, assembled through StandardHostBuilder
+    let root = StandardHostBuilder::new(Arc::new(MemoryConversationStore::new()))
+        .build(ThunderRoot::new(base_cfg));
 
     // Run task
     let options = RootRunOptions::default();
@@ -50,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Active Plugins: {:?}", result.selection.active_plugin_ids);
     println!("Final Content: {:?}", result.final_content);
     println!("Total Turns: {}", result.run_result.stats.total_turns);
+    println!("Live tok/s: {:?}", result.metrics.map(|m| m.live_tps));
 
     Ok(())
 }
@@ -62,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Plugin ID | Name | Activation Strategy | Core Capabilities |
 | :--- | :--- | :--- | :--- |
 | **`conversation`** | Session Persistence | **Permanent Baseline** | Tracks multi-turn dialogue, updates `index.json`, atomic file writes |
+| **`metrics`** | Model Telemetry | **Permanent Baseline** | Tracks live/average tok/s (TTFT and tool time excluded), token breakdown, cache hit rate, context occupancy and durations; emits `metrics_update` snapshots |
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
 | **`memory`** | Long-Term Memory | Dynamic Keyword Triggers | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |

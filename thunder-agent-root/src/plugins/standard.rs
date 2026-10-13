@@ -48,6 +48,7 @@ pub struct StandardHostBuilder {
     skills: Option<SkillsPlugin>,
     #[cfg(feature = "mcp")]
     mcp: Option<crate::plugins::McpPlugin>,
+    metrics: Option<crate::plugins::MetricsPlugin>,
 }
 
 #[cfg(feature = "conversation")]
@@ -60,9 +61,16 @@ impl StandardHostBuilder {
             skills: None,
             #[cfg(feature = "mcp")]
             mcp: None,
+            metrics: None,
         }
     }
 
+    /// Use `metrics` instead of a fresh `MetricsPlugin` (e.g. to share a
+    /// session-wide telemetry tracker across runs).
+    pub fn with_metrics_plugin(mut self, metrics: crate::plugins::MetricsPlugin) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
     /// Use `skills` instead of the default `SkillsPlugin` (e.g. to preload an
     /// active skill or add search paths).
     #[cfg(feature = "skills")]
@@ -81,7 +89,7 @@ impl StandardHostBuilder {
     /// Register the assembled set onto `root`.
     pub fn build(self, mut root: ThunderRoot) -> ThunderRoot {
         root = root.with_plugin(ConversationPlugin::new(self.store));
-
+        root = root.with_metrics_plugin(self.metrics.unwrap_or_default());
         // Long-term memory rides the baseline set: it contributes nothing when
         // no `THUNDER.md` exists, so every host gets it for free.
         root = root.with_plugin(MemoryPlugin::new());
@@ -118,7 +126,7 @@ impl StandardHostBuilder {
 /// it unconditionally would tax every user who has none.
 #[cfg(feature = "conversation")]
 pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
-    let mut ids = vec!["conversation".to_string()];
+    let mut ids = vec!["conversation".to_string(), "metrics".to_string()];
     #[cfg(feature = "skills")]
     {
         ids.push("skills".to_string());

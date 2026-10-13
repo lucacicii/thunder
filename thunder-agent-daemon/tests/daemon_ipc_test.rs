@@ -95,7 +95,53 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
     assert_eq!(trace_resp["success"], true);
     assert_eq!(trace_resp["data"]["task_id"], "task-test-1");
     assert!(trace_resp["data"]["events"].is_array());
+    // The trace carries the run's unified telemetry snapshot at the top level.
+    let trace_metrics = &trace_resp["data"]["metrics"];
+    assert!(
+        trace_metrics.is_object(),
+        "trace must carry a metrics snapshot: {}",
+        trace_resp["data"]
+    );
+    assert_eq!(trace_metrics["session_id"], session_id);
+    assert_eq!(trace_metrics["is_running"], false);
+    assert!(trace_metrics["session_total_tokens"].as_u64().unwrap_or(0) > 0);
+    assert!(trace_metrics["wall_duration_ms"].as_u64().is_some());
 
+    // 3b. GetMetrics: the same snapshot, readable on demand while no run is live.
+    let metrics_req = serde_json::json!({
+        "method": "get_metrics",
+        "id": "req-metrics-1",
+        "session_id": session_id
+    });
+    stdin
+        .write_all(format!("{}\n", metrics_req).as_bytes())
+        .await?;
+    stdin.flush().await?;
+
+    let metrics_line = reader.next_line().await?.expect("Expected metrics response");
+    let metrics_resp: serde_json::Value = serde_json::from_str(&metrics_line)?;
+    assert_eq!(metrics_resp["type"], "response");
+    assert_eq!(metrics_resp["id"], "req-metrics-1");
+    assert_eq!(metrics_resp["success"], true, "{}", metrics_resp);
+    assert_eq!(metrics_resp["data"]["session_id"], session_id);
+    assert_eq!(metrics_resp["data"]["is_running"], false);
+    assert!(metrics_resp["data"]["session_total_tokens"].as_u64().unwrap_or(0) > 0);
+
+    // A session that never ran has no snapshot: reported, not invented.
+    let missing_req = serde_json::json!({
+        "method": "get_metrics",
+        "id": "req-metrics-missing",
+        "session_id": "sess_never_ran"
+    });
+    stdin
+        .write_all(format!("{}\n", missing_req).as_bytes())
+        .await?;
+    stdin.flush().await?;
+    let missing_line = reader.next_line().await?.expect("Expected metrics miss");
+    let missing_resp: serde_json::Value = serde_json::from_str(&missing_line)?;
+    assert_eq!(missing_resp["id"], "req-metrics-missing");
+    assert_eq!(missing_resp["success"], false);
+    assert!(missing_resp["data"].is_null());
     // 4. Test ListTraces
     let list_traces_req = serde_json::json!({
         "method": "list_traces",

@@ -169,6 +169,11 @@ pub enum DaemonRequest {
         session_id: String,
         title: String,
     },
+    /// Get the latest unified [`MetricsSnapshot`] for a session
+    GetMetrics {
+        id: Option<String>,
+        session_id: String,
+    },
 }
 
 /// One image attached to a `run_task` request.

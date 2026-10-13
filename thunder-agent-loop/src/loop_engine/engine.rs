@@ -623,7 +623,7 @@ impl AgentLoop {
                 let mut had_tool_chunks;
                 let mut continuation_prompts_injected = 0;
                 let mut completed_chunk = None;
-
+                let mut first_token_at: Option<Instant> = None;
                 loop {
                     let request_opts = ChatRequestOptions {
                         messages: context.get_messages(),
@@ -703,22 +703,26 @@ impl AgentLoop {
                     reasoning_content.clear();
                     had_tool_chunks = false;
                     completed_chunk = None;
+                    first_token_at = None;
                     let mut stream_failed_overflow = None;
                     let mut stream_interrupted_error = None;
 
                     while let Some(chunk_res) = stream_rx.recv().await {
                         match chunk_res {
                             Ok(LLMStreamChunk::Token(delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 assistant_content.push_str(&delta);
                                 emitter.emit(AgentEvent::TokenDelta { turn, delta }).await;
                             }
                             Ok(LLMStreamChunk::ReasoningToken(delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 reasoning_content.push_str(&delta);
                                 emitter
                                     .emit(AgentEvent::ReasoningDelta { turn, delta })
                                     .await;
                             }
                             Ok(LLMStreamChunk::ToolCallChunk(tc_delta)) => {
+                                first_token_at.get_or_insert_with(Instant::now);
                                 had_tool_chunks = true;
                                 emitter
                                     .emit(AgentEvent::ToolCallChunk {
@@ -911,7 +915,14 @@ impl AgentLoop {
 
                 let has_tool_calls = !tool_calls.is_empty();
                 let turn_duration_ms = turn_start_time.elapsed().as_millis() as u64;
-
+                // Generation time starts when the first token arrives so TTFT
+                // (prompt prefill / network queueing) is not billed as decode
+                // time. If a turn completed without streaming deltas (e.g. a
+                // tool-call-only turn whose chunks arrived on the terminal
+                // event), fall back to `turn_duration_ms`.
+                let generation_duration_ms = first_token_at
+                    .map(|t| (t.elapsed().as_millis() as u64).max(1))
+                    .unwrap_or(turn_duration_ms);
                 // Reasoning-token breakdown: prefer the provider-reported subset
                 // (`completion_tokens_details.reasoning_tokens` / Gemini `thoughtsTokenCount`);
                 // otherwise estimate from the accumulated thinking text (Anthropic and
@@ -959,9 +970,9 @@ impl AgentLoop {
                     }
                 };
 
-                let tps = if turn_duration_ms > 0 && effective_completion_tokens.is_some() {
+                let tps = if generation_duration_ms > 0 && effective_completion_tokens.is_some() {
                     effective_completion_tokens
-                        .map(|ct| (ct as f64) / (turn_duration_ms as f64 / 1000.0))
+                        .map(|ct| (ct as f64) / (generation_duration_ms as f64 / 1000.0))
                 } else {
                     None
                 };

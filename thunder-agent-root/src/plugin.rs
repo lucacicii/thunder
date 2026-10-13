@@ -1,4 +1,5 @@
 use crate::error::PluginError;
+use crate::plugins::metrics::MetricsPlugin;
 use crate::plugins::mode::{Mode, ModePlugin};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -153,6 +154,7 @@ pub struct PluginContext {
     /// Wrapped so the derived `Debug` keeps working — a trait object is not
     /// `Debug`.
     pub tools: ToolInvokerHandle,
+    pub metrics_plugin: Option<MetricsPlugin>,
 }
 
 /// Newtype over [`ToolInvokerSlot`], excluded from `Debug` like [`HostUiHandle`].
@@ -178,6 +180,7 @@ impl PluginContext {
             mode_plugin: None,
             prompt: None,
             tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
+            metrics_plugin: None,
         }
     }
 
@@ -258,6 +261,15 @@ impl PluginContext {
     /// The host UI, as a shareable trait object.
     pub fn ui(&self) -> Arc<dyn HostUi> {
         Arc::clone(&self.ui.0)
+    }
+
+    pub fn with_metrics_plugin(mut self, metrics_plugin: MetricsPlugin) -> Self {
+        self.metrics_plugin = Some(metrics_plugin);
+        self
+    }
+
+    pub fn metrics_plugin(&self) -> Option<&MetricsPlugin> {
+        self.metrics_plugin.as_ref()
     }
 }
 

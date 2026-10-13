@@ -4443,7 +4443,7 @@ impl App {
             }
             AgentEvent::TokenDelta { delta, .. } => {
                 self.agent_status = AgentStatus::Streaming;
-                self.metrics.count_token_delta();
+                self.metrics.count_token_delta_str(&delta);
                 self.streaming_delta.push_str(&delta);
                 push_live_segment(&mut self.live_segments, LiveKind::Text, delta.len());
             }
@@ -4494,7 +4494,7 @@ impl App {
                 ));
             }
             AgentEvent::ReasoningDelta { delta, .. } => {
-                self.metrics.count_reasoning_delta();
+                self.metrics.count_reasoning_delta_str(&delta);
                 self.reasoning_delta.push_str(&delta);
                 push_live_segment(&mut self.live_segments, LiveKind::Reasoning, delta.len());
             }
@@ -4510,6 +4510,7 @@ impl App {
                 });
             }
             AgentEvent::ToolExecStart { name, .. } => {
+                self.metrics.pause_generation_for_tools();
                 self.agent_status = AgentStatus::ExecutingTool {
                     name,
                     duration_ms: 0,
@@ -4600,6 +4601,13 @@ impl App {
                     "🗜 Context compacted: ~{} → ~{} tokens (older history summarized)",
                     tokens_before, tokens_after
                 ));
+            }
+            AgentEvent::Custom { kind, payload }
+                if kind == thunder_agent_root::plugins::METRICS_UPDATE_EVENT_KIND =>
+            {
+                if let Ok(snap) = serde_json::from_value::<thunder_agent_root::plugins::MetricsSnapshot>(payload) {
+                    self.metrics.apply_snapshot(&snap);
+                }
             }
             _ => {}
         }

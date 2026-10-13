@@ -97,6 +97,8 @@ pub struct DaemonService {
     /// conversation's "always allow", and a mode switch has to outlive the turn
     /// that issued it.
     session_modes: Arc<tokio::sync::RwLock<SessionModes>>,
+    /// Shared telemetry & token-speed plugin across all sessions/tasks.
+    metrics_plugin: thunder_agent_root::plugins::MetricsPlugin,
 }
 
 /// How many sessions keep their approval state before the oldest is dropped.
@@ -286,6 +288,7 @@ impl DaemonService {
             pending_ui,
             host_ui,
             session_modes: Arc::new(tokio::sync::RwLock::new(SessionModes::default())),
+            metrics_plugin: thunder_agent_root::plugins::MetricsPlugin::new(),
         })
     }
 
@@ -997,6 +1000,22 @@ impl DaemonService {
                 })
                 .await;
             }
+
+            DaemonRequest::GetMetrics { id, session_id } => {
+                let snapshot = self.metrics_plugin.snapshot(&session_id);
+                let found = snapshot.is_some();
+                self.send_response(DaemonResponse::Response {
+                    id,
+                    success: found,
+                    data: snapshot.and_then(|s| serde_json::to_value(s).ok()),
+                    error: if !found {
+                        Some("Metrics snapshot not found for session".to_string())
+                    } else {
+                        None
+                    },
+                })
+                .await;
+            }
         }
     }
 
@@ -1401,7 +1420,8 @@ impl DaemonService {
         let run_task_id = task_id.clone();
         let run_session_id = effective_session_id.clone();
         let run_policy = Arc::clone(&policy);
-
+        let metrics_plugin = self.metrics_plugin.clone();
+        let prior_used_tokens = conversation.stats.total_used_tokens;
         // Spawn async task runner
         tokio::spawn(async move {
             let _permit = permit;
@@ -1440,11 +1460,13 @@ impl DaemonService {
             let root = ThunderRoot::new(base_cfg)
                 .with_workspace(ws_dir)
                 .with_extra_roots(chosen_shared_roots.iter().map(PathBuf::from).collect())
-                .with_provider_registry(registry.clone());
+                .with_provider_registry(registry.clone())
+                .with_initial_session_total_tokens(prior_used_tokens);
             // Baseline capability set is assembled centrally so every host
-            // exposes the same plugins (conversation + skills + mcp + script host).
+            // exposes the same plugins (conversation + metrics + skills + mcp).
             let mut root = StandardHostBuilder::new(store.clone())
                 .with_mcp_plugin((*mcp_plugin).clone())
+                .with_metrics_plugin(metrics_plugin)
                 .build(root);
 
             // Headless clients cannot answer `user_question`. Omitting the tool
@@ -1675,6 +1697,11 @@ impl DaemonService {
                             // Distinct from `duration_ms`, which is the agent-loop's
                             // internal duration (used for tokens-per-second math).
                             let wall_duration_ms = finished_at_ms.saturating_sub(start_time_ms);
+                            let mut metrics_snap = res.metrics.clone();
+                            if let Some(snap) = &mut metrics_snap {
+                                snap.wall_duration_ms = Some(wall_duration_ms);
+                                snap.session_total_tokens = conversation.stats.total_used_tokens;
+                            }
                             let trace_data = serde_json::json!({
                                 "task_id": task_id,
                                 "session_id": effective_session_id,
@@ -1687,8 +1714,8 @@ impl DaemonService {
                                 "wall_duration_ms": wall_duration_ms,
                                 "finish_reason": finish_reason,
                                 "stats": res.run_result.stats,
+                                "metrics": metrics_snap,
                                 "final_content": final_content,
-                                // Additive keys: every field ARP reads keeps its
                                 // name and shape, and a reader that does not know
                                 // these ignores them.
                                 "tool_traces": collected.tool_traces(),

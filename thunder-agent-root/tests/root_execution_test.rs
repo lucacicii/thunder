@@ -106,12 +106,26 @@ async fn test_thunder_root_end_to_end_execution() {
         .contains(&"conversation".to_string()));
 
     let mut event_count = 0;
+    let mut metrics_updates = 0;
     if let Some(mut rx) = handle.take_events() {
-        while let Some(_event) = rx.recv().await {
+        while let Some(event) = rx.recv().await {
             event_count += 1;
+            if matches!(
+                &event.event,
+                thunder_agent_loop::types::event::AgentEvent::Custom { kind, .. }
+                    if kind == METRICS_UPDATE_EVENT_KIND
+            ) {
+                metrics_updates += 1;
+            }
         }
     }
     assert!(event_count > 0);
+    // The telemetry plugin rides the same stream: live snapshots are emitted on
+    // every metric-bearing event, so a run cannot finish without them.
+    assert!(
+        metrics_updates > 0,
+        "expected metrics_update snapshots on the run's stream"
+    );
 
     let result = handle.join().await.expect("Join should succeed");
     assert_eq!(result.run_result.finish_reason, FinishReason::Done);
@@ -121,6 +135,26 @@ async fn test_thunder_root_end_to_end_execution() {
         .final_content
         .unwrap()
         .contains("Bash executed successfully"));
+
+    // The run carries its own unified telemetry snapshot, settled at finish.
+    let metrics = result.metrics.expect("metrics snapshot");
+    assert_eq!(metrics.session_id, session_id);
+    assert!(!metrics.is_running);
+    assert_eq!(metrics.turn, 2);
+    assert_eq!(
+        metrics.completion_tokens,
+        Some(result.run_result.stats.total_completion_tokens)
+    );
+    assert_eq!(
+        metrics.prompt_tokens,
+        Some(result.run_result.stats.total_prompt_tokens)
+    );
+    assert!(
+        metrics.avg_tps.is_some_and(|tps| tps > 0.0),
+        "avg tps must be measured, not left empty: {metrics:?}"
+    );
+    // The turn-end snapshot reported a turn breakdown as well.
+    assert!(metrics.total_tokens.is_some_and(|t| t > 0));
 
     // Verify conversation was persisted by ConversationPlugin
     let loaded = store.load(&session_id).await.unwrap();

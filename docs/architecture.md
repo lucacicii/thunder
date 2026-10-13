@@ -732,13 +732,12 @@ flowchart TB
     SLOT -.-> SET
 ```
 
-三处**已实现但无生产调用方**的接线（都是"接线存在、无人拉"）：
+两处**已实现但无生产调用方**的接线（"接线存在、无人拉"）：
 
-- `ActivePluginSet::dispatch_event`（`registry.rs:164`）**全仓无调用方** ⇒ `ThunderPlugin::on_event` 永不触发。`ConversationPlugin::on_event` 里那句"turn-level checkpoint 增量持久化"（`conversation.rs:140-143`）因此不会执行；会话实际靠 `on_finish` 落盘（`:149-179`）与宿主自己的 `store.save`。
 - `ThunderPlugin::tool_gate()`（`plugin.rs:285`）被 `execute` 忽略——只安装模式插件（`host.rs:532`）。
 - `ToolInvoker::invoke` 只有测试调用（`pack-code/tests/plugin_call_tool_test.rs`），没有任何随仓插件使用 `ctx.tool_slot()`。
 
-**特殊：mode 插件不是被"执行"，是被"查询"**。它以 `ToolGate` 身份被内核在每次工具调用时询问（`host.rs:532` 的 `with_tool_gate`），同时通过 `active_set.push`（`host.rs:376`）把 `write_plan`/`exit_plan_mode` 两个工具注册进内核——这两个工具**由此变成普通工具**，走与 `bash` 完全相同的漏斗。
+**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:121`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
 
 `TriggerSpec`（`plugin.rs:25-47`）：`keywords` + `auto_always` + `description_for_llm`；`TriggerSpec::always()` 是常驻基线。
 
@@ -838,10 +837,20 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 `TraceCollector`（`trace_collector.rs`）：`record(ObservedEvent)` + `record_tool_trace(ToolTrace)`，上限 `MAX_EVENTS = 5000`、`MAX_TOOL_TRACES = 2000`、`MAX_DECISION_RECORDS = 2000`；微增量只计数不保留；**丢弃是自报的**——`dropped_deltas` / `dropped_events` 被计数，`is_complete()` 在任何丢弃后为 false，且淘汰日志本身也有上限（`:111-113,273-280`）。落盘位置由宿主决定：`<store>/<session>/traces/<task_id>.json`，**route 就是 task_id**。
 
+### 11.8.1 遥测插件：`MetricsPlugin`
+
+`MetricsPlugin`（`plugins/metrics.rs`）是常驻基线插件（`baseline_forced_plugins` 固定包含 `metrics`），把**与模型有关的全部遥测**——实时/平均 tok/s、token 明细、prompt cache 命中率、上下文占用、纯解码耗时与工具耗时——从内核搬到插件层：
+
+- **零侵入内核**：它只实现 `ThunderPlugin::on_event`/`on_finish`，不注册工具、不装 gate，事件派发走 `try_send`/`send` 旁路，内核主循环不知道自己被观测。
+- **生成时钟只计解码**：收到本轮第一个 `TokenDelta`/`ReasoningDelta` 时开表，`ToolExecStart` 或 `TurnEnd` 时结算并暂停——TTFT（prefill + 排队）与工具执行都不计入分母。
+- **一份权威快照**：`MetricsSnapshot`（`metrics.rs`，serde）由 `RootRunHandle::take_events` 随流以 `AgentEvent::Custom { kind: "metrics_update", payload }` 推送；`RootRunHandle::metrics_snapshot()` 与 daemon 的 `get_metrics` 命令可随时读取，trace 文件顶层的 `metrics` 键是同一结构。
+- **消费方**：TUI 在 `handle_agent_event` 里反序列化 `metrics_update` 直接刷新状态栏；daemon 随 `observed_event` 一并转发给宿主，并把它写进 trace；桌面面板只渲染，不再自行估算 token 或计时。
+- `TraceCollector` 不保留 `metrics_update`：它是从流派生的高频遥测，最终快照已存在 trace 顶层，逐条保留既无信息量又会顶掉真实事件（`trace_collector.rs:59-68`）。
+
 ### 11.9 已知细节
 
 - `create_active_set` 迭代 `HashMap`（`registry.rs:76`），插件顺序（进而工具注册顺序与提示块拼接顺序）**跨 `PluginRegistry` 实例不确定**；TUI/daemon 每请求重建 `ThunderRoot`，因此可能逐轮置换提示段顺序。模式插件是显式 `push` 的，所以它的块总在最后。`[INFERENCE]`（单个注册表实例内稳定，实例间受 `RandomState` 影响）
-- **三处死接线**（详见 §11.1.1）：`ThunderPlugin::tool_gate()` 在 `execute` 中从未被调用（总是安装模式插件，`host.rs:532`）；`ActivePluginSet::dispatch_event`（`registry.rs:164`）全仓无调用方，故 `on_event` 永不触发；`ToolInvoker::invoke` 只有测试调用，无随仓插件使用 `ctx.tool_slot()`。
+- **两处死接线**（详见 §11.1.1）：`ThunderPlugin::tool_gate()` 在 `execute` 中从未被调用（总是安装模式插件，`host.rs:532`）；`ToolInvoker::invoke` 只有测试调用，无随仓插件使用 `ctx.tool_slot()`。`ActivePluginSet::dispatch_event` 已在 `RootRunHandle::take_events` 接通，不再是死接线。
 - `ModePlugin::system_prompt_contribution` 在调用时重读 `self.mode()`，但热切换只对**下一次 run 的提示装配**生效；gate 本身立刻生效（`mode.rs:717-726`）。
 - `write_plan` 走原子写，`memory_write` 用普通 `tokio::fs::write`（`mode.rs:561-563` vs `memory.rs:447,451`）。
 - `RootRunHandle::join` 吞掉 `dispatch_finish` 错误 ⇒ 会话持久化失败对调用方不可见。
@@ -885,6 +894,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 | `reload_integrations` | `id` | 关 MCP 池 + 失效 selection cache（**新名字**：旧 `ReloadPlugins` 的 TS 插件宿主已删） |
 | `get_trace` / `list_traces` | `session_id`, `task_id?` | 读 `<store>/<session>/traces/*.json` |
 | `generate_title` / `set_conversation_title` | `session_id`, `force?` / `title` | 标题（manual 不被 auto 覆盖；标题截断到 40 **字符**） |
+| `get_metrics` | `session_id` | 读共享 `MetricsPlugin` 的最新 `MetricsSnapshot`（未命中 → `success:false`） |
 
 ### 12.3 `run_task` 编排
 
@@ -892,7 +902,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.default_mode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
-运行体（`service.rs:1406-1767`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot` + `StandardHostBuilder` → `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event` + `SteerAccepted` 时补发队列快照）→ `handle.join()` → 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON → 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
+运行体（`service.rs:1406-1794`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `SteerAccepted` 时补发队列快照）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
 
 ### 12.4 并发与背压
 
@@ -1259,7 +1269,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `TurnEnd` | 记 metrics、把 thinking 存进 `run_thinking`（每轮一条）、写 assistant 消息 |
 | `Error` | `last_error` + `Error` 状态 |
 | `ContextCompacted` | 仅状态提示 |
-
+| `Custom { kind: "metrics_update" }` | 反序列化 `MetricsSnapshot` 直接刷新遥测条（`Metrics::apply_snapshot`）——权威值优先；`/single` 直连路径不建 `ThunderRoot`、收不到该事件，退化为本地计数 |
 `handle_agent_finished`（`app.rs:4608-4769`）三分支：取消（保留 partial answer、无错误）、成功（采纳引擎权威消息 + `reattach_run_thinking`）、失败（合成 `❌ …` 消息）。随后无条件清理运行态、`metrics.finish_run`、**加法式**折 `run_stats` 进会话统计、`finalize_trace`。
 
 **thinking 的重新附着**（`app.rs:968-1066,4870-4875`）：引擎的权威消息列表**不带 reasoning**，所以宿主用 assistant 消息的"身份键"（`call:{首个 tool_call_id}` 或 `text:{内容}`）索引 thinking；权威替换后按位置**从尾部对齐**配对，因为引擎重建的正文可能有一个字节的漂移。
@@ -1272,7 +1282,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `ui/chat.rs` | 941 | transcript：`TranscriptKey` 命中才重建；`Stream` 维护行 + 屏幕行映射 + 链接 span + turn 标记；每帧重发链接 hitbox |
 | `ui/markdown.rs` | 1257 | 自研**宽松**渲染器：块级（围栏/ATX 标题/分隔线/引用/表格/列表/段落）+ 行内 `Frag`；**每行恰好一个屏幕行**（换行在这里做，绝不交给 `Paragraph`）；表格列宽上限 40 格 |
 | `ui/timeline.rs` | 288 | 右侧悬浮 turn 轨道：宽度 < 100 列时不画；高亮窗口 `rail_window`；悬停浮出单行提示；每帧重发 hitbox |
-| `ui/metrics.rs` | 836 | 遥测条：9 类 segment 按重要性贪心打包（**绝不拆开一个 segment**），`bar_height` 用同一算法量高度；上下文占用 ≥ 80% 变红 |
+| `ui/metrics.rs` | 956 | 遥测条：9 类 segment 按重要性贪心打包（**绝不拆开一个 segment**），`bar_height` 用同一算法量高度；上下文占用 ≥ 80% 变红。数值优先取 `MetricsPlugin` 的 `metrics_update` 快照，本地计数仅作无 root 路径的回退 |
 | `ui/status_bar.rs` | 469 | 提示框 + 底栏：输入按显式换行与软换行切行（不切宽字符），上限 `MAX_INPUT_ROWS = 6`；底栏**永远画会话行**，瞬时状态叠在它上面 |
 | `ui/help.rs` | 553 | 帮助弹窗：`help_lines` 静态表与渲染分离，好让 `help_max_scroll` 用同一段落量高度 |
 | `ui/command_popup.rs` | 241 | 斜杠命令补全：命令名补全后若该命令有固定首参，切换为参数候选渲染；上限 8 条 |
@@ -1406,7 +1416,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 | 接口 | 定义处 | 状态 |
 |---|---|---|
-| `ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event` | `root/registry.rs:164`、`root/plugin.rs:306` | 全仓无调用方；`ConversationPlugin::on_event` 的逐 turn 增量持久化因此不执行 |
+| ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:121`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化随之生效 |
 | `ThunderPlugin::tool_gate` | `root/plugin.rs:285` | `execute` 忽略它，只装 mode 插件 |
 | `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:584-592` 填充 |
 | `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
@@ -1422,7 +1432,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | 忽略 `nextCursor` | 中 | `protocol.rs:144` 解析、无人读取 | 多页工具列表被截断 |
 | MCP 图片内容被丢弃 | 中 | `protocol.rs:183-187` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
 | `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
-| `ActivePluginSet::dispatch_event` 无调用方 | 中 | `root/registry.rs:164` | 插件拿不到事件流；会话增量持久化失效 |
+| ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
 | 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-89,72-75` | 系统提示里出现意外技能条目 |
 
 ---

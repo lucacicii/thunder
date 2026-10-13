@@ -1,6 +1,7 @@
 use crate::error::PluginError;
 use crate::instructions::discover_context_files;
 use crate::plugin::PluginContext;
+use crate::plugins::metrics::{MetricsPlugin, MetricsSnapshot, METRICS_UPDATE_EVENT_KIND};
 use crate::plugins::mode::{Mode, ModePlugin};
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
@@ -82,6 +83,7 @@ pub struct RootRunResult {
     pub final_content: Option<String>,
     pub selection: PluginSelection,
     pub run_result: AgentRunResult,
+    pub metrics: Option<MetricsSnapshot>,
 }
 
 pub struct RootRunHandle {
@@ -90,25 +92,120 @@ pub struct RootRunHandle {
     pub handle: AgentHandle,
     pub active_set: ActivePluginSet,
     pub ctx: PluginContext,
+    /// Signalled when the event proxy has drained the loop's stream and
+    /// finished dispatching every event to the active plugins.
+    ///
+    /// [`Self::join`] awaits it: a plugin's `on_event` may write (the
+    /// conversation plugin checkpoints the session on `TurnEnd`), and returning
+    /// from `join` before that write lands would let a host's own read-modify-
+    /// write of the same store race it.
+    dispatch_drained: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl RootRunHandle {
+    /// Take the observed event stream.
+    ///
+    /// Events flow through a non-blocking proxy that dispatches
+    /// [`ActivePluginSet::dispatch_event`] to all active plugins (including
+    /// [`MetricsPlugin`] and [`ConversationPlugin`]) and emits live
+    /// `AgentEvent::Custom { kind: "metrics_update" }` snapshots for downstream
+    /// hosts (TUI, daemon, desktop panel).
     pub fn take_events(&mut self) -> Option<mpsc::Receiver<ObservedEvent>> {
-        self.handle.take_events()
+        let mut inner_rx = self.handle.take_events()?;
+        let (tx, rx) = mpsc::channel(512);
+        let (drained_tx, drained_rx) = tokio::sync::oneshot::channel();
+        self.dispatch_drained = Some(drained_rx);
+        let active_set = self.active_set.clone();
+        let ctx = self.ctx.clone();
+        let metrics_plugin = self.ctx.metrics_plugin().cloned();
+        let session_id = self.ctx.session_id.clone();
+
+        tokio::spawn(async move {
+            while let Some(observed) = inner_rx.recv().await {
+                active_set.dispatch_event(&observed, &ctx).await;
+                let snap = metrics_plugin
+                    .as_ref()
+                    .and_then(|mp| mp.snapshot(&session_id));
+                let agent_id = observed.agent_id.clone();
+                let ts = observed.timestamp_ms;
+                let is_relevant = matches!(
+                    &observed.event,
+                    thunder_agent_loop::types::event::AgentEvent::TurnStart { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ReasoningDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ToolExecStart { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ToolExecResult { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ContextCompacted { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::TurnEnd { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::LoopComplete { .. }
+                );
+                let is_micro = matches!(
+                    &observed.event,
+                    thunder_agent_loop::types::event::AgentEvent::TokenDelta { .. }
+                        | thunder_agent_loop::types::event::AgentEvent::ReasoningDelta { .. }
+                );
+
+                if tx.send(observed).await.is_err() {
+                    break;
+                }
+
+                if is_relevant {
+                    if let Some(snapshot) = snap {
+                        if let Ok(payload) = serde_json::to_value(&snapshot) {
+                            let custom = ObservedEvent {
+                                agent_id,
+                                event: thunder_agent_loop::types::event::AgentEvent::Custom {
+                                    kind: METRICS_UPDATE_EVENT_KIND.to_string(),
+                                    payload,
+                                },
+                                timestamp_ms: ts,
+                            };
+                            if is_micro {
+                                let _ = tx.try_send(custom);
+                            } else if tx.send(custom).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // The loop's stream is closed and every event has been dispatched:
+            // release `join`, which is waiting on exactly this.
+            let _ = drained_tx.send(());
+        });
+
+        Some(rx)
     }
 
-    pub async fn join(self) -> Result<RootRunResult, AgentError> {
+    pub fn metrics_snapshot(&self) -> Option<MetricsSnapshot> {
+        self.ctx
+            .metrics_plugin()
+            .and_then(|mp| mp.snapshot(&self.ctx.session_id))
+    }
+
+    pub async fn join(mut self) -> Result<RootRunResult, AgentError> {
         let run_result = self.handle.join().await?;
+        // The loop is done, but its event proxy may still be dispatching the
+        // tail of the stream to plugins. Wait for that before `on_finish`, so
+        // both halves of the same run settle in order.
+        if let Some(drained) = self.dispatch_drained.take() {
+            let _ = drained.await;
+        }
         let _ = self
             .active_set
             .dispatch_finish(&run_result, &self.ctx)
             .await;
+        let metrics = self
+            .ctx
+            .metrics_plugin()
+            .and_then(|mp| mp.snapshot(&self.ctx.session_id));
 
         Ok(RootRunResult {
             agent_id: self.agent_id,
             final_content: run_result.final_content.clone(),
             selection: self.selection,
             run_result,
+            metrics,
         })
     }
 }
@@ -132,8 +229,9 @@ pub struct ThunderRoot {
     /// Defaults to `NullHostUi`: no panel, every dialog cancelled, every caller
     /// degrades to its safe branch.
     host_ui: Arc<dyn HostUi>,
+    metrics_plugin: Option<MetricsPlugin>,
+    initial_session_total_tokens: Option<usize>,
 }
-
 impl ThunderRoot {
     pub fn new(config: AgentConfig) -> Self {
         let scratch_root = std::env::temp_dir().join("thunder_root_scratch");
@@ -161,6 +259,8 @@ impl ThunderRoot {
             provider_registry: ProviderRegistry::default(),
             active_model,
             host_ui: Arc::new(thunder_agent_loop::types::ui::NullHostUi),
+            metrics_plugin: None,
+            initial_session_total_tokens: None,
         }
     }
 
@@ -202,6 +302,20 @@ impl ThunderRoot {
 
     pub fn provider_registry(&self) -> &ProviderRegistry {
         &self.provider_registry
+    }
+
+    /// Attach a shared [`MetricsPlugin`] so session telemetry (token rates,
+    /// cache hit rates, context occupancy, durations) persists across runs.
+    pub fn with_metrics_plugin(mut self, plugin: MetricsPlugin) -> Self {
+        self.metrics_plugin = Some(plugin.clone());
+        self.registry.register(plugin);
+        self
+    }
+
+    /// Seed the cumulative billed tokens for the session prior to this run.
+    pub fn with_initial_session_total_tokens(mut self, total: usize) -> Self {
+        self.initial_session_total_tokens = Some(total);
+        self
     }
 
     pub fn with_plugin<P: crate::plugin::ThunderPlugin + 'static>(mut self, plugin: P) -> Self {
@@ -375,6 +489,44 @@ impl ThunderRoot {
         // plan mode at all.
         active_set.push(Arc::clone(&mode_plugin) as Arc<dyn crate::plugin::ThunderPlugin>);
 
+        // Install the telemetry / token-speed plugin so every run tracks live
+        // tok/s, context occupancy, prompt-cache hit rates, and wall-clock time.
+        let metrics_plugin = self.metrics_plugin.clone().unwrap_or_default();
+        let initial_ctx_tokens = match &context_input {
+            ContextInput::Text(t) => {
+                thunder_agent_loop::core::token_estimator::estimate_token_count(t)
+            }
+            ContextInput::Messages(msgs) => msgs
+                .iter()
+                .filter_map(|m| m.content_str())
+                .map(thunder_agent_loop::core::token_estimator::estimate_token_count)
+                .sum(),
+            ContextInput::Buffer(buf) => buf.estimated_tokens(),
+        };
+        let resolved_spec = self.provider_registry.resolve_ref(&self.active_model);
+        let context_window_limit = resolved_spec
+            .map(|s| s.context_window)
+            .filter(|&w| w > 0)
+            .or_else(|| {
+                let w = self.config.pruning.max_context_tokens;
+                (w > 0).then_some(w)
+            });
+        let effective_thinking = options
+            .thinking_level
+            .clone()
+            .or_else(|| self.config.thinking_level.clone());
+        metrics_plugin.configure_session(
+            &session_id,
+            Some(self.active_model.selection_id()),
+            effective_thinking,
+            context_window_limit,
+            initial_ctx_tokens,
+            self.initial_session_total_tokens.unwrap_or(0),
+        );
+        if !selection.active_plugin_ids.iter().any(|id| id == "metrics") {
+            active_set.push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
+        }
+
         info!(
             session_id = %session_id,
             mode = options.mode.as_str(),
@@ -392,6 +544,7 @@ impl ThunderRoot {
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
             .with_mode_plugin(Arc::clone(&mode_plugin))
+            .with_metrics_plugin(metrics_plugin)
             .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
@@ -618,6 +771,7 @@ impl ThunderRoot {
             handle,
             active_set,
             ctx,
+            dispatch_drained: None,
         })
     }
 
