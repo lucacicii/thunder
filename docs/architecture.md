@@ -524,7 +524,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 内核不知道"什么是 shell、工作区、文件"（`pack-code/src/lib.rs:3-6`）。装了这个包，`AgentLoop` 才得到：6 个内建工具、`CodeScope`、原子写 + 进程级 per-path 锁、`file_change` 变更上报、工程默认提示词（`lib.rs:7-22`）。
 
 一键安装：`install_code_pack(agent, &CodePackConfig{ register_builtins, apply_default_prompt })`（`pack.rs:37-66`）——它同时装 scope 与工具，因为"问路径"和"不知道路径在哪的内核"是两个不同的问题（`pack.rs:29-31`）。所有工具都 `with_default_cwd(ws)`，相对路径 = 相对工作区。
-**注意**：`install_code_pack` 在生产路径上**没有调用方**——`thunder-agent-root/src/host.rs:543-568` 与 TUI 的单 Agent 路径（`tui/src/app.rs:4356-4372`）都是自己逐个 `register_tool` 并把 `CodeScope` 单独装上去；只有 `pack-code/tests/code_tools_test.rs:105` 用这个便捷函数。同样，`CodePackConfig::apply_default_prompt` 声明了但**从未被读取**（`pack.rs:14,21`）——默认提示词实际由宿主显式取用（`root/src/host.rs:410` 的 `DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`）。
+**注意**：`install_code_pack` 在生产路径上**没有调用方**——`thunder-agent-root/src/host.rs:675-680,696-721` 与 TUI 的单 Agent 路径（`tui/src/app.rs:4312,4356-4371`）都是自己逐个 `register_tool` 并把 `CodeScope` 单独装上去；只有 `pack-code/tests/code_tools_test.rs:105` 用这个便捷函数。同样，`CodePackConfig::apply_default_prompt` 声明了但**从未被读取**（`pack.rs:14,21`）——默认提示词实际由宿主显式取用（`root/src/host.rs:563` 的 `DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`）。
 
 ### 9.2 工具清单
 
@@ -587,7 +587,7 @@ static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()
 写入流程 `write_cancellable`（`fs.rs:202-265`）：
 
 1. `file_lock_for(&path)` 取该物理路径的 mutex（键为 `lock_key`：能 canonicalize 就用真实路径，否则用"canonicalize 后的父目录 + 文件名"，所以相对/绝对/符号链接父目录的两种拼写不会拿到两把锁，`:418-429`）；
-2. `tokio::select!` 竞速：**取消令牌 vs 写入**——承诺是"被取消的 run 让目标要么原样、要么完整写入"（`:209-216`）；
+2. `tokio::select!` 竞速：**取消令牌 vs 写入**——承诺是"被取消的 run 让目标要么原样、要么完整写入"（`:218-223`）；
 3. `stage_and_commit`：`create_dir_all` → 记录原权限 → 在**目标同目录**建隐藏暂存文件 `.{name}_{pid}_{nanos}.tmp`（同文件系统 ⇒ rename 原子，无跨设备回退问题）→ `write_all` → **`sync_all`（先落盘再改名，否则崩溃后会留下正确命名的空文件）** → 恢复权限 → `rename`（`:266-347`）；
 4. `TempFileGuard` 在任何退出路径（含取消时 future 被 drop）删除未提交的暂存文件（`:352-374`）；
 5. 写完后 `release_file_lock` 在仍持锁时清理表项，且只在 `Arc::strong_count == 2` 时删除，保证排队中的写者仍持有同一把 mutex（`:404-416`）。
@@ -656,9 +656,9 @@ static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()
 ```rust
 pub struct RpiAiClient { provider: Arc<dyn rpi_ai::Provider>, model: rpi_ai::Model, timeout: Duration }
 ```
-（`client.rs:55-59`）
+（`client.rs:49-53`）
 
-**三种方言**，其余明确报错（`client.rs:93-107`）：
+**三种方言**，其余明确报错（`client.rs:85-108`）：
 
 | `api` | provider 实现 |
 |---|---|
@@ -675,7 +675,7 @@ pub struct RpiAiClient { provider: Arc<dyn rpi_ai::Provider>, model: rpi_ai::Mod
 - `Done` → `Completed{…}`；`Error` → `Err`；
 - **流在无终止事件时结束** → 显式报错 `"rpi-ai stream ended without a terminal event (N chars of text received)"`，而不是静默关通道（`client.rs:188-195`）。
 
-通道深度 `CHUNK_CHANNEL = 64`（`client.rs:53`）。
+通道深度 `CHUNK_CHANNEL = 64`（`client.rs:47`）。
 
 wire 语义（`client.rs:1-19`）：`prompt_tokens` 是**完整** prompt（rpi-ai 的 `input` 只是未缓存部分，缓存桶被折回）；`finish_reason` 沿用旧 bridge 词汇：`toolUse`/`deferred` → `tool_calls`，`length` → `length`，其余 → `stop`。
 
@@ -693,9 +693,9 @@ wire 语义（`client.rs:1-19`）：`prompt_tokens` 是**完整** prompt（rpi-a
 
 **事件**（`protocol.rs:112-158`）：`response` / `observation`（原样转发 `AgentEvent`）/ `tool_call` / `gate_request` / `run_finished`（带完整 `messages` 供宿主持久化）/ `error`。
 
-远程工具 `RemoteTool`（`remote.rs:33-112`）：声明给模型，但 `execute` 不做事——把调用转成 `RuntimeEvent::ToolCall` 发给宿主，然后在 oneshot 上等 `tool_result`。宿主不答（sender 被 drop）→ `Err("the host dropped the tool call without answering")`；宿主已走 → 清理 pending 并 `Err("the host is gone; …")`。
+远程工具 `RemoteTool`（`remote.rs:33-110`）：声明给模型，但 `execute` 不做事——把调用转成 `RuntimeEvent::ToolCall` 发给宿主，然后在 oneshot 上等 `tool_result`。宿主不答（sender 被 drop）→ `Err("the host dropped the tool call without answering")`；宿主已走 → 清理 pending 并 `Err("the host is gone; …")`。
 
-`RemoteGate` 实现 `CompletionGate`：完成判定同样发到宿主（`gate_request`）等 `gate_result`。`parse_effect`（`remote.rs:18-27`）把宿主声明的 `read|write|exec|plan_artifact` 映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
+`RemoteGate` 实现 `CompletionGate`：完成判定同样发到宿主（`gate_request`）等 `gate_result`。`parse_effect`（`remote.rs:19-29`）把宿主声明的 `read|write|exec|plan_artifact` 映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
 
 运行器形态：`Runtime`（`session.rs:19-40`）持有 `runs: HashMap<run_id, CancellationToken>`、两个 pending 表，以及一个 `mpsc::UnboundedSender<RuntimeEvent>` → 单一 writer task，保证一帧一行、不交错。
 

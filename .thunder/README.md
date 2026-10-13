@@ -28,7 +28,7 @@ Thunder 自身的用户级与项目级配置目录。
 ├── scratchpad/  conversations/      # 运行时产物
 
 <workspace>/.thunder/                # 项目级（可提交）
-├── models.json                      # provider 项目覆盖（已有）
+├── models.json                      # provider 项目覆盖（读时**不**覆盖用户级，见下）
 ├── auth.json                        # 项目密钥（gitignore）
 ├── config.json                      # ★ 项目 agent 配置（覆盖用户级）
 ├── config.local.json                # ★ 本机覆盖（gitignore）
