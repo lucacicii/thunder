@@ -14,6 +14,12 @@ pub struct McpServerConfig {
     pub disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Bound on one request round trip against this server, in milliseconds.
+    ///
+    /// Omitted: [`crate::transport::stdio::DEFAULT_REQUEST_TIMEOUT`] applies, so
+    /// a server that stops answering cannot park a tool call forever. `0` opts
+    /// out — for a tool that is legitimately unbounded — and is the only setting
+    /// under which a call may wait indefinitely.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -50,6 +56,7 @@ impl McpServerConfig {
         self
     }
 
+    /// Bound one request round trip, in milliseconds (`0` = unbounded).
     pub fn with_timeout_ms(mut self, ms: u64) -> Self {
         self.timeout_ms = Some(ms);
         self

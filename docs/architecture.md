@@ -1,6 +1,6 @@
 # Thunder 架构详解
 
-> 版本：0.4.0（`Cargo.toml:17`）｜代码基线：`b78a920`（2026-10-12）
+> 版本：0.4.0（`Cargo.toml:17`）｜代码基线：`b78a920`（2026-10-12）+ 本轮 MCP 修复（§15.2.1、§15.2.2）
 > 本文是**代码事实文档**：所有结论都对应到具体 `文件:行`。与 `docs/permission-structure.md`（权限专项）和 `docs/migration-0.4.md`（迁移说明）互补。
 
 ---
@@ -1006,7 +1006,7 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 `StdioTransport::spawn`（`transport/stdio.rs:32-149`）：`Command::new(command).args(args)`，`stdin/stdout/stderr` 全 piped，`kill_on_drop(true)`（`:44`），注入 `config.env`，可设 `cwd`。spawn 出来的 `Child` **被存进结构体**（`child: Arc<Mutex<Option<Child>>>`，`:27`）——`kill_on_drop(true)` 使这个句柄成为 server 的生命周期：持有即存活，drop 即 SIGKILL。见 §15.2.1。
 
-三个 task：写 stdin（`mpsc::channel(64)`）、读 stdout 按行解析并按 `id` 派发到 `pending_requests: HashMap<String, oneshot::Sender<JsonRpcResponse>>`、以及读 stderr 打日志。`is_alive: Arc<AtomicBool>` 让 manager 跳过死掉的 server。
+三个 task：写 stdin（`mpsc::channel(64)`）、读 stdout 按行解析并按 `id` 派发到 `pending_requests`（`PendingMap = Arc<StdMutex<HashMap<id, oneshot::Sender<JsonRpcResponse>>>>`，`stdio.rs:27-55`）、以及读 stderr 打日志。`is_alive: Arc<AtomicBool>` 让 manager 跳过死掉的 server。**每个请求都带时限**（默认 120s，可配置）且用 RAII 守卫注销，见 §15.2.2。
 
 ### 15.2.1 已修复：stdio server 曾被瞬间杀死
 
@@ -1038,14 +1038,36 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 `printf` 输出与 `pgrep` 断言让"进程真的活着/真的没了"成为可观测量，而不是只看一个布尔标志。A/B 复核：**原源码下两个测试均失败**（`initialize handshake timed out after 10s`），**修复后 0.11 s 通过**；`cargo fmt --check`、`cargo clippy -- -D warnings`、`./test.sh` 全工作区通过。
 
-### 15.2.2 其它已核实缺口
+### 15.2.2 已修复：请求无超时 + pending 表泄漏
+
+**曾有的缺陷**（与 §15.2.1 同批修掉）：
+
+- `send_request` 在 `rx.await` 上**没有超时**（旧 `stdio.rs:177-182`）：一个只读不回或干脆挂住的 server，会让 `tools/call` 永远等待。
+- pending 表只在"发送失败"这一条路径上 `remove`（旧 `:168-184`）；序列化失败的 `?` 早退与（后来才有的）超时路径都不移除 → **每次超时留一条永久 entry**。
+- 顺带查出：`McpServerConfig::timeout_ms` 是**死字段**（`config.rs:18` 声明、`:53` 设置，全仓无消费者），所以"已经配了超时"这件事本身也不成立。
+
+**修复**（`transport/stdio.rs`）：
+
+1. `PendingMap` 包装该表（`insert` / `take` / `len` / `clear`），用 `std::sync::Mutex`——表只在同步片段内被持有，从不在 `await` 期间跨持。
+2. `PendingEntry` 是 RAII 守卫：`register` 插入，`Drop` 注销。**早退 `return`、`?`、超时、成功**四条出口自动覆盖；成功路径上读取任务已先 `take`，`remove` 幂等，二者不会互踩。
+3. `send_request` 用 `tokio::time::timeout(limit, rx)` 包住等待，超时报 `MCP server '<name>' did not answer request '<id>' within <ms>ms`。**超时 ≠ 死亡**：`is_alive` 不变，transport 继续可用。
+4. `close()` 同时 `pending_requests.clear()`——server 已走，不会再有回复，丢掉 sender 让每个 waiter 立刻以 "channel dropped" 解开，而不是挂到进程结束。
+5. `McpServerConfig::timeout_ms` 接上了：`None` → `DEFAULT_REQUEST_TIMEOUT = 120s`；`Some(0)` → **显式放弃时限**（给合法无上限的工具留口）；`Some(ms)` → 毫秒。
+6. 新增诊断接口 `StdioTransport::pending_len()`：静置为 0，只涨不回说明回复在丢。
+
+**回归测试**（追加进 `stdio_lifecycle_test.rs`，server 是"只读不答"的 `sh` 脚本）：
+
+| 测试 | 断言 |
+|---|---|
+| `a_silent_server_times_out_and_leaves_no_pending_entry` | `timeout_ms=300` 时调用在 5s 内返回 `Err` 且错误含 `did not answer`；`pending_len()==0`；`is_alive()` 仍为真（慢 ≠ 死） |
+| `an_explicit_zero_timeout_opts_out_of_the_bound` | `timeout_ms=0` 时 400ms 后请求**仍在飞**（`pending_len()==1`、任务未结束）；`close()` 后 waiter 立刻解开且 `pending_len()==0` |
+
+**为什么没有"修复前失败"的 A/B**：修复前这个测试**不会失败，会挂住**——缺陷本身就是"没有上界"，没有可失败的断言点。旧行为用静态证据钉住：`send_request` 全函数无 `timeout`，且 `timeout_ms` 无消费者（`grep` 可复核）。
+
+### 15.2.3 其它已核实缺口
 
 | 缺口 | 证据 | 影响 |
 |---|---|---|
-| `tools/call` **无超时** | `client.rs:152-190` → `send_request` → `rx.await`（`stdio.rs:186-190`）无 `timeout` 包裹 | 一个不响应的 server 会永久挂住该工具调用 |
-| 待处理表**泄漏** | `send_request` 先 `map.insert(id, tx)`（`stdio.rs:170-173`），超时/取消路径不移除 | 每次超时留一条永久 entry |
-| 忽略 `nextCursor` 分页 | `next_cursor` 在 `protocol.rs:144` 被解析，但 `client.rs:126-150` 与 `manager.rs` 从不读它 | 工具数超过一页的 server 静默丢工具 |
-| `McpServerConfig::timeout_ms` 是死字段 | 声明于 `config.rs:18`，`with_timeout_ms`（`:53`）设置后无任何消费者 | 配置了也不生效 |
 | server→client 请求被丢弃 | 读取任务只 `serde_json::from_str::<JsonRpcResponse>`（`stdio.rs:115`），未知 id 只 `debug!` 后忽略（`:122-127`） | sampling / roots / elicitation 全部不可用 |
 | 图片内容被降级为占位符 | `CallToolResult::plain_text` 把 `ToolContent::Image` 渲染成 `[Image: mime]`（`protocol.rs:183-187`），base64 被丢 | MCP 返回的图片永远到不了模型 |
 | 桥接工具效果分类靠猜名字 | `McpToolBridge` **没有**覆写 `effect()`（`tool_bridge.rs`），落到 `ToolEffect::of("mcp_x_y")` | 只有名字里含 `exec`/`shell`/`command` 的才是 `Exec`，其余按 `Other`（≈`Write`）判——再叠加 `CodeScope` 对 `Other` 返回 `Unknown`，实际退化为"每次问" |
@@ -1388,16 +1410,15 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `ThunderPlugin::tool_gate` | `root/plugin.rs:285` | `execute` 忽略它，只装 mode 插件 |
 | `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:584-592` 填充 |
 | `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
-| `McpServerConfig::timeout_ms` | `mcp/config.rs:18,53` | `with_timeout_ms` 设置后无任何消费者 |
 | `render_sidebar` | `tui/ui/sidebar.rs:9` | `draw` 从不调用 |
-以上五项是"接线存在、无人拉"；`thunder-runtime` 是独立二进制、`MemoryConversationStore` 由 TUI 的 `StandardHostBuilder` 正常使用，**不属于**死接线。
+以上四项是"接线存在、无人拉"；`thunder-runtime` 是独立二进制、`MemoryConversationStore` 由 TUI 的 `StandardHostBuilder` 正常使用，**不属于**死接线。（`McpServerConfig::timeout_ms` 曾在此列，已在 §15.2.2 接上消费者，移出。）
 
 ### 18.5 已知功能缺陷
 
 | 缺陷 | 严重度 | 证据 | 后果 |
 |---|---|---|---|
 | ~~**stdio MCP server 在 spawn 返回时即被 SIGKILL**~~ | ~~阻断~~ **已修复** | 根因与修复见 §15.2.1；回归测试 `mcp/tests/stdio_lifecycle_test.rs` | 修复前 stdio MCP 完全不可用且静默（`McpPlugin::on_init` fail-open + 测试只用 `MockTransport`） |
-| `tools/call` 无超时 + pending 表泄漏 | 高 | `mcp/client.rs:152-190` → `stdio.rs:170-190` | 不响应的 server 永久挂住工具调用 |
+| ~~`tools/call` 无超时 + pending 表泄漏~~ | ~~高~~ **已修复** | 根因与修复见 §15.2.2；回归测试 2 条 | 修复前一个不响应的 server 会永久挂住工具调用，且每次超时留一条 pending 残留 |
 | 忽略 `nextCursor` | 中 | `protocol.rs:144` 解析、无人读取 | 多页工具列表被截断 |
 | MCP 图片内容被丢弃 | 中 | `protocol.rs:183-187` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
 | `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
@@ -1430,7 +1451,7 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 | conversation | 6 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
 | tui | 20 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker |
 | providers | 2 个 | 目录解析、思考档位、compat/cost 透传、保温推导、元数据缓存 |
-| skills / mcp / runtime | 各 1-3 个 | 解析/发现/桥接、JSON-RPC 往返、JSONL 协议；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止** |
+| skills / mcp / runtime | 各 1-3 个 | 解析/发现/桥接、JSON-RPC 往返、JSONL 协议；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留** |
 
 ### 19.3 关键回归测试（行为契约）
 
@@ -1453,24 +1474,34 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 | `tui/tests/transcript_order_test.rs::thinking_survives_the_authoritative_replacement` | thinking 重新附着 |
 | `tui/tests/links.rs::dangerous_schemes_are_rejected` | `javascript:`/`data:` 等被丢弃 |
 | `mcp/tests/stdio_lifecycle_test.rs::a_real_stdio_server_survives_spawn_and_serves_requests` | 真实 stdio server 在 spawn 后存活，且 `close()` 真的终止进程（`pgrep` 归零） |
+| `mcp/tests/stdio_lifecycle_test.rs::a_silent_server_times_out_and_leaves_no_pending_entry` | 静默 server 不挂住调用（可配置时限），且超时不留 pending 残留 |
+| `mcp/tests/stdio_lifecycle_test.rs::an_explicit_zero_timeout_opts_out_of_the_bound` | `timeout_ms = 0` 真的放弃时限；`close()` 释放所有 parked 请求 |
 
 ### 19.4 本地验证记录
 
-本文档主体基于静态阅读 + `path:line` 交叉核对（365 处锚点全部解析成功且在文件行数范围内），未逐条执行为文档结论而设的测试。
+本文档主体基于静态阅读 + `path:line` 交叉核对，未逐条执行为文档结论而设的测试。
 
-**已实际执行的验证**（针对 MCP 修复）：
+**已实际执行的验证**：
 
 ```bash
+# ① spawn 即被 SIGKILL（§15.2.1）：A/B
 git stash push -- thunder-agent-mcp/src/transport/stdio.rs   # 回到缺陷源码
 cargo test -p thunder-agent-mcp --test stdio_lifecycle_test   # → 2 failed（10s 握手超时）
 git stash pop                                                 # 恢复修复
-cargo test -p thunder-agent-mcp --test stdio_lifecycle_test   # → 2 passed（0.11s）
-cargo fmt --all -- --check                                    # 通过
-cargo clippy -p thunder-agent-mcp --all-targets -- -D warnings # 通过
-./test.sh                                                     # 全工作区通过
+cargo test -p thunder-agent-mcp --test stdio_lifecycle_test   # → 2 passed
+
+# ② 超时 + pending 泄漏（§15.2.2）：新增的两条测试
+cargo test -p thunder-agent-mcp --test stdio_lifecycle_test   # → 4 passed（0.41s）
+
+# ③ 门禁
+cargo fmt --all -- --check                                     # 通过
+cargo clippy -p thunder-agent-mcp --all-targets -- -D warnings  # 通过（exit 0）
+./test.sh                                                      # 全工作区通过
 ```
 
-§18.5 中其余条目是**静态阅读得出、尚未修复**，未做运行时复现。
+**关于"全工作区通过"的时效性**：运行期间工作树里同时存在另一方正在开发的 `thunder-agent-root/src/plugins/web/`（未跟踪，mtime 与本轮重叠），曾一度让 `root --lib` 编译失败 / 单测失败；等它补完后再跑即全绿。也就是说 `./test.sh` 的结果取决于那一刻那批 WIP 文件的状态，与 §15.2 的改动无关。
+
+§18.5 中其余条目仍是**静态阅读得出、尚未修复**，未做运行时复现。
 
 ---
 

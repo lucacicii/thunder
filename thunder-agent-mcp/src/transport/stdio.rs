@@ -6,16 +6,91 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, info, warn};
 
+/// Wait for one request's reply when a server declares no timeout of its own.
+///
+/// A silent server must not hold a tool call — and its pending-table entry —
+/// open forever. Two minutes is a ceiling no ordinary MCP request should reach,
+/// while still being generous enough that a slow *tool* is not mistaken for a
+/// hang. `McpServerConfig::timeout_ms` overrides it per server, and `Some(0)`
+/// opts out entirely for a tool that is legitimately unbounded.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The in-flight request table: request id -> the channel its reply arrives on.
+#[derive(Clone)]
+struct PendingMap(Arc<StdMutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>);
+
+impl PendingMap {
+    fn new() -> Self {
+        Self(Arc::new(StdMutex::new(HashMap::new())))
+    }
+
+    /// A poisoned lock is recovered from rather than propagated: only an insert
+    /// or a remove can poison it, and neither leaves the map inconsistent, so
+    /// one unrelated panic must not take the whole transport down.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<JsonRpcResponse>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn insert(&self, key: String, tx: oneshot::Sender<JsonRpcResponse>) {
+        self.lock().insert(key, tx);
+    }
+
+    /// Take the reply channel for `key`, if the request is still in flight.
+    fn take(&self, key: &str) -> Option<oneshot::Sender<JsonRpcResponse>> {
+        self.lock().remove(key)
+    }
+
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+    /// Forget every in-flight request, resolving each waiter with a dropped
+    /// channel. For when the server is gone and no reply can arrive.
+    fn clear(&self) {
+        self.lock().clear();
+    }
+}
+
+/// Unregisters its request when it goes out of scope.
+///
+/// Every exit from `send_request` — a serialization failure, a dead stdin, a
+/// timeout, a reply that arrived — must unregister the request. While that was
+/// done by hand on each path, the paths that timed out had no removal at all: a
+/// server that never answered leaked one table entry per call, forever.
+struct PendingEntry {
+    map: PendingMap,
+    key: String,
+}
+
+impl PendingEntry {
+    fn register(map: &PendingMap, key: String, tx: oneshot::Sender<JsonRpcResponse>) -> Self {
+        map.insert(key.clone(), tx);
+        Self {
+            map: map.clone(),
+            key,
+        }
+    }
+}
+
+impl Drop for PendingEntry {
+    fn drop(&mut self) {
+        // On the success path the reader task already took this entry; `remove`
+        // is idempotent, so the two cannot collide.
+        self.map.take(&self.key);
+    }
+}
 pub struct StdioTransport {
     server_name: String,
     stdin_tx: mpsc::Sender<String>,
-    pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
+    pending_requests: PendingMap,
     is_alive: Arc<AtomicBool>,
     /// The spawned server process, held for as long as the transport lives.
     ///
@@ -25,9 +100,22 @@ pub struct StdioTransport {
     /// transport both shut the server down, and what made the previous
     /// never-stored handle SIGKILL every server the instant `spawn` returned.
     child: Arc<Mutex<Option<Child>>>,
+    /// Bound on one request round trip; `None` only when the server's own config
+    /// asked for that (`timeout_ms = 0`).
+    request_timeout: Option<Duration>,
 }
 
 impl StdioTransport {
+    /// Requests sent but not yet answered.
+    ///
+    /// A diagnostic: this is zero at rest, and a value that only grows means
+    /// replies are being lost (or a server is answering with ids nobody asked
+    /// for). Each in-flight request holds one entry, released on the reply, on a
+    /// timeout, and on any error on the way out.
+    pub fn pending_len(&self) -> usize {
+        self.pending_requests.len()
+    }
+
     /// Spawn the external command and initialize bidirectional JSON-RPC stdio transport.
     pub async fn spawn(
         name: impl Into<String>,
@@ -70,8 +158,7 @@ impl StdioTransport {
         })?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
-        let pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending_requests = PendingMap::new();
         let is_alive = Arc::new(AtomicBool::new(true));
 
         let is_alive_stdin = is_alive.clone();
@@ -119,8 +206,7 @@ impl StdioTransport {
                         other => other.to_string(),
                     };
 
-                    let mut map = pending_map.lock().await;
-                    if let Some(tx) = map.remove(&key) {
+                    if let Some(tx) = pending_map.take(&key) {
                         let _ = tx.send(resp);
                     } else {
                         debug!(server = %name_for_stdout, key = %key, "Received response for unknown request ID");
@@ -145,6 +231,13 @@ impl StdioTransport {
             pending_requests,
             is_alive,
             child: Arc::new(Mutex::new(Some(child))),
+            request_timeout: match config.timeout_ms {
+                // An explicit zero is the opt-out: a legitimately unbounded tool
+                // keeps its unbounded call, and says so in its config.
+                Some(0) => None,
+                Some(ms) => Some(Duration::from_millis(ms)),
+                None => Some(DEFAULT_REQUEST_TIMEOUT),
+            },
         })
     }
 }
@@ -166,28 +259,38 @@ impl McpTransport for StdioTransport {
         };
 
         let (tx, rx) = oneshot::channel();
-        {
-            let mut map = self.pending_requests.lock().await;
-            map.insert(id_key.clone(), tx);
-        }
+        // Held until this function returns, so every exit below — a serialization
+        // failure, a dead stdin, a timeout, a reply — leaves the table unchanged.
+        let _pending = PendingEntry::register(&self.pending_requests, id_key.clone(), tx);
 
         let serialized = serde_json::to_string(&request)
             .map_err(|e| McpError::SerializationError(e.to_string()))?;
 
         if let Err(e) = self.stdin_tx.send(serialized).await {
-            let mut map = self.pending_requests.lock().await;
-            map.remove(&id_key);
             return Err(McpError::TransportError(format!(
                 "Failed to send request to '{}': {e}",
                 self.server_name
             )));
         }
 
-        match rx.await {
-            Ok(resp) => Ok(resp),
-            Err(_) => Err(McpError::TransportError(format!(
-                "MCP response channel dropped for request ID '{id_key}'"
-            ))),
+        match self.request_timeout {
+            Some(limit) => match tokio::time::timeout(limit, rx).await {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(_)) => Err(McpError::TransportError(format!(
+                    "MCP response channel dropped for request ID '{id_key}'"
+                ))),
+                Err(_) => Err(McpError::TransportError(format!(
+                    "MCP server '{}' did not answer request '{id_key}' within {}ms",
+                    self.server_name,
+                    limit.as_millis()
+                ))),
+            },
+            None => match rx.await {
+                Ok(resp) => Ok(resp),
+                Err(_) => Err(McpError::TransportError(format!(
+                    "MCP response channel dropped for request ID '{id_key}'"
+                ))),
+            },
         }
     }
 
@@ -222,6 +325,10 @@ impl McpTransport for StdioTransport {
     /// is gone rather than a zombie.
     async fn close(&self) -> Result<(), McpError> {
         self.is_alive.store(false, Ordering::SeqCst);
+        // Nothing is coming back for the requests still parked: dropping their
+        // senders resolves each waiter with "channel dropped" instead of leaving
+        // it parked until the process exits.
+        self.pending_requests.clear();
         if let Some(mut child) = self.child.lock().await.take() {
             // An already-exited child makes `kill` return an error; that is the
             // outcome we wanted, not a failure of the shutdown.

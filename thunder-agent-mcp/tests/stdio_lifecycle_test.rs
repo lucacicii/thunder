@@ -10,8 +10,13 @@
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use thunder_agent_mcp::client::McpClient;
 use thunder_agent_mcp::config::McpServerConfig;
+use thunder_agent_mcp::protocol::JsonRpcRequest;
+use thunder_agent_mcp::transport::stdio::StdioTransport;
+use thunder_agent_mcp::transport::McpTransport;
 
 /// A minimal MCP server: one JSON-RPC frame per line in, one out.
 const FAKE_SERVER: &str = r#"#!/bin/sh
@@ -32,20 +37,36 @@ done
 "#;
 
 fn write_fake_server(dir: &Path) -> PathBuf {
-    let path = dir.join("fake-mcp-server.sh");
-    std::fs::write(&path, FAKE_SERVER).expect("write fake server");
+    write_server(dir, "fake-mcp-server.sh", FAKE_SERVER)
+}
+
+/// A server that reads every request and answers none of them, ever.
+const SILENT_SERVER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  :
+done
+"#;
+
+fn write_silent_server(dir: &Path) -> PathBuf {
+    write_server(dir, "silent-mcp-server.sh", SILENT_SERVER)
+}
+
+fn write_server(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, body).expect("write server script");
     let mut perms = std::fs::metadata(&path)
-        .expect("stat fake server")
+        .expect("stat server script")
         .permissions();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         perms.set_mode(0o755);
     }
-    std::fs::set_permissions(&path, perms).expect("chmod fake server");
+    std::fs::set_permissions(&path, perms).expect("chmod server script");
 
     path
 }
+
 /// A marker unique to one test run, so `pgrep` can find that test's server only.
 ///
 /// Both tests share this process, so the pid alone is not enough; the counter
@@ -158,5 +179,89 @@ async fn a_configured_server_yields_bridged_tools() {
     assert!(
         after_close.is_empty(),
         "close_all must terminate the server process, still alive: {after_close:?}"
+    );
+}
+
+/// A server that never answers must not park its caller forever, and must not
+/// leave its in-flight entry behind either.
+#[tokio::test]
+async fn a_silent_server_times_out_and_leaves_no_pending_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_silent_server(dir.path());
+    let marker = unique_marker();
+    let cfg = config_for(&script, &marker).with_timeout_ms(300);
+
+    let transport = StdioTransport::spawn("silent", &cfg).await.expect("spawn");
+
+    let started = std::time::Instant::now();
+    let err = transport
+        .send_request(JsonRpcRequest::new(json!(1), "ping", None))
+        .await
+        .expect_err("a silent server must not answer");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the call must be bounded by the configured timeout, took {elapsed:?}"
+    );
+    assert!(
+        err.to_string().contains("did not answer"),
+        "the error must name the cause, got: {err}"
+    );
+    assert_eq!(
+        transport.pending_len(),
+        0,
+        "a timed-out request must not linger in the pending table"
+    );
+    assert!(
+        transport.is_alive(),
+        "a slow server is not a dead one: the transport stays usable"
+    );
+
+    transport.close().await.expect("close");
+}
+
+/// `timeout_ms = 0` is the documented opt-out, so the bound must not apply.
+#[tokio::test]
+async fn an_explicit_zero_timeout_opts_out_of_the_bound() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_silent_server(dir.path());
+    let marker = unique_marker();
+    let cfg = config_for(&script, &marker).with_timeout_ms(0);
+
+    let transport = Arc::new(StdioTransport::spawn("silent", &cfg).await.expect("spawn"));
+    assert_eq!(transport.pending_len(), 0);
+
+    let sender = Arc::clone(&transport);
+    let parked = tokio::spawn(async move {
+        sender
+            .send_request(JsonRpcRequest::new(json!(1), "ping", None))
+            .await
+    });
+
+    // Well past where a 120 s default would fire, but the opt-out means it waits.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        transport.pending_len(),
+        1,
+        "with timeout_ms = 0 the request is expected to still be in flight"
+    );
+    assert!(
+        !parked.is_finished(),
+        "the call must not have been cut short"
+    );
+
+    // Closing releases it: nothing is coming back, so the waiter resolves rather
+    // than staying parked for the life of the process.
+    transport.close().await.expect("close");
+    let outcome = tokio::time::timeout(Duration::from_secs(5), parked)
+        .await
+        .expect("the parked call must resolve once the transport closes")
+        .expect("task must not panic");
+    assert!(outcome.is_err(), "a closed transport answers nothing");
+    assert_eq!(
+        transport.pending_len(),
+        0,
+        "close() must release every parked entry"
     );
 }
