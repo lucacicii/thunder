@@ -19,14 +19,14 @@ pub mod prelude {
     };
     #[cfg(feature = "mcp")]
     pub use crate::plugins::mcp::*;
+    pub use crate::plugins::metrics::{
+        MetricsPlugin, MetricsSnapshot, SessionMetricsTracker, METRICS_UPDATE_EVENT_KIND,
+    };
     #[cfg(feature = "skills")]
     pub use crate::plugins::skills::*;
     #[cfg(feature = "conversation")]
     pub use crate::plugins::standard::{baseline_forced_plugins, StandardHostBuilder};
     pub use crate::plugins::web::WebPlugin;
-    pub use crate::plugins::metrics::{
-        MetricsPlugin, MetricsSnapshot, SessionMetricsTracker, METRICS_UPDATE_EVENT_KIND,
-    };
     #[cfg(feature = "conversation")]
     pub use crate::plugins::{ConversationPlugin, MemoryPlugin};
     pub use crate::registry::{ActivePluginSet, PluginRegistry};

@@ -118,14 +118,22 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
         .await?;
     stdin.flush().await?;
 
-    let metrics_line = reader.next_line().await?.expect("Expected metrics response");
+    let metrics_line = reader
+        .next_line()
+        .await?
+        .expect("Expected metrics response");
     let metrics_resp: serde_json::Value = serde_json::from_str(&metrics_line)?;
     assert_eq!(metrics_resp["type"], "response");
     assert_eq!(metrics_resp["id"], "req-metrics-1");
     assert_eq!(metrics_resp["success"], true, "{}", metrics_resp);
     assert_eq!(metrics_resp["data"]["session_id"], session_id);
     assert_eq!(metrics_resp["data"]["is_running"], false);
-    assert!(metrics_resp["data"]["session_total_tokens"].as_u64().unwrap_or(0) > 0);
+    assert!(
+        metrics_resp["data"]["session_total_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
 
     // A session that never ran has no snapshot: reported, not invented.
     let missing_req = serde_json::json!({

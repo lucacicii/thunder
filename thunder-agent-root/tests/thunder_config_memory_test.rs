@@ -235,7 +235,11 @@ async fn a_config_file_can_set_the_default_mode() {
     let ws = temp.path();
     let dir = ws.join(".thunder");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.json"), r#"{"agent":{"defaultMode":"plan"}}"#).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{"agent":{"defaultMode":"plan"}}"#,
+    )
+    .unwrap();
 
     // The daemon seeds a new session's mode plugin from this value, so a field
     // the merge drops is a `defaultMode` that silently never applies.

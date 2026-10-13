@@ -725,7 +725,10 @@ mod tests {
             estimated_prompt_tokens: 0,
         });
         let started = tracker.snapshot();
-        assert_eq!(started.context_tokens, 1_000, "prompt base, nothing streamed");
+        assert_eq!(
+            started.context_tokens, 1_000,
+            "prompt base, nothing streamed"
+        );
         assert_eq!(
             started.session_total_tokens, 1_000,
             "the prompt in flight is about to be billed"
@@ -733,7 +736,8 @@ mod tests {
 
         tracker.apply_event(&AgentEvent::TokenDelta {
             turn: 1,
-            delta: "这是一段流式生成的中文内容，用来验证上下文与总消耗在一轮之内也会前进。".to_string(),
+            delta: "这是一段流式生成的中文内容，用来验证上下文与总消耗在一轮之内也会前进。"
+                .to_string(),
         });
         let streaming = tracker.snapshot();
         assert!(

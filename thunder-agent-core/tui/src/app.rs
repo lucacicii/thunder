@@ -4605,7 +4605,9 @@ impl App {
             AgentEvent::Custom { kind, payload }
                 if kind == thunder_agent_root::plugins::METRICS_UPDATE_EVENT_KIND =>
             {
-                if let Ok(snap) = serde_json::from_value::<thunder_agent_root::plugins::MetricsSnapshot>(payload) {
+                if let Ok(snap) =
+                    serde_json::from_value::<thunder_agent_root::plugins::MetricsSnapshot>(payload)
+                {
                     self.metrics.apply_snapshot(&snap);
                 }
             }

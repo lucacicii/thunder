@@ -864,8 +864,16 @@ mod tests {
             completion_tokens: Some(200),
             ..Default::default()
         });
-        assert_eq!(m.context_tokens(50), 1_200, "local figure before a snapshot");
-        assert_eq!(m.billed_total(7_000), 7_000, "conversation store before a snapshot");
+        assert_eq!(
+            m.context_tokens(50),
+            1_200,
+            "local figure before a snapshot"
+        );
+        assert_eq!(
+            m.billed_total(7_000),
+            7_000,
+            "conversation store before a snapshot"
+        );
 
         m.apply_snapshot(&thunder_agent_root::plugins::MetricsSnapshot {
             session_id: "s".to_string(),

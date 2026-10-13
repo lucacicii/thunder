@@ -524,7 +524,8 @@ impl ThunderRoot {
             self.initial_session_total_tokens.unwrap_or(0),
         );
         if !selection.active_plugin_ids.iter().any(|id| id == "metrics") {
-            active_set.push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
+            active_set
+                .push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
         }
 
         info!(
