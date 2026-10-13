@@ -9,6 +9,7 @@ pub mod mode;
 pub mod skills;
 #[cfg(feature = "conversation")]
 pub mod standard;
+pub mod web;
 
 #[cfg(feature = "conversation")]
 pub use conversation::ConversationPlugin;
@@ -21,3 +22,4 @@ pub use mode::{AllowRule, Mode, ModePlugin};
 pub use skills::SkillsPlugin;
 #[cfg(feature = "conversation")]
 pub use standard::{baseline_forced_plugins, StandardHostBuilder};
+pub use web::WebPlugin;

@@ -86,6 +86,16 @@ impl StandardHostBuilder {
         // no `THUNDER.md` exists, so every host gets it for free.
         root = root.with_plugin(MemoryPlugin::new());
 
+        {
+            // The provider registry carries the utility model `web_fetch`
+            // summarises with, so the plugin is built from the root the caller
+            // already configured. `with_provider_registry` must run before
+            // `build` — the doc comment on `StandardHostBuilder` says so — or
+            // the tool silently loses its summariser and returns raw markdown.
+            let registry = root.provider_registry().clone();
+            root = root.with_plugin(crate::plugins::web::WebPlugin::new(registry));
+        }
+
         #[cfg(feature = "skills")]
         {
             root = root.with_plugin(self.skills.unwrap_or_default());

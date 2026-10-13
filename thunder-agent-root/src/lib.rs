@@ -23,6 +23,7 @@ pub mod prelude {
     pub use crate::plugins::skills::*;
     #[cfg(feature = "conversation")]
     pub use crate::plugins::standard::{baseline_forced_plugins, StandardHostBuilder};
+    pub use crate::plugins::web::WebPlugin;
     #[cfg(feature = "conversation")]
     pub use crate::plugins::{ConversationPlugin, MemoryPlugin};
     pub use crate::registry::{ActivePluginSet, PluginRegistry};

@@ -37,6 +37,21 @@ fn standard_host_registers_conversation_and_skills() {
     );
 }
 
+#[test]
+fn standard_host_registers_web() {
+    let root = baseline_root();
+    let ids: Vec<String> = root
+        .registry()
+        .list_manifests()
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
+    assert!(
+        ids.contains(&"web".to_string()),
+        "web plugin missing: {ids:?}"
+    );
+}
+
 #[cfg(feature = "mcp")]
 #[test]
 fn standard_host_registers_mcp() {

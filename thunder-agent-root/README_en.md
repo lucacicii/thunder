@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
 | **`memory`** | Long-Term Memory | Dynamic Keyword Triggers | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
 | **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode` |
+| **`web`** | Web Fetch | **Permanent Baseline** | Fetches a URL, converts the page to markdown, and answers a prompt with the utility model (markdown fallback when none is configured); exposes `web_fetch` |
 
 
 ## 📄 License

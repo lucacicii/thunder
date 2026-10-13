@@ -62,6 +62,7 @@ ratatui = "0.29"
 unicode-width = "0.2"
 crossterm = { version = "0.28", features = ["event-stream"] }
 libc = "0.2"
+htmd = "0.5"
 
 # ────────────────────────────────────────────────────────────
 # Workspace-wide lint baseline. Crates opt in via `[lints] workspace = true`.
