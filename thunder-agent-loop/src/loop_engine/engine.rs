@@ -567,6 +567,7 @@ impl AgentLoop {
                     .emit(AgentEvent::TurnStart {
                         turn,
                         timestamp: now_ts,
+                        estimated_prompt_tokens: context.estimated_tokens(),
                     })
                     .await;
 

@@ -231,6 +231,7 @@ mod tests {
         c.record(observed(AgentEvent::TurnStart {
             turn: 1,
             timestamp: 1,
+            estimated_prompt_tokens: 10,
         }));
         assert_eq!(c.events().len(), 1);
         assert!(c.is_complete());
@@ -245,6 +246,7 @@ mod tests {
             c.record(observed(AgentEvent::TurnStart {
                 turn: i,
                 timestamp: i as u64,
+                estimated_prompt_tokens: 10 * i,
             }));
         }
         assert_eq!(c.events().len(), MAX_EVENTS);

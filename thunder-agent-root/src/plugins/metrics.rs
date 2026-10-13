@@ -70,7 +70,13 @@ pub struct MetricsSnapshot {
     pub cache_hit_percent: Option<f64>,
 
     // ── Context window & session cumulative usage ────────────────────────
-    /// Current working context occupancy in tokens.
+    /// Tokens the model has in front of it: the request in flight — its prompt
+    /// plus what it has produced so far — or, between turns, the exact
+    /// prompt+completion of the request that just finished.
+    ///
+    /// It advances during a turn (so the number creeps up while the answer
+    /// streams) and snaps to the provider's exact figure at every `turn_end`.
+    /// It is a gauge: it is *replaced*, never summed.
     pub context_tokens: usize,
     /// Model's maximum context window in tokens, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +85,10 @@ pub struct MetricsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_usage_percent: Option<f64>,
     /// Cumulative billed tokens across all turns in this session.
+    ///
+    /// A counter: every request re-sends the whole prompt, so each turn adds its
+    /// own prompt+completion. It advances during a turn too (settled total plus
+    /// the in-flight request) and is exact at every `turn_end`.
     pub session_total_tokens: usize,
 
     // ── Timing breakdown ─────────────────────────────────────────────────
@@ -108,6 +118,19 @@ pub struct SessionMetricsTracker {
     turn_reasoning: String,
     turn_text_tokens: usize,
     turn_reasoning_tokens: usize,
+    /// Best known size of the prompt the *current* turn is running with:
+    /// assigned at `turn_end` (that turn's exact prompt + completion — i.e. what
+    /// the model has now seen) and grown by each tool output, because the next
+    /// request will carry them. This is what lets the gauges move mid-turn.
+    turn_prompt_base: usize,
+    /// Exact cumulative billed total as of the last `turn_end` (the configured
+    /// seed plus every finished turn). The live counter adds the in-flight turn
+    /// on top rather than mutating this.
+    settled_session_total: usize,
+    /// Whether a request is in flight (`TurnStart` .. `TurnEnd`). Decides
+    /// whether the live formulas add the in-flight turn's estimate: outside a
+    /// turn the numbers are already exact and must not be inflated.
+    turn_in_flight: bool,
 }
 
 impl Default for SessionMetricsTracker {
@@ -133,6 +156,9 @@ impl SessionMetricsTracker {
             turn_reasoning: String::new(),
             turn_text_tokens: 0,
             turn_reasoning_tokens: 0,
+            turn_prompt_base: 0,
+            settled_session_total: 0,
+            turn_in_flight: false,
         }
     }
 
@@ -168,9 +194,14 @@ impl SessionMetricsTracker {
         if initial_context_tokens > 0 && self.snapshot.context_tokens == 0 {
             self.snapshot.context_tokens = initial_context_tokens;
         }
-        if initial_session_total_tokens > self.snapshot.session_total_tokens {
-            self.snapshot.session_total_tokens = initial_session_total_tokens;
+        // The live gauges build on these: the first request's prompt is the
+        // seeded estimate, and the settled counter never goes below the
+        // conversation's cumulative usage.
+        if initial_session_total_tokens > self.settled_session_total {
+            self.settled_session_total = initial_session_total_tokens;
         }
+        self.snapshot.session_total_tokens = self.settled_session_total;
+        self.turn_prompt_base = self.snapshot.context_tokens;
         self.recompute_percentages();
     }
 
@@ -197,6 +228,14 @@ impl SessionMetricsTracker {
         self.turn_reasoning.clear();
         self.turn_text_tokens = 0;
         self.turn_reasoning_tokens = 0;
+        // The live gauges carry over: `context_tokens` still holds the seeded
+        // initial estimate (the first request's prompt) and the counter its
+        // settled total, so neither jumps back to zero. `settled_session_total`
+        // is deliberately left alone — it is the exact value, and re-reading it
+        // from the display could import an aborted turn's estimate.
+        self.turn_prompt_base = self.snapshot.context_tokens;
+        self.snapshot.session_total_tokens = self.settled_session_total;
+        self.turn_in_flight = false;
     }
 
     pub fn on_token_delta(&mut self, delta: &str) {
@@ -291,11 +330,19 @@ impl SessionMetricsTracker {
             });
         self.snapshot.avg_tps = tps;
 
+        // The turn is settled: the provider's exact figures replace the estimate.
+        // The counter accumulates on `settled_session_total` — the display value
+        // may hold an inflated in-flight estimate, and adding to *that* would
+        // count the in-flight request twice.
         if let Some(total) = turn_total.filter(|&t| t > 0) {
+            self.settled_session_total = self.settled_session_total.saturating_add(total);
+            self.snapshot.session_total_tokens = self.settled_session_total;
+            // What the model has now seen; the next request's prompt (plus any
+            // tool output) grows from here.
+            self.turn_prompt_base = total;
             self.snapshot.context_tokens = total;
-            self.snapshot.session_total_tokens =
-                self.snapshot.session_total_tokens.saturating_add(total);
         }
+        self.turn_in_flight = false;
 
         self.sync_live_counters();
         self.recompute_percentages();
@@ -303,6 +350,10 @@ impl SessionMetricsTracker {
 
     pub fn on_finish(&mut self, stats: Option<&AgentStats>) {
         self.snapshot.is_running = false;
+        // A run can end inside a turn (cancel, error): close the window so the
+        // gauges stop advancing. They keep their last value, which is the best
+        // estimate of a request the provider may still have billed.
+        self.turn_in_flight = false;
         if let Some(started) = self.turn_first_token_at.take() {
             let elapsed = (started.elapsed().as_millis() as u64).max(1);
             self.completed_gen_ms += elapsed;
@@ -347,11 +398,25 @@ impl SessionMetricsTracker {
 
     pub fn apply_event(&mut self, event: &AgentEvent) -> bool {
         match event {
-            AgentEvent::TurnStart { turn, .. } => {
+            AgentEvent::TurnStart {
+                turn,
+                estimated_prompt_tokens,
+                ..
+            } => {
                 self.snapshot.turn = *turn;
                 self.snapshot.is_running = true;
                 self.turn_first_token_at = None;
                 self.turn_gen_settled = false;
+                // The loop reports what this request's prompt costs, so the base
+                // is right from the first frame — no waiting for the provider.
+                if *estimated_prompt_tokens > 0 {
+                    self.turn_prompt_base = *estimated_prompt_tokens;
+                }
+                // A request is now in flight: from here the two gauges include
+                // it (its prompt is the base, its output streams in), so they
+                // move during the turn instead of only at its boundary.
+                self.turn_in_flight = true;
+                self.sync_live_counters();
                 true
             }
             AgentEvent::TokenDelta { delta, .. } => {
@@ -371,10 +436,23 @@ impl SessionMetricsTracker {
                     .snapshot
                     .tool_duration_ms
                     .saturating_add(result.duration_ms);
+                // A tool's output becomes part of the *next* request's prompt, so
+                // it is added to the base here. The next `turn_end` replaces the
+                // base with the provider's exact prompt, which already includes
+                // it — assigning, not adding, is what stops it being counted
+                // twice.
+                self.turn_prompt_base = self
+                    .turn_prompt_base
+                    .saturating_add(estimate_token_count(&result.output));
+                self.sync_live_counters();
                 true
             }
             AgentEvent::ContextCompacted { tokens_after, .. } => {
                 self.snapshot.context_tokens = *tokens_after;
+                // The next request really will be this small, so the live
+                // estimate has to start from here rather than from the
+                // pre-compaction size.
+                self.turn_prompt_base = *tokens_after;
                 self.recompute_percentages();
                 true
             }
@@ -398,6 +476,25 @@ impl SessionMetricsTracker {
         if let Some(started) = self.run_started_at {
             self.snapshot.wall_duration_ms = Some(started.elapsed().as_millis() as u64);
         }
+
+        // The two gauges, advanced mid-turn.
+        //
+        // `context_tokens` is a gauge: the request in flight is its prompt plus
+        // what it has produced so far, and between turns it is the prompt the
+        // *next* request will carry (which a tool output extends as it lands).
+        //
+        // `session_total_tokens` is a counter: settled turns plus the in-flight
+        // request — the provider re-bills the whole prompt on every request, so
+        // an in-flight request is a real cost the moment it is sent.
+        let live_completion = self.turn_text_tokens + self.turn_reasoning_tokens;
+        let in_flight = self.turn_prompt_base.saturating_add(live_completion);
+        self.snapshot.context_tokens = in_flight;
+        self.snapshot.session_total_tokens = if self.turn_in_flight {
+            self.settled_session_total.saturating_add(in_flight)
+        } else {
+            self.settled_session_total
+        };
+        self.recompute_percentages();
     }
 
     fn compute_live_tps(&self) -> f64 {
@@ -603,5 +700,125 @@ mod tests {
         assert_eq!(after_turn.context_tokens, 4_200);
         assert_eq!(after_turn.session_total_tokens, 5_000 + 4_200);
         assert_eq!(after_turn.avg_tps, Some(80.0));
+    }
+
+    /// The two gauges have to move *during* a turn, and be exact at its
+    /// boundary. Walks the real event path (`apply_event`), because that is
+    /// where `turn_in_flight` is set and the whole behaviour hangs off it.
+    #[test]
+    fn the_gauges_advance_mid_turn_and_snap_exactly_at_turn_end() {
+        let mut tracker = SessionMetricsTracker::new("sess_2");
+        tracker.configure_session("sess_2", None, None, Some(100_000), 1_000, 0);
+        tracker.begin_run(Some("task_2".to_string()));
+
+        // Nothing sent yet: the seeded estimate, nothing billed.
+        let idle = tracker.snapshot();
+        assert_eq!(idle.context_tokens, 1_000);
+        assert_eq!(idle.session_total_tokens, 0);
+
+        // A request goes out. From here the gauges include it, which is the
+        // whole point: they advance as the answer streams instead of freezing
+        // until the provider reports usage.
+        tracker.apply_event(&AgentEvent::TurnStart {
+            turn: 1,
+            timestamp: 0,
+            estimated_prompt_tokens: 0,
+        });
+        let started = tracker.snapshot();
+        assert_eq!(started.context_tokens, 1_000, "prompt base, nothing streamed");
+        assert_eq!(
+            started.session_total_tokens, 1_000,
+            "the prompt in flight is about to be billed"
+        );
+
+        tracker.apply_event(&AgentEvent::TokenDelta {
+            turn: 1,
+            delta: "这是一段流式生成的中文内容，用来验证上下文与总消耗在一轮之内也会前进。".to_string(),
+        });
+        let streaming = tracker.snapshot();
+        assert!(
+            streaming.context_tokens > started.context_tokens,
+            "context creeps up with the answer: {} -> {}",
+            started.context_tokens,
+            streaming.context_tokens
+        );
+        assert_eq!(
+            streaming.session_total_tokens, streaming.context_tokens,
+            "nothing settled yet, so the counter is the in-flight request"
+        );
+
+        // A tool output will ride in the *next* prompt.
+        tracker.apply_event(&AgentEvent::ToolExecResult {
+            turn: 1,
+            tool_call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+                "x".repeat(400),
+                std::time::Duration::from_millis(5),
+            ),
+        });
+
+        // Turn ends: the provider's exact figures replace every estimate.
+        tracker.apply_event(&AgentEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "stop".to_string(),
+            stats: TurnStats {
+                turn: 1,
+                prompt_tokens: Some(4_000),
+                completion_tokens: Some(120),
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                duration_ms: 900,
+                tool_calls_count: 1,
+                tokens_per_second: Some(80.0),
+            },
+        });
+        let settled = tracker.snapshot();
+        assert_eq!(settled.context_tokens, 4_120, "exact prompt + completion");
+        assert_eq!(settled.session_total_tokens, 4_120);
+
+        // Between turns nothing is in flight, so the numbers must not drift
+        // upward on their own — including when a tool result lands.
+        tracker.apply_event(&AgentEvent::ToolExecResult {
+            turn: 1,
+            tool_call_id: "c2".to_string(),
+            name: "bash".to_string(),
+            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+                "y".repeat(400),
+                std::time::Duration::from_millis(5),
+            ),
+        });
+        // Between turns the counter is exact — nothing new has been billed — but
+        // the gauge already shows the tool output the next request will carry.
+        let between = tracker.snapshot();
+        assert_eq!(
+            between.session_total_tokens, 4_120,
+            "the counter must not drift between turns"
+        );
+        assert!(
+            between.context_tokens > settled.context_tokens,
+            "the pending tool output is part of the next prompt: {} -> {}",
+            settled.context_tokens,
+            between.context_tokens
+        );
+
+        // The next request costs at least that prompt again, and the loop's own
+        // estimate of it replaces the base carried over from the last turn.
+        tracker.apply_event(&AgentEvent::TurnStart {
+            turn: 2,
+            timestamp: 0,
+            estimated_prompt_tokens: 5_000,
+        });
+        let next = tracker.snapshot();
+        assert_eq!(
+            next.context_tokens, 5_000,
+            "the loop's estimate of the prompt wins over the carried-over base"
+        );
+        assert_eq!(
+            next.session_total_tokens,
+            4_120 + 5_000,
+            "the counter adds the request in flight"
+        );
     }
 }

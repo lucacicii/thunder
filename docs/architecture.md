@@ -844,7 +844,9 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 - **零侵入内核**：它只实现 `ThunderPlugin::on_event`/`on_finish`，不注册工具、不装 gate，事件派发走 `try_send`/`send` 旁路，内核主循环不知道自己被观测。
 - **生成时钟只计解码**：收到本轮第一个 `TokenDelta`/`ReasoningDelta` 时开表，`ToolExecStart` 或 `TurnEnd` 时结算并暂停——TTFT（prefill + 排队）与工具执行都不计入分母。
 - **一份权威快照**：`MetricsSnapshot`（`metrics.rs`，serde）由 `RootRunHandle::take_events` 随流以 `AgentEvent::Custom { kind: "metrics_update", payload }` 推送；`RootRunHandle::metrics_snapshot()` 与 daemon 的 `get_metrics` 命令可随时读取，trace 文件顶层的 `metrics` 键是同一结构。
-- **消费方**：TUI 在 `handle_agent_event` 里反序列化 `metrics_update` 直接刷新状态栏；daemon 随 `observed_event` 一并转发给宿主，并把它写进 trace；桌面面板只渲染，不再自行估算 token 或计时。
+- **两个数的语义不同，别混**：`context_tokens` 是**仪表**（当前这次请求的 prompt + 已生成量，每个 `turn_end` 被精确值**覆盖**）；`session_total_tokens` 是**计数器**（累计计费，每个 `turn_end` **累加**「该轮 prompt + completion」——每轮请求都会把整个 prompt 重新计费一次）。"一轮一次"不是不累加，而是增量只有轮末才由 provider 报出。
+- **但两者在轮内也会前进**：`TurnStart` 现在带上 `estimated_prompt_tokens`（内核本来就在日志里算这个数），插件以它作为本次请求的 prompt 基数；此后每个 `TokenDelta` 都让两个数随生成量增长，`ToolExecResult` 把工具输出计入下一个请求的 prompt（`turn_end` 用精确值**赋值**覆盖基数，所以不会重复计）。这样面板上的「上下文 / 总消耗」在流式过程中就在动，而不是只在轮末跳一下。
+- **消费方**：TUI 在 `handle_agent_event` 里反序列化 `metrics_update` 直接刷新状态栏；daemon 随 `observed_event` 一并转发给宿主，并把它写进 trace；桌面面板与 prototype-edit-llm 都以快照为准（含「总耗时」＝`wall_duration_ms`，它每帧都在刷，而 `turn_end` 的 `duration_ms` 只是**该轮**耗时）。
 - `TraceCollector` 不保留 `metrics_update`：它是从流派生的高频遥测，最终快照已存在 trace 顶层，逐条保留既无信息量又会顶掉真实事件（`trace_collector.rs:59-68`）。
 
 ### 11.9 已知细节

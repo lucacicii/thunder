@@ -75,6 +75,7 @@ async fn test_app_streaming_event_ingestion() {
         event: AgentEvent::TurnStart {
             turn: 1,
             timestamp: 100,
+            estimated_prompt_tokens: 10,
         },
         timestamp_ms: 0,
     });

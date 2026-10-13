@@ -428,6 +428,7 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
         event: AgentEvent::TurnStart {
             turn: 1,
             timestamp: 1,
+            estimated_prompt_tokens: 10,
         },
         timestamp_ms: 0,
     });

@@ -65,6 +65,15 @@ pub enum AgentEvent {
     TurnStart {
         turn: usize,
         timestamp: u64,
+        /// Estimated size of the prompt this turn is about to send — the whole
+        /// thing, system prompt and tool definitions included.
+        ///
+        /// Carried so a telemetry consumer can report context occupancy (and the
+        /// cost the request is about to incur) from a turn's first frame, rather
+        /// than waiting for the provider's usage report at its end. Estimated,
+        /// and replaced by the exact figure at `TurnEnd`.
+        #[serde(default)]
+        estimated_prompt_tokens: usize,
     },
     /// Streaming token for user-visible answer content
     TokenDelta {
