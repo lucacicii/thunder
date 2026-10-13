@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`mcp`** | MCP 客户端 | 触发词动态激活 | 连接外部 MCP 服务器并暴露远程工具 |
 | **`memory`** | 长期记忆 | 触发词动态激活 | 分层加载 `.thunder` 的 `THUNDER.md` / `memory/*.md`，追加进系统提示 |
 | **`mode`** | 审批模式门 | **宿主显式安装** | 实现 `ToolGate`：`plan` / `ask` / `acceptEdits` / `yolo`，并携带 `write_plan` / `exit_plan_mode` |
-| **`web`** | 网页抓取 | **基线常驻** | 抓取 URL、HTML 转 markdown，用 utility 模型按 prompt 提炼答案（无 utility 模型时回退 markdown），暴露 `web_fetch` |
+| **`web`** | 网页工具 | **基线常驻** | `web_fetch`：抓取 URL、HTML 转 markdown，用 utility 模型按 prompt 提炼答案（无 utility 模型时回退 markdown）；`web_search`：走免 key 引擎（DuckDuckGo 主、Exa 兜底）返回标题/链接/摘要 |
 
 ---
 

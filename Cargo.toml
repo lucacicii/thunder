@@ -63,6 +63,8 @@ unicode-width = "0.2"
 crossterm = { version = "0.28", features = ["event-stream"] }
 libc = "0.2"
 htmd = "0.5"
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
 
 # ────────────────────────────────────────────────────────────
 # Workspace-wide lint baseline. Crates opt in via `[lints] workspace = true`.

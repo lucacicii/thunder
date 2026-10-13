@@ -2368,6 +2368,8 @@ dependencies = [
  "async-trait",
  "futures-util",
  "htmd",
+ "html5ever",
+ "markup5ever_rcdom",
  "parking_lot",
  "reqwest",
  "serde",

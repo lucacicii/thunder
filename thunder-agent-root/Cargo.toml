@@ -30,6 +30,8 @@ async-trait.workspace = true
 reqwest = { workspace = true, features = ["charset", "gzip"] }
 parking_lot.workspace = true
 htmd.workspace = true
+html5ever.workspace = true
+markup5ever_rcdom.workspace = true
 tracing.workspace = true
 futures-util.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi"] }

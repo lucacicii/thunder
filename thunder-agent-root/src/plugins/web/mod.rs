@@ -18,10 +18,12 @@
 pub mod cache;
 pub mod convert;
 pub mod fetch;
+pub mod search;
 pub mod summarize;
 
 pub use cache::{global_cache, CachedFetch, FetchCache};
 pub use fetch::{WebFetchTool, WEB_FETCH_TOOL};
+pub use search::{SearchResult, WebSearchTool, WEB_SEARCH_TOOL};
 
 use crate::plugin::{PluginCapability, PluginManifest, ThunderPlugin, TriggerSpec};
 use async_trait::async_trait;
@@ -29,7 +31,8 @@ use std::sync::Arc;
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_providers::prelude::ProviderRegistry;
 
-/// Contributes `web_fetch`, summarised by the registry's utility model.
+/// Contributes `web_fetch` and `web_search`: one reads a page, the other finds
+/// them. `web_fetch` is summarised by the registry's utility model.
 pub struct WebPlugin {
     manifest: PluginManifest,
     registry: ProviderRegistry,
@@ -43,7 +46,7 @@ impl WebPlugin {
         let manifest = PluginManifest::new(
             "web",
             "Thunder Web Tools",
-            "Fetches a URL, converts the page to markdown, and answers a prompt against it with the utility model.",
+            "Fetches a URL, converts the page to markdown, and answers a prompt against it with the utility model; also searches the web through free engines.",
             "0.1.0",
         )
         .with_capability(PluginCapability::ToolProvider)
@@ -72,9 +75,12 @@ impl ThunderPlugin for WebPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        vec![Arc::new(WebFetchTool::new(
-            self.registry.clone(),
-            Arc::clone(&self.cache),
-        ))]
+        vec![
+            Arc::new(WebFetchTool::new(
+                self.registry.clone(),
+                Arc::clone(&self.cache),
+            )),
+            Arc::new(WebSearchTool::new()),
+        ]
     }
 }
