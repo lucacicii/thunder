@@ -1442,6 +1442,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 ### 19.1 门禁
 
 ```bash
+python3 scripts/check-version.py        # 版本一致性（发布时加 --tag vX.Y.Z）
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
 cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mock
@@ -1449,6 +1450,9 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 ```
 
 （`.github/workflows/ci.yml`、`test.sh`）`RUSTFLAGS="-D warnings"` 在 CI 里全局生效。
+
+**版本只有一处真源**：根 `Cargo.toml` 的 `[workspace.package].version`，10 个 member 一律 `version.workspace = true`。`scripts/check-version.py` 是这条规则的唯一实现，ci.yml、release.yml、test.sh 三处调用（避免两份检查各自漂移）：它要求 member 继承版本、`Cargo.lock` 跟上、`docs/architecture.md` 记录的版本一致，并在发版时要求 tag 等于 `v<版本>` 且不低于任何已有 tag —— **只改了某个子包也必须提升版本号**，否则消费方只看版本号分不清是哪个构建。release.yml 的 checkout 因此用 `fetch-depth: 0`（浅克隆读不到 tag，门禁会拒绝而不是放行）。
+
 
 ### 19.2 测试分布
 

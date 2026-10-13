@@ -37,9 +37,8 @@ Usage:
 import argparse
 import os
 import re
+import subprocess
 import sys
-
-CRATES_EXPECTED_NOTE = "every crate in `[workspace] members`"
 
 
 def die(problems):
@@ -107,6 +106,33 @@ def lock_versions(lock_text):
     return found
 
 
+def version_key(tag):
+    """`v1.2.3` -> `(1, 2, 3)`; anything that is not a release tag sorts below."""
+    m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag.strip())
+    if not m:
+        return (-1, -1, -1)
+    return tuple(int(g) for g in m.groups())
+
+
+def git_tags(root_dir):
+    """Every tag in the repo, or None when git cannot answer.
+
+    None is a refusal, not a pass: this is the half of the release gate that
+    catches "a subpackage changed and the version stayed the same", so it must
+    not quietly disappear in a shallow clone.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", root_dir, "tag", "--list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        ).stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Thunder workspace version consistency gate")
     ap.add_argument("--repo-root", default=None, help="defaults to this script's parent directory")
@@ -114,6 +140,11 @@ def main():
         "--tag",
         default=None,
         help="the git tag being released (e.g. v0.5.0); must match the workspace version",
+    )
+    ap.add_argument(
+        "--no-tag-history",
+        action="store_true",
+        help="with --tag, skip the 'this version number is not already used by a tag' half",
     )
     args = ap.parse_args()
 
@@ -205,7 +236,8 @@ def main():
                 "docs/architecture.md 写的是 {0}，workspace 是 {1}".format(m.group(1), version)
             )
 
-    # 5. The release gate: the tag and the compiled-in version are the same claim.
+    # 5. The release gate: the tag, the compiled-in version and the tags that
+    # already exist all have to tell the same story.
     if args.tag:
         expected = "v" + version
         if args.tag != expected:
@@ -214,7 +246,26 @@ def main():
                 "只改了某个子包也必须提升版本号，否则产物会自称一个版本、"
                 "而二进制应答另一个".format(args.tag, expected)
             )
-
+        elif not args.no_tag_history:
+            tags = git_tags(root_dir)
+            if tags is None:
+                problems.append(
+                    "给了 --tag 却读不到 git tag，无法确认这个版本号还没被用过"
+                    "（浅克隆请用 fetch-depth: 0；确实要跳过就加 --no-tag-history）"
+                )
+            else:
+                # The tag being released is already in the list; every *other*
+                # tag at or above this version means the number is taken, which
+                # is exactly "you changed a subpackage and did not bump".
+                taken = sorted(
+                    t for t in tags if t != args.tag and version_key(t) >= version_key(expected)
+                )
+                if taken:
+                    problems.append(
+                        "已有 tag {0} 不低于本版本 `{1}` —— 发布必须带一个更新的版本号。"
+                        "只改了某个子包也一样：两个不同的构建共用一个版本号，"
+                        "消费方只看版本号根本分不出来".format(", ".join(taken), version)
+                    )
     if problems:
         die(problems)
 
@@ -225,6 +276,8 @@ def main():
         print("  · docs/architecture.md 记录 {0}".format(version))
     if args.tag:
         print("  · 发布 tag {0} 与 workspace 版本一致".format(args.tag))
+        if not args.no_tag_history:
+            print("  · 该版本号尚未被更早的 tag 占用（只改子包也必须升版本）")
     return 0
 
 

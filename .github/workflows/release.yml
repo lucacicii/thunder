@@ -42,6 +42,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The version gate compares the released version against every existing
+          # tag; a shallow checkout would only show the tag being built and let a
+          # stale version number through.
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         # Pinned the same way as ci.yml: an unpinned stable makes release
