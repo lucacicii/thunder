@@ -32,7 +32,6 @@
 | :--- | :--- |
 | `openai-completions` | OpenAI, DeepSeek, OpenRouter, Qwen, Moonshot, zAI, Groq, Ollama, etc. |
 | `anthropic-messages` | Anthropic Claude 3.5 / 3.7 |
-| `google-generative-ai` | Google Gemini |
 
 ---
 

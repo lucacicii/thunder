@@ -19,7 +19,7 @@
      - **`MetricsPlugin`**: Model telemetry — live/average tok/s, token breakdown, prompt-cache hit rate, context occupancy, and durations; streamed as `metrics_update` custom events without touching the kernel.
 2. **Deterministic Zero-LLM Latency Activation**:
    - Replaces sluggish secondary LLM intent classification (which added 1~2s latency per turn).
-   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills and telemetry plugins are permanently active for all runs;
+   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills, memory, web and telemetry plugins are permanently active for all runs;
    - Complex plugins (MCP, etc.) are activated selectively via keyword intent triggers, ensuring **zero added latency, minimal token consumption, and maximal extensibility**.
 3. **Global Skills Scan Cache (120s TTL)**:
    - Features `DEFAULT_SKILLS_CACHE` with a 120-second TTL over skill directories, eliminating redundant disk walks and filesystem bottlenecks during multi-turn interactions.
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`metrics`** | Model Telemetry | **Permanent Baseline** | Tracks live/average tok/s (TTFT and tool time excluded), token breakdown, cache hit rate, context occupancy and durations; emits `metrics_update` snapshots |
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
-| **`memory`** | Long-Term Memory | Dynamic Keyword Triggers | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
+| **`memory`** | Long-Term Memory | **Permanent Baseline** | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
 | **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode` |
 | **`web`** | Web Tools | **Permanent Baseline** | `web_fetch`: fetches a URL, converts the page to markdown, and answers a prompt with the utility model (markdown fallback when none is configured). `web_search`: queries keyless engines (DuckDuckGo first, Exa as a fallback) and returns titles, URLs, and snippets |
 

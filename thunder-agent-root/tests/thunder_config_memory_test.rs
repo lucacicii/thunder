@@ -228,3 +228,17 @@ async fn malformed_config_does_not_abort_the_run() {
     let cfg = ThunderConfig::load(Some(ws)).await;
     assert_eq!(cfg.agent.max_turns, None);
 }
+
+#[tokio::test]
+async fn a_config_file_can_set_the_default_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path();
+    let dir = ws.join(".thunder");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), r#"{"agent":{"defaultMode":"plan"}}"#).unwrap();
+
+    // The daemon seeds a new session's mode plugin from this value, so a field
+    // the merge drops is a `defaultMode` that silently never applies.
+    let cfg = ThunderConfig::load(Some(ws)).await;
+    assert_eq!(cfg.agent.default_mode.as_deref(), Some("plan"));
+}

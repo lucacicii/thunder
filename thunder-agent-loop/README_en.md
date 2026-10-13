@@ -45,6 +45,8 @@ Benchmarked on Apple Silicon (ARM64):
 ```rust
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+// Tools live in the capability pack (`thunder-agent-pack-code`), not the kernel (see §4).
+use thunder_agent_pack_code::builtin::{BashTool, ReadFileTool, WriteFileTool};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -199,10 +201,9 @@ The pause checkpoint is placed **before tool dispatch**. Active tools finish cle
 src/
 ├── core/                  # Context buffer, state tracker, token estimator, PauseGate
 ├── loop_engine/           # Core loop engine, event emitter, task state machine
-├── pruning/               # Decoupled pruning & tool output eviction
+├── pruning/               # Checkpoint context compaction (+ emergency trim floor)
 ├── stream/                # Pure LLMClientTrait contract (+ unconfigured placeholder)
-├── tools/                 # Tool registry, parallel executor, builtin tools
-│   ├── builtin/           # bash, read_file, write_file
+├── tools/                 # Tool registry and parallel executor
 │   ├── executor.rs        # run_tool: the one entry (guard -> gate -> ask -> execute -> trace)
 │   ├── guard.rs           # Kernel guard: dangerous commands (token-based) + critical paths
 │   └── trace.rs           # ToolTrace, redaction, ToolTraceSink

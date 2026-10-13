@@ -145,6 +145,9 @@ impl ThunderConfig {
         if b.memory.is_some() {
             self.agent.memory = b.memory;
         }
+        if b.default_mode.is_some() {
+            self.agent.default_mode = b.default_mode;
+        }
     }
 
     /// Push the config-declared values onto a run's [`AgentConfig`].
@@ -182,6 +185,7 @@ mod tests {
         let mut base = ThunderConfig::default();
         base.agent.max_turns = Some(10);
         base.agent.thinking_level = Some("high".to_string());
+        base.agent.default_mode = Some("plan".to_string());
 
         let mut overlay = ThunderConfig::default();
         overlay.agent.thinking_level = Some("low".to_string());
@@ -189,6 +193,18 @@ mod tests {
         base.merge(overlay);
         assert_eq!(base.agent.max_turns, Some(10), "unset field must survive");
         assert_eq!(base.agent.thinking_level.as_deref(), Some("low"));
+        assert_eq!(
+            base.agent.default_mode.as_deref(),
+            Some("plan"),
+            "an overlay that declares no mode must not clear one"
+        );
+
+        // ...and one that does declare a mode replaces it, which is the half
+        // the daemon reads to seed a new session.
+        let mut overlay = ThunderConfig::default();
+        overlay.agent.default_mode = Some("ask".to_string());
+        base.merge(overlay);
+        assert_eq!(base.agent.default_mode.as_deref(), Some("ask"));
     }
 
     #[test]

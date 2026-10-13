@@ -12,7 +12,7 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
-| **`/resume`** | `/sessions`, `/load_session` | `[# \| id]` | **List all saved sessions or resume by index/ID** |
+| **`/resume`** | `/sessions`, `/load_session`, `/switch` | `[# \| id]` | **List all saved sessions or resume by index/ID** |
 | **`/help`** | `/?` | | Show command reference and keyboard shortcut overlay |
 | **`/model`** | `/m` | `[name]` | View active model or hot-switch models (e.g. `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`) |
 | **`/mode`** | | `[plan \| ask \| acceptEdits \| yolo]` | Switch the approval mode (no argument shows the current one) |
@@ -28,9 +28,6 @@ Type `/` in the bottom `❯ ` input line to open the command palette:
 | **`/health`** | `/doctor`, `/status` | | Execute multi-agent and environment health check probes |
 | **`/timeline`** | `/rail` | `[on \| off]` | Show or hide the turn rail on the right of the transcript (bare = toggle) |
 | **`/details`** | `/verbose` | `[on \| off]` | Expand or collapse thinking and tool details (summaries by default; bare = toggle) |
-| **`/pipeline`** | `/seq` | `<task>` | Run task directly in sequential pipeline mode (Planner ➔ Coder) |
-| **`/parallel`** | `/par`, `/council` | `<task>` | Run task directly in multi-role parallel review mode (Planner + Reviewer) |
-| **`/fanout`** | `/decompose` | `<task>` | Run task directly in decomposed subtask fan-out mode |
 | **`/quit`** | `/exit`, `/q` | | Cleanly exit Thunder TUI |
 
 ---

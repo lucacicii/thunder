@@ -76,7 +76,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 ```json
 {"type":"ui_request","request_id":"ui_1234_1_99","task_id":"task-1","session_id":"sess-001",
- "source":"host","ui":"select","title":"Run rm -rf build/","options":["Allow once","Always allow","Deny"],"timeout_ms":60000}
+ "source":"host","ui":"select","title":"Run bash","options":["Allow once","Always allow","Deny","Deny with reason"],"timeout_ms":600000}
 {"type":"ui_request","request_id":"ui_1234_2_100","source":"host","ui":"confirm","title":"Proceed?","message":"将写入 3 个文件"}
 {"type":"ui_request","request_id":"...","source":"host","ui":"input","title":"输入值","placeholder":"..."}
 {"type":"ui_request","request_id":"...","source":"host","ui":"editor","title":"编辑","prefill":"..."}
@@ -102,7 +102,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 | `host` | 宿主自身发起（如权限审批） | 使用**插件无法伪造的专用样式**渲染；用户的选择才算授权决定 |
 | `plugin` | 插件发起 | 明确标注插件名；**不得**将其视为授权依据 |
 
-请求 id 由守护进程签发（进程号 + 计数器 + 随机后缀），插件无法自选，因此无法
+请求 id 由守护进程签发（进程号 + 计数器 + 纳秒时间戳），插件无法自选，因此无法
 伪造或重放一次审批。`request_id` 未出现在 `timeout_ms` 字段时表示无自定义超时，
 守护进程按 60s 兜底。
 
@@ -166,15 +166,15 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
   `unknown mode '…': expected one of plan | ask | acceptEdits | yolo`，
   **绝不静默回落到默认模式**。
 - 模式按 `session_id` 记忆（上限 FIFO 淘汰最老的会话），**下一次调用立刻生效**。
-- `run_task` 也接受可选 `mode` 字段，用于一次性的模式覆盖。
+- `run_task` 也接受可选 `mode` 字段；它同样写进该会话的模式（不是只作用于本次
+  run），该会话后续的 run 继续沿用。
 - `get_permission_state` 可查看当前模式与已记住的「always allow」规则。
 
 ### 交互弹窗长这样
 
 ```json
 {"type":"ui_request","request_id":"ui_...","source":"host","ui":"select",
- "title":"Run bash","options":["Allow once","Always allow","Deny","Deny with reason"],
- "detail":"rm -rf build/"}
+ "title":"Run bash","options":["Allow once","Always allow","Deny","Deny with reason"]}
 ```
 
 - 弹窗**串行**投递：同一批并行工具调用不会叠出多个框，避免批准错对象。

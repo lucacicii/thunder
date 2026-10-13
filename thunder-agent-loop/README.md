@@ -45,6 +45,8 @@
 ```rust
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+// 工具住在能力包里（`thunder-agent-pack-code`），不在内核（见第 4 节）。
+use thunder_agent_pack_code::builtin::{BashTool, ReadFileTool, WriteFileTool};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -200,8 +202,7 @@ src/
 ├── loop_engine/           # 核心自主循环引擎、事件分发与任务状态机
 ├── pruning/               # 检查点式上下文压缩（含紧急裁剪兜底）
 ├── stream/                # LLMClientTrait 纯传输契约（含未配置占位实现）
-├── tools/                 # 工具注册表、并行执行器与内置工具
-│   ├── builtin/           # bash, read_file, write_file
+├── tools/                 # 工具注册表与并行执行器
 │   ├── executor.rs        # run_tool：唯一执行入口（guard → gate → ask → execute → trace）
 │   ├── guard.rs           # 内核守卫：危险命令（token 判定）+ 关键路径
 │   └── trace.rs           # ToolTrace、脱敏与 ToolTraceSink

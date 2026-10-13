@@ -17,7 +17,6 @@
     - Markdown formatted rendering with smooth typewriter token streaming (`TokenDelta`).
     - Collapsible deep reasoning chains (`ReasoningDelta`, supporting DeepSeek-R1, o1, etc.).
     - Tool invocation and execution result cards (`BashTool`, `ReadFileTool`, `WriteFileTool`, `McpToolBridge`).
-    - **Multi-Agent Synthesis Report Rendering**: In `Parallel` or `FanOut` topologies, prominently renders `### 📝 Synthesized Report` at the top with expandable per-role execution details.
   - **Interactive `❯` Input Line & Slash Auto-completion**: Type `/` to open the command palette popup with `Tab` completion and `↑/↓` selection.
   - **Session Resume & Persistence (`/resume`)**: List all saved sessions and restore any session by index or ID instantly.
   - **Turn timeline rail**: A minimal rail floats on the transcript's right edge, one tick per user turn. Hover for details (state, tool calls, duration, prompt excerpt); click or press `Enter` to scroll that turn to the top. `Ctrl + T` toggles it, and narrow terminals hide it automatically.

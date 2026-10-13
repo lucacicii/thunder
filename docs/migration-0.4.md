@@ -109,7 +109,7 @@ plan | ask | acceptEdits | yolo
 | `Mode`（原 `PermissionMode`） | `loop::types::policy` | `thunder-agent-root::plugins::mode` |
 | `AllowRule` | `loop::types::policy` | `thunder-agent-root::plugins::mode` |
 | `ApprovalRequest` / `Verdict` | `loop::types::policy` | `GateVerdict` / `ApprovalPrompt`（`loop::types::gate`，纯数据结构） |
-| `call_hash` / `ALLOW_*` 文案 | `loop::types::policy` | `ModePlugin` 内部 |
+| `ALLOW_*` 文案 | `loop::types::policy` | `loop::types::gate`（内核的对话框词汇）；`call_hash` 不存在 |
 | `SessionPolicy` | `loop::types::policy` | **不存在**（职责由 `ModePlugin` 承担） |
 | `Permission` | `loop::types::policy` | **不存在** |
 
@@ -125,7 +125,7 @@ plan | ask | acceptEdits | yolo
 
 `ThunderPlugin` 新增 `fn tool_gate(&self) -> Option<Arc<dyn ToolGate>>`（默认 `None`）；`root` 的 `execute()` 在装配时把它转给 `AgentLoop::with_tool_gate`。
 
-**`PluginContext.permission` → `PluginContext.mode`**，且 `policy()` 的 fallback **显式改成 `Yolo`**：若 fallback 成 `Ask` + `NullHostUi`（fail-closed），所有 Rust 插件会被静默锁死。
+**`PluginContext.permission` → `PluginContext.mode`**，且 `gate()` 的 fallback **显式改成 `Yolo`**：若 fallback 成 `Ask` + `NullHostUi`（fail-closed），所有 Rust 插件会被静默锁死。
 
 ---
 

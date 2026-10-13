@@ -1,7 +1,9 @@
 # Thunder 架构详解
 
-> 版本：0.5.0（`Cargo.toml:17`）｜代码基线：`76353a6`（2026-10-13）｜上一版 0.4.0 的迁移说明见 `docs/migration-0.4.md`
+> 版本：0.5.0（`Cargo.toml:17`）｜代码基线：`171694d`（2026-10-13）｜上一版 0.4.0 的迁移说明见 `docs/migration-0.4.md`
 > 本文是**代码事实文档**：所有结论都对应到具体 `文件:行`。与 `docs/permission-structure.md`（权限专项）和 `docs/migration-0.4.md`（迁移说明）互补。
+>
+> ⚠️ **行号会漂**：文中引用以基线 `171694d` 为准。任何一次改动都可能让某个区间整体平移（例如 `loop_engine/engine.rs` 在第 17 步之后曾整体 +12 行，`mcp/src/stdio.rs` 整段 +85 行）。**引用行号前先 grep 一次**，不要把它当稳定坐标；反过来，如果发现某处行号对不上，先怀疑行号，再怀疑结论。
 
 ---
 
@@ -43,33 +45,41 @@ LLMClientTrait  ToolScope   ToolGate      ToolTraceSink     HostUi
 
 | Crate | 目录 | 源文件 | 源码行数 | 角色 |
 |---|---|---|---|---|
-| `thunder-agent-loop` | `thunder-agent-loop` | 41 | 9,740 | Agent 内核（A） |
-| `thunder-agent-pack-code` | `thunder-agent-pack-code` | — | 4,387 | 编码能力包：6 工具 + `CodeScope` |
-| `thunder-agent-providers` | `thunder-agent-providers` | 15 | 3,669 | 模型目录 + 进程内流式 HTTP |
+| `thunder-agent-loop` | `thunder-agent-loop` | 43 | 9,820 | Agent 内核（A） |
+| `thunder-agent-pack-code` | `thunder-agent-pack-code` | 10 | 2,192 | 编码能力包：6 工具 + `CodeScope` |
+| `thunder-agent-providers` | `thunder-agent-providers` | 13 | 3,071 | 模型目录 + 进程内流式 HTTP |
 | `thunder-agent-runtime` | `thunder-agent-runtime` | 4 | 898 | JSONL 无头运行时 |
-| `thunder-agent-skills` | `thunder-agent-skills` | 8 | 1,498 | Skill 解析与注册 |
-| `thunder-agent-mcp` | `thunder-agent-mcp` | 11 | 1,521 | MCP 客户端 |
-| `thunder-agent-root` | `thunder-agent-root` | 33 | 7,290 | 微内核宿主 |
-| `thunder-agent-daemon` | `thunder-agent-daemon` | 10 | 5,071 | STDIO sidecar |
-| `thunder-conversation` | `thunder-agent-core/conversation` | 16 | 2,666 | 会话存储 |
-| `thunder-tui` | `thunder-agent-core/tui` | 44 | 18,194 | 终端 UI |
+| `thunder-agent-skills` | `thunder-agent-skills` | 7 | 1,274 | Skill 解析与注册 |
+| `thunder-agent-mcp` | `thunder-agent-mcp` | 10 | 1,454 | MCP 客户端 |
+| `thunder-agent-root` | `thunder-agent-root` | 23 | 7,037 | 微内核宿主 |
+| `thunder-agent-daemon` | `thunder-agent-daemon` | 7 | 3,968 | STDIO sidecar |
+| `thunder-conversation` | `thunder-agent-core/conversation` | 11 | 1,976 | 会话存储 |
+| `thunder-tui` | `thunder-agent-core/tui` | 24 | 13,662 | 终端 UI |
 
-工作区合计约 **58,400 行 Rust**（`Cargo.toml:3-14` 定义 10 个成员）。
+口径：各 crate `src/` 下的 `.rs` 文件数与行数（**不含** `tests/`、`examples/`，统计于 `171694d`）。工作区合计 **45,352 行**；把测试与示例一起算则是 62,373 行（`Cargo.toml:3-14` 定义 10 个成员）。
+
+> 这张表是**快照**，每改一次代码就过期一分：当量级参考，不要当事实引用。上一版混用了「src only」与「含 tests/examples」两种口径，数字互相矛盾（合计写 58,400，两种口径实测分别是 45,352 与 62,373）。
 
 ### 1.2 依赖方向（硬约束）
 
-```
-tui ─┐
-     ├─► root ─► loop ◄─ providers
-daemon┘        ▲  ▲
-runtime ───────┘  │
-                  ├── pack-code ──► loop
-                  ├── skills ─────► loop
-                  ├── mcp ────────► loop
-                  └── conversation ► loop
-```
+各 crate 直接依赖的**内部** crate（逐条抄自各自的 `Cargo.toml`；`loop` 一栏为空是硬约束，不是遗漏）：
 
-- 全部使用 **path 依赖**，`[workspace.dependencies]` 统一版本（`Cargo.toml:30-64`）。
+| Crate | 依赖的内部 crate |
+|---|---|
+| `thunder-agent-loop` | —（内核不依赖任何宿主） |
+| `thunder-agent-pack-code` | `loop` |
+| `thunder-agent-providers` | `loop` |
+| `thunder-agent-skills` | `loop` |
+| `thunder-agent-mcp` | `loop` |
+| `thunder-conversation` | `loop` |
+| `thunder-agent-runtime` | `loop`、`providers` |
+| `thunder-agent-root` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation` |
+| `thunder-agent-daemon` | `loop`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+| `thunder-tui` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+
+> 上一版这里是一张手绘箭头图，它把 `root` / `daemon` / `tui` 画成只依赖 `loop`（和 `root`），漏掉了 `pack-code`、`providers`、`skills`、`mcp`、`conversation` 这几条真实存在的边。
+
+- 全部使用 **path 依赖**，`[workspace.dependencies]` 统一版本（`Cargo.toml:30-67`）。
 - `thunder-agent-loop` **不依赖任何宿主**；`ARCHITECTURE.md:90-97` 把它写成契约："A never imports B"。
 - `thunder-agent-root` 的 `conversation` / `skills` / `mcp` 是**可选特性**，默认全开（`thunder-agent-root/Cargo.toml` 的 `[features]`）。
 
@@ -77,12 +87,13 @@ runtime ───────┘  │
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| Rust | 1.80+（workspace）／CI pin 1.98.0 | `Cargo.toml:19`、`.github/workflows/ci.yml` |
-| `unsafe_code` | **deny**（全工作区） | `Cargo.toml:69-70` |
-| clippy | `all = warn`，`too_many_arguments` / `type_complexity` / `result_large_err` allow | `Cargo.toml:72-77` |
-| release profile | `opt-level=3` + `lto="fat"` + `codegen-units=1` + `strip` | `Cargo.toml:79-83` |
-| `tui-dev` profile | 继承 release，关 LTO、16 CGU、incremental（TUI 迭代用） | `Cargo.toml:90-96` |
-| CI 步骤 | fmt --check → clippy -D warnings → check → `./test.sh` | `.github/workflows/ci.yml` |
+| Rust | 1.80+（workspace 最低）／构建与 lint 用 **1.98.0**（`rust-toolchain.toml` 与 CI 同步 pin） | `Cargo.toml:19`、`rust-toolchain.toml:11-13`、`.github/workflows/ci.yml` |
+| `unsafe_code` | **deny**（全工作区） | `Cargo.toml:72-73` |
+| clippy | `all = warn`，`too_many_arguments` / `type_complexity` / `result_large_err` allow | `Cargo.toml:75-80` |
+| release profile | `opt-level=3` + `lto="fat"` + `codegen-units=1` + `strip` | `Cargo.toml:82-86` |
+| `tui-dev` profile | 继承 release，关 LTO、16 CGU、incremental（TUI 迭代用） | `Cargo.toml:93-99` |
+| 版本一致性门禁 | `python3 scripts/check-version.py`：单一 workspace 版本 + 每个成员 `version.workspace = true`，`ci.yml` 与 `release.yml` 共用同一份实现 | `scripts/check-version.py`、`.github/workflows/ci.yml` |
+| CI 步骤 | lint job：`fmt --check` → `clippy -D warnings` → `check-version.py`；test job：setup Node 22 → `cargo check` → `./test.sh` | `.github/workflows/ci.yml` |
 | 测试特性 | 一律带 `--features thunder-agent-daemon/testing-mock` | `test.sh`、`ci.yml` |
 
 脚本入口：`./run.sh`（TUI，默认 release）、`./daemon.sh`（daemon，debug）、`./test.sh`（`cargo test --workspace --no-fail-fast`）。
@@ -96,7 +107,7 @@ runtime ───────┘  │
 | 文件 | 行 | 职责 |
 |---|---|---|
 | `src/lib.rs` | 71 | `prelude` 导出全部稳定 API |
-| `loop_engine/engine.rs` | 1709 | `AgentLoop`：装配、`start`/`run`、主循环、结算 |
+| `loop_engine/engine.rs` | 1721 | `AgentLoop`：装配、`start`/`run`、主循环、结算 |
 | `loop_engine/handle.rs` | 151 | `AgentHandle`：join / cancel / events / status |
 | `loop_engine/gate.rs` | 69 | `CompletionGate`：完成判定接缝 |
 | `loop_engine/guard.rs` | 158 | `LoopGuard`：重复动作 / 连续错误熔断 |
@@ -115,12 +126,12 @@ runtime ───────┘  │
 | `core/context.rs` | 197 | `ContextBuffer`：带 token 记账的消息向量 |
 | `core/steer.rs` | 286 | `SteerQueues` / `PendingQueue` |
 | `core/pause.rs` | 110 | `PauseGate` |
-| `core/state.rs` | 129 | `AgentStateTracker` / `LoopStatus` |
+| `core/state.rs` | 188 | `AgentStateTracker` / `LoopStatus` |
 | `core/paths.rs` | 152 | 用户数据根解析（`THUNDER_CONFIG_DIR`） |
 | `core/token_estimator.rs` | 81 | 零分配 token 估算 |
 | `core/images.rs` | 184 | 图片 magic-byte 校验 + base64 |
 | `core/utf8.rs` | 60 | 安全切片 / 截断 |
-| `types/*` | ~1,700 | 配置、事件、消息、工具、gate、scope、policy、ui、invoke |
+| `types/*` | 2,215 | 配置、事件、消息、工具、gate、scope、policy、ui、invoke |
 
 ### 2.2 装配：`AgentLoop`
 
@@ -195,24 +206,24 @@ loop {
  14. token 记账 + 回退估算（completion/prompt/reasoning/tps）           engine.rs:920-1005
  15. Prompt Cache 保温调度（每轮替换上一代）                            engine.rs:972-993
  16. push assistant 消息 + 事件 TurnEnd                                 engine.rs:1008-1038
- 17. 无工具调用 → 队列 → CompletionGate → Done / retry / fail            engine.rs:1040-1164
- 18. 有工具调用 → 状态 ExecutingTools                                   engine.rs:1166
- 19. 逐个发 ToolCallReady / ToolExecStart                              engine.rs:1169-1192
- 20. PauseGate 检查（工具边界，绝不打断在途工具）                       engine.rs:1196-1208
- 21. ToolExecutor::execute_all(...)  ← 并发 join_all                   engine.rs:1210
+ 17. 无工具调用 → 队列 → CompletionGate → Done / retry / fail            engine.rs:1052-1176
+ 18. 有工具调用 → 状态 ExecutingTools                                   engine.rs:1178
+ 19. 逐个发 ToolCallReady / ToolExecStart                              engine.rs:1181-1204
+ 20. PauseGate 检查（工具边界，绝不打断在途工具）                       engine.rs:1208-1220
+ 21. ToolExecutor::execute_all(...)  ← 并发 join_all                   engine.rs:1222
  22. 逐结果：统计 / 熔断记账 / 重复告警 / 截断诊断 → 事件 ToolExecResult │
-     + TelemetryNotice → push tool 消息                                 engine.rs:1220-1288
+     + TelemetryNotice → push tool 消息                                 engine.rs:1232-1300
  23. 状态回到 Running，下一轮
 }
 
 结算（settle）：
-  A. 非 Done 时修补悬空 tool_call（dangling_tool_calls）→ 补 CANCELLED_TOOL_RESULT  engine.rs:1302-1336
-  B. Cancelled 时把 partial answer 写回 transcript                                engine.rs:1338-1349
-  C. 终态 LoopStatus::Completed/Aborted/Failed                                     engine.rs:1352-1358
-  D. clear_run_trace()                                                             engine.rs:1362
-  E. cache::warmer::mark_idle(session_id)                                          engine.rs:1366
-  F. scratchpad.cleanup()（仅 auto_cleanup）                                        engine.rs:1381
-  G. 事件 LoopComplete + oneshot 回传 AgentRunResult                               engine.rs:1387-1406
+  A. 非 Done 时修补悬空 tool_call（dangling_tool_calls）→ 补 CANCELLED_TOOL_RESULT  engine.rs:1314-1348
+  B. Cancelled 时把 partial answer 写回 transcript                                engine.rs:1350-1361
+  C. 终态 LoopStatus::Completed/Aborted/Failed                                     engine.rs:1364-1370
+  D. clear_run_trace()                                                             engine.rs:1374
+  E. cache::warmer::mark_idle(session_id)                                          engine.rs:1378
+  F. scratchpad.cleanup()（仅 auto_cleanup）                                        engine.rs:1393
+  G. 事件 LoopComplete + oneshot 回传 AgentRunResult                               engine.rs:1399-1418
 ```
 
 ### 2.5 `AgentRunResult`：宿主拿到的产物
@@ -476,7 +487,19 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 
 **刻意不在根下**（用 `real_home_dir()`）：`~/.agents`、`~/.pi`、存 API key 的 shell rc、跨工具 `mcp.json` 位置、shell 路径的 `~` 展开（`paths.rs:27-33`）。宿主想屏蔽跨工具提示面，用 `THUNDER_SKILLS_NO_GLOBAL` / `THUNDER_NO_GLOBAL_INSTRUCTIONS`，**绝不伪造 `HOME`**。
 
+工作区级 `<ws>/.thunder/` 的生活面（与数据根同名不同物）：
+
+| 路径 | 读取者 |
+|---|---|
+| `config.json` / `config.local.json` | `thunder_config.rs:100-101` |
+| `mcp.json` | `mcp/src/config.rs:130`（候选表第一项） |
+| `memory/*.md` | `root/plugins/memory.rs:156,210`（由 `agent.memory` 声明，路径必须落在 `.thunder/` 内） |
+| `plans/<session>.md` | `root/plugins/mode.rs:157`（plan 模式唯一可写目标，`<session>` 消毒成 `[A-Za-z0-9._-]`） |
+| `models.json` / `auth.json` | 见下：**写**路径把项目级排第一，**读**路径不是 |
+
 配置优先级：内置默认 → `~/.thunder` → `<ws>/.thunder` → `<ws>/.thunder/*.local.*`（`.thunder/README.md:46-47`）。`.arp/` 属于 `agent-resume-panel`，Thunder 不读（`.thunder/README.md:8-10`）。
+
+> **`models.json` 的读写优先级不一致（已核实的缺陷）**：读走 `ConfigSource::default_chain`，源顺序是「用户级 → 项目级」且合并用 `entry().or_insert` —— **先到先得，用户级赢**（`providers/src/source.rs:34-41, 62-82`）；写走 `ModelsFile::primary_config_path`，候选是 `[".thunder/models.json", <数据根>/models.json]` —— **项目级在前，而且相对 CWD 而非相对 workspace**（`providers/src/config.rs:195-217`）。后果：探测结果与 `utilityModel` 的回写可能被下一次加载覆盖，等于白写；两处对「项目目录」的定义也不是同一个。`config.rs:195` 那句 "first match wins" 说的是**写**路径，不要拿它推断读路径。
 
 ---
 
@@ -537,7 +560,8 @@ pub struct CodeScope {
 candidate()：展开 ~ / $HOME / ${HOME}；相对路径按 workspace_root 解析   :202-209
 resolve_for_check()：逐段 canonicalize（解符号链接）→ normalize_path    :250-269
   ↓
-是 WRITABLE_DEVICES（/dev/null /dev/stdin /dev/stdout /dev/stderr /dev/tty）？ → InScope   :169-172
+是 WRITABLE_DEVICES（/dev/null /dev/stdin /dev/stdout /dev/stderr /dev/tty）？
+  └ 命中 ⇒ **只跳过下面整段 Critical 判定**，并不返回 InScope；未命中 ⇒ 继续往下判  :169-172
 命中 protections（auth.json / models.json / credentials.json，双向）？      → Critical  :174-176
 是写操作？
   ├ 命中 write_blocked（数据根）？                                        → Critical  :178-180
@@ -546,6 +570,8 @@ resolve_for_check()：逐段 canonicalize（解符号链接）→ normalize_path
       /usr /var/db /System /Library /Applications …）？                    → Critical  :184-188
 在某个 root 前缀下？ → InScope；否则 → OutOfScope（不是拒绝）              :191-197
 ```
+
+> `WRITABLE_DEVICES` 那一格容易读错：它是 `if !device { …Critical 判定… }` 的一层**豁免**，不是一条 `InScope` 出口。设备节点最终仍要走最后的 roots 判定 —— `/dev/null` 不在任何 root 下，因此**写 `/dev/null` 是 `OutOfScope`**（`scope.rs:497-509` 的测试断言的就是这个）。上一版这里写成 `→ InScope`，与代码相反。
 
 `scope_of` 的硬规则（`:213-227`）：**`Exec` 与 `Other` 一律 `Unknown`**——shell 命令的目标只有运行时才知道，`rm -rf $BUILD_DIR` 的诚实分类就是"本文件无法判断"；`Unknown` 不赚取自动放行，于是它变成一次询问而不是一次静默拒绝。
 
@@ -623,7 +649,7 @@ static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()
 
 关键默认值：`DEFAULT_SAFE_CONTEXT_WINDOW = 128_000`（`catalog.rs:9`）。`ModelSpec::prompt_cache_warm_settings(thinking)`（`catalog.rs:194`）是保温策略的唯一来源——**必须同时声明 `promptCache` 与 `cost`**，否则 `decide_warming` 直接返回 `Stop("cache economics unavailable")`。
 
-`ProviderRegistry::load_default` / `load_from_sources`（`catalog.rs:359-384`），`probe_unprobed_models`（`:392`）会对未探测模型做能力探测并落盘 `models_metadata.json`（`default_metadata_cache_path`，`:74`）。
+`ProviderRegistry::load_default` / `load_from_sources`（`catalog.rs:359-384`），`probe_unprobed_models`（`:392`）会对未探测模型做能力探测，结果通过 `ModelsFile::update_model_thinking_probed_config`（`config.rs:231-299`）**回写 `models.json`**（`primary_config_path`，`:210`）——不是回写 `models_metadata.json`：后者只存上下文窗口探测结果（`ModelMetadataCache { context_windows }`，`catalog.rs:74-83`）。回写的落点有一个已核实的坑，见 §7 末尾关于读写优先级不一致的说明。
 
 ### 10.2 `RpiAiClient`：进程内流式传输
 
@@ -692,9 +718,9 @@ pub trait ThunderPlugin: Send + Sync {
     async fn on_finish(&self, result: &AgentRunResult, ctx: &PluginContext) -> Result<(), PluginError>;
 }
 ```
-（`plugin.rs:264-316`）
+（`plugin.rs:277-328`）
 
-**生命周期严格顺序**：`on_init`（全部插件）→ 工具注册 → `on_run_ready` → run → `on_finish`，逐插件 `await`，无 per-plugin 超时。调用点只有三处：`host.rs:403`（`dispatch_init`）、`host.rs:595`（`dispatch_ready`）、`host.rs:104`（`dispatch_finish`，在 `RootRunHandle::join` 里，错误被 `let _ =` 吞掉）。
+**生命周期严格顺序**：`on_init`（全部插件）→ 工具注册 → `on_run_ready` → run → `on_finish`，逐插件 `await`，无 per-plugin 超时。调用点只有三处：`host.rs:556`（`dispatch_init`）、`host.rs:748`（`dispatch_ready`）、`host.rs:196`（`dispatch_finish`，在 `RootRunHandle::join` 里，错误被 `let _ =` 吞掉）。
 
 ### 11.1.1 「插件执行」到底在哪一层
 
@@ -704,7 +730,7 @@ pub trait ThunderPlugin: Send + Sync {
 |---|---|---|
 | **插件的生命周期回调**（`on_init`/`on_run_ready`/`on_finish`） | `thunder-agent-root`（插件宿主层） | `registry.rs:148-180` 的 `dispatch_*`，由 `host.rs` 调用 |
 | **插件贡献的工具被调用** | `thunder-agent-loop`（内核层） | `collect_tools()`（`registry.rs:119-125`）→ `agent.register_tool()`（`host.rs:571-573`）→ `ToolRegistry::execute_tool_call` → `ToolExecutor::run_tool`；插件只提供 `AgentTool` 实现，**调度权、守卫、判定、审批、trace 全在内核** |
-| **插件主动发起工具调用**（反向 RPC） | 由内核执行，插件的调用意图经 `ToolInvokerSlot` 进入 | `ExecutorToolInvoker`（`loop/types/invoke.rs:120-238`）由宿主在 `host.rs:584-592` 填槽；`invoke` 最后一行是 `self.executor.run_tool(...)`（`:208`），并带 `caller: Some(plugin_id)`（`:195`） |
+| **插件主动发起工具调用**（反向 RPC） | 由内核执行，插件的调用意图经 `ToolInvokerSlot` 进入 | `ExecutorToolInvoker`（`loop/types/invoke.rs:120-238`）由宿主在 `host.rs:737-745` 填槽；`invoke` 最后一行是 `self.executor.run_tool(...)`（`:208`），并带 `caller: Some(plugin_id)`（`:195`） |
 
 ```mermaid
 flowchart TB
@@ -712,8 +738,8 @@ flowchart TB
         H["thunder-tui / thunder-daemon"]
     end
     subgraph ROOTLAYER["thunder-agent-root —— 插件宿主层"]
-        EXE["ThunderRoot::execute  host.rs:277"]
-        LIFE["生命周期 dispatch_init :403 / dispatch_ready :595 / dispatch_finish :104"]
+        EXE["ThunderRoot::execute  host.rs:391"]
+        LIFE["生命周期 dispatch_init :556 / dispatch_ready :748 / dispatch_finish :196"]
         CONTRIB["贡献收集 collect_tools :119 / build_combined_system_prompt :128"]
         SET["ActivePluginSet → Arc&lt;dyn ThunderPlugin&gt;"]
         EXE --> SET
@@ -728,16 +754,16 @@ flowchart TB
     H --> EXE
     CONTRIB -->|"register_tool"| REG
     FUNNEL -->|"插件实现的 AgentTool::execute()"| TOOL["插件工具代码"]
-    SLOT["ExecutorToolInvoker  宿主在 host.rs:584 填入"] -->|"tool_slot().invoke()"| FUNNEL
+    SLOT["ExecutorToolInvoker  宿主在 host.rs:737 填入"] -->|"tool_slot().invoke()"| FUNNEL
     SLOT -.-> SET
 ```
 
 两处**已实现但无生产调用方**的接线（"接线存在、无人拉"）：
 
-- `ThunderPlugin::tool_gate()`（`plugin.rs:285`）被 `execute` 忽略——只安装模式插件（`host.rs:532`）。
+- `ThunderPlugin::tool_gate()`（`plugin.rs:297`）被 `execute` 忽略——只安装模式插件（`host.rs:685`）。
 - `ToolInvoker::invoke` 只有测试调用（`pack-code/tests/plugin_call_tool_test.rs`），没有任何随仓插件使用 `ctx.tool_slot()`。
 
-**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:121`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
+**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
 
 `TriggerSpec`（`plugin.rs:25-47`）：`keywords` + `auto_always` + `description_for_llm`；`TriggerSpec::always()` 是常驻基线。
 
@@ -755,35 +781,37 @@ flowchart TB
 
 18 步，逐条对应 `host.rs`：
 
-1. 取 prompt（`Text` 原样；`Messages`/`Buffer` 取最后一条 user，否则字面 `"General task"`）`:282-302`
-2. `ThunderConfig::load(workspace)` `:307`
-3. session id（缺省 `sess_1`）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:309-324`
-4. 插件选择（`forced_plugins` 短路，否则会话锁定启发式）`:326-338`
-5. `create_active_set` `:347-349`
-6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）`:357-376`
-7. 构造 `PluginContext`（空 `ToolInvokerSlot`、取消令牌、模式、ui、route、prompt、workspace、scratch）`:388-400`
-8. `dispatch_init`（任一插件 `InitFailed` 中止 execute）`:403`
-9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:406-476`
-10. `agent_cfg`：workspace/extra roots、`thunder_cfg.apply_to`（max_turns、thinking_level）、`route`、合并后的 system prompt `:477-489`
-11. 模型解析：`resolve_ref` → **把真实窗口写进 `pruning.max_context_tokens`**；无 custom client 时 `client_for(spec, timeout)`；失败只 warn，留给 `UnconfiguredLLMClient` `:491-541`
-12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:520-532`
-13. 6 个内建工具（`register_builtins`）逐个 `with_default_cwd(ws)` 后注册 `:543-568`
-14. 插件工具注册 `:571-573`
-15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace 约束 `:584-592`
-16. `dispatch_ready` `:595`
-17. `with_pause_gate` / `with_steer_queues` `:598-606`
-18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:609-621`
+1. 取 prompt（`Text` 原样；`Messages`/`Buffer` 取最后一条 user，否则字面 `"General task"`）`:397-416`
+2. `ThunderConfig::load(workspace)` `:421`
+3. session id（缺省 `sess_1`）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:423-438`
+4. 插件选择（`forced_plugins` 短路，否则会话锁定启发式）`:440-452`
+5. `create_active_set` `:461-463`
+6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）；随后配置并挂上 `MetricsPlugin`（`:494-528`）`:465-490`
+7. 构造 `PluginContext`（空 `ToolInvokerSlot`、取消令牌、模式、ui、route、prompt、workspace、scratch）`:540-553`
+8. `dispatch_init`（任一插件 `InitFailed` 中止 execute）`:556`
+9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:559-629`
+10. `agent_cfg`：workspace/extra roots、`thunder_cfg.apply_to`（max_turns、thinking_level）、`route`、合并后的 system prompt `:630-642`
+11. 模型解析：`resolve_ref` → **把真实窗口写进 `pruning.max_context_tokens`**；无 custom client 时 `client_for(spec, timeout)`；失败只 warn，留给 `UnconfiguredLLMClient` `:644-667`
+12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:673-694`
+13. 6 个内建工具（`register_builtins`）逐个 `with_default_cwd(ws)` 后注册 `:696-721`
+14. 插件工具注册 `:723-726`
+15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace 约束 `:737-745`
+16. `dispatch_ready` `:748`
+17. `with_pause_gate` / `with_steer_queues` `:750-759`
+18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:762-775`
 
-`RootRunHandle::join`（`:100-113`）：`handle.join()` → `dispatch_finish`（错误被 `let _ =` 吞掉）→ `RootRunResult`。
+`RootRunHandle::join`（`:186-210`）：`handle.join()` → 等事件代理排空（`dispatch_drained`）→ `dispatch_finish`（错误被 `let _ =` 吞掉）→ `RootRunResult`。
 
 ### 11.4 四档模式矩阵（`plugins/mode.rs`）
 
 | mode | Read | Write·InScope | Write·OutOfScope/Unknown | Exec | PlanArtifact |
 |---|---|---|---|---|---|
-| `plan` | Allow | **Deny** | **Deny** | **Ask** | Allow |
-| `ask` | Allow | Ask | Ask | Ask | Allow |
-| `acceptEdits` | Allow | **Allow** | Ask | Ask | Allow |
+| `plan` | Allow | **Deny** | **Deny** | **Ask** | **Deny** |
+| `ask` | Allow | Ask | Ask | Ask | Ask |
+| `acceptEdits` | Allow | **Allow** | Ask | Ask | Ask |
 | `yolo` | Allow | Allow | Allow | Allow | Allow |
+
+`PlanArtifact` 这一列**不属于任何一个具名分支**：`decide` 只对 `Read` / `Write` / `Exec` 分支，其余效果落进各模式的兜底臂——`plan` → `Deny`（`mode.rs:486-496`）、`ask` → `ask_for`（`:471`）、`acceptEdits` → `ask_for`（`:479`）、`yolo` → `Allow`（`:468`）。所以**四档下 `write_plan` / `exit_plan_mode` 都能过，靠的是按名字的豁免**（`:445-447`），不是靠 `ToolEffect::PlanArtifact`。上一版把这一列全写成 `Allow`，与本节的第 3 条自相矛盾。
 
 三条承重实现细节：
 
@@ -798,7 +826,7 @@ flowchart TB
 ```rust
 pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 ```
-（`mode.rs:165-172`）
+（`mode.rs:170-177`）
 
 `for_call`（`mode.rs:195-226`）**绝不授予"一个工具类"**：
 
@@ -812,8 +840,8 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 ### 11.6 plan 模式的两个工具
 
-- `write_plan`（效果 `PlanArtifact`，`:542`）：参数 `{ content }`，整体覆盖写到 `<workspace>/.thunder/plans/<sanitize(session)>.md`（`plan_path`，`:156-162`）。`sanitize_session_id`（`:139-154`）把非 `[A-Za-z0-9._-]` 一律换成 `_`，`""`/`"."`/`".."` 落回 `"session"`——**jail 删除后这是真实注入点**（daemon 的 session_id 来自客户端），测试直接钉住 `../../../etc/evil` 逃不出去。写入复用 `WriteFileTool::write_cancellable`，同一把 per-path 锁与原子语义。
-- `exit_plan_mode`（效果 `Read`，`:590-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。
+- `write_plan`（效果 `PlanArtifact`，`:542-544`）：参数 `{ content }`，整体覆盖写到 `<workspace>/.thunder/plans/<sanitize(session)>.md`（`plan_path`，`:157-162`）。`sanitize_session_id`（`:139-154`）把非 `[A-Za-z0-9._-]` 一律换成 `_`，`""`/`"."`/`".."` 落回 `"session"`——**jail 删除后这是真实注入点**（daemon 的 session_id 来自客户端），测试直接钉住 `../../../etc/evil` 逃不出去。写入复用 `WriteFileTool::write_cancellable`，同一把 per-path 锁与原子语义。
+- `exit_plan_mode`（效果 `Read`，`:592-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。
 
 ### 11.7 记忆与配置
 
@@ -874,7 +902,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 版本与 `CARGO_PKG_VERSION` **是两件事**：后者每次发版都动，前者只在宿主解析的请求/响应形状变化时动——`ping` 同时回 `{pong, version, protocol}`，宿主因此能区分"更新的 thunder"与"回答得不一样的 thunder"（`protocol.rs:6-13`）。
 
-启动参数（`main.rs:32-53`）：`--workspace`/`-w <path>`；`--config-dir <path>`（通过 `set_var(THUNDER_CONFIG_DIR)` 生效，让下面每一层只解析出一个根；缺值 `exit(2)`）；其余 argv 忽略。stdin EOF → `shutdown()` 取消所有存活令牌——**僵尸进程保证**（`main.rs:96-97`、`service.rs:354-359`）。
+启动参数（`main.rs:32-53`）：`--workspace`/`-w <path>`；`--config-dir <path>`（通过 `set_var(THUNDER_CONFIG_DIR)` 生效，让下面每一层只解析出一个根；缺值 `exit(2)`）；其余 argv 忽略。stdin EOF → `shutdown()` 取消所有存活令牌——**僵尸进程保证**（`main.rs:96-97`、`service.rs:357-362`）。
 
 ### 12.2 请求清单（`DaemonRequest`，tag = `method`）
 
@@ -900,18 +928,18 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 ### 12.3 `run_task` 编排
 
-准入优先（`service.rs:1042-1054`）：`concurrency_semaphore.try_acquire_owned()`，**不阻塞**——满了直接回 `"Server busy: maximum concurrent task limit reached"`。上限来自 `THUNDER_MAX_CONCURRENT_TASKS`（默认 **8**，`.max(1)`，`service.rs:241-246`）。
+准入优先（`service.rs:1061-1073`）：`concurrency_semaphore.try_acquire_owned()`，**不阻塞**——满了直接回 `"Server busy: maximum concurrent task limit reached"`。上限来自 `THUNDER_MAX_CONCURRENT_TASKS`（默认 **8**，`.max(1)`，`service.rs:243-247`）。
 
-随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.default_mode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
+随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
-运行体（`service.rs:1406-1794`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `SteerAccepted` 时补发队列快照）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
+运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `SteerAccepted` 时补发队列快照）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
 
 ### 12.4 并发与背压
 
 | 机制 | 实现 |
 |---|---|
 | 准入 | `Semaphore`（默认 8），`try_acquire_owned` fail-fast；permit 移入 runner 全生命周期 |
-| stdout 串行 | 单 `mpsc::channel::<String>(1024)` + 一个 writer task，攒到 **64 KiB** 或通道空时 `write_all` + `flush`（`service.rs:248-267`）；通道满则**await**（生产端阻塞而非丢帧） |
+| stdout 串行 | 单 `mpsc::channel::<String>(1024)` + 一个 writer task，攒到 **64 KiB** 或通道空时 `write_all` + `flush`（`service.rs:250-269`）；通道满则**await**（生产端阻塞而非丢帧） |
 | 取消 | 每任务 `CancellationToken`；`cancel_task` 先移除再 cancel，所以二次取消回 `cancelled:false` |
 | 暂停 | 每任务 `PauseGate`，只在**工具边界**生效 |
 | 转向 | `active_queues: HashMap<task_id, LiveQueue>`，注入时用**该 run 的** workspace + roots 做附件 jail |
@@ -922,7 +950,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 ### 12.5 双向交互（UI 反向 RPC）
 
-**`ask_user_question`**（`ask_user.rs`）：id 由 daemon 铸造 `"{task_id}:q{seq}"`（`AtomicU64`，SeqCst），发 `user_question`，然后 `tokio::select!{ biased; 取消 → Err; timeout(1800s, rx) }`。答案渲染成 `Q: …\nA: …`；空对象 → `"User dismissed the question without answering."`；超时返回 Err 并**指导模型按已声明假设继续**。默认超时 **1800s**（是权限弹窗的 30 倍）。
+**`ask_user_question`**（`ask_user.rs`）：id 由 daemon 铸造 `"{task_id}:q{seq}"`（`AtomicU64`，SeqCst），发 `user_question`，然后 `tokio::select!{ biased; 取消 → Err; timeout(1800s, rx) }`。答案渲染成 `Q: …\nA: …`；空对象 → `"User dismissed the question without answering."`；超时返回 Err 并**指导模型按已声明假设继续**。默认超时 **1800s**（是权限弹窗的 3 倍）。
 
 **`HostUi` 弹窗**（`ui.rs`）：id 由 daemon 铸造 `"ui_{pid}_{seq}_{nanos}"`，超时取调用方 `timeout_ms`（否则 `DEFAULT_UI_TIMEOUT = 60s`），发 `ui_request`（flatten `UiRequest` 的内部 `ui` tag），**超时/通道关闭/发送失败一律 `UiResponse::Cancelled`**（fail-closed）。未知/过期 id 的答案被报告 `delivered:false` 且不生效——迟到的答案永远不会落到后来的弹窗上（`ui.rs:17-18,215-228`）。
 
@@ -948,11 +976,11 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 **事件**（tag = `type`，`protocol.rs:112-158`）：`response`（带 `version`）、`observation`（原样转发 `AgentEvent`）、`tool_call`、`gate_request`、`run_finished`（带完整 `messages` + `stats` 供宿主持久化）、`error`。
 
-`RemoteToolSpec.effect` 是可选的 `read|write|exec`（`protocol.rs:18-21`）；`parse_effect`（`remote.rs:18-27`）映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
+`RemoteToolSpec.effect` 是可选的 `read|write|exec|plan_artifact`（`protocol.rs:18-21`）；`parse_effect`（`remote.rs:19-29`）映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
 
-`RemoteTool::execute`（`remote.rs:81-112`）把调用转成 `tool_call` 事件并在 oneshot 上等待：宿主答 `ok:false` → `Err(output)`；宿主 drop 了 sender → `Err("the host dropped the tool call without answering")`；宿主进程没了 → `Err("the host is gone; tool call could not be delivered")`。
+`RemoteTool::execute`（`remote.rs:80-110`）把调用转成 `tool_call` 事件并在 oneshot 上等待：宿主答 `ok:false` → `Err(output)`；宿主 drop 了 sender → `Err("the host dropped the tool call without answering")`；宿主进程没了 → `Err("the host is gone; tool call could not be delivered")`。
 
-`Runtime` 持 `runs: HashMap<run_id, CancellationToken>` 与两张 pending 表，所有输出经单个 `UnboundedSender<RuntimeEvent>` → 一个 writer task（一帧一行，不交错）；关闭时用 `watch` 通道让 writer 排空再退出（`session.rs:19-46`）。
+`Runtime` 持 `runs: HashMap<run_id, CancellationToken>` 与两张 pending 表，所有输出经单个 `UnboundedSender<RuntimeEvent>` → 一个 writer task（一帧一行，不交错）；关闭时用 `watch` 通道让 writer 排空再退出（`session.rs:19-40`）。
 
 ---
 
@@ -960,17 +988,17 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 ### 14.1 格式与解析
 
-`Skill`（`types.rs:5-42`）：`name` / `description` / `version?` / `author?` / `tags[]` / `triggers[]` / `prompt_instructions` / `parameters?` / `location?` / `metadata{}`。
+`Skill`（`types.rs:7-44`）：`name` / `description` / `version?` / `author?` / `tags[]` / `triggers[]` / `prompt_instructions` / `parameters?` / `location?` / `metadata{}`。
 
-`SkillLoader::load_file`（`loader.rs:12-38`）按扩展名分派：`.json` → `parse_json`；`.yaml`/`.yml` → `parse_yaml`；**其余一律按 Markdown**（`SKILL.md` 走这条路）。
+`SkillLoader::load_file`（`loader.rs:11-35`）按扩展名分派：`.json` → `parse_json`；`.yaml`/`.yml` → `parse_yaml`；**其余一律按 Markdown**（`SKILL.md` 走这条路）。
 
-Markdown 解析（`parser.rs:28-80`）：以 `---` 开头时取 `\n---` 之前为 YAML frontmatter，`FrontmatterData` 的 `name` 缺省回退到文件名 stem，`description` 缺省回退到正文首行；`tags`/`triggers` 经 `extract_string_list` 支持标量或序列两种写法；**frontmatter 之后的正文就是 `prompt_instructions`**。
+Markdown 解析（`parser.rs:25-90`）：以 `---` 开头时取 `\n---` 之前为 YAML frontmatter，`FrontmatterData` 的 `name` 缺省回退到文件名 stem，`description` 缺省回退到正文首行；`tags`/`triggers` 经 `extract_string_list` 支持标量或序列两种写法；**frontmatter 之后的正文就是 `prompt_instructions`**。
 
-`load_dir`（`loader.rs:40+`）用显式栈做递归遍历（非递归 async），坏目录只 warn 不中断。
+`load_dir`（`loader.rs:38+`）用显式栈做递归遍历（非递归 async），坏目录只 warn 不中断。
 
 ### 14.2 注册表与工具
 
-`SkillRegistry`（`registry.rs:9-16`）：`Arc<RwLock<HashMap<String, Skill>>>`，`register` / `register_sync`（拿不到写锁就 spawn 一个任务）/ `unregister` / `get` / `contains` / `list_sync`；`from_dir` / `from_default_paths`。
+`SkillRegistry`（`registry.rs:10-13`）：`Arc<RwLock<HashMap<String, Skill>>>`，`register` / `register_sync`（拿不到写锁就 spawn 一个任务）/ `unregister` / `get` / `contains` / `list_sync`；`from_dir` / `from_default_paths`。
 
 `tools.rs` 把技能变成三个工具：`list_skills` / `load_skill` / `search_skills`（`lib.rs:19`）。
 
@@ -997,10 +1025,10 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 | 事实 | 证据 | 影响 |
 |---|---|---|
-| **先到先得，不是后到先得** | `load_search_paths` 用 `seen_names.insert(name)` 门禁压入（`loader.rs:114-137`）；而 `default_search_paths_from` 的注释写 "Order mirrors the pre-contract list (later wins)"（`loader.rs:161-162`） | 注释与实现相反。好在列表把**工作区**相对路径排在最前（`.agents/skills` → `.pi/skills` → `skills`，`:158-160`），先到先得恰好等于"工作区覆盖用户级"，与直觉一致 |
-| **`node_modules` 会被遍历** | 目录跳过只有 `name_str != ".git" && name_str != "target"`（`loader.rs:72-75`） | 注释声称"Ignore .git, target, or top-level node_modules"（`:72`），但没有对应代码；技能目录下若有 `node_modules`，其中的 `.md` 都会被当技能解析 |
-| **任何 `.md` 都是技能** | `load_dir` 按扩展名收 `.md/.markdown/.json/.yaml/.yml`（`loader.rs:81-89`），`load_file` 对 `.md` 一律走 `parse_markdown`（`loader.rs:25-31`） | `SKILL.md` 约定**不被强制**：技能目录里的 `README.md` 会变成一个名为 `README` 的技能并进入系统提示目录 |
-| 前端 frontmatter 非必需 | `parse_markdown` 在无 `---` 时用文件名 stem 作 name、正文首行作 description（`parser.rs:30-52`） | 同上：一个普通说明文档能顺利"成为"技能 |
+| **先到先得，不是后到先得** | `load_search_paths` 用 `seen_names.insert(name)` 门禁压入（`loader.rs:106-129`）；而 `default_search_paths_from` 的注释写 "Order mirrors the pre-contract list (later wins)"（`loader.rs:161-162`） | 注释与实现相反。好在列表把**工作区**相对路径排在最前（`.agents/skills` → `.pi/skills` → `skills`，`:154-157`），先到先得恰好等于"工作区覆盖用户级"，与直觉一致 |
+| **`node_modules` 会被遍历** | 目录跳过只有 `name_str != ".git" && name_str != "target"`（`loader.rs:70-74`） | 注释声称"Ignore .git, target, or top-level node_modules"（`:71`），但没有对应代码；技能目录下若有 `node_modules`，其中的 `.md` 都会被当技能解析 |
+| **任何 `.md` 都是技能** | `load_dir` 按扩展名收 `.md/.markdown/.json/.yaml/.yml`（`loader.rs:81-86`），`load_file` 对 `.md` 一律走 `parse_markdown`（`loader.rs:30-34`） | `SKILL.md` 约定**不被强制**：技能目录里的 `README.md` 会变成一个名为 `README` 的技能并进入系统提示目录 |
+| 前端 frontmatter 非必需 | `parse_markdown` 在无 `---` 时用文件名 stem 作 name、正文首行作 description（`parser.rs:42-54`） | 同上：一个普通说明文档能顺利"成为"技能 |
 
 **120s TTL 不在本 crate**：README 把它记在 skills 上，实际实现位于 `thunder-agent-root/src/plugins/skills.rs:79-103`（`OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>>`，**纯时间失效**，无 mtime/内容校验）。
 
@@ -1012,11 +1040,11 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 `LATEST_PROTOCOL_VERSION = "2024-11-05"`（`protocol.rs:4`）。JSON-RPC 2.0 结构：`JsonRpcRequest` / `JsonRpcNotification` / `JsonRpcResponse` / `JsonRpcErrorDetail`（`protocol.rs:7-65`）。
 
-已实现的方法（`client.rs`）：`initialize`（`:74`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:194`）→ `close`（`:209`）。
+已实现的方法（`client.rs`）：`initialize`（`:80`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:196`）→ `close`（`:209`）。
 
 ### 15.2 stdio 传输
 
-`StdioTransport::spawn`（`transport/stdio.rs:32-149`）：`Command::new(command).args(args)`，`stdin/stdout/stderr` 全 piped，`kill_on_drop(true)`（`:44`），注入 `config.env`，可设 `cwd`。spawn 出来的 `Child` **被存进结构体**（`child: Arc<Mutex<Option<Child>>>`，`:27`）——`kill_on_drop(true)` 使这个句柄成为 server 的生命周期：持有即存活，drop 即 SIGKILL。见 §15.2.1。
+`StdioTransport::spawn`（`transport/stdio.rs:120-242`）：`Command::new(command).args(args)`，`stdin/stdout/stderr` 全 piped，`kill_on_drop(true)`（`:132`），注入 `config.env`，可设 `cwd`。spawn 出来的 `Child` **被存进结构体**（`child: Arc<Mutex<Option<Child>>>`，`:102`）——`kill_on_drop(true)` 使这个句柄成为 server 的生命周期：持有即存活，drop 即 SIGKILL。见 §15.2.1。
 
 三个 task：写 stdin（`mpsc::channel(64)`）、读 stdout 按行解析并按 `id` 派发到 `pending_requests`（`PendingMap = Arc<StdMutex<HashMap<id, oneshot::Sender<JsonRpcResponse>>>>`，`stdio.rs:27-55`）、以及读 stderr 打日志。`is_alive: Arc<AtomicBool>` 让 manager 跳过死掉的 server。**每个请求都带时限**（默认 120s，可配置）且用 RAII 守卫注销，见 §15.2.2。
 
@@ -1080,15 +1108,15 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 | 缺口 | 证据 | 影响 |
 |---|---|---|
-| server→client 请求被丢弃 | 读取任务只 `serde_json::from_str::<JsonRpcResponse>`（`stdio.rs:115`），未知 id 只 `debug!` 后忽略（`:122-127`） | sampling / roots / elicitation 全部不可用 |
-| 图片内容被降级为占位符 | `CallToolResult::plain_text` 把 `ToolContent::Image` 渲染成 `[Image: mime]`（`protocol.rs:183-187`），base64 被丢 | MCP 返回的图片永远到不了模型 |
-| 桥接工具效果分类靠猜名字 | `McpToolBridge` **没有**覆写 `effect()`（`tool_bridge.rs`），落到 `ToolEffect::of("mcp_x_y")` | 只有名字里含 `exec`/`shell`/`command` 的才是 `Exec`，其余按 `Other`（≈`Write`）判——再叠加 `CodeScope` 对 `Other` 返回 `Unknown`，实际退化为"每次问" |
+| server→client 请求被丢弃 | 读取任务只 `serde_json::from_str::<JsonRpcResponse>`（`stdio.rs:202`），未知 id 只 `debug!` 后忽略（`:211-213`） | sampling / roots / elicitation 全部不可用 |
+| 图片内容被降级为占位符 | `CallToolResult::plain_text` 把 `ToolContent::Image` 渲染成 `[Image: mime]`（`protocol.rs:184-188`），base64 被丢 | MCP 返回的图片永远到不了模型 |
+| 桥接工具效果分类靠猜名字 | `McpToolBridge` **没有**覆写 `effect()`（`tool_bridge.rs`），落到 `ToolEffect::of("mcp_x_y")` | 只有名字里含 `exec`/`shell`/`terminal`/`powershell`/`command`，或以 `_bash` 结尾的才是 `Exec`（`loop/types/policy.rs:68-80`），其余按 `Other`（≈`Write`）判——再叠加 `CodeScope` 对 `Other` 返回 `Unknown`，实际退化为"每次问" |
 
 （`thunder-agent-mcp/tests/mcp_test.rs` 断言的是 `MockTransport` 往返，不覆盖以上任何一条。）
 
 ### 15.3 配置发现顺序
 
-`McpConfig::find_and_load_from_workspace`（`config.rs:119-155`）依次尝试：
+`McpConfig::find_and_load_from_workspace`（`config.rs:127-161`）依次尝试：
 
 ```
 <ws>/.thunder/mcp.json → <ws>/mcp_servers.json → <ws>/.mcp.json → <ws>/claude_desktop_config.json
@@ -1098,18 +1126,18 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 → ~/Library/Application Support/Claude/claude_desktop_config.json → ~/.config/claude/claude_desktop_config.json
 ```
 
-**第一个存在且 `mcpServers` 非空的胜出**。thunder 自己的 `mcp.json` 跟随数据根，其余是用户的跨工具文件，仍取真实 HOME（`config.rs:129-131`）。解析兼容两种形状：`{"mcpServers": {…}}` 与裸的 `{"server": {…}}` map（`config.rs:81-98`）。
+**第一个存在且 `mcpServers` 非空的胜出**。thunder 自己的 `mcp.json` 跟随数据根，其余是用户的跨工具文件，仍取真实 HOME（`config.rs:137-139`）。解析兼容两种形状：`{"mcpServers": {…}}` 与裸的 `{"server": {…}}` map（`config.rs:85-98`）。
 
 ### 15.4 工具桥接
 
-`McpToolBridge`（`tool_bridge.rs:10-58`）把远程工具包装成内核 `AgentTool`，暴露名为：
+`McpToolBridge`（`tool_bridge.rs:9-100`）把远程工具包装成内核 `AgentTool`，暴露名为：
 
 ```
 mcp_<server_name 中 - 换 _>_<tool_name 中 - 换 _>
 ```
-（`tool_bridge.rs:22-27`），描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
+（`tool_bridge.rs:19-23`），描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
 
-`McpManager::discover_all_tools_timeout`（`manager.rs:93-128`）**每 server 10 秒超时**，超时/报错的 server 只 warn 并跳过，防止一个挂死的 server 阻塞整个 run；`is_alive() == false` 的 server 直接跳过。`close_all` 逐个 `close()`（`manager.rs:156-163`）。
+`McpManager::discover_all_tools_timeout`（`manager.rs:93-127`）**每 server 10 秒超时**，超时/报错的 server 只 warn 并跳过，防止一个挂死的 server 阻塞整个 run；`is_alive() == false` 的 server 直接跳过。`close_all` 逐个 `close()`（`manager.rs:156-162`）。
 
 ---
 
@@ -1202,7 +1230,7 @@ async fn save(&self, conversation: &Conversation) -> Result<(), ConversationErro
 
 ### 17.1 形态
 
-Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有约 70 个 pub 字段（`app.rs:130-287`），核心分组：会话/输入编辑器/运行控制/追踪/渲染开关。
+Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有 74 个 pub 字段（`app.rs:130-287`），核心分组：会话/输入编辑器/运行控制/追踪/渲染开关。
 
 两个执行拓扑（`ExecutionMode`，`app.rs:43-47`，默认 `AutoRouter`）：
 
@@ -1219,7 +1247,7 @@ Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有约 70 个 p
    agent 事件中继     ─┘
 ```
 
-`TuiRunner::run`（`runner.rs:70-102`）：
+`TuiRunner::run`（`runner.rs:30-116`）：
 
 1. `needs_redraw` 为真才 `terminal.draw(...)`；
 2. `events.next().await`；`None`（所有 sender 都没了）→ 退出；
@@ -1233,7 +1261,7 @@ Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有约 70 个 p
 
 ### 17.3 输入优先级阶梯
 
-`handle_key`（`app.rs:1593-1794`）顺序固定：
+`handle_key`（`app.rs:1588-1795`）顺序固定：
 
 ```
 0. pending_question  → handle_question_key（agent 被阻塞在这里）
@@ -1255,9 +1283,9 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 `run_root_agent`（`app.rs:4094-4256`）构造 `AgentConfig`（`with_unlimited_turns`、`session_id = conversation.id` 做缓存亲和、`pruning.max_context_tokens = spec.context_window`、`prompt_cache_warm`），包进 `StandardHostBuilder`，可选挂 `AskUserPlugin`，然后 `RootRunOptions { route: run_id, ui: TuiHostUi, mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(has_mcp_config) }`。
 
-**route 就是 trace 的 task_id**（`app.rs:4149-4156` 注释）：一次 run 两个名字会导致文件里的 `task_id` 与文件名不符。
+**route 就是 trace 的 task_id**（`app.rs:4154-4160` 注释）：一次 run 两个名字会导致文件里的 `task_id` 与文件名不符。
 
-`handle_agent_event`（`app.rs:4432-4606`）逐事件映射：
+`handle_agent_event`（`app.rs:4432-4615`）逐事件映射：
 
 | 事件 | 宿主动作 |
 |---|---|
@@ -1272,9 +1300,9 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `Error` | `last_error` + `Error` 状态 |
 | `ContextCompacted` | 仅状态提示 |
 | `Custom { kind: "metrics_update" }` | 反序列化 `MetricsSnapshot` 直接刷新遥测条（`Metrics::apply_snapshot`）——速率、上下文占用、累计消耗一律以它为准（本地计数只在没有快照时兜底，例如 `/single` 直连路径不建 `ThunderRoot`） |
-`handle_agent_finished`（`app.rs:4608-4769`）三分支：取消（保留 partial answer、无错误）、成功（采纳引擎权威消息 + `reattach_run_thinking`）、失败（合成 `❌ …` 消息）。随后无条件清理运行态、`metrics.finish_run`、**加法式**折 `run_stats` 进会话统计、`finalize_trace`。
+`handle_agent_finished`（`app.rs:4616-4777`）三分支：取消（保留 partial answer、无错误）、成功（采纳引擎权威消息 + `reattach_run_thinking`）、失败（合成 `❌ …` 消息）。随后无条件清理运行态、`metrics.finish_run`、**加法式**折 `run_stats` 进会话统计、`finalize_trace`。
 
-**thinking 的重新附着**（`app.rs:968-1066,4870-4875`）：引擎的权威消息列表**不带 reasoning**，所以宿主用 assistant 消息的"身份键"（`call:{首个 tool_call_id}` 或 `text:{内容}`）索引 thinking；权威替换后按位置**从尾部对齐**配对，因为引擎重建的正文可能有一个字节的漂移。
+**thinking 的重新附着**（`app.rs:968-1066,4872-4883`）：引擎的权威消息列表**不带 reasoning**，所以宿主用 assistant 消息的"身份键"（`call:{首个 tool_call_id}` 或 `text:{内容}`）索引 thinking；权威替换后按位置**从尾部对齐**配对，因为引擎重建的正文可能有一个字节的漂移。
 
 ### 17.5 渲染模块
 

@@ -1,7 +1,7 @@
 # thunder 权限结构图（0.4）
 
 > 源码事实图。所有结论都对应到具体文件与函数。
-> 唯一执行入口：`ToolExecutor::run_tool`（`thunder-agent-loop/src/tools/executor.rs:280`）
+> 唯一执行入口：`ToolExecutor::run_tool`（`thunder-agent-loop/src/tools/executor.rs:249`）
 > 唯一判定入口：宿主安装的 `ToolGate::decide`（`thunder-agent-loop/src/types/gate.rs:125`）
 
 ---
@@ -48,7 +48,7 @@ flowchart TB
     subgraph HOST["thunder-agent-root（宿主，含产品意见）"]
         MODE["ModePlugin : ThunderPlugin + ToolGate"]
         M1["Mode plan / ask / acceptEdits / yolo"]
-        M2["AllowRule + call_hash（always allow）"]
+        M2["AllowRule + matches 窄化（always allow）"]
         M3["write_plan / exit_plan_mode"]
         M4["system_prompt_contribution"]
         MODE --> M1
@@ -71,22 +71,22 @@ flowchart TB
 
 ## 2. 一个入口：`run_tool` 的十步
 
-`run_tool`（`executor.rs:280`）**不含任何早退 `return`**：所有分支都在私有方法 `dispatch`（`executor.rs:318`）里，而 `dispatch` 拿到的是一个 `&mut TraceDraft`，它怎么返回都必须把判定填进去。于是"每次调用必然留下且只留下一条 trace"是**结构的结果，不是约定**（`trace_test.rs::every_exit_path_records_a_trace` 遍历 14 条出口）。
+`run_tool`（`executor.rs:249`）**不含任何早退 `return`**：所有分支都在私有方法 `dispatch`（`executor.rs:287`）里，而 `dispatch` 拿到的是一个 `&mut TraceDraft`，它怎么返回都必须把判定填进去。于是"每次调用必然留下且只留下一条 trace"是**结构的结果，不是约定**（`trace_test.rs::every_exit_path_records_a_trace` 遍历 14 条出口）。
 
 | # | 步骤 | 位置 | 拒绝时 |
 |---|---|---|---|
-| 1 | 解析效果 `effect` | `executor.rs:291`；`resolve_effect` 227 | — |
-| 2 | 补 `event_sink` / `ui`（宿主未给则由 executor 兜底） | `executor.rs:293-298` | — |
-| 3 | 开 trace 草稿 `TraceDraft::begin` | `executor.rs:300` | — |
-| 4 | **取消检查** | `dispatch` 327 | `Decision::Cancelled` → `cancelled_refusal` |
-| 5 | 解析参数 + **脱敏** | `dispatch` 332-340 | `unwrap_or(Value::Null)`，畸形参数照常走完 |
-| 6 | **作用域** `ToolScope::scope_of` | `dispatch` 342；`scope_of` 194 | 无 scope ⇒ `Scope::Unknown` |
-| 7 | **守卫** `Guard::check` | `dispatch` 345；`guard.rs:61` | `Decision::Deny{by: Guard}` → `guard_refusal` |
-| 8 | **判定** `ToolGate::decide` | `dispatch` 362-373 | 无 gate ⇒ 直接 `Allow` |
-| 9 | **弹窗**（gate 返回 `Ask` 时，内核执行） | `ask` 452 | 超时/无面板/取消 ⇒ 拒绝 |
-| 10 | **执行** + 关 trace + 发布 | `via_pipeline` 423；`finish` 758；`publish` 441 | — |
+| 1 | 解析效果 `effect` | `executor.rs:260`；`resolve_effect` 209 | — |
+| 2 | 补 `event_sink` / `ui`（宿主未给则由 executor 兜底） | `executor.rs:262-267` | — |
+| 3 | 开 trace 草稿 `TraceDraft::begin` | `executor.rs:270` | — |
+| 4 | **取消检查** | `dispatch` 296 | `Decision::Cancelled` → `cancelled_refusal` |
+| 5 | 解析参数 + **脱敏** | `dispatch` 301-309 | `unwrap_or(Value::Null)`，畸形参数照常走完 |
+| 6 | **作用域** `ToolScope::scope_of` | `dispatch` 311；`scope_of` 176 | 无 scope ⇒ `Scope::Unknown` |
+| 7 | **守卫** `Guard::check` | `dispatch` 314；`guard.rs:61` | `Decision::Deny{by: Guard}` → `guard_refusal` |
+| 8 | **判定** `ToolGate::decide` | `dispatch` 341 | 无 gate ⇒ 直接 `Allow` |
+| 9 | **弹窗**（gate 返回 `Ask` 时，内核执行） | `ask` 432 | 超时/无面板/取消 ⇒ 拒绝 |
+| 10 | **执行** + 关 trace + 发布 | `execute_tool` 400；`finish` 738；`publish` 421 | — |
 
-**第 10 步是唯一出口。** `publish`（`executor.rs:441`）把记录交给宿主安装的 `ToolTraceSink`；**内核自己不落盘**（A/B 契约：内核不知道 store 路径）。
+**第 10 步是唯一出口。** `publish`（`executor.rs:421`）把记录交给宿主安装的 `ToolTraceSink`；**内核自己不落盘**（A/B 契约：内核不知道 store 路径）。
 
 > 曾经的洋葱：`PermissionGuardMiddleware → SecurityGuard → ResourceGuard → Transaction → OutputPostProcessor → ToolRegistry`。
 > 现在没有任何一层住在"决定之后、执行之前"这个位置上——那正是洋葱的病根：可编排的执行顺序让"谁先谁后"变成隐式语义。
@@ -161,7 +161,7 @@ flowchart TB
 
 ## 5. 审批弹窗：fail-closed 的交互闭环
 
-弹窗由**内核**发起，gate 只负责说"问"（`gate.rs:9-22`）：gate 返回 `Ask(ApprovalPrompt)` 就到此为止，串行化、超时、无面板的处理全在 `ask`（`executor.rs:452`）里。**gate 无法自己弹窗，因此也无法提供"永远允许"这类脚枪。**
+弹窗由**内核**发起，gate 只负责说"问"（`gate.rs:9-22`）：gate 返回 `Ask(ApprovalPrompt)` 就到此为止，串行化、超时、无面板的处理全在 `ask`（`executor.rs:432`）里。**gate 无法自己弹窗，因此也无法提供"永远允许"这类脚枪。**
 
 ```mermaid
 flowchart TB
@@ -196,7 +196,7 @@ flowchart TB
 
 > `git status` 永远不会授权 `git status && rm -rf /`。
 
-**两条不变式**：① `prompt.allow_always` 为假时内核**不提供** `Always allow` 选项（`executor.rs:502`），所以用户点不到一个没有安全规则的项；② 审批是"窄化 + 记忆"两件事都由 gate 负责（`record_answer`，`mode.rs:501`）——内核不再持有任何规则推导逻辑（R10：这是 gate 的责任，`ModePlugin` 是唯一实现且带测试）。
+**两条不变式**：① `prompt.allow_always` 为假时内核**不提供** `Always allow` 选项（`executor.rs:482`），所以用户点不到一个没有安全规则的项；② 审批是"窄化 + 记忆"两件事都由 gate 负责（`record_answer`，`mode.rs:501`）——内核不再持有任何规则推导逻辑（R10：这是 gate 的责任，`ModePlugin` 是唯一实现且带测试）。
 
 ---
 
@@ -275,7 +275,7 @@ flowchart TB
 | Gate | `Blocked '<tool>' — the user did not approve it` | `Error: '<tool>' was not approved. Reason: <reason>` |
 | 取消 | `Tool execution cancelled before launch` | `Tool execution cancelled by user signal` |
 
-三者的 `ground_truth` 都明确写下"什么也没发生"（`The call never ran. The workspace is unchanged.`），指引也会明确阻止"换个工具绕过去"（`executor.rs:854-919`）。
+三者的 `ground_truth` 都明确写下"什么也没发生"（`The call never ran. The workspace is unchanged.`），指引也会明确阻止"换个工具绕过去"（`executor.rs:815-899`）。
 
 ---
 
@@ -352,7 +352,7 @@ flowchart LR
 
 要点：
 
-- `caller: Some(id)` → `Caller::Plugin(id)`（`policy.rs:86`）；弹窗标题据此加前缀（`executor.rs:493`），**插件无法伪装成助手发起**。
+- `caller: Some(id)` → `Caller::Plugin(id)`（`policy.rs:86`）；弹窗标题据此加前缀（`executor.rs:473`），**插件无法伪装成助手发起**。
 - 没有 `caller` 就是 `Caller::Model`。trace 里的 `caller` 字段是这条归因的落点。
 - 协议层防伪仍在 daemon 侧：`ui_request.request_id` 由 daemon 签发，`source: host | plugin` 区分来源，plugin-sourced 答复不构成授权依据。
 
@@ -389,7 +389,7 @@ flowchart LR
 2. `ToolTraceSink`（宿主安装的 `Arc<dyn ToolTraceSink>`，`trace.rs:443`）；
 3. 内核不落盘。
 
-`install_run_trace`（`executor.rs:147`）是**就地**安装的：插件反向调用那个 invoker 持有的是 run 开始前克隆的 executor，消费式 builder 会静默丢掉所有插件发起的调用。run 结算时 `clear_run_trace`。
+`install_run_trace`（`executor.rs:129`）是**就地**安装的：插件反向调用那个 invoker 持有的是 run 开始前克隆的 executor，消费式 builder 会静默丢掉所有插件发起的调用。run 结算时 `clear_run_trace`。
 
 ### 9.1 脱敏
 
@@ -400,7 +400,7 @@ flowchart LR
 | 键名 | `arguments` 的键 | 命中 `SECRET_KEYS`（`api_key`/`apikey`/`token`/`secret`/`password`/`credential`/`authorization`/`cookie`/`private_key`/`access_key`/`client_secret`，大小写不敏感子串）→ 值变 `[redacted:key]`，规则名 `key:<名字>` |
 | 正文 | `content` / `preview` | 只留 `{digest, bytes, preview(200 字符)}`，规则名 `document:<名字>` |
 | 形态 | 任何文本 | 正则打码：`gh[pousr]_…`、`sk-…`、`AKIA…`、JWT、PEM 私钥块、`Bearer …`、URL 内嵌凭据（保留 scheme+host） |
-| 输出 | `result.output_preview` | 先按上述正则打码，再截到 2048 字符（`OUTPUT_PREVIEW_CHARS`，`executor.rs:37`），另存**全文**的 `stable_digest` |
+| 输出 | `result.output_preview` | 先按上述正则打码，再截到 2048 字符（`OUTPUT_PREVIEW_CHARS`，`executor.rs:36`），另存**全文**的 `stable_digest` |
 
 第三条规则**不够**，测试抓到过一个真实泄漏：`api_key` 下的 `hunter2` 在 `arguments` 里被打码，却从 `output_preview` 原样回来了——因为被测的 stub 会回显自己的参数，而按键名打码看不见"工具拿这个值做了什么"。所以 `withhold`（`trace.rs:373`）把**已声明为密钥的字面量**从所有派生文本里抹掉（短于 6 字符的不抹，免得把普通词打成乱码），并推入规则名 `echoed_secret`。
 
@@ -429,7 +429,7 @@ classDiagram
         +run_tool(call, ctx, timeout) ToolExecutionResult  «唯一入口»
         -dispatch(call, ctx, timeout, draft)
         -ask(gate, request, prompt, ctx, draft) AskOutcome
-        -via_pipeline(...)
+        -execute_tool(...)
         -publish(trace)
         +with_tool_gate(gate, ui)
         +with_tool_scope(scope)
@@ -542,7 +542,7 @@ classDiagram
 
 | # | 不变量 | 实现位置 | 测试 |
 |---|---|---|---|
-| 1 | `run_tool` 是**唯一**工具执行入口，没有旁路 | `executor.rs:280` | `guard_test.rs::no_entry_point_skips_the_guard` |
+| 1 | `run_tool` 是**唯一**工具执行入口，没有旁路 | `executor.rs:249` | `guard_test.rs::no_entry_point_skips_the_guard` |
 | 2 | 每次调用恰好一条 trace，覆盖全部出口 | `run_tool` 单出口 | `trace_test.rs::every_exit_path_records_a_trace`（14 条路径） |
 | 3 | trace 不可关闭 | `publish` | `trace_test.rs::a_trace_cannot_be_disabled` |
 | 4 | 守卫先于 gate 且不咨询 gate；gate 只能收紧 | `guard.rs:61`、`gate.rs:9-22` | `guard_test.rs::the_floor_holds_under_a_permissive_scope_and_a_permissive_mode` |
@@ -550,7 +550,7 @@ classDiagram
 | 6 | 作用域只分类不裁决；`Critical` 是唯一例外 | `scope.rs:1-18` | `path_scope_test.rs::repository_metadata_is_off_limits_without_asking` |
 | 7 | 越界写是"问"，不是"拒" | `CodeScope` + 模式矩阵 | `path_scope_test.rs::an_out_of_scope_write_is_a_question_the_user_can_answer` |
 | 8 | 旧 jail 误伤的调用不再被拒 | `Guard` token 判定 | `path_scope_test.rs::the_calls_that_used_to_be_refused_are_not_any_more` |
-| 9 | **不装 gate ⇒ 除守卫外全放行** | `dispatch` 382 | `gate_absent_allows_test.rs::without_a_gate_everything_the_guard_allows_runs` |
+| 9 | **不装 gate ⇒ 除守卫外全放行** | `dispatch` 352 | `gate_absent_allows_test.rs::without_a_gate_everything_the_guard_allows_runs` |
 | 10 | 卸载 gate 后回到同一状态 | `Option<Arc<dyn ToolGate>>` | `gate_absent_allows_test.rs::removing_the_gate_returns_to_the_gate_absent_state` |
 | 11 | 工具**永远全量注册**（无 tier） | `host.rs` 装配 | `always_registered_test.rs::the_builtins_are_registered_on_every_run` |
 | 12 | 四档矩阵逐格正确 | `mode.rs:435` | `mode_matrix_test.rs::the_matrix_is_what_the_docs_say` |
@@ -559,12 +559,12 @@ classDiagram
 | 15 | 含 `/` 的 `session_id` 逃不出 plans 目录 | `sanitize_session_id` | `plan_mode_test.rs::a_hostile_session_id_cannot_escape_the_plans_directory` |
 | 16 | plan 的拒绝文案必须点名出口 | `mode.rs:486` | `plan_mode_test.rs::the_write_refusal_names_the_way_out` |
 | 17 | 驳回留在 plan 且反馈回灌模型 | `exit_plan_mode` | `plan_mode_test.rs::declining_keeps_the_mode_and_carries_the_feedback_back` |
-| 18 | 弹窗 fail-closed：无面板/超时/取消/意外值 → 拒绝 | `ask`、`executor.rs:480-601` | `plan_mode_test.rs::a_headless_host_stays_in_plan_mode`、`trace_test.rs` 各 `AskAnswer` 分支 |
+| 18 | 弹窗 fail-closed：无面板/超时/取消/意外值 → 拒绝 | `ask`、`executor.rs:432-587` | `plan_mode_test.rs::a_headless_host_stays_in_plan_mode`、`trace_test.rs` 各 `AskAnswer` 分支 |
 | 19 | 弹窗串行，避免并发批叠框批准错对象 | `prompt_lock` | — |
-| 20 | 『Always allow』只授予最窄规则，且可重放性由 `call_hash` 阻断 | `AllowRule::for_call` / `matches` | `mode_matrix_test.rs::a_remembered_rule_allows_without_asking` |
+| 20 | 『Always allow』只授予最窄规则，且重放由 `matches` 的链式字符检查挡住 | `AllowRule::for_call` / `matches` | `mode_matrix_test.rs::a_remembered_rule_allows_without_asking` |
 | 21 | 秘钥键名/形态/正文在落盘前被打码，回显的密钥也被抹掉 | `redact_arguments` / `withhold` | `trace_test.rs::arguments_under_a_secret_key_are_redacted`、`…::a_secret_in_the_output_never_reaches_the_record` |
 | 22 | 宿主的模式可被外部读到并设置 | daemon `SetMode`/`GetPermissionState` | `mode_protocol_test.rs::a_host_can_read_and_set_the_mode_over_the_wire` |
-| 23 | 审批模式不会被静默重置（会话表 FIFO 淘汰） | `SessionModes`（`service.rs:111`） | — |
+| 23 | 审批模式不会被静默重置（会话表 FIFO 淘汰） | `SessionModes`（`service.rs:116`） | — |
 
 ---
 

@@ -105,7 +105,8 @@ Three rules that hold in every mode:
   `success:false` with `unknown mode '…': expected one of plan | ask | acceptEdits | yolo`
   — it never falls back to the default silently.
 - The mode is remembered per `session_id` (oldest evicted first) and applies to the
-  **very next** call. `run_task` also accepts an optional `mode`, for a one-off override.
+  **very next** call. `run_task` also accepts an optional `mode`; it writes the
+  session's mode too, so later runs of that session keep it rather than reverting.
 - `get_permission_state` reports the current mode and the remembered "always allow" rules.
 
 ### Where it takes effect

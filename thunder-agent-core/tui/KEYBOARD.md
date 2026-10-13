@@ -12,7 +12,7 @@ Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全
 
 | 命令 | 别名 | 参数 | 功能说明 |
 | :--- | :--- | :--- | :--- |
-| **`/resume`** | `/sessions`, `/load_session` | `[# \| id]` | **列出所有历史会话，或按序号/ID一键恢复继续对话** |
+| **`/resume`** | `/sessions`, `/load_session`, `/switch` | `[# \| id]` | **列出所有历史会话，或按序号/ID一键恢复继续对话** |
 | **`/help`** | `/?` | | 呼出命令参考与键盘快捷键说明 |
 | **`/model`** | `/m` | `[name]` | 查看当前模型或热切换模型（如 `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`） |
 | **`/mode`** | | `[plan \| ask \| acceptEdits \| yolo]` | 切换权限模式（留空则显示当前模式） |
@@ -28,9 +28,6 @@ Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全
 | **`/health`** | `/doctor`, `/status` | | 运行多智能体与环境健康检查探针 |
 | **`/timeline`** | `/rail` | `[on \| off]` | 显示 / 隐藏对话区右缘的 turn 时间轴轨道（裸调用 = 切换） |
 | **`/details`** | `/verbose` | `[on \| off]` | 展开 / 收起思考过程与工具调用详情（默认只显示概要，裸调用 = 切换） |
-| **`/pipeline`**| `/seq` | `<task>` | 直接以串行流水线模式运行任务（Planner ➔ Coder） |
-| **`/parallel`**| `/par`, `/council` | `<task>` | 直接以多角色并行评审模式运行任务（Planner + Reviewer） |
-| **`/fanout`** | `/decompose` | `<task>` | 直接以子任务拆解分片模式并发运行任务 |
 | **`/quit`** | `/exit`, `/q` | | 优雅退出 Thunder TUI |
 
 ---

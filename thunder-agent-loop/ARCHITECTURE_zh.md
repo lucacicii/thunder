@@ -62,7 +62,7 @@ let result = handle.join().await?;
 - 完整的闭环自主循环（`run` / `start`）
 - `LLMClientTrait` 传输抽象契约（生产环境由 `RpiAiClient` 实现）
 - 工具注册表、并发工具派发、超时熔断与 UTF-8 截断
-- 内存上下文裁剪，支持解耦工具输出驱逐（`tool_eviction_threshold_tokens`）
+- 内存上下文裁剪，支持检查点式压缩（`max_context_tokens` / `reserve_tokens` / `keep_recent_tokens`）
 - 唯一的工具执行入口（`ToolExecutor::run_tool`），守卫就在其中
 - 三个由宿主安装的准入/观测接缝：`ToolScope`、`ToolGate`、`ToolTraceSink`
 - 循环级防死循环熔断器（默认 50 轮上限）

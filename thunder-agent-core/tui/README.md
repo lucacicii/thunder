@@ -17,7 +17,6 @@
     - Markdown 格式化排版渲染与打字机效果（`TokenDelta`）。
     - 深度思考链折叠展示（`ReasoningDelta`，支持 DeepSeek-R1、o1 等模型）。
     - 工具调用与执行结果卡片（`BashTool`、`ReadFileTool`、`WriteFileTool`、`McpToolBridge` 等）。
-    - **多 Agent 聚合决议报告渲染**：当运行 `Parallel` 或 `FanOut` 拓扑时，优先突出渲染 `### 📝 Synthesized Report` 综合报告，并支持展开各角色的分工输出卡片。
   - **交互式 `❯` 提示行与斜杠命令自动补全**：输入 `/` 即时呼出浮窗命令菜单，支持 `Tab` 补全与 `↑/↓` 切换。
   - **会话恢复与持久化 (`/resume`)**：随时列出历史会话，按序号或 ID 一键恢复继续对话。
   - **Turn 时间轴轨道**：对话区右缘悬浮一条极简轨道，一次用户提问一个刻度；鼠标悬停看详情（状态 / 工具数 / 耗时 / 提问摘要），单击或 `Enter` 把该轮滚到顶部；`Ctrl + T` 开关，窄终端自动隐藏。

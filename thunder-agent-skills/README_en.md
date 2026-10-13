@@ -16,8 +16,8 @@
    - Structured JSON & YAML configuration definitions.
    - XML tag syntax (`<skill>...<instructions>...</skill>`).
 2. **Autonomous Directory Discovery & Global Caching (120s TTL)**:
-   - Recursively scans project directories (`.agents/skills`, `.pi/skills`) and user global directories (`~/.agents/skills`).
-   - Integrated with `DEFAULT_SKILLS_CACHE` enforcing a 120-second TTL, eliminating redundant disk walks and I/O bottlenecks during high-frequency turns.
+   - Recursively scans project directories (`.agents/skills`, `.pi/skills`, `skills`), user global directories (`~/.agents/skills`, `~/.pi/agent/skills`, `~/.pi/skills`), and `skills` under the data root.
+   - The global cache over scan results (120-second TTL) is provided by the host skills plugin (`thunder-agent-root`'s `DEFAULT_SKILLS_CACHE`), eliminating redundant disk walks and I/O bottlenecks during high-frequency turns.
 3. **Instant Intent & Trigger Matching**:
    - Matches keywords, tags, and semantic intent against user prompts in sub-milliseconds to activate relevant playbooks.
 4. **Dynamic LLM Tools**:

@@ -17,7 +17,7 @@ B  = optional scheduler / multi-agent graph (another crate)
 | Role | A complete single Agent | Scheduler / multi-agent graph |
 | Lifecycle | create → register tools → `start`/`run` → events → join/cancel | Creates N agents, routes work, retries, persists product state |
 | Dialogue | Multi-turn **inside one task** (the loop's job) | Cross-agent / cross-task routing and storage |
-| Standalone | Required. `examples/cli` is one A | Optional. A works with no B |
+| Standalone | Required. A runs its whole lifecycle with no B | Optional. A works with no B |
 | Composition | B calls `AgentLoop::start` / `join` / `cancel` | B must not become A's inner loop |
 
 A owns the closed `run()` / `start()` loop: it streams the LLM, executes tools,
@@ -69,7 +69,7 @@ Rules:
 - Closed autonomous loop (`run` / `start`)
 - `LLMClientTrait` transport abstraction (implemented in production by `RpiAiClient`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
-- In-memory context pruning with decoupled tool output eviction (`tool_eviction_threshold_tokens`)
+- In-memory context pruning with checkpoint compaction (`max_context_tokens` / `reserve_tokens` / `keep_recent_tokens`)
 - One tool-execution funnel (`ToolExecutor::run_tool`) with the guard inside it
 - Three admission/tracing seams a host installs: `ToolScope`, `ToolGate`, `ToolTraceSink`
 - Loop-level repetition / error circuit breaker (bounded default turns = 50)
