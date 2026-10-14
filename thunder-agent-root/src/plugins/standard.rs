@@ -15,6 +15,8 @@
 //! - `memory`       — always (no-ops when no `THUNDER.md` / `memory/*.md`)
 //! - `skills`       — always, unless the caller supplies a preloaded one
 //! - `mcp`          — always (no-ops when the workspace configures no servers)
+//! - `metrics`      — always, unless the caller supplies a shared one
+//! - `agent_status` — always, unless the caller supplies a shared one
 //!
 //! The TypeScript plugin host used to be the fifth member, opt-in because it
 //! spawned a Node sidecar. It is gone: plugins are Rust now, so there is no
@@ -49,6 +51,7 @@ pub struct StandardHostBuilder {
     #[cfg(feature = "mcp")]
     mcp: Option<crate::plugins::McpPlugin>,
     metrics: Option<crate::plugins::MetricsPlugin>,
+    status: Option<crate::plugins::StatusPlugin>,
 }
 
 #[cfg(feature = "conversation")]
@@ -62,6 +65,7 @@ impl StandardHostBuilder {
             #[cfg(feature = "mcp")]
             mcp: None,
             metrics: None,
+            status: None,
         }
     }
 
@@ -69,6 +73,15 @@ impl StandardHostBuilder {
     /// session-wide telemetry tracker across runs).
     pub fn with_metrics_plugin(mut self, metrics: crate::plugins::MetricsPlugin) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Use `status` instead of a fresh [`StatusPlugin`](crate::plugins::StatusPlugin).
+    ///
+    /// A host passes its own so it can *hold* the status it publishes: the
+    /// dialog path reports `awaiting_user` through that same handle.
+    pub fn with_status_plugin(mut self, status: crate::plugins::StatusPlugin) -> Self {
+        self.status = Some(status);
         self
     }
     /// Use `skills` instead of the default `SkillsPlugin` (e.g. to preload an
@@ -90,6 +103,10 @@ impl StandardHostBuilder {
     pub fn build(self, mut root: ThunderRoot) -> ThunderRoot {
         root = root.with_plugin(ConversationPlugin::new(self.store));
         root = root.with_metrics_plugin(self.metrics.unwrap_or_default());
+        // What the agent is doing right now, on the same footing as the numbers
+        // above: a host that wants to *report* the status (TUI pane title, panel
+        // chip, a dialog-driven `awaiting_user`) needs this very instance.
+        root = root.with_status_plugin(self.status.unwrap_or_default());
         // Long-term memory rides the baseline set: it contributes nothing when
         // no `THUNDER.md` exists, so every host gets it for free.
         root = root.with_plugin(MemoryPlugin::new());
@@ -126,7 +143,11 @@ impl StandardHostBuilder {
 /// it unconditionally would tax every user who has none.
 #[cfg(feature = "conversation")]
 pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
-    let mut ids = vec!["conversation".to_string(), "metrics".to_string()];
+    let mut ids = vec![
+        "conversation".to_string(),
+        "metrics".to_string(),
+        "agent_status".to_string(),
+    ];
     #[cfg(feature = "skills")]
     {
         ids.push("skills".to_string());

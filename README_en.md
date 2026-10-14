@@ -50,7 +50,7 @@ Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorep
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **Skills Engine**: Discovers and parses Playbooks / SKILL.md with intent trigger matching and 120s TTL global cache |
 | **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP Client**: Standard JSON-RPC 2.0 client for discovering and bridging remote Model Context Protocol tools |
 | **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **Microkernel Host**: Dynamic plugin assembler with trigger routing, executing prompts into structured run results |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with approval modes (plan / ask / acceptEdits / yolo), concurrency semaphores, pause, and ask-user |
+| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with approval modes (plan / ask / acceptEdits / yolo) and **mode-change events** (a pushed `mode_changed` frame), concurrency semaphores, pause, and ask-user |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Conversation Store**: Atomic filesystem and in-memory session persistence, `index.json` fast index, and multi-topology tracking |
 | **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming and reasoning fold |
 

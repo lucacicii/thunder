@@ -17,14 +17,15 @@
      - **`SkillsPlugin`**: Playbook directory discovery, prompt injection, and dynamic skill inspection tools.
      - **`McpPlugin`**: Model Context Protocol connections and remote tool bridging.
      - **`MetricsPlugin`**: Model telemetry — live/average tok/s, token breakdown, prompt-cache hit rate, context occupancy, and durations; streamed as `metrics_update` custom events without touching the kernel.
+     - **`StatusPlugin`**: Execution status — whether the agent is thinking, streaming, which tool it is running, what it is waiting on, whether it is paused, and when it finished; streamed as `agent_status` custom events **only on a transition**. The single authority for "what is it doing right now".
 2. **Deterministic Zero-LLM Latency Activation**:
    - Replaces sluggish secondary LLM intent classification (which added 1~2s latency per turn).
-   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills, memory, web and telemetry plugins are permanently active for all runs;
+   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills, memory, web, telemetry and execution-status plugins are permanently active for all runs;
    - Complex plugins (MCP, etc.) are activated selectively via keyword intent triggers, ensuring **zero added latency, minimal token consumption, and maximal extensibility**.
 3. **Global Skills Scan Cache (120s TTL)**:
    - Features `DEFAULT_SKILLS_CACHE` with a 120-second TTL over skill directories, eliminating redundant disk walks and filesystem bottlenecks during multi-turn interactions.
 4. **One-line Standard Assembly (`StandardHostBuilder`)**:
-   - The canonical assembly entry point: mounts conversation, telemetry, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_plugin`.
+   - The canonical assembly entry point: mounts conversation, telemetry, execution status, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_plugin`.
 
 ---
 
@@ -65,10 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | :--- | :--- | :--- | :--- |
 | **`conversation`** | Session Persistence | **Permanent Baseline** | Tracks multi-turn dialogue, updates `index.json`, atomic file writes |
 | **`metrics`** | Model Telemetry | **Permanent Baseline** | Tracks live/average tok/s (TTFT and tool time excluded), token breakdown, cache hit rate, context occupancy and durations; emits `metrics_update` snapshots |
+| **`agent_status`** | Execution Status | **Permanent Baseline** | One authoritative snapshot per session: phase (`idle`/`thinking`/`streaming`/`tool`/`awaiting_user`/`paused`/`compacting`/`done`/`error`) + current tool + turn. `agent_status` custom events are emitted **only on a transition** (`seq` is monotonic); `awaiting_user`/`paused` are reported by the host through `note_awaiting`/`note_paused` |
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
 | **`memory`** | Long-Term Memory | **Permanent Baseline** | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
-| **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode` |
+| **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode`; a mode change is announced through `set_mode_announcing` (a no-op is not announced) |
 | **`web`** | Web Tools | **Permanent Baseline** | `web_fetch`: fetches a URL, converts the page to markdown, and answers a prompt with the utility model (markdown fallback when none is configured). `web_search`: queries keyless engines (DuckDuckGo first, Exa as a fallback) and returns titles, URLs, and snippets |
 
 

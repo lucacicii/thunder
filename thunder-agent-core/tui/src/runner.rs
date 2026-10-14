@@ -12,7 +12,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, stdout};
+use std::io::{self, stdout, Write};
 use std::panic;
 use std::time::Duration;
 
@@ -68,12 +68,26 @@ impl TuiRunner {
         app.refresh_sessions().await;
 
         loop {
+            // The pane report is reconciled before the frame, so a status that
+            // moved during this iteration leaves in the same one.
+            app.reconcile_pane_status();
+
             // Frames are drawn when something has actually changed. A terminal
             // that is idle — no run, no queue, no fresh status — costs nothing
             // instead of rebuilding the transcript twenty times a second.
             if app.needs_redraw {
                 app.needs_redraw = false;
                 terminal.draw(|f| draw(f, &mut app, &theme))?;
+            }
+
+            // Out-of-band, so it goes out *after* the frame and outside the
+            // redraw gate: it addresses the terminal emulator, not the screen
+            // buffer, and the runner is single-threaded here, so it cannot
+            // interleave with a half-drawn frame.
+            if let Some(sequence) = app.pane_status.take_pending() {
+                let backend = terminal.backend_mut();
+                backend.write_all(sequence.as_bytes())?;
+                backend.flush()?;
             }
 
             // `None` means every sender is gone: no input can ever arrive
@@ -99,6 +113,18 @@ impl TuiRunner {
                 app.save_current_conversation().await;
                 break;
             }
+        }
+
+        // Take the pane report back down before handing the terminal back. The
+        // pane outlives this process: a panel that has been told what the
+        // program is doing stops reading that pane's screen, so a TUI that exits
+        // mid-run would leave a shell sitting in a pane the panel still believes
+        // is working.
+        app.pane_status.leaving();
+        if let Some(sequence) = app.pane_status.take_pending() {
+            let backend = terminal.backend_mut();
+            backend.write_all(sequence.as_bytes())?;
+            backend.flush()?;
         }
 
         // Restore terminal

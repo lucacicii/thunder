@@ -26,6 +26,9 @@ pub mod prelude {
     pub use crate::plugins::skills::*;
     #[cfg(feature = "conversation")]
     pub use crate::plugins::standard::{baseline_forced_plugins, StandardHostBuilder};
+    pub use crate::plugins::status::{
+        AgentPhase, AgentStatusSnapshot, StatusPlugin, AGENT_STATUS_EVENT_KIND,
+    };
     pub use crate::plugins::web::WebPlugin;
     #[cfg(feature = "conversation")]
     pub use crate::plugins::{ConversationPlugin, MemoryPlugin};

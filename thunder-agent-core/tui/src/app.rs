@@ -1,5 +1,6 @@
 use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
 use crate::links::{LinkCache, LinkTarget};
+use crate::pane_status::PaneStatus;
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
 use crate::ui::chat::TranscriptCache;
 use crate::ui::metrics::Metrics;
@@ -213,6 +214,17 @@ pub struct App {
     /// The session's mode plugin: the judge every tool call of this session is
     /// asked through, held so a mode switch mid-session sticks across runs.
     pub mode_plugin: Arc<thunder_agent_root::plugins::mode::ModePlugin>,
+    /// The session's execution-status plugin, shared with the root this host
+    /// builds.
+    ///
+    /// Held rather than left to the root because this process knows two things
+    /// about a run that the event stream cannot express — a question modal is
+    /// on screen, the run is parked on its pause gate — and because the pane
+    /// report below reads the snapshot directly. One instance, or the terminal
+    /// would be told about a run that thinks it is busy while it waits.
+    pub status_plugin: StatusPlugin,
+    /// What the terminal running this TUI is told about the run (OSC 7501).
+    pub pane_status: PaneStatus,
     /// Extra workspace roots granted the same read/write standing as the
     /// primary workspace (mirrored into `conversation.shared_roots` on submit).
     pub extra_roots: Vec<PathBuf>,
@@ -387,6 +399,8 @@ impl App {
             mode_plugin: thunder_agent_root::plugins::mode::ModePlugin::new(
                 thunder_agent_root::plugins::mode::Mode::default(),
             ),
+            status_plugin: StatusPlugin::new(),
+            pane_status: PaneStatus::default(),
             extra_roots: Vec::new(),
             ask_user_enabled: true,
             pause_gate: None,
@@ -1109,6 +1123,33 @@ impl App {
     /// Notes that the next frame has something new to show.
     pub fn mark_dirty(&mut self) {
         self.needs_redraw = true;
+    }
+
+    /// Fold the run's live status — and the two waits only this process can see
+    /// — into what the terminal is told next (OSC 7501).
+    ///
+    /// Reconciled from state once per frame rather than driven by events, for
+    /// two reasons. The question modal and the pause gate are *App* state that
+    /// five different call sites open and close, and a missed call at one of
+    /// them would be silent; and in single-agent mode the TUI builds no
+    /// `ThunderRoot`, so there is no plugin host publishing anything to listen
+    /// for. Reading the same plugin the root publishes from keeps one source of
+    /// truth for both modes.
+    ///
+    /// Cheap enough to call every frame: the plugin publishes a hold only when
+    /// it actually changes, and [`PaneStatus`] drops a report that says nothing
+    /// new.
+    pub fn reconcile_pane_status(&mut self) {
+        let snapshot = {
+            let session_id = self.conversation.id.as_str();
+            self.status_plugin
+                .note_awaiting(session_id, self.pending_question.is_some());
+            self.status_plugin.note_paused(session_id, self.is_paused());
+            self.status_plugin.snapshot(session_id)
+        };
+        if let Some(snapshot) = snapshot {
+            self.pane_status.observe(&snapshot);
+        }
     }
 
     /// Drops the cached transcript and asks for a frame. Called by every
@@ -4128,8 +4169,13 @@ impl App {
         // the daemon's baseline capability set again. The terminal host keeps a
         // memory-backed conversation store (the app owns FS persistence) and
         // opts out of the Node-backed TypeScript plugin host.
+        //
+        // The status plugin is the App's own instance, not a fresh one: the
+        // frame loop reports the two host-side waits through that same handle
+        // and reads the same snapshot back to tell the terminal about the run.
         let root = StandardHostBuilder::new(Arc::new(MemoryConversationStore::new()))
             .with_skills(skills_plugin)
+            .with_status_plugin(self.status_plugin.clone())
             .build(
                 ThunderRoot::new(base_cfg.clone())
                     .with_workspace(self.workspace_dir.clone())
@@ -4292,6 +4338,12 @@ impl App {
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&config));
         let mode_plugin = Arc::clone(&self.mode_plugin);
+        // This path builds no `ThunderRoot`, so no plugin host will fold the
+        // run's events into a status — the App does it with the same plugin
+        // instance the auto path shares, which is what keeps the pane report
+        // identical in both modes.
+        let status_plugin = self.status_plugin.clone();
+        let status_session = self.conversation.id.clone();
         let ws = self.workspace_dir.clone();
         // One run, one name: the same id the trace is filed under. This path
         // builds no `ThunderRoot`, so nothing else would set it.
@@ -4373,12 +4425,19 @@ impl App {
             agent = agent.with_pause_gate(pause_gate);
             agent = agent.with_steer_queues(steer_queues);
 
+            // The run's clock starts here, before the first event can arrive: a
+            // status read between the two would otherwise show the *previous*
+            // run's settled phase.
+            status_plugin.begin_run(&status_session);
+
             match agent.start(context_input, Some(cancel)) {
                 Ok(mut handle) => {
                     if let Some(mut rx) = handle.take_events() {
                         let tx = event_tx.clone();
                         tokio::spawn(async move {
                             while let Some(observed) = rx.recv().await {
+                                status_plugin
+                                    .record_session_event(&status_session, &observed.event);
                                 if tx.send(crate::event::AppEvent::Agent(observed)).is_err() {
                                     break;
                                 }

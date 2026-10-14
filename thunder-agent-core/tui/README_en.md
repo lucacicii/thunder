@@ -31,6 +31,7 @@
   - `Ctrl + C`: Copy the selection, else clear the prompt, else cancel the run, else exit.
   - `Esc`: Drop the selection first, else dismiss the overlay or cancel the run.
 - **Crash-Safe Terminal Handling**: Panic hooks guarantee clean restoration to Normal terminal mode on unexpected errors.
+- **Pane Status Reporting (OSC 7501)**: writes the run's phase (`working` / `blocked` / `error` / `idle` / `done`) into the terminal's program-status protocol, so a hosting panel can show "working / waiting on you" for this pane with no handshake (agent-resume-panel's `cli:thunder` pane reads exactly this). The very first frame reports `idle`, which is also what *names* the pane — the panel learns which program occupies it from the report itself. After that it sends **only on a phase change**, plus one `idle` on exit to take the record back down: a pane outlives the process, and a stale record would leave it saying "working" forever.
 
 ---
 

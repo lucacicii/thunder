@@ -57,6 +57,7 @@ One valid JSON line per command:
 - **Response Confirmation**: `{"type":"response","id":"req-1","success":true,"data":{...}}`
 - **Streaming Event**: `{"type":"observed_event","task_id":"task-1","event":{...}}`
 - **User Question (Awaiting Input)**: `{"type":"user_question","task_id":"task-1","question_id":"task-1:q1","questions":[{"question":"...","options":[{"label":"..."}]}]}`
+- **Approval Mode Changed (pushed)**: `{"type":"mode_changed","session_id":"sess-001","mode":"plan","previous":"yolo","source":"user"}` — `source` is `user` / `plan_approved` / `run_option`, and a change made inside a run also carries `task_id`. A no-op is never announced, so receiving this frame always means the mode really moved.
 - **Task Paused**: `{"type":"task_paused","task_id":"task-1","reason":"..."}`
 - **Task Completed**: `{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
 - **Task Failed**: `{"type":"task_failed","task_id":"task-1","error":"..."}`
@@ -107,7 +108,21 @@ Three rules that hold in every mode:
 - The mode is remembered per `session_id` (oldest evicted first) and applies to the
   **very next** call. `run_task` also accepts an optional `mode`; it writes the
   session's mode too, so later runs of that session keep it rather than reverting.
+- **A mode that really moved is pushed as `mode_changed`** (§2). The `response` is
+  written **first** and the push follows, so a client that reads one line per
+  request still reads the frame it asked for. All three origins share the one frame:
+  a client's `set_mode` (`user`), a mode pinned by `run_task` (`run_option`), and an
+  approved `exit_plan_mode` (`plan_approved` — the one change the daemon only learns
+  from the run's own event stream). **A no-op is never announced**: the host
+  re-applies the run's mode at every run start, so announcing that would put a frame
+  on every turn. A `set_mode` for a session that does not exist yet *creates* it in
+  that mode, so there is no transition to announce either — the `response`'s
+  `data.mode` is the confirmation.
 - `get_permission_state` reports the current mode and the remembered "always allow" rules.
+  Note it *creates* a session that has never run in `Mode::default()` (`yolo`), while
+  that session's first `run_task` resolves `.thunder`'s `agent.defaultMode` instead;
+  the two can differ, and the first run's `mode_changed` (`run_option`) pushes the
+  real mode across.
 
 ### Where it takes effect
 
@@ -147,6 +162,13 @@ the title) and traced like any other call.
 1. **Tool Boundary Pausing**: `pause_task` takes effect before the next tool is dispatched. If a write is currently in progress, it finishes completely before the agent suspends.
 2. **Pausing During User Question**: The question continues to await user input; when answered, the tool completes and the task immediately freezes in `Paused`.
 3. **Cancellation Priority**: `cancel_task` overrides any state immediately, waking waiters and aborting the task.
+
+### Reading the run's status
+
+"What is the agent doing right now" is not assembled from the frames above: `thunder-agent-root`'s `StatusPlugin` publishes `{"type":"custom","kind":"agent_status","payload":{...}}` on the same `observed_event` stream, with a phase of `idle | thinking | streaming | tool | awaiting_user | paused | compacting | done | error`, the current tool name, and the turn. It publishes **only on a transition** (deduplicated by `seq`), so every frame a consumer receives means something actually moved.
+
+- `paused` and `awaiting_user` are not in the event stream at all — the kernel emits nothing while they hold — so the daemon reports them to the plugin itself: `pause_task`/`resume_task` for the former, an `AwaitingGuard` for the latter while an approval or question dialog is on screen. When both hold, the most recently entered one wins.
+- The protocol version stays put: `custom` is transparent to the NDJSON protocol, and a client that does not know the kind simply ignores it.
 
 ---
 

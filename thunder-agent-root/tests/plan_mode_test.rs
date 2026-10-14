@@ -18,7 +18,8 @@ use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use thunder_agent_root::plugin::ThunderPlugin;
 use thunder_agent_root::plugins::mode::{
     Mode, ModePlugin, APPROVE_AND_AUTO_ACCEPT, APPROVE_BUT_ASK, APPROVE_FULLY_AUTONOMOUS,
-    EXIT_PLAN_MODE_TOOL, KEEP_PLANNING, WRITE_PLAN_TOOL,
+    EXIT_PLAN_MODE_TOOL, KEEP_PLANNING, MODE_CHANGED_EVENT_KIND, MODE_CHANGE_SOURCE_PLAN_APPROVED,
+    WRITE_PLAN_TOOL,
 };
 
 /// A panel that answers from a script and records every request it was handed.
@@ -77,7 +78,6 @@ impl HostUi for ScriptedUi {
 /// A tool that succeeds and claims the plan effect, to prove the exemption is
 /// keyed on the *name* and not on what a tool says about itself.
 struct ClaimsPlanEffect;
-
 #[async_trait::async_trait]
 impl AgentTool for ClaimsPlanEffect {
     fn definition(&self) -> ToolDefinition {
@@ -147,6 +147,28 @@ async fn run(
         ..Default::default()
     };
     executor.run_tool(&call, ctx, None).await
+}
+
+/// A sink that keeps what a tool reported, so a test can see the side channel a
+/// tool has for news the kernel does not interpret.
+#[derive(Debug, Default)]
+struct RecordingSink {
+    events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl RecordingSink {
+    fn events(&self) -> Vec<(String, serde_json::Value)> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl ToolEventSink for RecordingSink {
+    fn emit_custom(&self, kind: &str, payload: serde_json::Value) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((kind.to_string(), payload));
+    }
 }
 
 // ------------------------------------------------------------ the closed door
@@ -449,6 +471,81 @@ async fn approval_flips_the_mode_and_says_which_one() {
             res.output
         );
     }
+}
+
+/// An approval is the one mode change the daemon cannot see coming: this tool
+/// holds the shared `ModeState`, not the plugin, so it reports the transition
+/// down the run's event sink instead. The daemon re-shapes that report into the
+/// frame a client-driven `set_mode` produces, and this is where the report
+/// itself is pinned — payload, source word and all.
+#[tokio::test]
+async fn an_approval_announces_the_mode_it_landed_in() {
+    let (_dir, _plugin, exec) = fixture(Mode::Plan, "s1");
+    let sink = Arc::new(RecordingSink::default());
+    let exec = exec.with_event_sink(Arc::clone(&sink) as Arc<dyn ToolEventSink>);
+
+    run(
+        &exec,
+        ScriptedUi::new(vec![]),
+        WRITE_PLAN_TOOL,
+        serde_json::json!({"content": "# Plan"}),
+    )
+    .await;
+    assert!(
+        sink.events().is_empty(),
+        "writing the plan is not a mode change: {:?}",
+        sink.events()
+    );
+
+    run(
+        &exec,
+        ScriptedUi::new(vec![UiResponse::value(APPROVE_BUT_ASK)]),
+        EXIT_PLAN_MODE_TOOL,
+        serde_json::json!({}),
+    )
+    .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1, "exactly one announcement: {events:?}");
+    let (kind, payload) = &events[0];
+    assert_eq!(kind, MODE_CHANGED_EVENT_KIND);
+    assert_eq!(payload["mode"], "ask");
+    assert_eq!(
+        payload["previous"], "plan",
+        "the transition, not just the value"
+    );
+    assert_eq!(payload["source"], MODE_CHANGE_SOURCE_PLAN_APPROVED);
+}
+
+/// Declining is not a change, so it says nothing. Silence has to be the
+/// default, or a panel learns to ignore the event.
+#[tokio::test]
+async fn staying_in_plan_mode_announces_nothing() {
+    let (_dir, plugin, exec) = fixture(Mode::Plan, "s1");
+    let sink = Arc::new(RecordingSink::default());
+    let exec = exec.with_event_sink(Arc::clone(&sink) as Arc<dyn ToolEventSink>);
+
+    run(
+        &exec,
+        ScriptedUi::new(vec![]),
+        WRITE_PLAN_TOOL,
+        serde_json::json!({"content": "# Plan"}),
+    )
+    .await;
+    let res = run(
+        &exec,
+        ScriptedUi::new(vec![
+            UiResponse::value(KEEP_PLANNING),
+            UiResponse::value("change it"),
+        ]),
+        EXIT_PLAN_MODE_TOOL,
+        serde_json::json!({}),
+    )
+    .await;
+
+    assert!(!res.is_error, "{}", res.output);
+    assert_eq!(plugin.mode(), Mode::Plan);
+    assert!(sink.events().is_empty(), "{:?}", sink.events());
 }
 
 /// The flip lands on the very next call: the kernel asks the gate every time.

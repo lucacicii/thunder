@@ -10,7 +10,13 @@ use thunder_agent_providers::ModelDescriptor;
 /// scans `ping` can therefore tell "a newer thunder" from "a thunder that
 /// answers differently" — the two are not the same question, and before 0.4
 /// there was no way to ask the second one.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// 3 added the pushed `mode_changed` frame. It is additive — a host that does
+/// not know the frame drops it, which is what every host did before — so the
+/// bump is for the record rather than a handshake. Nothing gates on it: a
+/// client that never reads `ping` still works, and an older daemon simply never
+/// pushes the frame.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Incoming command from host (Electron / CLI) via stdin
 #[derive(Debug, Deserialize)]
@@ -194,6 +200,23 @@ pub struct Attachment {
     pub name: Option<String>,
 }
 
+/// What made a session's mode change.
+///
+/// A panel uses it to say *why* the chip moved: a user's own toggle needs no
+/// comment, an approved plan is worth announcing ("the plan was approved, the
+/// mode is now ask"), and a run that pinned a mode explains a jump nobody
+/// clicked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeChangeSource {
+    /// A client's `set_mode`.
+    User,
+    /// `exit_plan_mode`'s approval dialog.
+    PlanApproved,
+    /// A `run_task` that pinned this run's mode.
+    RunOption,
+}
+
 /// Outgoing message to host (Electron) via stdout
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -255,6 +278,25 @@ pub enum DaemonResponse {
         session_id: Option<String>,
         steering: Vec<String>,
         follow_up: Vec<String>,
+    },
+    /// The approval mode a session is judged by changed.
+    ///
+    /// Pushed for **every** change, whatever made it. A client that called
+    /// `set_mode` gets this in addition to its `response`; a client that only
+    /// watched gets this alone, which is the point — before it, a panel could
+    /// see a mode only by asking for it.
+    ///
+    /// `previous` is carried so a consumer can render the transition
+    /// ("plan → yolo") rather than a bare value it must diff itself.
+    ModeChanged {
+        session_id: String,
+        /// Present when the change happened inside a run (a plan approval).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+        mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<String>,
+        source: ModeChangeSource,
     },
     /// A dialog the agent (or a plugin) wants answered. Blocks that caller until
     /// `answer_ui` arrives or `timeout_ms` elapses — on expiry the daemon

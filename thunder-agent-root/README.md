@@ -17,14 +17,15 @@
      - **`SkillsPlugin`**：Playbook 技能库发现、Prompt 注入与动态加载工具。
      - **`McpPlugin`**：Model Context Protocol 远程服务连接与工具桥接。
      - **`MetricsPlugin`**：模型遥测——实时/平均 tok/s、token 明细、prompt cache 命中率、上下文占用与耗时；以 `metrics_update` 自定义事件随流推送，不侵入内核。
+     - **`StatusPlugin`**：执行状态——Agent 此刻在思考/流式/跑哪个工具/等谁/是否暂停/跑完了；以 `agent_status` 自定义事件**仅在跃迁时**随流推送，是「现在在干什么」的唯一权威。
 2. **确定性极速意图路由（Zero-LLM Latency Activation）**：
    - 彻底摒弃带来 1~2 秒延迟的二次 LLM 意图分类。
-   - `PluginSelector` 确立**确定性基线**：会话、技能、记忆、网页与遥测插件对每次任务常驻激活；
+   - `PluginSelector` 确立**确定性基线**：会话、技能、记忆、网页、遥测与执行状态插件对每次任务常驻激活；
    - 复杂扩展（如 MCP 服务器等）仅在用户 Prompt 命中特定意图关键词时精准激活，兼顾**零额外延迟、最小 Token 消耗与最强可扩展性**。
 3. **全局技能扫描缓存（120s TTL）**：
    - 内置 `DEFAULT_SKILLS_CACHE`，对本地与全局技能目录文件树建立带 120 秒有效期的全局缓存，消除高频对话下的磁盘 I/O 阻塞。
 4. **一键标准插件装配（`StandardHostBuilder`）**：
-   - 开箱即用的装配入口，默认挂载会话、遥测、记忆、网页、技能与 MCP 标准插件；宿主专属能力（如 daemon 的 `ask_user`）在 `build` 之后用 `ThunderRoot::with_plugin` 追加。
+   - 开箱即用的装配入口，默认挂载会话、遥测、执行状态、记忆、网页、技能与 MCP 标准插件；宿主专属能力（如 daemon 的 `ask_user`）在 `build` 之后用 `ThunderRoot::with_plugin` 追加。
 
 ---
 
@@ -65,10 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | :--- | :--- | :--- | :--- |
 | **`conversation`** | 会话持久化 | **基线常驻** | 追踪多轮对话、更新 `index.json` 索引并执行原子落盘 |
 | **`metrics`** | 模型遥测 | **基线常驻** | 跟踪实时/平均 tok/s（剔除 TTFT 与工具耗时）、token 明细、cache 命中率、上下文占用与总耗时；推送 `metrics_update` 快照 |
+| **`agent_status`** | 执行状态 | **基线常驻** | 每个会话一份权威快照：阶段（`idle`/`thinking`/`streaming`/`tool`/`awaiting_user`/`paused`/`compacting`/`done`/`error`）+ 当前工具 + 轮次；`agent_status` 自定义事件**仅在跃迁时**推送（`seq` 单调），`awaiting_user`/`paused` 由宿主经 `note_awaiting`/`note_paused` 补报 |
 | **`skills`** | 技能库解析 | **基线常驻** | 扫描 `~/.agents/skills`，暴露 `load_skill` / `list_skills` 工具 |
 | **`mcp`** | MCP 客户端 | 触发词动态激活 | 连接外部 MCP 服务器并暴露远程工具 |
 | **`memory`** | 长期记忆 | **基线常驻** | 分层加载 `.thunder` 的 `THUNDER.md` / `memory/*.md`，追加进系统提示 |
-| **`mode`** | 审批模式门 | **宿主显式安装** | 实现 `ToolGate`：`plan` / `ask` / `acceptEdits` / `yolo`，并携带 `write_plan` / `exit_plan_mode` |
+| **`mode`** | 审批模式门 | **宿主显式安装** | 实现 `ToolGate`：`plan` / `ask` / `acceptEdits` / `yolo`，并携带 `write_plan` / `exit_plan_mode`；档位变化经 `set_mode_announcing` 播报（同值不播报） |
 | **`web`** | 网页工具 | **基线常驻** | `web_fetch`：抓取 URL、HTML 转 markdown，用 utility 模型按 prompt 提炼答案（无 utility 模型时回退 markdown）；`web_search`：走免 key 引擎（DuckDuckGo 主、Exa 兜底）返回标题/链接/摘要 |
 
 ---

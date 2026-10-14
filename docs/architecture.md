@@ -458,7 +458,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 | 微增量（`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`） | broadcast + mpsc | `try_send`，**绝不阻塞引擎** |
 | 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被静默丢弃（见 §18.5） |
 
-`AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。
+`AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。随仓的 kind 有四个：`file_change`（代码包）、`mode_changed`（模式插件，§11.4）、`metrics_update`（遥测插件，§11.8.1）、`agent_status`（状态插件，§11.8.2）——前两个由工具/插件自己发，后两个由**宿主**在 `take_events` 里按 `seq` 变化追加。
 
 ---
 
@@ -763,7 +763,7 @@ flowchart TB
 - `ThunderPlugin::tool_gate()`（`plugin.rs:297`）被 `execute` 忽略——只安装模式插件（`host.rs:685`）。
 - `ToolInvoker::invoke` 只有测试调用（`pack-code/tests/plugin_call_tool_test.rs`），没有任何随仓插件使用 `ctx.tool_slot()`。
 
-**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
+**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`、在状态真的跃迁时追加一条 `AgentEvent::Custom { kind: "agent_status" }`（§11.8.2）。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
 
 `TriggerSpec`（`plugin.rs:25-47`）：`keywords` + `auto_always` + `description_for_llm`；`TriggerSpec::always()` 是常驻基线。
 
@@ -786,7 +786,7 @@ flowchart TB
 3. session id（缺省 `sess_1`）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:423-438`
 4. 插件选择（`forced_plugins` 短路，否则会话锁定启发式）`:440-452`
 5. `create_active_set` `:461-463`
-6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）；随后配置并挂上 `MetricsPlugin`（`:494-528`）`:465-490`
+6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）；随后配置并挂上 `MetricsPlugin`（`:494-528`）`:465-490`，执行状态插件同批解析——选择器没选中它时**直接 push**（`:651-659`），理由是宿主自己也持有这个实例并读它的快照（§11.8.2）
 7. 构造 `PluginContext`（空 `ToolInvokerSlot`、取消令牌、模式、ui、route、prompt、workspace、scratch）`:540-553`
 8. `dispatch_init`（任一插件 `InitFailed` 中止 execute）`:556`
 9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:559-629`
@@ -819,6 +819,20 @@ flowchart TB
 2. **plan 拒绝文案必须给出出口**，否则模型会反复重试（见 `docs/permission-structure.md` §7）。
 3. **plan 工具豁免按名字，不按 `ToolEffect`**（`mode.rs:438-447`）——否则任何工具都能自称 `PlanArtifact` 绕过（测试 `a_self_declared_plan_effect_is_not_an_exemption`）。
 
+**每次模式变化都会被播报，且只在真的变了时播报。** 这条由 `ModePlugin::set_mode_announcing`（`mode.rs:392-399`）承担：它翻转并返回被替换掉的旧档位，档位本来就相同则返回 `None`。daemon 侧三条路都汇进 `emit_mode_changed`，推同一帧 `mode_changed`（`protocol.rs`）：
+
+| 谁改的 | `source` | `task_id` |
+|---|---|---|
+| 客户端的 `set_mode` | `user` | 无 |
+| `run_task` 钉了本次 run 的档位 | `run_option` | 有 |
+| `exit_plan_mode` 被批准 | `plan_approved` | 有 |
+
+为什么要"同值不播报"：宿主在**每次 run 开始**都无条件 `set_mode`（`host.rs:475`），若同值也播报，每轮都会冒一帧、面板很快就会学会忽略它。`get_permission_state` 对一个尚不存在的会话是**以所请求的档位创建**它（`service.rs:751`），因此那次 `set_mode` 也没有"转变"可播报——客户端从 `response` 的 `data.mode` 拿确认。
+
+第三行是唯一 daemon 看不见的变化：`ExitPlanModeTool` 持有的是共享的 `Arc<ModeState>`（`mode.rs:575-577`）而非插件，它直接翻状态，只能通过**本次 run 的 event sink** 以 `AgentEvent::Custom{kind:"mode_changed"}`（`MODE_CHANGED_EVENT_KIND`）申报；daemon 的事件泵把它翻成上面那张表里的同一个顶层帧（`service.rs` 的事件泵）。custom 事件本身照旧原样转发，不吞。sink 是可选的，批准**没有 sink 也必须成功**。
+
+范围限定：这条承诺覆盖的是 **daemon 的客户端**。TUI 是另一个进程里另一个 `ModePlugin` 实例，收不到这个帧。新增会改会话档位的调用点时，必须走 `set_mode_announcing` 才会被播报。
+
 `Mode::parse`（`mode.rs:91-104`）接受历史名：`ask|default|manual|mutations|writes|always|all` → `Ask`；`acceptedits|accept_edits|shell_only|ask_shell` → `AcceptEdits`；`yolo|never|none|bypass|bypass_permissions|bypasspermissions` → `Yolo`。**`plan` 的语义被修正**（0.3 把它解析成 `never`，与"计划"完全相反）。`Mode::default() == Yolo`（`mode.rs:54-63`）。
 
 ### 11.5 `AllowRule` 的窄化
@@ -841,7 +855,7 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 ### 11.6 plan 模式的两个工具
 
 - `write_plan`（效果 `PlanArtifact`，`:542-544`）：参数 `{ content }`，整体覆盖写到 `<workspace>/.thunder/plans/<sanitize(session)>.md`（`plan_path`，`:157-162`）。`sanitize_session_id`（`:139-154`）把非 `[A-Za-z0-9._-]` 一律换成 `_`，`""`/`"."`/`".."` 落回 `"session"`——**jail 删除后这是真实注入点**（daemon 的 session_id 来自客户端），测试直接钉住 `../../../etc/evil` 逃不出去。写入复用 `WriteFileTool::write_cancellable`，同一把 per-path 锁与原子语义。
-- `exit_plan_mode`（效果 `Read`，`:592-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。
+- `exit_plan_mode`（效果 `Read`，`:592-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。批准（`approve`，`:732-756`）在翻完档位后往本次 run 的 event sink 发一条 `mode_changed`（带 `mode`/`previous`/`source:"plan_approved"`，常量 `mode.rs:130-135`），daemon 据此推 `mode_changed` 帧——这是 daemon 自己看不见的那条变化（见 §11.4）。"No, keep planning" 与无答案都**不播报**：没有变化就没有事件。
 
 ### 11.7 记忆与配置
 
@@ -877,6 +891,18 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 - **消费方**：TUI 在 `handle_agent_event` 里反序列化 `metrics_update` 直接刷新状态栏；daemon 随 `observed_event` 一并转发给宿主，并把它写进 trace；桌面面板与 prototype-edit-llm 都以快照为准（含「总耗时」＝`wall_duration_ms`，它每帧都在刷，而 `turn_end` 的 `duration_ms` 只是**该轮**耗时）。
 - `TraceCollector` 不保留 `metrics_update`：它是从流派生的高频遥测，最终快照已存在 trace 顶层，逐条保留既无信息量又会顶掉真实事件（`trace_collector.rs:59-68`）。
 
+### 11.8.2 执行状态插件：`StatusPlugin`
+
+`StatusPlugin`（`plugins/status.rs`）回答的是**另一个问题**：Agent 现在在干什么。遥测说「多少」，它说「什么」，两者不重叠。装配关系同遥测（`baseline_forced_plugins` 固定含 `agent_status`），但多一层保证：`execute` 在选择器没选中它时仍会 `push` 宿主持有的那个实例（`host.rs:651-659`），所以经 `StandardHostBuilder` 装配的宿主必然发布状态，不会因关键词选择而漂移。
+
+- **词汇**：`AgentPhase`（serde `snake_case`）= `idle | thinking | streaming | tool | awaiting_user | paused | compacting | done | error`；载荷 `AgentStatusSnapshot { session_id, phase, tool?, turn, detail?, started_at_ms, seq }`（`tool`/`detail` 省略空值）。`done`/`error` 是黏滞终态（`is_terminal()`）；**`Cancelled` 刻意落在 `idle`**——它是"没有 run"的静止档，因此不算终态。
+- **状态机折自事件流**：`TurnStart→thinking`、`TokenDelta|ReasoningDelta→streaming`、`ToolExecStart→tool`（记工具名）、**整批** `ToolExecResult` 到齐才回 `thinking`（并行调用不会在第一个结果落地时就掉回）、`ContextCompacted→compacting`（detail 记 token 变化）、`LoopComplete→done/error/idle`。**终态必须在 `on_event` 的 `LoopComplete` 里落定，不能放 `on_finish`**：`dispatch_finish` 跑在 `join()` 里，那时事件流已排空，再改状态没有接收方（§11.2 的 `dispatch_drained` oneshot 就是为这个顺序存在的）。run 落定后引擎的解流事件（`tool_exec_result` 之类）不会把状态"复活"。
+- **两个只有宿主知道的阶段**：`awaiting_user` 与 `paused` 在事件流里**根本不存在**——审批/提问时 gate 阻塞在 `ToolExecutor::execute_all` 内部，内核一条事件都不发；暂停门同理。所以插件公开 `note_awaiting(session_id, bool)` / `note_paused(session_id, bool)`，由**弹窗的那一方**调用。等待是 `base` 之上的**视图**而非替换（取最新进入的那个等待，`set_base` 不碰等待）——工具轮里弹了审批，答完回到 `tool` 而不是 `thinking`；两个等待互不覆盖（可以既暂停又有个问题在屏幕上）。**清除必须 RAII**（daemon 的 `AwaitingGuard`，`ui.rs`）：一次等待有四条出口（作答 / 取消 / 超时 / 通道关闭），只在部分出口清的状态比不清更糟。
+- **发布点只有一处**：`RootRunHandle::take_events`（`host.rs`）逐条转发后比对 `seq`，**变了才**追加 `AgentEvent::Custom { kind: "agent_status" }`——照 `metrics_update` 的先例，但按变化去重（遥测每帧都发，状态只在跃迁时发；`seq` 让消费者能丢弃乱序/重复帧）。该代理同时 `select!` 插件的 `watch` 变化信号：**宿主驱动的等待必须在没有任何内核事件在飞的时候也能被看见**，否则审批期间消费者看到的是一个"看起来在忙"的运行（这正是 `agent_status_stream_test.rs` 断言的那条）。
+- **宿主侧补位的两条**：daemon 在 `ui.rs` 的 `dispatch` 用 `AwaitingGuard` 报 `awaiting_user`，在 `PauseTask`/`ResumeTask` 里按 `task_id → session_id` 报 `paused`（任务表与 session 是两套 id，`LiveQueue` 因此记着 `session_id`）。
+- **消费方**：daemon 把它当普通 `observed_event` 原样转发给宿主（**协议不用升版**：`custom` 对协议透明）；TUI 不解析事件，直接读同一实例的快照并翻译成 OSC 7501 交给终端（§17.4）；宿主若自己驱动 `AgentLoop`（TUI 的 `/single` 直连路径不建 `ThunderRoot`），用 `StatusPlugin::begin_run` + `record_session_event` 手工喂养——这两个 API 存在就是因为那条路径没有插件宿主，而**两份状态机是不允许的**。
+- **trace 里留着**（与 `metrics_update` 相反）：`TraceCollector` 只过滤遥测快照，状态帧会照常进 `events`。它低频（一次 run 通常个位数）且正是「宿主当时看到的是这个」的证据；TUI 的 trace 视图会以通用 `✦ agent_status` 行显示（和 `mode_changed` 一样走 `app.rs` 的兜底分支，没有专门渲染）。
+
 ### 11.9 已知细节
 
 - `create_active_set` 迭代 `HashMap`（`registry.rs:76`），插件顺序（进而工具注册顺序与提示块拼接顺序）**跨 `PluginRegistry` 实例不确定**；TUI/daemon 每请求重建 `ThunderRoot`，因此可能逐轮置换提示段顺序。模式插件是显式 `push` 的，所以它的块总在最后。`[INFERENCE]`（单个注册表实例内稳定，实例间受 `RandomState` 影响）
@@ -908,7 +934,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 | method | 关键字段 | 效果 |
 |---|---|---|
-| `ping` | `id` | `{pong:true, version, protocol:2}` |
+| `ping` | `id` | `{pong:true, version, protocol:3}` |
 | `list_models` | `id` | 重载 `ProviderRegistry`，返回模型目录 + `utility_model` |
 | `list_conversations` | `id` | `store.list(filter.with_min_turns(1))` |
 | `get_conversation` | `session_id` | 会话 JSON |
@@ -919,7 +945,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 | `answer_question` | `question_id`, `answers?`, `cancelled?` | 释放阻塞中的 `ask_user_question` |
 | `answer_ui` | `request_id`, `value?`, `confirmed?`, `cancelled?` | 释放 `ui_request` 弹窗 |
 | `get_permission_state` | `session_id` | `{mode, rules}` |
-| `set_mode` | `session_id`, `mode` | 未知模式 → `success:false` + `unknown mode '…': expected one of plan \| ask \| acceptEdits \| yolo`，**绝不静默回落** |
+| `set_mode` | `session_id`, `mode` | 未知模式 → `success:false` + `unknown mode '…': expected one of plan \| ask \| acceptEdits \| yolo`，**绝不静默回落**；档位真的变了则**在 `response` 之后再推一条 `mode_changed`**（顺序如此，见 §11.4） |
 | `cancel_task` | `task_id` | 移出 `active_tasks` 后 cancel，并记入 `stopping` |
 | `reload_integrations` | `id` | 关 MCP 池 + 失效 selection cache（**新名字**：旧 `ReloadPlugins` 的 TS 插件宿主已删） |
 | `get_trace` / `list_traces` | `session_id`, `task_id?` | 读 `<store>/<session>/traces/*.json` |
@@ -932,7 +958,9 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
-运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `SteerAccepted` 时补发队列快照）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
+运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`、`.with_status_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session, status_plugin), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `agent_status` 快照 + `SteerAccepted` 时补发队列快照 + `mode_changed` 的 custom 事件翻成顶层 `mode_changed` 帧）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
+
+id 归属：daemon 的状态插件实例挂在 `DaemonService` 上（跨 run 共享），`scoped()` 除了 `task_id` 还带 `session_id` 与插件句柄——审批弹窗期间 `AwaitingGuard` 就是从这里报 `awaiting_user` 并保证四条出口都清干净（§11.8.2）。暂停同理：`pause_task`/`resume_task` 拿 `task_id` 去 `active_queues` 换 `session_id` 再报 `paused`，因为任务表和会话是两套 id。
 
 ### 12.4 并发与背压
 
@@ -1249,11 +1277,13 @@ Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有 74 个 pub 
 
 `TuiRunner::run`（`runner.rs:30-116`）：
 
-1. `needs_redraw` 为真才 `terminal.draw(...)`；
-2. `events.next().await`；`None`（所有 sender 都没了）→ 退出；
-3. `dispatch_event`；
-4. **再 `try_next()` 批量排空最多 32 个事件**——这就是流式 token 的批处理；
-5. `should_quit` → 保存会话后退出。
+1. `app.reconcile_pane_status()`——把宿主侧的两个等待与插件快照折成下一条窗格状态（§17.4）；
+2. `needs_redraw` 为真才 `terminal.draw(...)`；
+3. 有 pending 就往外写一条 OSC 7501（**在 draw 之后、且不受 `needs_redraw` 约束**：它面向终端模拟器而非屏幕缓冲，runner 这里是单线程的，不会和 ratatui 的半帧绘制交错）；
+4. `events.next().await`；`None`（所有 sender 都没了）→ 退出；
+5. `dispatch_event`；
+6. **再 `try_next()` 批量排空最多 32 个事件**——这就是流式 token 的批处理；
+7. `should_quit` → 保存会话后退出（退出前补一条 `state=idle`，§17.4）。
 
 终端线程是**独立的 OS 线程**（`event.rs:68-104`），阻塞在 `crossterm::event::read()`，所以既不占 tokio worker，也能在按键落下的瞬间被读到；`Interrupted` 重试，其它错误终止。鼠标 `Moved` 事件在读取线程被**合并**（前一个未处理则丢弃），在 `handle_mouse` 里再次只在悬停目标变化时标脏——这是 AnyEvent 鼠标追踪下的已知 CPU 大户。
 
@@ -1281,9 +1311,18 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 `submit_prompt`（`app.rs:3988-4092`）：剥离 `/single`、`/auto` 前缀 → 折叠 `pending_images` 进用户 turn → 状态 `Thinking` + `clear_run_state` + `auto_scroll` → 把 model/workspace/thinking/shared_roots 绑到会话 → 判断首轮 → 首轮且标题占位时写 `provisional_title` → `begin_trace(prompt)`（`task_id = run_<now_ms>`）→ `save_and_refresh()` → 新建 `CancellationToken` / `PauseGate` / `SteerQueues` / `metrics.begin_run()` → 分派到 `run_single_agent` 或 `run_root_agent`。
 
-`run_root_agent`（`app.rs:4094-4256`）构造 `AgentConfig`（`with_unlimited_turns`、`session_id = conversation.id` 做缓存亲和、`pruning.max_context_tokens = spec.context_window`、`prompt_cache_warm`），包进 `StandardHostBuilder`，可选挂 `AskUserPlugin`，然后 `RootRunOptions { route: run_id, ui: TuiHostUi, mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(has_mcp_config) }`。
+`run_root_agent`（`app.rs:4094-4256`）构造 `AgentConfig`（`with_unlimited_turns`、`session_id = conversation.id` 做缓存亲和、`pruning.max_context_tokens = spec.context_window`、`prompt_cache_warm`），包进 `StandardHostBuilder`（带 `.with_status_plugin(App 自己的实例)`，见下），可选挂 `AskUserPlugin`，然后 `RootRunOptions { route: run_id, ui: TuiHostUi, mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(has_mcp_config) }`。
 
 **route 就是 trace 的 task_id**（`app.rs:4154-4160` 注释）：一次 run 两个名字会导致文件里的 `task_id` 与文件名不符。
+
+**窗格状态：OSC 7501**（`pane_status.rs`）：把「这个运行在干什么」写给**终端**。宿主面板（agent-resume-panel 的 `cli:thunder` 窗格）只看得见 pty 上的字节，OSC 7501 正是它扫的 Program Status Protocol——因此不需要 socket、不需要握手、也不需要面板配合。
+
+- **读快照，不解析事件**：`App::reconcile_pane_status` 每帧从 `self.status_plugin`（与 root 共用的那个实例）取 `snapshot()`，顺带用 `note_awaiting` / `note_paused` 补上两个只有终端知道的等待。**不建第二条状态机**是硬要求；`/single` 直连路径没有插件宿主，由 `begin_run` + `record_session_event` 手工喂养同一个实例，所以两种执行模式报的是同一份状态（这也是 `handle_agent_event` 里没有 `agent_status` 分支的原因：那条 `Custom` 帧只有其他宿主消费）。
+- **只在报告变了时发**（`PaneStatus` 记着上一条正文）：同一阶段内的 `turn` 变化不发，否则 pty 上全是噪声。
+- **协议的三条硬约束**：不带 `id=`（带 id 的记录算子记录，不拥有 pane）；`state` 是闭集 `working|blocked|error|idle|done|clear`（未知值整条丢弃）；键 `[a-z]{1,16}`、值 `[A-Za-z0-9_.,+/=-]*`、单条 ≤ 4096 字节。所以工具名不合法时**只丢 `kind` 对**，不废掉整条报告（MCP 工具名带空格/括号/冒号很常见）。
+- **从第一帧就开始报，而不是从第一次 run 开始**：一条 `idle` 报告同时也是**给窗格命名**的动作——面板是从报告本身知道这个窗格里跑的是哪个程序的（`app=thunder`），沉默到有活干为止的 TUI 在那之前是个匿名窗格。
+- **退出补一条 `idle`**：窗格活得比进程久，而一旦某个程序报过状态，面板就**不再读该窗格的屏幕**了——不撤记录的话，退出后接管的 shell 会一直被当成「工作中」。从没报过状态的 `PaneStatus` 保持沉默：报告本身就是"改权威"的动作，不是装饰（对自己直接跑的终端无害，对面板是有意义的声明）。
+- **不发探测序列** `ESC ] 7501 ; ?`：面板的回执会写进 pty 的 stdin，被 TUI 当成键盘输入。
 
 `handle_agent_event`（`app.rs:4432-4615`）逐事件映射：
 
@@ -1495,10 +1534,10 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 |---|---|---|
 | loop | 14 个（`tests/*.rs`） | 单元契约（并行/忙/取消隔离）、完整生命周期、流中断三分支、checkpoint 压缩与紧急裁剪、溢出自动修复、pause/steer、trace 的 14 条出口、UTF-8 安全、缓存保温 |
 | pack-code | 8 个 | 工具行为、守卫、路径作用域、权限层、插件调用、安全守卫 |
-| root | 17 个 | 模式矩阵 15 格、plan 模式端到端、host UI 两阶段、记忆写入 jail、配置分层、选择缓存、无 gate 全放行 |
+| root | 18 个 | 模式矩阵 15 格、plan 模式端到端、host UI 两阶段、记忆写入 jail、配置分层、选择缓存、无 gate 全放行、执行状态流（`agent_status` 只在跃迁时出现、且宿主驱动的等待在无事件时也送达） |
 | daemon | 3 个 | 真实二进制的 IPC（`CARGO_BIN_EXE_thunder-daemon`）、模式协议、数据根隔离 |
 | conversation | 5 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
-| tui | 20 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker |
+| tui | 21 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker、窗格状态（OSC 7501） |
 | providers | 2 个 | 目录解析、思考档位、compat/cost 透传、保温推导、元数据缓存 |
 | skills / mcp / runtime | 1 / 2 / 0 个 | 解析/发现/桥接、JSON-RPC 往返；**`runtime` 没有 `tests/` 集成测试文件**（其 JSONL 协议只由 crate 内单测覆盖）；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留** |
 
@@ -1516,12 +1555,14 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 | `root/tests/mode_matrix_test.rs::a_rule_does_not_leak_into_plan_mode` | plan 跳过 allow 规则 |
 | `root/tests/plan_mode_test.rs::a_hostile_session_id_cannot_escape_the_plans_directory` | session id 消毒是唯一防线 |
 | `root/tests/gate_absent_allows_test.rs::without_a_gate_everything_the_guard_allows_runs` | 无 gate 全放行是契约 |
+| `root/tests/agent_status_stream_test.rs::a_run_publishes_its_status_and_reports_a_host_reported_wait_without_an_event` | 状态帧只在跃迁时出现、工具阶段带工具名，且**宿主补报的等待在运行的模型请求仍在途中（一条内核事件都没有）时也能送达消费者**——`take_events` 那个 `select!` 存在的唯一理由 |
 | `pack-code/tests/path_scope_test.rs::a_dangerous_command_is_refused_in_every_mode` | 守卫在 gate 之前 |
 | `daemon/tests/thunder_home_isolation_test.rs::daemon_writes_only_under_the_injected_root` | 数据根可被整体重定向 |
 | `conversation/tests/durability_test.rs::fs_store_refuses_a_conversation_without_a_user_turn` | 持久化门禁（连目录都不建） |
 | `conversation/tests/store_concurrency_test.rs::concurrent_new_on_a_clean_root_succeeds` | 构造竞态重试 |
 | `tui/tests/transcript_order_test.rs::thinking_survives_the_authoritative_replacement` | thinking 重新附着 |
 | `tui/src/links.rs::dangerous_schemes_are_rejected`（模块内单测） | `javascript:`/`data:` 等被丢弃 |
+| `tui/tests/pane_status_test.rs::a_run_walks_the_pane_from_working_through_its_tool_to_done` | 窗格报告的字面形状：`app=thunder`、绝不带 `id=`、阶段词表与 `kind=` 的取舍——**报错的格式等于没报**，所以断言直接打在字节上 |
 | `mcp/tests/stdio_lifecycle_test.rs::a_real_stdio_server_survives_spawn_and_serves_requests` | 真实 stdio server 在 spawn 后存活，且 `close()` 真的终止进程（`pgrep` 归零） |
 | `mcp/tests/stdio_lifecycle_test.rs::a_silent_server_times_out_and_leaves_no_pending_entry` | 静默 server 不挂住调用（可配置时限），且超时不留 pending 残留 |
 | `mcp/tests/stdio_lifecycle_test.rs::an_explicit_zero_timeout_opts_out_of_the_bound` | `timeout_ms = 0` 真的放弃时限；`close()` 释放所有 parked 请求 |
@@ -1563,6 +1604,7 @@ cargo clippy -p thunder-agent-mcp --all-targets -- -D warnings  # 通过（exit 
 | 让某路径免问 | 实现/扩展 `ToolScope`（`loop/types/scope.rs:57-73`），注意它只能放宽 |
 | 收 trace 到自定义存储 | 实现 `ToolTraceSink`（`loop/tools/trace.rs`）或排 `AgentEvent::ToolTrace` |
 | 加一个插件 | 实现 `ThunderPlugin`（`root/plugin.rs:277-328`）→ `ThunderRoot::with_plugin` |
+| 加一个 Phase / 状态词汇 | `root/plugins/status.rs` 的 `AgentPhase` + `apply_event`（**同时**改 TUI 的 `pane_status.rs::state_for` 与桌面面板的映射表，否则新档位会被协议丢掉） |
 | 加一个斜杠命令 | `tui/commands.rs:69` 的表 + `tui/app.rs:2965` 的 match（两处都要改） |
 | 加一个 UI 模块 | `tui/ui/mod.rs` 的 `draw` 里插一段布局 |
 | 换模型方言 | `providers/convert.rs::SUPPORTED_APIS` + `client.rs::with_model` 的 match |

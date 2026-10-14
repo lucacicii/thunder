@@ -119,6 +119,21 @@ impl Mode {
 pub const WRITE_PLAN_TOOL: &str = "write_plan";
 pub const EXIT_PLAN_MODE_TOOL: &str = "exit_plan_mode";
 
+/// Custom event `kind` raised whenever the mode a session is judged by changes.
+///
+/// It lives on this side because the one mode change the daemon cannot see is
+/// the plan approval: [`ExitPlanModeTool`] holds an `Arc<ModeState>`, not the
+/// plugin, so it flips the mode directly and reports the transition through the
+/// run's event sink. The daemon re-shapes that custom event into the same
+/// pushed frame a client-driven `set_mode` produces, so a panel has one
+/// contract to consume.
+pub const MODE_CHANGED_EVENT_KIND: &str = "mode_changed";
+
+/// The `source` word for a mode change the approval dialog made. Spelled here
+/// because this is what emits it; the daemon's own `ModeChangeSource` enum
+/// serialises to the same words.
+pub const MODE_CHANGE_SOURCE_PLAN_APPROVED: &str = "plan_approved";
+
 /// What the plan review offers, in the order the options appear. These are the
 /// strings on the wire and in the dialog; the answers are matched against
 /// them, so a translation of the panel must answer with the option it showed.
@@ -361,6 +376,26 @@ impl ModePlugin {
     /// Flip the mode. The next call is judged by it.
     pub fn set_mode(&self, mode: Mode) {
         self.state.set_mode(mode);
+    }
+
+    /// Flip the mode and report the transition, or `None` when this session was
+    /// already in `mode`.
+    ///
+    /// Every caller that can change a *user's* session mode goes through here,
+    /// so "a no-op raises no event" is one rule in one place. That matters
+    /// because the host re-applies the run's mode at every run start
+    /// (`host.rs`), which would otherwise look like a change every turn.
+    ///
+    /// A caller that only calls [`Self::set_mode`] is deliberately not
+    /// announced; the plan approval is the one such caller, and it reports
+    /// through the run's event sink instead — see [`MODE_CHANGED_EVENT_KIND`].
+    pub fn set_mode_announcing(&self, mode: Mode) -> Option<Mode> {
+        let previous = self.mode();
+        if previous == mode {
+            return None;
+        }
+        self.state.set_mode(mode);
+        Some(previous)
     }
 
     /// Bind the session this plugin judges: where the plan file lives and what
@@ -645,9 +680,9 @@ impl AgentTool for ExitPlanModeTool {
         };
 
         match choice {
-            APPROVE_AND_AUTO_ACCEPT => self.approve(Mode::AcceptEdits),
-            APPROVE_BUT_ASK => self.approve(Mode::Ask),
-            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo),
+            APPROVE_AND_AUTO_ACCEPT => self.approve(Mode::AcceptEdits, ctx),
+            APPROVE_BUT_ASK => self.approve(Mode::Ask, ctx),
+            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo, ctx),
             KEEP_PLANNING => {
                 let feedback = ui
                     .request(
@@ -688,8 +723,25 @@ impl AgentTool for ExitPlanModeTool {
 impl ExitPlanModeTool {
     /// Apply the user's approval: the mode flips, and the model is told which
     /// mode is now judging it.
-    fn approve(&self, mode: Mode) -> Result<String, String> {
+    ///
+    /// The flip goes to `state` rather than the plugin's announcing setter, so
+    /// the transition is reported here instead — through the run's event sink,
+    /// which is the only channel a tool has. The sink is optional (a direct
+    /// `execute` in a test has none) and the announcement is a pure side
+    /// channel: an approval must still succeed without it.
+    fn approve(&self, mode: Mode, ctx: &ToolExecutionContext) -> Result<String, String> {
+        let previous = self.state.mode();
         self.state.set_mode(mode);
+        if let Some(sink) = ctx.event_sink.as_ref() {
+            sink.emit_custom(
+                MODE_CHANGED_EVENT_KIND,
+                serde_json::json!({
+                    "mode": mode.as_str(),
+                    "previous": previous.as_str(),
+                    "source": MODE_CHANGE_SOURCE_PLAN_APPROVED,
+                }),
+            );
+        }
         Ok(format!(
             "Plan approved. Mode is now {}. Calls are judged by it from the next one on.",
             mode.as_str()

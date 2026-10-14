@@ -22,10 +22,45 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_root::prelude::StatusPlugin;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
 use crate::protocol::DaemonResponse;
+
+/// Holds a session at `awaiting_user` for as long as it lives.
+///
+/// A dialog is the one thing that parks a run with nothing on the wire: the gate
+/// blocks inside tool execution, and the engine emits no event until the answer
+/// arrives. Without this, a status consumer sees a run that looks busy — or,
+/// once the events stop, idle — while the user is in fact being waited on.
+///
+/// A guard rather than a matched pair of calls because every wait here has four
+/// ways out (answered, cancelled, timed out, channel closed) and a clear that
+/// only runs on some of them is worse than none.
+pub(crate) struct AwaitingGuard {
+    plugin: StatusPlugin,
+    session_id: String,
+}
+
+impl AwaitingGuard {
+    /// Mark `session_id` as waiting, or return `None` when there is no status
+    /// plugin to tell. Either way the caller keeps its own flow.
+    pub(crate) fn enter(status_plugin: Option<&StatusPlugin>, session_id: &str) -> Option<Self> {
+        let plugin = status_plugin?.clone();
+        plugin.note_awaiting(session_id, true);
+        Some(Self {
+            plugin,
+            session_id: session_id.to_string(),
+        })
+    }
+}
+
+impl Drop for AwaitingGuard {
+    fn drop(&mut self) {
+        self.plugin.note_awaiting(&self.session_id, false);
+    }
+}
 
 /// Pending dialogs awaiting an answer, keyed by the server-issued request id.
 pub type PendingUiRequests = Arc<Mutex<HashMap<String, oneshot::Sender<UiResponse>>>>;
@@ -52,15 +87,22 @@ impl DaemonHostUi {
     }
 
     /// Bind a task/session to every dialog raised through the returned handle.
+    ///
+    /// `status_plugin` is the run's execution-status plugin, when the host
+    /// installed one: a dialog is reported as `awaiting_user` for as long as it
+    /// is on screen. It belongs on the run-scoped handle rather than the shared
+    /// one because only this form knows *which* run is waiting.
     pub fn scoped(
         self: &Arc<Self>,
         task_id: impl Into<String>,
         session_id: Option<String>,
+        status_plugin: Option<StatusPlugin>,
     ) -> ScopedHostUi {
         ScopedHostUi {
             base: Arc::clone(self),
             task_id: task_id.into(),
             session_id,
+            status_plugin,
         }
     }
 
@@ -145,11 +187,18 @@ pub struct ScopedHostUi {
     base: Arc<DaemonHostUi>,
     task_id: String,
     session_id: Option<String>,
+    status_plugin: Option<StatusPlugin>,
 }
 
 #[async_trait]
 impl HostUi for ScopedHostUi {
     async fn request(&self, source: UiSource, request: UiRequest) -> UiResponse {
+        // A dialog parks the run with no event on the wire, so the status has to
+        // be told directly. The guard clears it however the wait ends.
+        let _awaiting = self
+            .session_id
+            .as_deref()
+            .and_then(|session| AwaitingGuard::enter(self.status_plugin.as_ref(), session));
         self.base
             .dispatch(
                 source,
@@ -289,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn scoped_handle_tags_the_task() {
         let (mut rx, ui, _p) = ui();
-        let scoped = ui.scoped("task-42", Some("sess-7".into()));
+        let scoped = ui.scoped("task-42", Some("sess-7".into()), None);
         tokio::spawn(async move { scoped.confirm("Proceed?", "This writes files.").await });
         let line = rx.recv().await.unwrap();
         let msg: serde_json::Value = serde_json::from_str(line.trim()).unwrap();

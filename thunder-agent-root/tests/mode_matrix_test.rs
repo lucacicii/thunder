@@ -366,3 +366,33 @@ fn flipping_the_mode_applies_to_the_next_call() {
         Scope::InScope
     )));
 }
+
+/// The announcing setter is the same flip plus a report of what it replaced.
+///
+/// "Nothing changed" must be distinguishable from "changed", because the host
+/// re-applies the run's mode at every run start: without this rule every turn
+/// would look like a mode change and a panel would learn to ignore the event.
+#[test]
+fn announcing_returns_the_previous_mode_only_when_it_changed() {
+    let plugin = ModePlugin::new(Mode::Yolo);
+
+    assert_eq!(
+        plugin.set_mode_announcing(Mode::Plan),
+        Some(Mode::Yolo),
+        "a real flip reports what it replaced"
+    );
+    assert_eq!(plugin.mode(), Mode::Plan);
+
+    assert_eq!(
+        plugin.set_mode_announcing(Mode::Plan),
+        None,
+        "re-applying the same mode is not a change"
+    );
+    assert_eq!(plugin.mode(), Mode::Plan);
+
+    // And the report is the *previous* value, not the new one.
+    assert_eq!(
+        plugin.set_mode_announcing(Mode::AcceptEdits),
+        Some(Mode::Plan)
+    );
+}
