@@ -21,6 +21,7 @@
 - **极致性能与低开销**：单任务调度框架纯净开销仅 **~5.7 微秒 (0.0057 ms)**，高并发常驻内存 (RSS) **< 10 MB**，零垃圾回收停顿 (No GC)。
 - **原生并行工具调度**：支持异步非阻塞子进程（Bash）与内存函数（Native Tools），内置超时熔断与 Head/Tail 智能文本截断。
 - **可观测性事件广播**：支持订阅从 `TurnStart`、`TokenDelta`、`ReasoningDelta`、`ToolExecResult` 到 `LoopComplete` 的全生命周期背压事件流。
+- **一轮即一条消息**：`ChatMessage::assistant_turn` 让宿主把一轮写成一条 assistant 消息——正文、本轮全部 `tool_calls`，外加 `reasoning`（该轮思维链）与 `stats`（轮次号 / token / 耗时）。后两者是**转录字段**：引擎自己的上下文里恒为 `None`，provider 转换只读 `content`/`tool_calls`，所以它们永不出现在请求里，而宿主是唯一能把思维链留住的一方（provider 只推一次）。
 - **准入钩子与全量 trace**：内核只提供三个具名接缝——`ToolScope`（宿主回答「打到哪儿」）、`ToolGate`（宿主回答「准不准」）、`ToolTraceSink`（宿主收记录）；**不装 gate 即除守卫外全放行**。每次调用必然留下且只留下一条 trace，记录判定本身（`guard` / `gate` / `answer` / `scope`），落盘前统一脱敏。工具**始终全量注册**。
 
 ---

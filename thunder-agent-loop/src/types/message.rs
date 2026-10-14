@@ -1,3 +1,4 @@
+use crate::types::event::TurnStats;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +131,23 @@ pub enum ChatMessage {
         refusal: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// The chain-of-thought the model streamed for this turn.
+        ///
+        /// Kept because nothing else can recover it: the provider streams it
+        /// once, it is never part of the request the model gets back, and a
+        /// transcript without it cannot show what a turn was thinking. It is not
+        /// a wire field — a provider conversion reads `content` and `tool_calls`
+        /// and ignores this — so a host that does not render reasoning simply
+        /// drops it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
+        /// What the turn cost, as the loop reported it at `turn_end`: the engine
+        /// turn number, its token counts, its duration. Absent on messages a host
+        /// writes itself (a greeting, a slash-command answer), which is what
+        /// separates "the engine ran this turn" from "someone typed a line into
+        /// the transcript".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stats: Option<TurnStats>,
     },
     Tool {
         tool_call_id: String,
@@ -174,6 +192,30 @@ impl ChatMessage {
             tool_calls,
             refusal: None,
             name: None,
+            reasoning: None,
+            stats: None,
+        }
+    }
+
+    /// The message one engine turn leaves behind: what it said, the calls it
+    /// made, the chain-of-thought it streamed, and what it cost.
+    ///
+    /// The shape a host persists a transcript in — one message per turn, rather
+    /// than one per call inside it, so reading the turn back needs no second
+    /// index and no guessing at where turns began.
+    pub fn assistant_turn(
+        content: Option<String>,
+        tool_calls: Option<Vec<ToolCall>>,
+        reasoning: Option<String>,
+        stats: Option<TurnStats>,
+    ) -> Self {
+        Self::Assistant {
+            content,
+            tool_calls,
+            refusal: None,
+            name: None,
+            reasoning: reasoning.filter(|r| !r.is_empty()),
+            stats,
         }
     }
 
@@ -183,6 +225,25 @@ impl ChatMessage {
             tool_calls: None,
             refusal: None,
             name: None,
+            reasoning: None,
+            stats: None,
+        }
+    }
+
+    /// This assistant message's chain-of-thought, if it recorded one.
+    pub fn reasoning_str(&self) -> Option<&str> {
+        match self {
+            Self::Assistant { reasoning, .. } => reasoning.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The engine turn behind this message, if the engine rather than a host
+    /// wrote it.
+    pub fn turn_stats(&self) -> Option<&TurnStats> {
+        match self {
+            Self::Assistant { stats, .. } => stats.as_ref(),
+            _ => None,
         }
     }
 

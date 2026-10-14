@@ -1026,6 +1026,12 @@ impl AgentLoop {
                     },
                     refusal: None,
                     name: None,
+                    // The turn's reasoning and stats belong to a transcript, not
+                    // to the request context this message is part of: a host that
+                    // persists turns attaches them as it persists (the
+                    // conversation plugin reads both off the event stream).
+                    reasoning: None,
+                    stats: None,
                 };
                 context.push(assistant_msg.clone());
                 if let Some(log) = raw_log.as_mut() {
@@ -1652,6 +1658,8 @@ mod cancel_repair_tests {
             ),
             refusal: None,
             name: None,
+            reasoning: None,
+            stats: None,
         }
     }
 

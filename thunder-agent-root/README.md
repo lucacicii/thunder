@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | 插件 ID | 插件名称 | 激活策略 | 核心能力 |
 | :--- | :--- | :--- | :--- |
-| **`conversation`** | 会话持久化 | **基线常驻** | 追踪多轮对话、更新 `index.json` 索引并执行原子落盘 |
+| **`conversation`** | 会话持久化 | **基线常驻** | 追踪多轮对话、更新 `index.json` 索引并执行原子落盘。一个引擎轮次落成**一条** assistant 消息（正文 + 本轮全部 `tool_calls` + 思维链 `reasoning` + 轮次 `stats`），其后紧跟本轮的工具结果——思维链只在这里留得住（provider 只推一次，trace 把它当流式噪声丢掉） |
 | **`metrics`** | 模型遥测 | **基线常驻** | 跟踪实时/平均 tok/s（剔除 TTFT 与工具耗时）、token 明细、cache 命中率、上下文占用与总耗时；推送 `metrics_update` 快照 |
 | **`agent_status`** | 执行状态 | **基线常驻** | 每个会话一份权威快照：阶段（`idle`/`thinking`/`streaming`/`tool`/`awaiting_user`/`paused`/`compacting`/`done`/`error`）+ 当前工具 + 轮次；`agent_status` 自定义事件**仅在跃迁时**推送（`seq` 单调），`awaiting_user`/`paused` 由宿主经 `note_awaiting`/`note_paused` 补报 |
 | **`skills`** | 技能库解析 | **基线常驻** | 扫描 `~/.agents/skills`，暴露 `load_skill` / `list_skills` 工具 |

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thunder_agent_loop::core::context::ContextBuffer;
+use thunder_agent_loop::types::event::TurnStats;
 use thunder_agent_loop::types::message::{ChatMessage, ContentPart, Role, ToolCall};
 use thunder_agent_loop::AgentRunResult;
 
@@ -255,6 +256,25 @@ impl Conversation {
     ) {
         self.messages
             .push(ChatMessage::assistant(content, tool_calls));
+        self.touch();
+    }
+
+    /// Record one engine turn: what it said, what it called, what it thought, and
+    /// what it cost.
+    ///
+    /// The transcript's unit is the turn, not the call inside it — one message
+    /// per turn is what lets a reader (and the next request) see where a turn
+    /// began without a second index.
+    pub fn add_assistant_turn(
+        &mut self,
+        content: Option<String>,
+        tool_calls: Option<Vec<ToolCall>>,
+        reasoning: Option<String>,
+        stats: Option<TurnStats>,
+    ) {
+        self.messages.push(ChatMessage::assistant_turn(
+            content, tool_calls, reasoning, stats,
+        ));
         self.touch();
     }
 

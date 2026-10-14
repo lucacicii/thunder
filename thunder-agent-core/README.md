@@ -16,7 +16,7 @@ thunder-agent-core/
 
 ## 📦 子包概览
 
-- **[`conversation`](./conversation)**：会话管理子包（`thunder-conversation`）。负责会话生命周期、Turn 轮次抽象、Memory/Fs 双模持久化存储（带 `index.json` 极速缓存与原子写入），并保留多拓扑阶段追踪元数据（Sequential 阶段、Parallel 分支、Delegate 委托）。
+- **[`conversation`](./conversation)**：会话管理子包（`thunder-conversation`）。负责会话生命周期、Turn 轮次抽象、Memory/Fs 双模持久化存储（带 `index.json` 极速缓存与原子写入），并保留多拓扑阶段追踪元数据（Sequential 阶段、Parallel 分支、Delegate 委托）。一轮落成一条 assistant 消息（`add_assistant_turn`：正文 + 本轮 `tool_calls` + 思维链 + 轮次 `stats`），本轮工具结果紧随其后。
 - **[`tui`](./tui)**：交互式终端客户端（`thunder-tui`）。基于 Ratatui 0.29 与 Crossterm 构建，深度集成 `thunder-agent-root`，支持实时流式打字机（`TokenDelta`）、思考链折叠（`ReasoningDelta`）及全键盘快捷键驱动。
 
 ---
