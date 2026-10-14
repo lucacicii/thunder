@@ -635,6 +635,8 @@ async fn a_tool_result_that_arrives_after_the_stop_still_lands() {
         tool_calls: Some(vec![ToolCall::new_function("call_1", "read_file", "{}")]),
         refusal: None,
         name: None,
+        reasoning: None,
+        stats: None,
     });
     app.active_tool_calls.push(ActiveToolCall {
         id: "call_1".to_string(),

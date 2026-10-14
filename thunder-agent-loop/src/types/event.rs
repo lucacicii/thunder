@@ -2,7 +2,7 @@ use crate::types::message::ToolCall;
 use crate::types::tool::ToolExecutionResult;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TurnStats {
     pub turn: usize,
     pub prompt_tokens: Option<usize>,

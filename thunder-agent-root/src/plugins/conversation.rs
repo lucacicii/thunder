@@ -2,9 +2,9 @@
 use crate::error::PluginError;
 use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
 use async_trait::async_trait;
-use std::sync::Arc;
-use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
-use thunder_agent_loop::types::message::ChatMessage;
+use std::sync::{Arc, Mutex};
+use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent, TurnStats};
+use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use thunder_agent_loop::AgentRunResult;
 use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_conversation::prelude::*;
@@ -15,6 +15,84 @@ pub struct ConversationPlugin {
     manifest: PluginManifest,
     store: Arc<dyn ConversationStore>,
     active_conversation: Arc<RwLock<Option<Conversation>>>,
+    /// The turn being accumulated. A turn arrives as hundreds of deltas with its
+    /// tool results interleaved, and is only whole at its `turn_end`.
+    pending_turn: Mutex<Option<PendingTurn>>,
+}
+
+/// One engine turn's events, buffered until the turn can be written as a unit.
+///
+/// The transcript's entry is the turn — "what did the agent do this round" —
+/// but nothing in the event stream hands one over ready-made: its text and its
+/// chain-of-thought arrive as deltas, and its calls and their results arrive
+/// interleaved. Buffering here is what lets a single assistant message carry the
+/// whole turn, with that turn's results right after it.
+#[cfg(feature = "conversation")]
+#[derive(Default)]
+struct PendingTurn {
+    turn: usize,
+    text: String,
+    reasoning: String,
+    calls: Vec<ToolCall>,
+    results: Vec<PendingToolResult>,
+}
+
+#[cfg(feature = "conversation")]
+struct PendingToolResult {
+    tool_call_id: String,
+    name: String,
+    output: String,
+}
+
+/// Take the buffered turn out of its lock, leaving nothing behind.
+///
+/// Paired with [`put_pending`] so a caller can hold the buffer while it works
+/// without holding the guard across an `await`.
+#[cfg(feature = "conversation")]
+fn take_pending(lock: &Mutex<Option<PendingTurn>>) -> Option<PendingTurn> {
+    lock.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+#[cfg(feature = "conversation")]
+fn put_pending(lock: &Mutex<Option<PendingTurn>>, pending: Option<PendingTurn>) {
+    *lock.lock().unwrap_or_else(|e| e.into_inner()) = pending;
+}
+
+/// Point the buffer at `turn`, writing out whatever came before it.
+///
+/// The turn number on the events themselves decides the boundary, not
+/// `turn_start`: a run that is observed from partway through still has to split
+/// its turns, and a turn that never saw `turn_end` (cancel, daemon error) still
+/// has to be written rather than folded into the next one.
+#[cfg(feature = "conversation")]
+fn begin_turn(conv: &mut Conversation, pending: &mut Option<PendingTurn>, turn: usize) {
+    if pending.as_ref().is_some_and(|state| state.turn == turn) {
+        return;
+    }
+    write_turn(conv, pending.take(), None);
+    *pending = Some(PendingTurn {
+        turn,
+        ..PendingTurn::default()
+    });
+}
+
+/// Write a buffered turn: one assistant message, then the results that answered
+/// it. `stats` is absent for a turn whose `turn_end` never arrived.
+#[cfg(feature = "conversation")]
+fn write_turn(conv: &mut Conversation, pending: Option<PendingTurn>, stats: Option<TurnStats>) {
+    let Some(turn) = pending else { return };
+    let content = (!turn.text.is_empty()).then_some(turn.text);
+    let reasoning = (!turn.reasoning.is_empty()).then_some(turn.reasoning);
+    let calls = (!turn.calls.is_empty()).then_some(turn.calls);
+    // A turn that produced nothing at all — not even a stat line — is not worth
+    // a transcript entry.
+    if content.is_none() && reasoning.is_none() && calls.is_none() && stats.is_none() {
+        return;
+    }
+    conv.add_assistant_turn(content, calls, reasoning, stats);
+    for result in turn.results {
+        conv.add_tool_message(result.tool_call_id, result.output, Some(result.name));
+    }
 }
 
 #[cfg(feature = "conversation")]
@@ -36,6 +114,7 @@ impl ConversationPlugin {
             manifest,
             store,
             active_conversation: Arc::new(RwLock::new(None)),
+            pending_turn: Mutex::new(None),
         }
     }
 
@@ -111,38 +190,73 @@ impl ThunderPlugin for ConversationPlugin {
 
     async fn on_event(&self, event: &ObservedEvent, _ctx: &PluginContext) {
         let mut active = self.active_conversation.write().await;
-        if let Some(conv) = active.as_mut() {
-            match &event.event {
-                AgentEvent::ToolCallReady { tool_call, .. } => {
-                    let call_id = tool_call.id.clone();
-                    let already_committed = conv.messages.iter().rev().any(|message| {
-                        matches!(
-                            message,
-                            ChatMessage::Assistant {
-                                tool_calls: Some(calls),
-                                ..
-                            } if calls.iter().any(|call| call.id == call_id)
-                        )
-                    });
+        let Some(conv) = active.as_mut() else { return };
 
-                    if !already_committed {
-                        conv.add_assistant_message(None, Some(vec![tool_call.clone()]));
+        // The buffer is taken out of its lock for the length of the match and put
+        // back after: no guard is held across the checkpoint save below, which a
+        // plugin's future (it has to stay `Send`) would not survive.
+        let mut pending = take_pending(&self.pending_turn);
+        let mut turn_ended = false;
+        match &event.event {
+            AgentEvent::TurnStart { turn, .. } => {
+                begin_turn(conv, &mut pending, *turn);
+            }
+            AgentEvent::ReasoningDelta { turn, delta } => {
+                begin_turn(conv, &mut pending, *turn);
+                if let Some(state) = pending.as_mut() {
+                    state.reasoning.push_str(delta);
+                }
+            }
+            AgentEvent::TokenDelta { turn, delta } => {
+                begin_turn(conv, &mut pending, *turn);
+                if let Some(state) = pending.as_mut() {
+                    state.text.push_str(delta);
+                }
+            }
+            AgentEvent::ToolCallReady { turn, tool_call } => {
+                begin_turn(conv, &mut pending, *turn);
+                if let Some(state) = pending.as_mut() {
+                    let known = state.calls.iter().any(|call| call.id == tool_call.id);
+                    if !known {
+                        state.calls.push(tool_call.clone());
                     }
                 }
-                AgentEvent::ToolExecResult {
-                    tool_call_id,
-                    name,
-                    result,
-                    ..
-                } => {
-                    conv.add_tool_message(tool_call_id, result.output.clone(), Some(name.clone()));
-                }
-                AgentEvent::TurnEnd { .. } => {
-                    // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
-                    let _ = self.store.save(conv).await;
-                }
-                _ => {}
             }
+            AgentEvent::ToolExecResult {
+                turn,
+                tool_call_id,
+                name,
+                result,
+                ..
+            } => {
+                begin_turn(conv, &mut pending, *turn);
+                if let Some(state) = pending.as_mut() {
+                    state.results.push(PendingToolResult {
+                        tool_call_id: tool_call_id.clone(),
+                        name: name.clone(),
+                        output: result.output.clone(),
+                    });
+                }
+            }
+            AgentEvent::TurnEnd { turn, stats, .. } => {
+                // The turn is whole here: its text, its reasoning and its calls
+                // become one message, with the results that answered them right
+                // after it — the order a provider expects to read back, and the
+                // order a transcript wants (one entry per turn, not one per call).
+                // A turn whose events never arrived is not written: an empty entry
+                // in the transcript is worse than a missing one.
+                if pending.as_ref().is_some_and(|state| state.turn == *turn) {
+                    write_turn(conv, pending.take(), Some(stats.clone()));
+                }
+                turn_ended = true;
+            }
+            _ => {}
+        }
+        put_pending(&self.pending_turn, pending);
+
+        if turn_ended {
+            // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
+            let _ = self.store.save(conv).await;
         }
     }
 
@@ -153,6 +267,12 @@ impl ThunderPlugin for ConversationPlugin {
     ) -> Result<(), PluginError> {
         let mut active = self.active_conversation.write().await;
         if let Some(conv) = active.as_mut() {
+            // A run that ended without a `turn_end` for its last turn (error,
+            // cancel) still has that turn's events; write them before the final
+            // text is considered, so nothing the user watched stream is lost.
+            let pending = take_pending(&self.pending_turn);
+            write_turn(conv, pending, None);
+
             if let Some(final_text) = &result.final_content {
                 let already_present = conv
                     .messages

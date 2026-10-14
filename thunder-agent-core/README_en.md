@@ -16,7 +16,7 @@ thunder-agent-core/
 
 ## 📦 Subpackage Index
 
-- **[`conversation`](./conversation)**: Session management subpackage (`thunder-conversation`). Manages session lifecycles, Turn groupings, and Memory/Fs dual persistence with `index.json` caching and atomic shadow writes, plus topology stage tracking metadata (Sequential stages, Parallel branches, Delegate subtasks).
+- **[`conversation`](./conversation)**: Session management subpackage (`thunder-conversation`). Manages session lifecycles, Turn groupings, and Memory/Fs dual persistence with `index.json` caching and atomic shadow writes, plus topology stage tracking metadata (Sequential stages, Parallel branches, Delegate subtasks). A turn lands as one assistant message (`add_assistant_turn`: its text, the turn's `tool_calls`, its chain-of-thought, its `stats`), with that turn's tool results right after it.
 - **[`tui`](./tui)**: Interactive terminal user interface (`thunder-tui`). Built with Ratatui 0.29 & Crossterm, integrated with `thunder-agent-root`, featuring live token streaming (`TokenDelta`), collapsible reasoning chains (`ReasoningDelta`), and a complete keyboard-driven workflow.
 
 ---

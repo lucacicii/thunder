@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Plugin ID | Name | Activation Strategy | Core Capabilities |
 | :--- | :--- | :--- | :--- |
-| **`conversation`** | Session Persistence | **Permanent Baseline** | Tracks multi-turn dialogue, updates `index.json`, atomic file writes |
+| **`conversation`** | Session Persistence | **Permanent Baseline** | Tracks multi-turn dialogue, updates `index.json`, atomic file writes. One engine turn lands as **one** assistant message (its text, all of the turn's `tool_calls`, its chain-of-thought `reasoning`, its `stats`), followed by that turn's tool results — the reasoning has nowhere else to live: the provider streams it once and the trace counts it as noise |
 | **`metrics`** | Model Telemetry | **Permanent Baseline** | Tracks live/average tok/s (TTFT and tool time excluded), token breakdown, cache hit rate, context occupancy and durations; emits `metrics_update` snapshots |
 | **`agent_status`** | Execution Status | **Permanent Baseline** | One authoritative snapshot per session: phase (`idle`/`thinking`/`streaming`/`tool`/`awaiting_user`/`paused`/`compacting`/`done`/`error`) + current tool + turn. `agent_status` custom events are emitted **only on a transition** (`seq` is monotonic); `awaiting_user`/`paused` are reported by the host through `note_awaiting`/`note_paused` |
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |

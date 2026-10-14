@@ -763,7 +763,7 @@ flowchart TB
 - `ThunderPlugin::tool_gate()`（`plugin.rs:297`）被 `execute` 忽略——只安装模式插件（`host.rs:685`）。
 - `ToolInvoker::invoke` 只有测试调用（`pack-code/tests/plugin_call_tool_test.rs`），没有任何随仓插件使用 `ctx.tool_slot()`。
 
-**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`、在状态真的跃迁时追加一条 `AgentEvent::Custom { kind: "agent_status" }`（§11.8.2）。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:140-143`）因此生效。
+**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`、在状态真的跃迁时追加一条 `AgentEvent::Custom { kind: "agent_status" }`（§11.8.2）。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:241-256`，一个 turn 在它的 `turn_end` 处整体落盘）因此生效。
 
 `TriggerSpec`（`plugin.rs:25-47`）：`keywords` + `auto_always` + `description_for_llm`；`TriggerSpec::always()` 是常驻基线。
 
@@ -1190,6 +1190,10 @@ pub struct Conversation {
 
 `ConversationStats`（`types.rs:20-34`）区分两个 token 量：`total_tokens`（**当前工作上下文的估算**，每次变更重算）与 `total_used_tokens`（**累计 provider 上报用量，含 cache 读写**，只做加法，从不从文本重算）。
 
+**一轮 = 一条 assistant 消息**（`types.rs:262-280` 的 `add_assistant_turn`）：消息携带该轮 `content`（这一轮流出来的正文）、`tool_calls`（本轮发出的全部调用）、`reasoning`（该轮的思维链）与 `stats: Option<TurnStats>`（引擎轮次号、token、耗时）。最后两个字段是**宿主才有的信息**：`ChatMessage::Assistant` 的 `reasoning`/`stats` 在引擎侧恒为 `None`（`engine.rs:1020-1035`：那是请求上下文里的消息，不是转录记录），只有落盘这一侧才附着——provider 转换只读 `content`/`tool_calls`（`providers/client.rs:263-283`），因此这两个字段永远不会出现在请求里。
+
+理由是可读性与可恢复性：一轮的正文与思维链是**流式 delta**、调用与结果是**交错到达**的，`turn_end` 之前没有"一轮"这个东西（`ConversationPlugin` 的 `PendingTurn` 缓冲，`conversation.rs:32-90`）；而思维链除了这里**没有任何别的去处**——provider 只推一次，trace 收集器把它当流式噪声计数后丢弃（`trace_collector.rs:48-58`），转录不留它就永久丢失。落盘顺序固定为「本轮 assistant 消息 → 本轮工具结果」，也正是 provider 读回时期望的顺序（一条 assistant 带 N 个 tool_call，后跟 N 条 tool 结果）。
+
 ### 16.2 持久化门禁（本 crate 最硬的规则）
 
 ```rust
@@ -1489,7 +1493,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 | 接口 | 定义处 | 状态 |
 |---|---|---|
-| ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:113`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化随之生效 |
+| ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:113`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:241-256`）随之生效 |
 | `ThunderPlugin::tool_gate` | `root/plugin.rs:297` | `execute` 忽略它，只装 mode 插件 |
 | `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:737-745` 填充 |
 | `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
