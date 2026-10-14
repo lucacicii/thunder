@@ -88,7 +88,10 @@ fn a_run_walks_the_pane_from_working_through_its_tool_to_done() {
             estimated_prompt_tokens: 0,
         },
     );
-    assert_eq!(body(&report(&mut app).unwrap()), "app=thunder:state=working");
+    assert_eq!(
+        body(&report(&mut app).unwrap()),
+        "app=thunder:state=working"
+    );
 
     send(
         &mut app,
@@ -161,7 +164,10 @@ fn a_modal_on_screen_is_a_wait_and_releasing_it_restores_the_run() {
     // reconciled from the state they leave behind, so none of them has to
     // remember to tell the terminal.
     app.pending_question = Some(question());
-    assert_eq!(body(&report(&mut app).unwrap()), "app=thunder:state=blocked");
+    assert_eq!(
+        body(&report(&mut app).unwrap()),
+        "app=thunder:state=blocked"
+    );
 
     app.pending_question = None;
     assert_eq!(
@@ -180,7 +186,10 @@ fn a_parked_run_is_blocked_and_resuming_reports_it_again() {
     let _ = report(&mut app);
 
     app.pause_gate.as_ref().unwrap().pause();
-    assert_eq!(body(&report(&mut app).unwrap()), "app=thunder:state=blocked");
+    assert_eq!(
+        body(&report(&mut app).unwrap()),
+        "app=thunder:state=blocked"
+    );
 
     app.pause_gate.as_ref().unwrap().resume();
     assert_eq!(body(&report(&mut app).unwrap()), "app=thunder:state=idle");

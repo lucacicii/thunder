@@ -229,7 +229,10 @@ mod tests {
         let mut status = PaneStatus::default();
         // Real MCP names carry spaces, parentheses and colons; a colon would
         // even split the pair in two.
-        status.observe(&snapshot(AgentPhase::Tool, Some("mcp__gh__create issue (x)")));
+        status.observe(&snapshot(
+            AgentPhase::Tool,
+            Some("mcp__gh__create issue (x)"),
+        ));
         let pairs = parse(&status.take_pending().expect("a sequence"));
         assert_eq!(value(&pairs, "state"), Some("working"));
         assert_eq!(value(&pairs, "kind"), None);
@@ -272,6 +275,9 @@ mod tests {
         idle.observe(&snapshot(AgentPhase::Idle, None));
         let _ = idle.take_pending();
         idle.leaving();
-        assert!(idle.take_pending().is_none(), "idle is already the resting report");
+        assert!(
+            idle.take_pending().is_none(),
+            "idle is already the resting report"
+        );
     }
 }

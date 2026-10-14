@@ -922,11 +922,13 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 二进制 `thunder-daemon`，**NDJSON over stdio**：stdout 只走协议，所有日志强制 stderr（`main.rs:19-28`）。
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 ```
-（`protocol.rs:13`）
+（`protocol.rs:19`）
 
-版本与 `CARGO_PKG_VERSION` **是两件事**：后者每次发版都动，前者只在宿主解析的请求/响应形状变化时动——`ping` 同时回 `{pong, version, protocol}`，宿主因此能区分"更新的 thunder"与"回答得不一样的 thunder"（`protocol.rs:6-13`）。
+版本与 `CARGO_PKG_VERSION` **是两件事**：后者每次发版都动，前者只在宿主解析的请求/响应形状变化时动——`ping` 同时回 `{pong, version, protocol}`，宿主因此能区分"更新的 thunder"与"回答得不一样的 thunder"（`protocol.rs:6-19`）。
+
+**各版本新增了什么**：`1`→`2` 是 0.4 那轮（见 `migration-0.4.md`）；`2`→`3` 是本轮——顶层多了**一条推送帧** `mode_changed`（§11.4）。它是**加法**的：不认得的宿主丢掉即可，所以这次升版是"记账"而不是握手，没有哪条路径拿它做门禁（不读 `ping` 的客户端照常工作，旧 daemon 只是永远不推这帧）。`daemon_ipc_test` 直接断言这个数字，改版本号必须同时改它。
 
 启动参数（`main.rs:32-53`）：`--workspace`/`-w <path>`；`--config-dir <path>`（通过 `set_var(THUNDER_CONFIG_DIR)` 生效，让下面每一层只解析出一个根；缺值 `exit(2)`）；其余 argv 忽略。stdin EOF → `shutdown()` 取消所有存活令牌——**僵尸进程保证**（`main.rs:96-97`、`service.rs:357-362`）。
 
