@@ -1,6 +1,7 @@
 use crate::error::PluginError;
 use crate::plugins::metrics::MetricsPlugin;
 use crate::plugins::mode::{Mode, ModePlugin};
+use crate::plugins::status::StatusPlugin;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -155,6 +156,13 @@ pub struct PluginContext {
     /// `Debug`.
     pub tools: ToolInvokerHandle,
     pub metrics_plugin: Option<MetricsPlugin>,
+    /// The run's execution-status plugin, when the host installed one.
+    ///
+    /// Held here for the same reason as `metrics_plugin`: a host that publishes
+    /// this run's status onto its own wire needs the plugin's snapshot, and it
+    /// reaches that through the run's context rather than through the registry
+    /// (which is shared across runs and keyed by plugin id).
+    pub status_plugin: Option<StatusPlugin>,
 }
 
 /// Newtype over [`ToolInvokerSlot`], excluded from `Debug` like [`HostUiHandle`].
@@ -181,6 +189,7 @@ impl PluginContext {
             prompt: None,
             tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
             metrics_plugin: None,
+            status_plugin: None,
         }
     }
 
@@ -270,6 +279,17 @@ impl PluginContext {
 
     pub fn metrics_plugin(&self) -> Option<&MetricsPlugin> {
         self.metrics_plugin.as_ref()
+    }
+
+    /// Attach the run's execution-status plugin.
+    pub fn with_status_plugin(mut self, status_plugin: StatusPlugin) -> Self {
+        self.status_plugin = Some(status_plugin);
+        self
+    }
+
+    /// The run's execution-status plugin, when the host installed one.
+    pub fn status_plugin(&self) -> Option<&StatusPlugin> {
+        self.status_plugin.as_ref()
     }
 }
 

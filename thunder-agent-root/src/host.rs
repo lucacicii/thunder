@@ -3,6 +3,7 @@ use crate::instructions::discover_context_files;
 use crate::plugin::PluginContext;
 use crate::plugins::metrics::{MetricsPlugin, MetricsSnapshot, METRICS_UPDATE_EVENT_KIND};
 use crate::plugins::mode::{Mode, ModePlugin};
+use crate::plugins::status::{StatusPlugin, AGENT_STATUS_EVENT_KIND};
 use crate::registry::{ActivePluginSet, PluginRegistry};
 use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
@@ -102,14 +103,66 @@ pub struct RootRunHandle {
     dispatch_drained: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
+/// Emit the run's execution status when it moved since the last frame.
+///
+/// Deduplicated by `AgentStatusSnapshot::seq`, unlike the metrics snapshot
+/// beside it: metrics ride along with every relevant event, whereas a status is
+/// a *transition*, and re-publishing an unchanged one would make every token
+/// look like a state change to a consumer.
+///
+/// Returns `false` when the consumer is gone, which ends the proxy.
+async fn publish_status(
+    tx: &mpsc::Sender<ObservedEvent>,
+    status_plugin: Option<&StatusPlugin>,
+    session_id: &str,
+    agent_id: &str,
+    published: &mut Option<u64>,
+) -> bool {
+    let Some(plugin) = status_plugin else {
+        return true;
+    };
+    let Some(snapshot) = plugin.snapshot(session_id) else {
+        return true;
+    };
+    if *published == Some(snapshot.seq) {
+        return true;
+    }
+    let Ok(payload) = serde_json::to_value(&snapshot) else {
+        return true;
+    };
+    *published = Some(snapshot.seq);
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0);
+
+    tx.send(ObservedEvent {
+        agent_id: agent_id.to_string(),
+        event: thunder_agent_loop::types::event::AgentEvent::Custom {
+            kind: AGENT_STATUS_EVENT_KIND.to_string(),
+            payload,
+        },
+        timestamp_ms,
+    })
+    .await
+    .is_ok()
+}
+
 impl RootRunHandle {
     /// Take the observed event stream.
     ///
     /// Events flow through a non-blocking proxy that dispatches
     /// [`ActivePluginSet::dispatch_event`] to all active plugins (including
     /// [`MetricsPlugin`] and [`ConversationPlugin`]) and emits live
-    /// `AgentEvent::Custom { kind: "metrics_update" }` snapshots for downstream
+    /// `AgentEvent::Custom { kind: "metrics_update" }` and
+    /// `AgentEvent::Custom { kind: "agent_status" }` snapshots for downstream
     /// hosts (TUI, daemon, desktop panel).
+    ///
+    /// The status frame is published whenever the plugin's `seq` moves, and the
+    /// proxy also wakes on the plugin's own change signal — a host-reported wait
+    /// (`awaiting_user`) has no kernel event to ride on, and during one there is
+    /// no further event at all: the gate is blocked inside tool execution. See
+    /// [`StatusPlugin`].
     pub fn take_events(&mut self) -> Option<mpsc::Receiver<ObservedEvent>> {
         let mut inner_rx = self.handle.take_events()?;
         let (tx, rx) = mpsc::channel(512);
@@ -118,10 +171,42 @@ impl RootRunHandle {
         let active_set = self.active_set.clone();
         let ctx = self.ctx.clone();
         let metrics_plugin = self.ctx.metrics_plugin().cloned();
+        let status_plugin = self.ctx.status_plugin().cloned();
+        let mut status_changes = status_plugin.as_ref().map(StatusPlugin::subscribe_changes);
         let session_id = self.ctx.session_id.clone();
+        let run_agent_id = self.agent_id.clone();
 
         tokio::spawn(async move {
-            while let Some(observed) = inner_rx.recv().await {
+            let mut published_status: Option<u64> = None;
+
+            loop {
+                let observed = match status_changes.as_mut() {
+                    Some(changes) => {
+                        tokio::select! {
+                            event = inner_rx.recv() => event,
+                            changed = changes.changed() => {
+                                if changed.is_err()
+                                    || !publish_status(
+                                        &tx,
+                                        status_plugin.as_ref(),
+                                        &session_id,
+                                        &run_agent_id,
+                                        &mut published_status,
+                                    )
+                                    .await
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    None => inner_rx.recv().await,
+                };
+                let Some(observed) = observed else {
+                    break;
+                };
+
                 active_set.dispatch_event(&observed, &ctx).await;
                 let snap = metrics_plugin
                     .as_ref()
@@ -168,6 +253,18 @@ impl RootRunHandle {
                         }
                     }
                 }
+
+                if !publish_status(
+                    &tx,
+                    status_plugin.as_ref(),
+                    &session_id,
+                    &run_agent_id,
+                    &mut published_status,
+                )
+                .await
+                {
+                    break;
+                }
             }
             // The loop's stream is closed and every event has been dispatched:
             // release `join`, which is waiting on exactly this.
@@ -181,6 +278,12 @@ impl RootRunHandle {
         self.ctx
             .metrics_plugin()
             .and_then(|mp| mp.snapshot(&self.ctx.session_id))
+    }
+
+    pub fn status_snapshot(&self) -> Option<crate::plugins::AgentStatusSnapshot> {
+        self.ctx
+            .status_plugin()
+            .and_then(|sp| sp.snapshot(&self.ctx.session_id))
     }
 
     pub async fn join(mut self) -> Result<RootRunResult, AgentError> {
@@ -230,6 +333,7 @@ pub struct ThunderRoot {
     /// degrades to its safe branch.
     host_ui: Arc<dyn HostUi>,
     metrics_plugin: Option<MetricsPlugin>,
+    status_plugin: Option<StatusPlugin>,
     initial_session_total_tokens: Option<usize>,
 }
 impl ThunderRoot {
@@ -260,6 +364,7 @@ impl ThunderRoot {
             active_model,
             host_ui: Arc::new(thunder_agent_loop::types::ui::NullHostUi),
             metrics_plugin: None,
+            status_plugin: None,
             initial_session_total_tokens: None,
         }
     }
@@ -315,6 +420,19 @@ impl ThunderRoot {
     /// Seed the cumulative billed tokens for the session prior to this run.
     pub fn with_initial_session_total_tokens(mut self, total: usize) -> Self {
         self.initial_session_total_tokens = Some(total);
+        self
+    }
+
+    /// Attach the execution-status plugin, so every run publishes what the agent
+    /// is doing right now (phase, current tool, turn).
+    ///
+    /// The caller keeps a clone to report phases the event stream cannot express
+    /// — see [`StatusPlugin::note_awaiting`]. Passing one in rather than letting
+    /// the baseline set allocate its own is what lets a host *hold* the status it
+    /// publishes.
+    pub fn with_status_plugin(mut self, plugin: StatusPlugin) -> Self {
+        self.status_plugin = Some(plugin.clone());
+        self.registry.register(plugin);
         self
     }
 
@@ -528,6 +646,18 @@ impl ThunderRoot {
                 .push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
         }
 
+        // Same treatment for the execution status: a host that asked for it gets
+        // it on every run, whether or not the keyword selector picked it.
+        let status_plugin = self.status_plugin.clone().unwrap_or_default();
+        if !selection
+            .active_plugin_ids
+            .iter()
+            .any(|id| id == StatusPlugin::ID)
+        {
+            active_set
+                .push(Arc::new(status_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
+        }
+
         info!(
             session_id = %session_id,
             mode = options.mode.as_str(),
@@ -546,6 +676,7 @@ impl ThunderRoot {
             .with_route(route.clone())
             .with_mode_plugin(Arc::clone(&mode_plugin))
             .with_metrics_plugin(metrics_plugin)
+            .with_status_plugin(status_plugin)
             .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {

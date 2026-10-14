@@ -304,11 +304,11 @@ Plan 是 `ModePlugin` 的一个档位 + 两个工具，因此**可随插件一�
 | `Yes, fully autonomous` | `Yolo` |
 | `No, keep planning` | **留在 `Plan`** |
 
-- 批准 → `Plan approved. Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:691`）——**显式告诉模型模式变了**。
-- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。
+- 批准 → `Plan approved. Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:732`）——**显式告诉模型模式变了**。同一次批准还往本次 run 的 event sink 发一条 `mode_changed`（`mode`/`previous`/`source:"plan_approved"`），daemon 把 custom 事件翻成顶层 `mode_changed` 帧推给宿主——这是 daemon 自己看不见的那条变化（`ExitPlanModeTool` 持有的是共享 `Arc<ModeState>`，不是插件）。sink 可选，**没有 sink 也必须批准成功**。
+- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。驳回**不播报**——档位没动。
 - 无答案（关闭/超时）→ `No answer (dismissed or timed out). Still in plan mode.`——**沉默不是同意**。
 
-模式翻转靠 `ModePlugin` 内部 `set_mode` 直接生效：内核每次调用都重新问 gate，所以"下一次调用立刻生效"（`mode_matrix_test.rs::flipping_the_mode_applies_to_the_next_call`）。
+模式翻转靠共享 `ModeState` 里的 `set_mode` 直接生效：内核每次调用都重新问 gate，所以"下一次调用立刻生效"（`mode_matrix_test.rs::flipping_the_mode_applies_to_the_next_call`）。**会改用户会话档位的调用点走 `set_mode_announcing`**（它只在真的变了时返回旧档位，供 daemon 播报）；计划批准是唯一走 `set_mode` 的例外，因为它没有通往 daemon 的通道，只能靠 event sink 申报。
 
 ### 7.3 豁免钉在**名字**上，不是效果上
 
@@ -565,6 +565,9 @@ classDiagram
 | 21 | 秘钥键名/形态/正文在落盘前被打码，回显的密钥也被抹掉 | `redact_arguments` / `withhold` | `trace_test.rs::arguments_under_a_secret_key_are_redacted`、`…::a_secret_in_the_output_never_reaches_the_record` |
 | 22 | 宿主的模式可被外部读到并设置 | daemon `SetMode`/`GetPermissionState` | `mode_protocol_test.rs::a_host_can_read_and_set_the_mode_over_the_wire` |
 | 23 | 审批模式不会被静默重置（会话表 FIFO 淘汰） | `SessionModes`（`service.rs:116`） | — |
+| 24 | 档位真的变了必被播报，**同值不播报** | `set_mode_announcing`（`mode.rs:392`）、daemon `emit_mode_changed` | `mode_matrix_test.rs::announcing_returns_the_previous_mode_only_when_it_changed`、`mode_protocol_test.rs::a_mode_that_does_not_change_is_not_announced` |
+| 25 | 计划批准（daemon 看不见的那条）也播报，走 run 的 event sink | `approve`（`mode.rs:732`）、`MODE_CHANGED_EVENT_KIND` | `plan_mode_test.rs::an_approval_announces_the_mode_it_landed_in` |
+| 26 | 驳回/无答案**不**播报（没有变化就没有事件） | `exit_plan_mode` | `plan_mode_test.rs::staying_in_plan_mode_announces_nothing` |
 
 ---
 

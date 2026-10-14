@@ -63,6 +63,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 - **请求响应**：`{"type":"response","id":"req-1","success":true,"data":{...}}`
 - **流式增量事件**：`{"type":"observed_event","task_id":"task-1","event":{...}}`
 - **反问挂起（需用户回答）**：`{"type":"user_question","task_id":"task-1","question_id":"task-1:q1","questions":[{"question":"...","options":[{"label":"..."}]}]}`
+- **审批档位变了（推送）**：`{"type":"mode_changed","session_id":"sess-001","mode":"plan","previous":"yolo","source":"user"}`——`source` 为 `user` / `plan_approved` / `run_option`；变化发生在某次 run 内时多带 `task_id`。**同值不播报**，所以收到它就一定是真的变了。
 - **任务已暂停**：`{"type":"task_paused","task_id":"task-1","reason":"..."}`
 - **任务成功完成**：`{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
 - **任务失败**：`{"type":"task_failed","task_id":"task-1","error":"..."}`
@@ -168,7 +169,17 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 - 模式按 `session_id` 记忆（上限 FIFO 淘汰最老的会话），**下一次调用立刻生效**。
 - `run_task` 也接受可选 `mode` 字段；它同样写进该会话的模式（不是只作用于本次
   run），该会话后续的 run 继续沿用。
+- **档位真的变了会推一条 `mode_changed`**（§2），顺序是**先 `response` 再推送**——
+  一次请求读一行的客户端因此仍然先读到它要的那帧。三种来源（`source`）都走同一个帧：
+  客户端调的 `set_mode`（`user`）、`run_task` 钉的档位（`run_option`）、
+  `exit_plan_mode` 被批准（`plan_approved`，这条 daemon 只能从 run 的事件流里得知）。
+  **同值不播报**：宿主每轮 run 开始都会重设一次档位，若同值也播报，每轮都会冒一帧。
+  对一个尚不存在的会话调 `set_mode` 是**以该档位创建**它，因此也没有转变可播报——
+  确认来自 `response` 的 `data.mode`。
 - `get_permission_state` 可查看当前模式与已记住的「always allow」规则。
+  注意它对**从未 run 过**的会话是按 `Mode::default()`（`yolo`）创建插件的，
+  而首轮 `run_task` 走的是 `.thunder` 的 `agent.defaultMode`；两者可能不同，
+  首轮 run 的 `mode_changed`（`run_option`）会把真实档位推过来。
 
 ### 交互弹窗长这样
 
@@ -236,6 +247,13 @@ Rust 插件的 `ctx.tool_slot().invoke(...)` 不再自己实现能力，而是�
 1. **`pause_task` 生效边界**：位于工具调度边界前。若当前已有工具正在写文件，该工具会完整跑完，并在派发下一个工具前进入挂起。
 2. **反问期间收到 pause**：工具继续等待人类输入；人类提交答复后，该工具完成返回，任务随即在下一个调度边界冻结在 `Paused`。
 3. **取消的绝对优先**：任何状态下收到 `cancel_task`，任务立刻终止并释放所有等待资源。
+
+### 运行状态怎么读
+
+「现在在干什么」不是从上面这些帧拼出来的：`thunder-agent-root` 的 `StatusPlugin` 会随 `observed_event` 流推送 `{"type":"custom","kind":"agent_status","payload":{...}}`，阶段为 `idle | thinking | streaming | tool | awaiting_user | paused | compacting | done | error`，带上当前工具名与轮次。**只在跃迁时推**（按 `seq` 去重），所以消费方收到的每一帧都代表真的变了。
+
+- `paused` 与 `awaiting_user` 事件流里没有（内核那时一条事件都不发），由 daemon 自己报给插件：`pause_task`/`resume_task` 报前者、`AwaitingGuard` 在审批/提问弹窗存续期间报后者——两者同时成立时取最新进入的那个。
+- 协议版本不用跟着动：`custom` 对 NDJSON 协议是透明的，不认识这个 kind 的客户端直接忽略即可。
 
 ---
 

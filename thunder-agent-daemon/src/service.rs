@@ -14,7 +14,7 @@ use thunder_conversation::prelude::*;
 
 #[cfg(feature = "testing-mock")]
 use crate::mock::DaemonMockClient;
-use crate::protocol::{DaemonRequest, DaemonResponse, PROTOCOL_VERSION};
+use crate::protocol::{DaemonRequest, DaemonResponse, ModeChangeSource, PROTOCOL_VERSION};
 
 /// Outbound model-request timeout every run is configured with.
 ///
@@ -42,11 +42,17 @@ pub type ClientFactory = Arc<dyn Fn(&AgentConfig) -> Option<Arc<dyn LLMClientTra
 /// The workspace and roots travel with the queues because an injected
 /// attachment's path must be jailed against the run's own workspace, not
 /// whatever directory the daemon happens to be sitting in.
+///
+/// The session id travels here for the same reason: everything that addresses a
+/// run does so by `task_id` (pause, resume, cancel, steer), while the execution
+/// status a panel renders is keyed by session. This is the one per-run record
+/// that outlives the moment a request arrives, so it is where the two ids meet.
 #[derive(Clone)]
 struct LiveQueue {
     queues: Arc<thunder_agent_loop::core::steer::SteerQueues>,
     workspace: PathBuf,
     extra_roots: Vec<String>,
+    session_id: String,
 }
 
 pub struct DaemonService {
@@ -99,6 +105,14 @@ pub struct DaemonService {
     session_modes: Arc<tokio::sync::RwLock<SessionModes>>,
     /// Shared telemetry & token-speed plugin across all sessions/tasks.
     metrics_plugin: thunder_agent_root::plugins::MetricsPlugin,
+    /// Shared execution-status plugin across all sessions/tasks.
+    ///
+    /// Held here rather than only in the run's root so the *dialog* paths can
+    /// report the two phases the event stream cannot express — `awaiting_user`
+    /// while a permission prompt or question is on screen, and `paused` while a
+    /// run is parked. Both are facts only this layer knows, and both have to be
+    /// visible to the panel while nothing else is happening.
+    status_plugin: thunder_agent_root::plugins::StatusPlugin,
 }
 
 /// How many sessions keep their approval state before the oldest is dropped.
@@ -289,6 +303,7 @@ impl DaemonService {
             host_ui,
             session_modes: Arc::new(tokio::sync::RwLock::new(SessionModes::default())),
             metrics_plugin: thunder_agent_root::plugins::MetricsPlugin::new(),
+            status_plugin: thunder_agent_root::plugins::StatusPlugin::new(),
         })
     }
 
@@ -302,6 +317,23 @@ impl DaemonService {
         }
         let mut guard = self.session_modes.write().await;
         guard.get_or_create(session_id, initial)
+    }
+
+    /// Tell the execution-status plugin that a run is (or is no longer) parked.
+    ///
+    /// A request names a run by `task_id` while the published status is keyed by
+    /// session, so the two are reconciled through the run's queue record — the
+    /// per-run map that is registered and dropped in step with the run itself.
+    async fn report_pause_status(&self, task_id: &str, paused: bool) {
+        let session_id = self
+            .active_queues
+            .lock()
+            .await
+            .get(task_id)
+            .map(|live| live.session_id.clone());
+        if let Some(session_id) = session_id {
+            self.status_plugin.note_paused(&session_id, paused);
+        }
     }
 
     /// Get (or lazily create) the pooled MCP plugin for `workspace`.
@@ -351,6 +383,30 @@ impl DaemonService {
     /// Safely send a newline-delimited JSON response to stdout
     pub async fn send_response(&self, res: DaemonResponse) {
         write_ndjson(&self.output_tx, &res).await;
+    }
+
+    /// Tell the host that a session's mode changed.
+    ///
+    /// Every change funnels through here — the client-driven `set_mode`, a run
+    /// that pinned a mode, and the plan approval the daemon only learns about
+    /// from the run's own event stream — so a host has exactly one frame to
+    /// consume no matter what moved the mode.
+    async fn emit_mode_changed(
+        &self,
+        session_id: &str,
+        task_id: Option<String>,
+        previous: Mode,
+        mode: Mode,
+        source: ModeChangeSource,
+    ) {
+        self.send_response(DaemonResponse::ModeChanged {
+            session_id: session_id.to_string(),
+            task_id,
+            mode: mode.as_str().to_string(),
+            previous: Some(previous.as_str().to_string()),
+            source,
+        })
+        .await;
     }
 
     /// Cancel all active tasks during shutdown
@@ -522,6 +578,12 @@ impl DaemonService {
                 })
                 .await;
                 if paused {
+                    // Parked, as far as anyone watching is concerned. The gate
+                    // only takes hold at the next tool boundary, so the run may
+                    // still emit for a moment — and once it does park, nothing
+                    // emits at all, which is exactly why the panel cannot work
+                    // this out from the stream.
+                    self.report_pause_status(&task_id, true).await;
                     let _ = self
                         .send_response(DaemonResponse::TaskPaused {
                             task_id,
@@ -548,6 +610,9 @@ impl DaemonService {
                     error: None,
                 })
                 .await;
+                if resumed {
+                    self.report_pause_status(&task_id, false).await;
+                }
             }
 
             DaemonRequest::SteerTask {
@@ -769,7 +834,12 @@ impl DaemonService {
             } => match Mode::parse(&mode) {
                 Some(mode) => {
                     let plugin = self.session_mode(&session_id, mode).await;
-                    plugin.set_mode(mode);
+                    // A session that did not exist is created *in* the requested
+                    // mode, so there is no transition to announce and the
+                    // `response` below is the whole answer. Order matters when
+                    // there is one: the response goes first, so a client reading
+                    // a single frame per request still reads the right one.
+                    let changed = plugin.set_mode_announcing(mode);
                     self.send_response(DaemonResponse::Response {
                         id,
                         success: true,
@@ -780,6 +850,16 @@ impl DaemonService {
                         error: None,
                     })
                     .await;
+                    if let Some(previous) = changed {
+                        self.emit_mode_changed(
+                            &session_id,
+                            None,
+                            previous,
+                            mode,
+                            ModeChangeSource::User,
+                        )
+                        .await;
+                    }
                 }
                 None => {
                     self.send_response(DaemonResponse::Response {
@@ -1278,7 +1358,20 @@ impl DaemonService {
             .as_deref()
             .and_then(Mode::parse)
             .unwrap_or_else(|| session_plugin.mode());
-        session_plugin.set_mode(chosen_mode);
+        // Announcing, so a pinned mode that actually differs is broadcast. A
+        // run that re-affirms the session's mode changes nothing and therefore
+        // says nothing — which is also why the host's own re-apply at every run
+        // start (`host.rs`) stays silent.
+        if let Some(previous) = session_plugin.set_mode_announcing(chosen_mode) {
+            self.emit_mode_changed(
+                &effective_session_id,
+                Some(task_id.clone()),
+                previous,
+                chosen_mode,
+                ModeChangeSource::RunOption,
+            )
+            .await;
+        }
         let policy = Arc::clone(&session_plugin);
 
         // Bind model, workspace, and thinking_level permanently to this conversation
@@ -1297,6 +1390,7 @@ impl DaemonService {
                 queues: Arc::clone(&steer_queues),
                 workspace: PathBuf::from(&chosen_workspace),
                 extra_roots: chosen_shared_roots.clone(),
+                session_id: effective_session_id.clone(),
             },
         );
 
@@ -1421,6 +1515,7 @@ impl DaemonService {
         let run_session_id = effective_session_id.clone();
         let run_policy = Arc::clone(&policy);
         let metrics_plugin = self.metrics_plugin.clone();
+        let status_plugin = self.status_plugin.clone();
         let prior_used_tokens = conversation.stats.total_used_tokens;
         // Spawn async task runner
         tokio::spawn(async move {
@@ -1467,6 +1562,7 @@ impl DaemonService {
             let mut root = StandardHostBuilder::new(store.clone())
                 .with_mcp_plugin((*mcp_plugin).clone())
                 .with_metrics_plugin(metrics_plugin)
+                .with_status_plugin(status_plugin.clone())
                 .build(root);
 
             // Headless clients cannot answer `user_question`. Omitting the tool
@@ -1512,10 +1608,14 @@ impl DaemonService {
                 pause_gate: Some(pause_gate_for_run),
                 steer_queues: Some(steer_queues_for_run),
                 // Tag every dialog this run raises with its task/session, so a
-                // multi-task panel can route the prompt to the right stream.
-                ui: Some(Arc::new(
-                    host_ui.scoped(run_task_id.clone(), Some(run_session_id)),
-                )),
+                // multi-task panel can route the prompt to the right stream —
+                // and so the status it publishes can say the run is waiting on
+                // the user rather than merely busy.
+                ui: Some(Arc::new(host_ui.scoped(
+                    run_task_id.clone(),
+                    Some(run_session_id),
+                    Some(status_plugin),
+                ))),
                 // `task_id` is unique per run and readable in panel logs, and it
                 // is the key a plugin's reverse RPC is authorised against.
                 route: Some(run_task_id),
@@ -1540,12 +1640,29 @@ impl DaemonService {
                         let tid = task_id.clone();
                         let out = output_tx.clone();
                         let queues = Arc::clone(&queue_watch);
+                        let mode_session = effective_session_id.clone();
                         tokio::spawn(async move {
                             while let Some(event) = rx.recv().await {
                                 // The run drained a queued message: tell the client
                                 // so it can move it out of its pending list.
                                 let drained =
                                     matches!(event.event, AgentEvent::SteerAccepted { .. });
+                                // A mode change the *run* made — the plan approval —
+                                // reaches us as a custom event, because a tool's only
+                                // channel is the run's event sink. Re-shape it into the
+                                // same pushed frame a client-driven `set_mode` produces,
+                                // so a panel consumes one contract whichever end moved
+                                // the mode. The custom event itself still flows on
+                                // verbatim below; nothing is swallowed.
+                                let mode_change = match &event.event {
+                                    AgentEvent::Custom { kind, payload }
+                                        if kind
+                                            == thunder_agent_root::plugins::MODE_CHANGED_EVENT_KIND =>
+                                    {
+                                        Some(payload.clone())
+                                    }
+                                    _ => None,
+                                };
                                 // Tiered trace retention:
                                 // Filter out high-frequency streaming micro-deltas (TokenDelta, ReasoningDelta, ToolCallChunk)
                                 // from in-memory trace storage to prevent unbounded memory growth on long tasks, while
@@ -1560,6 +1677,31 @@ impl DaemonService {
                                     event,
                                 };
                                 write_ndjson(&out, &res).await;
+                                if let Some(payload) = mode_change {
+                                    // The emitter states its own source; the fallback
+                                    // is only for a payload that predates the field.
+                                    let source = payload
+                                        .get("source")
+                                        .and_then(|v| {
+                                            serde_json::from_value::<ModeChangeSource>(v.clone())
+                                                .ok()
+                                        })
+                                        .unwrap_or(ModeChangeSource::PlanApproved);
+                                    if let Some(mode) = payload.get("mode").and_then(|v| v.as_str())
+                                    {
+                                        let res = DaemonResponse::ModeChanged {
+                                            session_id: mode_session.clone(),
+                                            task_id: Some(tid.clone()),
+                                            mode: mode.to_string(),
+                                            previous: payload
+                                                .get("previous")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string),
+                                            source,
+                                        };
+                                        write_ndjson(&out, &res).await;
+                                    }
+                                }
                                 if drained {
                                     let snapshot = queues.snapshot();
                                     let res = DaemonResponse::TaskQueueUpdate {

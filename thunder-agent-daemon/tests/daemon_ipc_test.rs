@@ -33,9 +33,13 @@ async fn test_daemon_ping_and_mock_run() -> Result<(), Box<dyn std::error::Error
     assert_eq!(resp["data"]["pong"], true);
     // The wire revision. `version` only ever meant "some newer thunder"; a host
     // deciding whether it can parse what comes back needs this instead.
+    //
+    // Bumped to 3 by the mode round: it added the pushed `mode_changed` frame.
+    // The frame is additive — an old host drops what it does not know — so the
+    // bump is for the record, not a handshake. Nothing gates on it.
     assert_eq!(
-        resp["data"]["protocol"], 2,
-        "0.4 speaks protocol 2: {}",
+        resp["data"]["protocol"], 3,
+        "0.5 speaks protocol 3: {}",
         resp["data"]
     );
 

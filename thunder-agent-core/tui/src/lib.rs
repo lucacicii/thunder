@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod event;
 pub mod links;
+pub mod pane_status;
 pub mod picker;
 pub mod runner;
 pub mod title;
