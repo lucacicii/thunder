@@ -91,6 +91,8 @@ pub struct AgentLoop {
     /// over-broad jail. So the host classifies, and the kernel decides what a
     /// classification means.
     tool_scope: Option<Arc<dyn crate::types::scope::ToolScope>>,
+    /// Interceptors installed in this agent's pipeline.
+    interceptors: Vec<Arc<dyn crate::types::plugin::InterceptorPlugin>>,
 }
 
 impl AgentLoop {
@@ -124,6 +126,7 @@ impl AgentLoop {
             max_gate_rounds: 3,
             tool_scope: None,
             trace_sink: None,
+            interceptors: Vec::new(),
         }
     }
 
@@ -216,6 +219,9 @@ impl AgentLoop {
         if let Some(sink) = &self.trace_sink {
             executor = executor.with_trace_sink(Some(Arc::clone(sink)));
         }
+        for interceptor in &self.interceptors {
+            executor = executor.with_interceptor(Arc::clone(interceptor));
+        }
         executor
     }
 
@@ -280,6 +286,26 @@ impl AgentLoop {
 
     pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
         self.tool_registry.register(tool);
+        self.tool_executor = self.refresh_executor();
+        self
+    }
+
+    /// Register a modern MCP-aligned `ToolPlugin`.
+    pub fn register_plugin(
+        &mut self,
+        plugin: Arc<dyn crate::types::plugin::ToolPlugin>,
+    ) -> &mut Self {
+        self.tool_registry.register_plugin(plugin);
+        self.tool_executor = self.refresh_executor();
+        self
+    }
+
+    /// Install an interceptor plugin into the agent's execution pipeline.
+    pub fn with_interceptor(
+        mut self,
+        interceptor: Arc<dyn crate::types::plugin::InterceptorPlugin>,
+    ) -> Self {
+        self.interceptors.push(interceptor);
         self.tool_executor = self.refresh_executor();
         self
     }

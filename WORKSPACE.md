@@ -54,7 +54,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 ├── thunder-agent-runtime/        # 无头运行时：以 JSONL 协议驱动内核
 ├── thunder-agent-providers/      # LLM Catalog、配置解析与进程内流式传输
 ├── thunder-agent-skills/         # Skill 解析、注册与全局缓存
-├── thunder-agent-mcp/            # MCP 客户端与动态工具桥接
+├── thunder-agent-mcp/            # MCP 客户端与服务端生态及动态工具/插件桥接
 ├── thunder-agent-root/           # 微内核 host，按任务动态挂载插件
 ├── thunder-agent-daemon/         # STDIO Sidecar 守护进程（供 Electron / 外部前端集成）
 └── thunder-agent-core/           # 核心业务组件集合
@@ -98,7 +98,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 4. **确定性轻量宿主**：
    - `thunder-agent-root` 默认加载通用基线插件（会话、技能与长期记忆），并通过关键字意图动态触发高级插件，杜绝昂贵的二次 LLM 分类时延。
 5. **策略在宿主，不在内核**：
-   - 内核（`thunder-agent-loop`）不带任何审批意见：它只提供**一个**工具执行入口、一个 `ToolGate` 钩子、一个 `ToolScope` 钩子与不可绕过的 guard。未安装 `ToolGate` 即"除 guard 外全放行"，无头宿主因此不需要审批策略也能跑。
+   - 内核（`thunder-agent-loop`）不带任何审批意见：它只提供**一个**统一步骤的工具执行漏斗（`ToolExecutor`）、洋葱拦截器流水线、`ToolGate` 钩子、`ToolScope` 钩子与不可绕过的 guard。未安装 `ToolGate` 即"除 guard 外全放行"，无头宿主因此不需要审批策略也能跑。
    - 审批模式（`plan` / `ask` / `acceptEdits` / `yolo`）住在 `thunder-agent-root/src/plugins/mode.rs` 的 `ModePlugin` 里，可被宿主卸载。
 6. **配置归 .thunder/，不碰 .arp**：
    - `.arp/` 属于 `agent-resume-panel`（面板配置 + 共享产物），Thunder 不读取其任何内容。

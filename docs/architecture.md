@@ -271,10 +271,10 @@ pub struct AgentRunResult {
 | 4 | **守卫** `Guard::check` | `:314` | `Decision::Deny{by: Guard}` → `guard_refusal` |
 | 5 | **判定** `ToolGate::decide` | `:331-341` | 无 gate → `Allow` |
 | 6 | **弹窗**（gate 返回 `Ask`） | `:371` → `ask()` | 超时/无面板/取消/非法答案 → 拒绝 |
-| 7 | **执行** | `:400-414` | 直进 `ToolRegistry::execute_tool_call` |
-| 8 | **关 trace + 发布** | `run_tool:278-279` | 交给 `ToolTraceSink` |
+| 7 | **执行与洋葱流水线** | `:424-508` | `execute_tool`: pre 降序拦截 → 注册表执行 → post 升序解套与结果同步 |
+| 8 | **关 trace + 发布** | `run_tool:302-303` | 交给 `ToolTraceSink` |
 
-内核**自己不落盘 trace**：它不知道 store 在哪（`executor.rs:416-420`）。
+内核**自己不落盘 trace**：它不知道 store 在哪（`executor.rs:516-520`）。
 
 ### 3.2 守卫：内核地板
 
@@ -383,6 +383,28 @@ pub enum DenyBy { Guard, Gate }
 - `output_digest` 是完整**未脱敏**输出的稳定摘要，足以判断两次调用是否同产物而不留字节（`trace.rs:187-189`）。
 
 两个出口共用一条记录（`engine.rs:1519-1545`）：`AgentEvent::ToolTrace` 给排事件的宿主，`ToolTraceSink` 给不想解析事件的宿主；**内核只序列化、只脱敏一次**。
+
+### 3.9 拦截器洋葱流水线、递归调用防死锁与 MCP 流式进度
+
+`thunder-agent-loop` 内置基于 MCP 规范标准对齐的插件与拦截器流水线（`types/plugin.rs`、`tools/executor.rs`）：
+
+1. **优先级分层契约（`InterceptorPlugin::priority`）**：
+   - `priority(&self) -> i32` 规范了拦截器在洋葱模型中的相对层次：
+     - `CRITICAL_GUARD (1000)`：系统底层硬安全防御（危险命令、破坏性操作熔断）
+     - `SECURITY_POLICY (800)`：工作区路径与权限安全边界（`CodeScope`）
+     - `GOVERNANCE_MODE (500)`：人机协作审批模式门禁（`ModePlugin`）
+     - `OBSERVABILITY (100)`：调用监控与 Trace 遥测包络（`TraceInterceptor`）
+2. **洋葱包络执行规则**：
+   - **`pre_execute`（从外向内）**：按优先级**从高到低**降序执行。一旦高优先级的 Guard 阻断，底层的 Mode 决不会无谓弹窗惊扰用户；
+   - **`post_execute`（从内向外）**：按优先级**从低到高**升序反向解套（Unwinding），保证最外层的观测拦截器能完整包络整个生命周期耗时；解套后的改写结果（脱敏文本、错误状态标记等）双向同步回 `ToolExecutionResult`。
+3. **安全递归互调（`ctx.invoke`）与死锁防御**：
+   - 插件或工具可以通过 `ctx.invoke(sub_tool, arguments)` 安全互调其它工具；
+   - 内核在 `ToolExecutionContext` 自动维护 `call_chain` 与 `depth`：
+     - `depth >= max_depth`（默认 3 层）直接熔断，防御调用栈溢出；
+     - 第一跳即记录根工具，实现自递归（`A -> A`）与跨工具环路（`A -> B -> A`）即时熔断，彻底杜绝死锁。
+4. **流式进度上报（MCP `notifications/progress`）**：
+   - `ToolExecutionContext` 接入 `ProgressReporter` 异步接口；
+   - 工具在长耗时执行中调用 `ctx.report_progress(progress, total, message)`，经由通道直接流式推送给客户端，且子调用自动透明继承。
 
 ---
 
@@ -793,13 +815,13 @@ flowchart TB
 9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:559-629`
 10. `agent_cfg`：workspace/extra roots、`thunder_cfg.apply_to`（max_turns、thinking_level）、`route`、合并后的 system prompt `:630-642`
 11. 模型解析：`resolve_ref` → **把真实窗口写进 `pruning.max_context_tokens`**；无 custom client 时 `client_for(spec, timeout)`；失败只 warn，留给 `UnconfiguredLLMClient` `:644-667`
-12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:673-694`
-13. 6 个内建工具（`register_builtins`）逐个 `with_default_cwd(ws)` 后注册 `:696-721`
-14. 插件工具注册 `:723-726`
-15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace 约束 `:737-745`
-16. `dispatch_ready` `:748`
-17. `with_pause_gate` / `with_steer_queues` `:750-759`
-18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:762-775`
+12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:802-815`
+13. 声明式与内建插件加载：`PluginLoader::load_plugins(&thunder_cfg, ws, options.register_builtins)` 发现并构建内建插件集（`code_plugins` 包含 read/write/grep/find/ls/bash）与配置声明的 MCP Servers（`plugins.mcpServers`），按 `disabled` 过滤后注册 `:826-839`
+14. 活动插件集注册与禁用过滤：遍历 `active_set.collect_tools()`、`collect_tool_plugins()`、`collect_interceptors()`，经 `matches_plugin_id` 对照 `plugins.disabled` 过滤后挂载入 `AgentLoop` `:840-865`
+15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace/洋葱拦截器流水线约束 `:876-884`
+16. `dispatch_ready` `:887`
+17. `with_pause_gate` / `with_steer_queues` `:889-898`
+18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:901-914`
 
 `RootRunHandle::join`（`:186-210`）：`handle.join()` → 等事件代理排空（`dispatch_drained`）→ `dispatch_finish`（错误被 `let _ =` 吞掉）→ `RootRunResult`。
 
@@ -878,6 +900,26 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 **提示缓存稳定性**（`.thunder/README.md:105-109`）：记忆块位于每次请求的 position 0（正是 provider 缓存键控区域），所以**每次 host 初始化只读一次**并缓存；编辑在下次会话生效。`MemoryPlugin::render` 在 `memory.enabled == false` 或没有绑定工作区时返回 `None`。
 
 配置分层（`thunder_config.rs:96-104`）：`$THUNDER_CONFIG_DIR/config.json` → `<ws>/.thunder/config.json` → `<ws>/.thunder/config.local.json`；合并规则是**只在 overlay 声明该字段时才替换**（`:131-148`）；`apply_to` 只改 `max_turns` 与 `thinking_level`。
+
+**插件声明式配置（`plugins` 块）**：在 `.thunder/config.json` 中支持通过 `plugins` 字段配置插件启用、禁用与外部 MCP 服务注入：
+```json
+{
+  "plugins": {
+    "builtin": ["read_file", "write_file", "bash", "grep", "find_by_name", "list_dir"],
+    "disabled": ["bash"],
+    "mcpServers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "..." }
+      }
+    }
+  }
+}
+```
+- `builtin`：内建工具显式列表（默认全启）。
+- `disabled`：禁用列表，支持双向别名匹配（如禁用 `bash` 或 `read`/`read_file` 均会自动匹配其规范名称及别名）。
+- `mcpServers`：声明式外部 MCP 进程定义，由 `PluginLoader` 在初始化时拉起并以双模 `McpToolBridge`（同时实现 `AgentTool` 与 `ToolPlugin`）注入工具漏斗。
 
 上下文文件发现（`instructions.rs`）：候选 `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`（每目录首个命中胜出）；全局目录 `<real_home>/.agents`、`<real_home>/.pi/agent`、`<数据根>`，**只加载第一个命中**；工作区祖先自底向上再反转（最外层在前）；剥离 UTF-8 BOM。开关：`THUNDER_NO_GLOBAL_INSTRUCTIONS` / `THUNDER_SKILLS_NO_GLOBAL`（真值 `"1"`/`"true"`，大小写不敏感）。
 
@@ -1070,13 +1112,15 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 ---
 
-## 15. MCP 客户端：`thunder-agent-mcp`
+## 15. MCP 客户端与服务端生态：`thunder-agent-mcp`
 
 ### 15.1 协议实现
 
 `LATEST_PROTOCOL_VERSION = "2024-11-05"`（`protocol.rs:4`）。JSON-RPC 2.0 结构：`JsonRpcRequest` / `JsonRpcNotification` / `JsonRpcResponse` / `JsonRpcErrorDetail`（`protocol.rs:7-65`）。
 
-已实现的方法（`client.rs`）：`initialize`（`:80`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:196`）→ `close`（`:209`）。
+已实现的方法与通知：
+- 客户端（`client.rs`）：`initialize`（`:80`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:196`）→ `close`（`:209`）。
+- 进度通知（`protocol.rs` / `server.rs`）：`notifications/progress`（参数含 `progressToken`、`progress`、可选 `total` 与 `message`），供长时间运行工具向客户端回传流式进度。
 
 ### 15.2 stdio 传输
 
@@ -1164,16 +1208,25 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 **第一个存在且 `mcpServers` 非空的胜出**。thunder 自己的 `mcp.json` 跟随数据根，其余是用户的跨工具文件，仍取真实 HOME（`config.rs:137-139`）。解析兼容两种形状：`{"mcpServers": {…}}` 与裸的 `{"server": {…}}` map（`config.rs:85-98`）。
 
-### 15.4 工具桥接
+### 15.4 工具与插件双模桥接
 
-`McpToolBridge`（`tool_bridge.rs:9-100`）把远程工具包装成内核 `AgentTool`，暴露名为：
-
-```
-mcp_<server_name 中 - 换 _>_<tool_name 中 - 换 _>
-```
-（`tool_bridge.rs:19-23`），描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
+`McpToolBridge`（`tool_bridge.rs`）同时实现了 `AgentTool` 与 `ToolPlugin` 双重特征契约：
+- **作为 `AgentTool`**：可被直接注册至 AgentLoop 或工具注册表，暴露命名为：
+  ```
+  mcp_<server_name 中 - 换 _>_<tool_name 中 - 换 _>
+  ```
+  描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
+- **作为 `ToolPlugin`**：在洋葱拦截器流水线执行时可接收富上下文 `ToolExecutionContext`，支持调用递归调用代理 `ctx.invoke` 以及流式报告进度 `ctx.report_progress`。
 
 `McpManager::discover_all_tools_timeout`（`manager.rs:93-127`）**每 server 10 秒超时**，超时/报错的 server 只 warn 并跳过，防止一个挂死的 server 阻塞整个 run；`is_alive() == false` 的 server 直接跳过。`close_all` 逐个 `close()`（`manager.rs:156-162`）。
+
+### 15.5 MCP 服务端：`McpServer` 与流式进度推送
+
+`thunder-agent-mcp` 提供完整的 MCP 服务端抽象（`server.rs`），能够将任何本地 `ToolPlugin` 集合以标准 MCP Server 协议向外部宿主（Claude Desktop、Cursor、VS Code 或其它 Agent）暴露：
+
+- **基础能力**：`McpServer::new(name, version)` 配合 `with_tool` / `with_tools` 注册任意 `Arc<dyn ToolPlugin>`；
+- **传输服务**：`server.serve(reader, writer)` 提供标准 stdio 流式事件循环，按行处理 JSON-RPC 2.0 请求（`initialize`、`notifications/initialized`、`tools/list`、`tools/call`、`ping`）；
+- **进度中继**：当外部调用传入 `_meta.progressToken` 时，服务端自动构造 `McpStreamProgressReporter` 并通过 `ToolExecutionContext` 传递给插件；插件调用 `ctx.report_progress(...)` 时，以异步 JSON-RPC `notifications/progress` 消息通过 stdout 实时流式通知客户端。
 
 ---
 

@@ -38,8 +38,8 @@ pub mod prelude {
         Artifact, ArtifactManifest, ScratchpadConfig, ScratchpadManager,
     };
     pub use crate::tools::trace::{
-        AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace, ToolTraceSink, TraceResult,
-        TraceTiming, TRACE_SCHEMA,
+        AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace, ToolTraceSink,
+        TraceInterceptor, TraceResult, TraceTiming, TRACE_SCHEMA,
     };
     pub use crate::tools::Guard;
     pub use crate::types::config::{AgentConfig, ContextPruningConfig, LoopGuardConfig};
@@ -60,8 +60,8 @@ pub mod prelude {
     pub use crate::types::policy::{Caller, ToolEffect};
     pub use crate::types::scope::{Scope, ToolScope, UnknownScope};
     pub use crate::types::tool::{
-        AgentTool, FunctionDefinition, ToolDefinition, ToolEventSink, ToolExecutionContext,
-        ToolExecutionResult,
+        AgentTool, FunctionDefinition, ProgressReporter, ToolDefinition, ToolEventSink,
+        ToolExecutionContext, ToolExecutionResult,
     };
     pub use crate::types::ui::{
         HostUi, NotifyLevel, NullHostUi, UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT,

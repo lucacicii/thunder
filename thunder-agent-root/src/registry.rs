@@ -3,6 +3,7 @@ use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlug
 use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
+use thunder_agent_loop::types::plugin::{InterceptorPlugin, ToolPlugin};
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_loop::AgentRunResult;
 use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
@@ -122,6 +123,24 @@ impl ActivePluginSet {
             tools.extend(plugin.tools());
         }
         tools
+    }
+
+    /// Collect all MCP-aligned capability plugins contributed by active plugins.
+    pub fn collect_tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
+        let mut tool_plugins = Vec::new();
+        for plugin in &self.plugins {
+            tool_plugins.extend(plugin.tool_plugins());
+        }
+        tool_plugins
+    }
+
+    /// Collect all governance interceptor plugins contributed by active plugins.
+    pub fn collect_interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
+        let mut interceptors = Vec::new();
+        for plugin in &self.plugins {
+            interceptors.extend(plugin.interceptors());
+        }
+        interceptors
     }
 
     /// Build a combined system prompt incorporating contributions from all active plugins.

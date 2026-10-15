@@ -17,12 +17,14 @@
 - **自主循环与安全兜底**：默认设定 **50 轮安全上限**，防止失控无限死循环；同时提供 `.with_unlimited_turns()` 显式解除限制，由 LLM 自主结论或完成标志（`finish_reason: "stop"` / 无工具调用）驱动终止。
 - **纯契约传输解耦**：完全解耦 HTTP 与特定方言依赖，通过纯异步流式契约 `LLMClientTrait` 对接模型。生产环境由 `thunder-agent-providers` 的 `RpiAiClient` 进程内直连模型（无子进程、无 Node 依赖）。
 - **检查点式上下文压缩（Checkpoint Compaction）**：默认策略下，两次压缩之间请求前缀**字节级稳定**（供应商 Prompt Cache 全量命中）；仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，才一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal / Progress / Key Decisions / Next Steps / Critical Context + 读写文件清单），尾部 `keep_recent_tokens` 原文保留。摘要请求禁用缓存写入（`cache_retention: "none"`）；摘要不可用时退化为**紧急裁剪**（原子地丢弃最老的完整轮次，绝不切断 tool call/result 配对）；压缩前原始轨迹经 `AgentRunResult.raw_messages` 保留。
-- **一个工具执行入口**：全部工具调用（内建 / 插件 / MCP / runtime 远程）都经过 `ToolExecutor::run_tool`——取消 → 作用域 → 守卫 → 准入判定 → 弹窗 → 执行 → 落 trace。**没有洋葱**：判定顺序在代码里写死，不存在「决定之后、执行之前」这种可编排的位置。
+- **统一工具执行漏斗与优先级洋葱拦截流水线 (Onion Interceptor Pipeline)**：全部工具调用（内建 / 插件 / MCP / runtime 远程）都统一经过 `ToolExecutor::run_tool`。支持分层插件（`Plugin`、`ToolPlugin`）与拦截器（`InterceptorPlugin`）。按显式优先级（`CriticalGuard 1000` -> `SecurityPolicy 800` -> `GovernanceMode 500` -> `Observability 100`）在 `pre_execute` 高优先级先执行（阻断绝不惊扰用户）、`post_execute` 反向解套（Trace 完整包络耗时），且后置改写结果精准同步回传。
+- **递归工具调用与死锁防御**：支持工具内部通过 `ctx.invoke(sub_tool, args)` 安全互调下层工具。内核自动强校验调用栈深度（默认 3 层熔断）与 `call_chain` 根节点即时环路检测，从根源上杜绝单节点自递归（`A -> A`）与跨工具循环调用（`A -> B -> A`）死锁。
+- **Anthropic MCP 流式进度协议支持**：`ToolExecutionContext` 原生支持 `ProgressReporter` 接口与 `report_progress(...)` 辅助方法，工具执行过程中可实时向客户端流式推送 `notifications/progress` 进度通知，并在跨工具调用中递归透明继承。
 - **极致性能与低开销**：单任务调度框架纯净开销仅 **~5.7 微秒 (0.0057 ms)**，高并发常驻内存 (RSS) **< 10 MB**，零垃圾回收停顿 (No GC)。
 - **原生并行工具调度**：支持异步非阻塞子进程（Bash）与内存函数（Native Tools），内置超时熔断与 Head/Tail 智能文本截断。
 - **可观测性事件广播**：支持订阅从 `TurnStart`、`TokenDelta`、`ReasoningDelta`、`ToolExecResult` 到 `LoopComplete` 的全生命周期背压事件流。
 - **一轮即一条消息**：`ChatMessage::assistant_turn` 让宿主把一轮写成一条 assistant 消息——正文、本轮全部 `tool_calls`，外加 `reasoning`（该轮思维链）与 `stats`（轮次号 / token / 耗时）。后两者是**转录字段**：引擎自己的上下文里恒为 `None`，provider 转换只读 `content`/`tool_calls`，所以它们永不出现在请求里，而宿主是唯一能把思维链留住的一方（provider 只推一次）。
-- **准入钩子与全量 trace**：内核只提供三个具名接缝——`ToolScope`（宿主回答「打到哪儿」）、`ToolGate`（宿主回答「准不准」）、`ToolTraceSink`（宿主收记录）；**不装 gate 即除守卫外全放行**。每次调用必然留下且只留下一条 trace，记录判定本身（`guard` / `gate` / `answer` / `scope`），落盘前统一脱敏。工具**始终全量注册**。
+- **准入钩子与全量 trace**：内核只提供三个具名接缝——`ToolScope`（宿主回答「打到哪儿」）、`ToolGate`（宿主回答「准不准」）、`ToolTraceSink`（宿主收记录）；**不装 gate 即除守卫外全放行**。每次调用必然留下且只留下一条 trace，记录判定本身（`guard` / `gate` / `answer` / `scope`），落盘前统一脱敏。工具**支持全量注册与动态插件注册**。
 
 ---
 

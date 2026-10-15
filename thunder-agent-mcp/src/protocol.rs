@@ -150,6 +150,29 @@ pub struct CallToolParams {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<serde_json::Value>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+impl CallToolParams {
+    /// Extract progressToken if present in `_meta`.
+    pub fn progress_token(&self) -> Option<serde_json::Value> {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.get("progressToken").cloned())
+    }
+}
+
+/// Parameters for MCP `notifications/progress` notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressNotificationParams {
+    #[serde(rename = "progressToken")]
+    pub progress_token: serde_json::Value,
+    pub progress: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

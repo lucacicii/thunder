@@ -39,6 +39,35 @@ pub struct ThunderConfig {
     /// Agent behaviour overrides.
     #[serde(default)]
     pub agent: AgentSection,
+    /// Declarative plugin configurations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<PluginSection>,
+}
+
+#[cfg(feature = "mcp")]
+pub type McpServerConfigMap =
+    std::collections::HashMap<String, thunder_agent_mcp::config::McpServerConfig>;
+#[cfg(not(feature = "mcp"))]
+pub type McpServerConfigMap = std::collections::HashMap<String, serde_json::Value>;
+
+/// The `plugins` group of a [`ThunderConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSection {
+    /// Explicit whitelist of built-in plugins (e.g. `["read_file", "write_file", "grep"]`).
+    /// If `None`, all built-in coding plugins are enabled by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<Vec<String>>,
+    /// Blacklist of plugin / tool / interceptor IDs to disable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<Vec<String>>,
+    /// External MCP server configurations mounted as plugins.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "mcp_servers"
+    )]
+    pub mcp_servers: Option<McpServerConfigMap>,
 }
 
 /// The `agent` group of a [`ThunderConfig`].
@@ -148,6 +177,23 @@ impl ThunderConfig {
         if b.default_mode.is_some() {
             self.agent.default_mode = b.default_mode;
         }
+        if let Some(p) = other.plugins {
+            let entry = self.plugins.get_or_insert_with(PluginSection::default);
+            if p.builtin.is_some() {
+                entry.builtin = p.builtin;
+            }
+            if p.disabled.is_some() {
+                entry.disabled = p.disabled;
+            }
+            if p.mcp_servers.is_some() {
+                entry.mcp_servers = p.mcp_servers;
+            }
+        }
+    }
+
+    /// Access the declarative plugin configuration section if present.
+    pub fn plugins(&self) -> Option<&PluginSection> {
+        self.plugins.as_ref()
     }
 
     /// Push the config-declared values onto a run's [`AgentConfig`].
@@ -237,5 +283,47 @@ mod tests {
         let cfg: ThunderConfig =
             serde_json::from_str(r#"{"agent":{"maxTurns":3,"futureKnob":true}}"#).unwrap();
         assert_eq!(cfg.agent.max_turns, Some(3));
+    }
+
+    #[test]
+    fn plugins_section_parses_and_merges() {
+        let json_str = r#"{
+            "plugins": {
+                "builtin": ["read_file", "write_file"],
+                "disabled": ["bash"],
+                "mcpServers": {
+                    "test": {
+                        "command": "echo",
+                        "args": ["hello"]
+                    }
+                }
+            }
+        }"#;
+
+        let mut base: ThunderConfig = serde_json::from_str(json_str).unwrap();
+        let plugins = base.plugins().expect("plugins section present");
+        assert_eq!(
+            plugins.builtin.as_deref(),
+            Some(&["read_file".to_string(), "write_file".to_string()][..])
+        );
+        assert_eq!(plugins.disabled.as_deref(), Some(&["bash".to_string()][..]));
+
+        let overlay_str = r#"{
+            "plugins": {
+                "disabled": ["bash", "grep"]
+            }
+        }"#;
+        let overlay: ThunderConfig = serde_json::from_str(overlay_str).unwrap();
+        base.merge(overlay);
+
+        let merged_plugins = base.plugins().expect("plugins section survives");
+        assert_eq!(
+            merged_plugins.builtin.as_deref(),
+            Some(&["read_file".to_string(), "write_file".to_string()][..])
+        );
+        assert_eq!(
+            merged_plugins.disabled.as_deref(),
+            Some(&["bash".to_string(), "grep".to_string()][..])
+        );
     }
 }

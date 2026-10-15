@@ -54,7 +54,7 @@ thunder/                          # Git monorepo root & Cargo workspace root
 ├── thunder-agent-runtime/        # Headless runtime driving the kernel over JSONL
 ├── thunder-agent-providers/      # LLM catalog, config parsing & in-process streaming
 ├── thunder-agent-skills/         # Skill parsing, discovery & global cache
-├── thunder-agent-mcp/            # MCP client & dynamic tool bridge
+├── thunder-agent-mcp/            # MCP client & server ecosystem & dynamic tool/plugin bridge
 ├── thunder-agent-root/           # Microkernel host for dynamic plugin composition
 ├── thunder-agent-daemon/         # STDIO Sidecar daemon (Electron / desktop integration)
 └── thunder-agent-core/           # Core modules collection
@@ -98,7 +98,7 @@ The **internal** crates each crate depends on directly (copied one by one from i
 4. **Deterministic Lightweight Host**:
    - `thunder-agent-root` maintains standard baseline plugins (conversation, skills and long-term memory) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
 5. **Policy lives in the host, not the kernel**:
-   - The kernel (`thunder-agent-loop`) carries no approval opinion: it offers **one** tool-execution funnel, a `ToolGate` hook, a `ToolScope` hook, and a guard that cannot be bypassed. With no `ToolGate` installed, everything but the guard runs — which is how a headless host works without an approval policy at all.
+   - The kernel (`thunder-agent-loop`) carries no approval opinion: it offers **one** unified tool execution funnel (`ToolExecutor`), an onion interceptor pipeline, a `ToolGate` hook, a `ToolScope` hook, and a guard that cannot be bypassed. With no `ToolGate` installed, everything but the guard runs — which is how a headless host works without an approval policy at all.
    - The approval modes (`plan` / `ask` / `acceptEdits` / `yolo`) live in `ModePlugin` (`thunder-agent-root/src/plugins/mode.rs`) and can be unloaded by the host.
 6. **Config lives in .thunder/, never .arp**:
    - `.arp/` belongs to `agent-resume-panel` (panel config + shared artifacts); Thunder reads none of it.

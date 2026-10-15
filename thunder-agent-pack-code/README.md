@@ -30,6 +30,22 @@
 
 ## 🛠️ 快速上手
 
+### 1. 现代插件化装配（推荐）
+
+六个编码工具已全面实现 MCP 对齐的 `ToolPlugin` 契约，可通过 `code_plugins(...)` 获取插件列表：
+
+```rust
+use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::code_plugins;
+
+let ws = Some(std::path::PathBuf::from("/path/to/project"));
+for plugin in code_plugins(ws) {
+    agent.register_plugin(plugin);
+}
+```
+
+### 2. 能力包整体装配
+
 ```rust
 use thunder_agent_loop::prelude::*;
 use thunder_agent_pack_code::{install_code_pack, CodePackConfig};

@@ -43,8 +43,18 @@ impl McpToolBridge {
     }
 }
 
+impl thunder_agent_loop::types::plugin::Plugin for McpToolBridge {
+    fn id(&self) -> &str {
+        &self.exposed_name
+    }
+
+    fn description(&self) -> &str {
+        self.tool_info.description.as_deref().unwrap_or("")
+    }
+}
+
 #[async_trait]
-impl AgentTool for McpToolBridge {
+impl thunder_agent_loop::types::plugin::ToolPlugin for McpToolBridge {
     fn definition(&self) -> ToolDefinition {
         let desc = self.tool_info.description.clone().unwrap_or_else(|| {
             format!(
@@ -64,7 +74,7 @@ impl AgentTool for McpToolBridge {
         &self,
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
-    ) -> Result<String, String> {
+    ) -> Result<thunder_agent_loop::types::plugin::CallToolResult, String> {
         info!(
             tool = %self.exposed_name,
             original = %self.tool_info.name,
@@ -88,10 +98,45 @@ impl AgentTool for McpToolBridge {
                 )
             })?;
 
+        let content: Vec<thunder_agent_loop::types::plugin::ToolContent> = res
+            .content
+            .into_iter()
+            .map(|item| match item {
+                crate::protocol::ToolContent::Text { text } => {
+                    thunder_agent_loop::types::plugin::ToolContent::Text { text }
+                }
+                crate::protocol::ToolContent::Image { data, mime_type } => {
+                    thunder_agent_loop::types::plugin::ToolContent::Image { data, mime_type }
+                }
+                crate::protocol::ToolContent::Resource { uri, text } => {
+                    thunder_agent_loop::types::plugin::ToolContent::Resource { uri, text }
+                }
+            })
+            .collect();
+
+        Ok(thunder_agent_loop::types::plugin::CallToolResult {
+            content,
+            is_error: res.is_error,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentTool for McpToolBridge {
+    fn definition(&self) -> ToolDefinition {
+        thunder_agent_loop::types::plugin::ToolPlugin::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        let res = thunder_agent_loop::types::plugin::ToolPlugin::execute(self, args, ctx).await?;
         let output_text = res.plain_text();
         debug!(tool = %self.exposed_name, output_len = output_text.len(), is_error = ?res.is_error, "MCP tool execution finished");
 
-        if res.is_error.unwrap_or(false) {
+        if res.is_err() {
             Err(output_text)
         } else {
             Ok(output_text)

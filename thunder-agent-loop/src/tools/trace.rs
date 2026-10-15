@@ -18,10 +18,12 @@
 //! truth cannot work. See [`ToolTrace::arguments`] and
 //! [`TraceResult::output_preview`].
 
+use crate::types::plugin::{CallToolResult, InterceptorPlugin, Plugin};
 use crate::types::policy::{Caller, ToolEffect};
 use crate::types::scope::Scope;
+use crate::types::tool::ToolExecutionContext;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 /// Version of the trace layout. Bumped when a field changes meaning, so a reader
 /// can tell an old record from a new one.
@@ -446,6 +448,86 @@ pub trait ToolTraceSink: Send + Sync {
     /// Must not block the tool path for long, and must not fail the call: a sink
     /// that cannot keep up loses records, it does not stop work.
     fn record(&self, trace: &ToolTrace);
+}
+
+/// An [`InterceptorPlugin`] adapter that observes tool completions and records
+/// a [`ToolTrace`] into an underlying [`ToolTraceSink`].
+#[derive(Clone)]
+pub struct TraceInterceptor {
+    sink: Arc<dyn ToolTraceSink>,
+}
+
+impl TraceInterceptor {
+    pub fn new(sink: Arc<dyn ToolTraceSink>) -> Self {
+        Self { sink }
+    }
+
+    pub fn sink(&self) -> &Arc<dyn ToolTraceSink> {
+        &self.sink
+    }
+}
+
+impl Plugin for TraceInterceptor {
+    fn id(&self) -> &str {
+        "trace_interceptor"
+    }
+
+    fn name(&self) -> &str {
+        "Trace Telemetry Interceptor"
+    }
+
+    fn description(&self) -> &str {
+        "Observes tool execution lifecycle and forwards structured execution traces to a ToolTraceSink."
+    }
+}
+
+#[async_trait::async_trait]
+impl InterceptorPlugin for TraceInterceptor {
+    fn priority(&self) -> i32 {
+        crate::types::plugin::priority::OBSERVABILITY
+    }
+
+    async fn post_execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        result: &mut CallToolResult,
+        ctx: &ToolExecutionContext,
+    ) {
+        let text = result.plain_text();
+        let digest = stable_digest(text.as_bytes());
+        let now = now_ms();
+        let trace = ToolTrace {
+            schema: TRACE_SCHEMA,
+            trace_id: format!("trace-{now}"),
+            session_id: None,
+            task_id: None,
+            turn: ctx.depth,
+            tool_call_id: format!("call-{tool_name}"),
+            tool: tool_name.to_string(),
+            caller: Caller::Model,
+            effect: ToolEffect::of(tool_name),
+            mode: None,
+            scope: Scope::Unknown,
+            arguments: args.clone(),
+            decision: Decision::Allow,
+            guard: None,
+            answer: None,
+            result: TraceResult {
+                is_error: result.is_err(),
+                truncated: false,
+                original_bytes: text.len(),
+                result_bytes: text.len(),
+                output_preview: text,
+                output_digest: digest,
+            },
+            redactions: vec![],
+            timing: TraceTiming::default(),
+            started_at_ms: now,
+            finished_at_ms: now,
+        };
+        self.sink.record(&trace);
+    }
 }
 
 /// A digest of `bytes` that is stable across releases: FNV-1a, 64-bit, hex.

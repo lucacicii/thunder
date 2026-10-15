@@ -106,6 +106,40 @@ async fn test_mcp_tool_bridge_as_agent_tool() {
 }
 
 #[tokio::test]
+async fn test_mcp_tool_bridge_as_tool_plugin() {
+    use thunder_agent_loop::types::plugin::ToolPlugin;
+
+    let mock_transport = Arc::new(MockTransport::new());
+    let client = McpClient::from_transport("test_srv", mock_transport);
+    client
+        .initialize(InitializeParams::default())
+        .await
+        .expect("Init should succeed");
+
+    let tools = client.list_tools().await.expect("Tools list must succeed");
+    let mcp_tool = tools.into_iter().next().unwrap();
+
+    let bridge = McpToolBridge::new("test_srv", mcp_tool, Arc::new(client));
+    let plugin: Arc<dyn ToolPlugin> = Arc::new(bridge);
+
+    assert_eq!(
+        plugin.definition().function.name,
+        "mcp_test_srv_mock_fetch_data"
+    );
+
+    let ctx = ToolExecutionContext::default();
+    let res = plugin
+        .execute(json!({"query": "testing ToolPlugin"}), &ctx)
+        .await
+        .expect("ToolPlugin execution should succeed");
+
+    assert!(!res.is_err());
+    assert!(res
+        .plain_text()
+        .contains("Mock response from mock_fetch_data"));
+}
+
+#[tokio::test]
 async fn test_mcp_manager_discovery() {
     let manager = McpManager::new();
 

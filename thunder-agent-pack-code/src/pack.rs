@@ -64,3 +64,33 @@ pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> Agent
 
     agent
 }
+
+/// Returns the 6 coding capability tools as MCP-aligned `ToolPlugin` trait objects.
+///
+/// Enables modular, Lego-style assembly into any `AgentLoop` via `agent.register_plugin(...)`.
+pub fn code_plugins(
+    workspace_dir: Option<std::path::PathBuf>,
+) -> Vec<Arc<dyn thunder_agent_loop::types::plugin::ToolPlugin>> {
+    let mut bash = BashTool::default();
+    let mut read = ReadFileTool::default();
+    let mut write = WriteFileTool::default();
+    let mut grep = GrepTool::default();
+    let mut find = FindTool::default();
+    let mut ls = ListDirTool::default();
+    if let Some(ref dir) = workspace_dir {
+        bash = bash.with_default_cwd(dir.clone());
+        read = read.with_default_cwd(dir.clone());
+        write = write.with_default_cwd(dir.clone());
+        grep = grep.with_default_cwd(dir.clone());
+        find = find.with_default_cwd(dir.clone());
+        ls = ls.with_default_cwd(dir.clone());
+    }
+    vec![
+        Arc::new(bash),
+        Arc::new(read),
+        Arc::new(write),
+        Arc::new(grep),
+        Arc::new(find),
+        Arc::new(ls),
+    ]
+}

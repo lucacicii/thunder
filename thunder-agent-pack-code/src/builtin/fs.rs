@@ -3,11 +3,15 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
+
+pub type ReadFilePlugin = ReadFileTool;
+pub type WriteFilePlugin = WriteFileTool;
 
 #[derive(Default)]
 pub struct ReadFileTool {
@@ -110,6 +114,32 @@ impl AgentTool for ReadFileTool {
     }
 }
 
+impl Plugin for ReadFileTool {
+    fn id(&self) -> &str {
+        "read_file"
+    }
+
+    fn description(&self) -> &str {
+        "Read file contents with optional line offset and limit."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for ReadFileTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
+    }
+}
+
 #[derive(Default)]
 pub struct WriteFileTool {
     default_cwd: Option<PathBuf>,
@@ -177,6 +207,32 @@ impl AgentTool for WriteFileTool {
             );
         }
         outcome
+    }
+}
+
+impl Plugin for WriteFileTool {
+    fn id(&self) -> &str {
+        "write_file"
+    }
+
+    fn description(&self) -> &str {
+        "Write content to a file on disk."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for WriteFileTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
     }
 }
 

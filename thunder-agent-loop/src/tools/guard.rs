@@ -54,7 +54,43 @@ const TARGET_KEYS: &[&str] = &[
 ];
 
 /// The kernel's unconditional refusals.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Guard;
+
+impl crate::types::plugin::Plugin for Guard {
+    fn id(&self) -> &str {
+        "kernel_guard"
+    }
+
+    fn description(&self) -> &str {
+        "Unconditional security floor: blocks destructive commands and critical path writes."
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::types::plugin::InterceptorPlugin for Guard {
+    fn priority(&self) -> i32 {
+        crate::types::plugin::priority::CRITICAL_GUARD
+    }
+
+    async fn pre_execute(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        ctx: &crate::types::tool::ToolExecutionContext,
+    ) -> Result<crate::types::plugin::PreExecutionVerdict, String> {
+        let effect = ctx.effect.unwrap_or_else(|| ToolEffect::of(tool));
+        if let Some(hit) = Guard::check(tool, args, effect, Scope::Unknown) {
+            return Ok(crate::types::plugin::PreExecutionVerdict::Deny {
+                reason: format!(
+                    "Refused by kernel security guard: {:?} on pattern '{}'",
+                    hit.kind, hit.pattern
+                ),
+            });
+        }
+        Ok(crate::types::plugin::PreExecutionVerdict::Allow)
+    }
+}
 
 impl Guard {
     /// Refuse this call, or let it through to the gate.

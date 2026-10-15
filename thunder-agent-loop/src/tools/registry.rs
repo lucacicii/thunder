@@ -2,6 +2,7 @@ use crate::core::utf8::{safe_slice_from, safe_slice_to};
 use crate::tools::sanitizer::sanitize_tool_output;
 use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::message::ToolCall;
+use crate::types::plugin::{ToolPlugin, ToolPluginAdapter};
 use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -55,6 +56,13 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
         let name = tool.definition().function.name;
         self.tools.insert(name, tool);
+    }
+
+    /// Register a modern, MCP-aligned `ToolPlugin`.
+    ///
+    /// Automatically adapts the `ToolPlugin` into an `AgentTool` using `ToolPluginAdapter`.
+    pub fn register_plugin(&mut self, plugin: Arc<dyn ToolPlugin>) {
+        self.register(Arc::new(ToolPluginAdapter::new(plugin)));
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn AgentTool>> {

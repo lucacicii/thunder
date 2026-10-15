@@ -26,6 +26,11 @@
    - Features `DEFAULT_SKILLS_CACHE` with a 120-second TTL over skill directories, eliminating redundant disk walks and filesystem bottlenecks during multi-turn interactions.
 4. **One-line Standard Assembly (`StandardHostBuilder`)**:
    - The canonical assembly entry point: mounts conversation, telemetry, execution status, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_plugin`.
+5. **Declarative Plugin Configuration & Discovery (`PluginLoader`)**:
+   - Declare the `plugins` section in `.thunder/config.json` and its layered overrides:
+     - `builtin`: Whitelist enabled built-in tools (e.g. `["read_file", "write_file", "grep"]`);
+     - `disabled`: Blacklist unwanted tools or interceptors (e.g. `["bash"]`), with bidirectional alias support (`read` <=> `read_file`);
+     - `mcpServers`: Declare external MCP server processes, automatically spawned, discovered, and bridged as standard `ToolPlugin` instances.
 
 ---
 

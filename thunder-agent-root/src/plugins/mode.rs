@@ -45,7 +45,10 @@ use thunder_agent_loop::tools::read_only::call_is_read_only;
 use thunder_agent_loop::types::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest,
 };
-use thunder_agent_loop::types::policy::ToolEffect;
+use thunder_agent_loop::types::plugin::{
+    CallToolResult, InterceptorPlugin, Plugin as CorePlugin, PreExecutionVerdict, ToolPlugin,
+};
+use thunder_agent_loop::types::policy::{Caller, ToolEffect};
 use thunder_agent_loop::types::scope::Scope;
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use thunder_agent_loop::types::ui::{NullHostUi, UiRequest, UiSource};
@@ -402,7 +405,7 @@ impl ModeState {
 /// Shared by reference across every run of a session so an "always allow"
 /// survives a turn, and so flipping the mode takes effect on the very next
 /// call — the kernel asks the gate every time and caches nothing.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModePlugin {
     state: Arc<ModeState>,
     manifest: PluginManifest,
@@ -705,6 +708,51 @@ impl ToolGate for ModePlugin {
     }
 }
 
+impl CorePlugin for ModePlugin {
+    fn id(&self) -> &str {
+        "mode_interceptor"
+    }
+
+    fn name(&self) -> &str {
+        "Mode Policy Interceptor"
+    }
+
+    fn description(&self) -> &str {
+        "Enforces plan, ask, acceptEdits, and yolo permission modes before tool execution."
+    }
+}
+
+#[async_trait]
+impl InterceptorPlugin for ModePlugin {
+    fn priority(&self) -> i32 {
+        thunder_agent_loop::types::plugin::priority::GOVERNANCE_MODE
+    }
+
+    async fn pre_execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<PreExecutionVerdict, String> {
+        let effect = ToolEffect::of(tool_name);
+        let req = ToolGateRequest {
+            tool: tool_name,
+            caller: Caller::Model,
+            effect,
+            arguments: args,
+            scope: Scope::Unknown,
+            tool_call_id: "interceptor_check",
+        };
+        match self.decide(&req) {
+            GateVerdict::Allow | GateVerdict::AllowByRule { .. } => Ok(PreExecutionVerdict::Allow),
+            GateVerdict::Deny { reason } => Ok(PreExecutionVerdict::Deny { reason }),
+            GateVerdict::Ask(prompt) => Ok(PreExecutionVerdict::AskUser {
+                prompt: format!("{}: {}", prompt.title, prompt.detail),
+            }),
+        }
+    }
+}
+
 /// `write_plan`: the one write plan mode allows, and it is not the model's to
 /// choose — the path comes from the session, not the arguments.
 struct WritePlanTool {
@@ -759,6 +807,33 @@ impl AgentTool for WritePlanTool {
             content.len(),
             EXIT_PLAN_MODE_TOOL
         ))
+    }
+}
+
+impl CorePlugin for WritePlanTool {
+    fn id(&self) -> &str {
+        WRITE_PLAN_TOOL
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for WritePlanTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::PlanArtifact
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        AgentTool::execute(self, args, ctx)
+            .await
+            .map(CallToolResult::success_text)
     }
 }
 
@@ -906,6 +981,33 @@ impl ExitPlanModeTool {
     }
 }
 
+impl CorePlugin for ExitPlanModeTool {
+    fn id(&self) -> &str {
+        EXIT_PLAN_MODE_TOOL
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for ExitPlanModeTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Read
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        AgentTool::execute(self, args, ctx)
+            .await
+            .map(CallToolResult::success_text)
+    }
+}
+
 #[async_trait]
 impl ThunderPlugin for ModePlugin {
     fn manifest(&self) -> &PluginManifest {
@@ -921,6 +1023,21 @@ impl ThunderPlugin for ModePlugin {
                 state: Arc::clone(&self.state),
             }),
         ]
+    }
+
+    fn tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
+        vec![
+            Arc::new(WritePlanTool {
+                state: Arc::clone(&self.state),
+            }),
+            Arc::new(ExitPlanModeTool {
+                state: Arc::clone(&self.state),
+            }),
+        ]
+    }
+
+    fn interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
+        vec![Arc::new(self.clone())]
     }
 
     fn system_prompt_contribution(&self) -> Option<String> {

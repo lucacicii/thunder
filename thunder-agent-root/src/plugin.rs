@@ -9,6 +9,7 @@ use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::gate::ToolGate;
 use thunder_agent_loop::types::invoke::ToolInvokerSlot;
+use thunder_agent_loop::types::plugin::{InterceptorPlugin, ToolPlugin};
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::AgentRunResult;
@@ -300,6 +301,16 @@ pub trait ThunderPlugin: Send + Sync {
 
     /// Optional tools to register directly into the core `AgentLoop`.
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        vec![]
+    }
+
+    /// Optional MCP-aligned capability plugins to register into the core `AgentLoop`.
+    fn tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
+        vec![]
+    }
+
+    /// Optional governance interceptor plugins (guardrails, modes, traces) to wrap around tool execution.
+    fn interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
         vec![]
     }
 

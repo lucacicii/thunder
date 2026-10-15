@@ -103,6 +103,27 @@ pub struct ToolExecutionContext {
     /// `None` means nobody stamped it — a direct `execute` call — and the tool
     /// degrades to no panel, which for a dialog means the fail-closed branch.
     pub ui: Option<UiHandle>,
+    /// Current invocation depth (0 for direct model call, incremented on sub-invocations).
+    pub depth: usize,
+    /// Maximum allowed depth before refusing sub-invocations (default: 3).
+    pub max_depth: usize,
+    /// Call chain for cycle/deadlock detection and attribution: `["root_tool", "sub_tool"]`.
+    pub call_chain: Vec<String>,
+    /// Sub-tool invocation provider for safe, decoupled inter-tool calls.
+    pub sub_invoker: Option<Arc<dyn crate::types::plugin::SubToolInvoker>>,
+    /// Streaming progress reporter interface for long-running operations.
+    pub progress_reporter: Option<Arc<dyn ProgressReporter>>,
+}
+
+/// Streaming progress reporter interface (aligned with Anthropic MCP `notifications/progress`).
+#[async_trait]
+pub trait ProgressReporter: Send + Sync + std::fmt::Debug {
+    /// Report execution progress.
+    ///
+    /// - `progress`: The current progress value (e.g. 10.0 or 0.5).
+    /// - `total`: Optional total number of steps or units (e.g. 100.0 or 1.0).
+    /// - `message`: Optional human-readable message describing the current step.
+    async fn report_progress(&self, progress: f64, total: Option<f64>, message: Option<String>);
 }
 
 impl Default for ToolExecutionContext {
@@ -120,6 +141,11 @@ impl Default for ToolExecutionContext {
             effect: None,
             event_sink: None,
             ui: None,
+            depth: 0,
+            max_depth: 3,
+            call_chain: Vec::new(),
+            sub_invoker: None,
+            progress_reporter: None,
         }
     }
 }
@@ -137,9 +163,106 @@ impl ToolExecutionContext {
         self
     }
 
+    /// Set current call depth.
+    pub fn with_depth(mut self, depth: usize) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// Set maximum allowed call depth before refusing calls.
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    /// Set sub-tool invoker.
+    pub fn with_sub_invoker(
+        mut self,
+        invoker: Arc<dyn crate::types::plugin::SubToolInvoker>,
+    ) -> Self {
+        self.sub_invoker = Some(invoker);
+        self
+    }
+
+    /// Attach a progress reporter.
+    pub fn with_progress_reporter(mut self, reporter: Arc<dyn ProgressReporter>) -> Self {
+        self.progress_reporter = Some(reporter);
+        self
+    }
+
+    /// Report execution progress if a reporter is installed.
+    pub async fn report_progress(
+        &self,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<impl Into<String>>,
+    ) {
+        if let Some(reporter) = &self.progress_reporter {
+            reporter
+                .report_progress(progress, total, message.map(Into::into))
+                .await;
+        }
+    }
+
     /// A short "who is asking" label, empty when the model is the caller.
     pub fn caller_label(&self) -> &str {
         self.caller.as_deref().unwrap_or("")
+    }
+
+    /// Safely invoke another tool through the kernel proxy.
+    ///
+    /// Automatically enforces:
+    /// 1. Maximum invocation depth limit (`depth < max_depth`) to prevent stack overflow.
+    /// 2. Cycle detection on `call_chain` to prevent infinite recursion / deadlocks.
+    /// 3. Proper inheritance of cancellation, caller attribution, and proxy chain.
+    pub async fn invoke(
+        &self,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<crate::types::plugin::CallToolResult, String> {
+        if self.depth >= self.max_depth {
+            return Err(format!(
+                "Refused tool invocation: Max invocation depth ({}) exceeded. Cannot call '{}'.",
+                self.max_depth, tool
+            ));
+        }
+
+        if self.call_chain.iter().any(|c| c == tool) {
+            return Err(format!(
+                "Refused tool invocation: Cycle detected in call chain: {:?} -> '{}'. Aborting to prevent infinite recursion.",
+                self.call_chain, tool
+            ));
+        }
+
+        let invoker = self.sub_invoker.as_ref().ok_or_else(|| {
+            format!("No sub-tool invoker configured in ToolExecutionContext to invoke '{tool}'.")
+        })?;
+
+        let mut next_chain = self.call_chain.clone();
+        next_chain.push(tool.to_string());
+
+        let child_ctx = ToolExecutionContext {
+            tool_call_id: format!("{}_{}_{}", self.tool_call_id, tool, self.depth + 1),
+            turn: self.turn,
+            cancellation_token: self.cancellation_token.clone(),
+            caller: Some(
+                self.call_chain
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "model".into()),
+            ),
+            route: self.route.clone(),
+            effect: None,
+            event_sink: self.event_sink.clone(),
+            ui: self.ui.clone(),
+            depth: self.depth + 1,
+            max_depth: self.max_depth,
+            call_chain: next_chain,
+            sub_invoker: self.sub_invoker.clone(),
+            progress_reporter: self.progress_reporter.clone(),
+        };
+
+        invoker.invoke_sub_tool(tool, args, &child_ctx).await
     }
 }
 
@@ -196,6 +319,11 @@ impl ToolExecutionResult {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
+
+    /// Name of the tool as exposed in its definition.
+    fn name(&self) -> String {
+        self.definition().function.name
+    }
 
     /// What this tool can do to the world.
     ///

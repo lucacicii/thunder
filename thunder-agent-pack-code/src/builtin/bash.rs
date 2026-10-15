@@ -2,11 +2,14 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Stdio;
+use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::file_change;
+
+pub type BashPlugin = BashTool;
 
 pub struct BashTool {
     max_buffer_bytes: usize,
@@ -30,6 +33,32 @@ impl BashTool {
     pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
         self.default_cwd = Some(cwd);
         self
+    }
+}
+
+impl Plugin for BashTool {
+    fn id(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a bash shell command and capture standard output and standard error."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for BashTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
     }
 }
 
