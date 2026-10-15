@@ -206,6 +206,7 @@ src/
 ├── tools/                 # 工具注册表与并行执行器
 │   ├── executor.rs        # run_tool：唯一执行入口（guard → gate → ask → execute → trace）
 │   ├── guard.rs           # 内核守卫：危险命令（token 判定）+ 关键路径
+│   ├── read_only.rs       # 只读命令判据：plan 模式下能证明什么都不改的 shell 免问
 │   └── trace.rs           # ToolTrace、脱敏与 ToolTraceSink
 └── types/                 # 消息、事件、工具与配置类型定义
 ```

@@ -482,6 +482,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 <root>/logs/                 TUI 日志（写）
 <root>/scratchpad/           超大工具输出（写）
 <root>/conversations/        会话存储（写）
+<root>/permissions.json     已同意的「always allow」规则（写，daemon / TUI 落盘）
 ```
 （`paths.rs:9-20`）
 
@@ -806,7 +807,7 @@ flowchart TB
 
 | mode | Read | Write·InScope | Write·OutOfScope/Unknown | Exec | PlanArtifact |
 |---|---|---|---|---|---|
-| `plan` | Allow | **Deny** | **Deny** | **Ask** | **Deny** |
+| `plan` | Allow | **Deny** | **Deny** | Allow（只读命令）/ **Ask** | **Deny** |
 | `ask` | Allow | Ask | Ask | Ask | Ask |
 | `acceptEdits` | Allow | **Allow** | Ask | Ask | Ask |
 | `yolo` | Allow | Allow | Allow | Allow | Allow |
@@ -818,6 +819,7 @@ flowchart TB
 1. **plan 跳过 allow 规则**：规则查询先于矩阵，但 `if mode != Mode::Plan` 把它挡在 plan 之外（`mode.rs:449-465`）——"更宽松模式里记住的 always allow 不是 plan 模式下写文件的办法"（`mode.rs:20-22`）。
 2. **plan 拒绝文案必须给出出口**，否则模型会反复重试（见 `docs/permission-structure.md` §7）。
 3. **plan 工具豁免按名字，不按 `ToolEffect`**（`mode.rs:438-447`）——否则任何工具都能自称 `PlanArtifact` 绕过（测试 `a_self_declared_plan_effect_is_not_an_exemption`）。
+4. **plan 下的 Exec 先读命令本身**：内核的 `read_only::call_is_read_only`（`thunder-agent-loop/src/tools/read_only.rs`）能证明这条命令什么都不改时直接 Allow，否则照旧 `ask_for`。它只被 plan 分支使用——ask / acceptEdits 问的是"要不要跑点东西"，那里没有可省的问。判据、白名单与诚实的边界见 `docs/permission-structure.md` §7.5；测试在 `mode_matrix_test.rs::a_read_only_command_runs_in_plan_mode` 与 `read_only.rs` 自己的用例里，两侧都钉。
 
 **每次模式变化都会被播报，且只在真的变了时播报。** 这条由 `ModePlugin::set_mode_announcing`（`mode.rs:392-399`）承担：它翻转并返回被替换掉的旧档位，档位本来就相同则返回 `None`。daemon 侧三条路都汇进 `emit_mode_changed`，推同一帧 `mode_changed`（`protocol.rs`）：
 
@@ -846,11 +848,15 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 | 工具类型 | 规则形式 | `matches` 逻辑 |
 |---|---|---|
-| `Exec` | 命令到第一个链接符为止的前缀 | `strip_prefix` 后余下部分**不得含** `; & \| \` > < \n $` |
-| 其它（有 `path` 参数） | `path` 本身（文件或整个目录） | `path == prefix \|\| path.starts_with(prefix + "/")` |
+| `Exec` | 命令到第一个链接符为止的前缀（空白已折叠） | `strip_prefix` 后余下部分**不得含** `; & \| \` > < \n $` |
+| 其它（有 `path` 参数） | `path` **归一化后**（绝对化 + 折叠 `.`/`..`/重复与末尾分隔符） | `under(path, prefix)`：自身或其后代，按分隔符判 |
 | 其它且无 `path` | `None` → **不提供** "Always allow" 选项 | — |
 
-`SHELL_CHAINING = [';','&','|','`','>','<','\n','$']`（`mode.rs:184`）。于是 `git status` 永远不会授权 `git status && rm -rf /`。
+`SHELL_CHAINING = [';','&','|','`','>','<','\n','$']`（`mode.rs:211`）。于是 `git status` 永远不会授权 `git status && rm -rf /`。
+
+**键在两侧都归一化**（`plugins/permission_rules.rs`：`:108` 命令、`:120` 路径、`:140` `under`）。规则存的是归一化后的键，判定时也把待判调用归一化——否则一条规则只对"弹窗当时那一种写法"生效，用户会以为 Always allow 坏了。工作区绑定时相对路径绝对化，`a.txt` / `./a.txt` / `/ws/a.txt` 才算同一个文件；`under` 取代 `starts_with(prefix + "/")` 修掉了尾斜杠（`src//`）与根目录（`/`）两个永不匹配/不覆盖的 bug。
+
+**daemon 与 TUI 会把规则落盘**（`ModePlugin::with_persisted_rules`，`mode.rs:472`）：`<数据根>/permissions.json`（`permission_rules.rs:50`，即 `--config-dir`/`$THUNDER_CONFIG_DIR`/`~/.thunder`），`{"version":1,"rules":[…]}`，临时文件 + rename 写入、unix 上 `0600`；读失败一律当空（这个文件只会授予）。`ModePlugin::new`（测试、嵌入方、headless）仍是纯内存，行为与从前一致。用户级而非按工作区：跨项目再问一遍正是让人关掉询问的原因；规则仍然很窄，plan 下仍然不查，守卫仍然先跑。撤销＝改/删该文件（下次建会话生效）或宿主调 `clear_rules`。
 
 ### 11.6 plan 模式的两个工具
 

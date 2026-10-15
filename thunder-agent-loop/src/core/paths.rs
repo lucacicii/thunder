@@ -17,6 +17,7 @@
 //! <root>/logs/                 TUI log file                     (written)
 //! <root>/scratchpad/           oversized tool output            (written)
 //! <root>/conversations/        session store                   (written)
+//! <root>/permissions.json      agreed "always allow" rules      (written)
 //! ```
 //!
 //! Resolution order: `$THUNDER_CONFIG_DIR` → `<home>/.thunder` → `<temp>/.thunder`.

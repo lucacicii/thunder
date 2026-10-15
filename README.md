@@ -29,7 +29,7 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 6. **项目级配置与长期记忆（`.thunder/`）**：
    - Thunder 读取自身 `.thunder/` 下的项目配置，与 `.arp`（面板所有）完全隔离：`config.json` 分层合并（用户级 / 项目级 / 本机），可追加系统提示文件、限制轮数；`THUNDER.md` 与 `memory/*.md` 作为长期记忆注入系统提示；`mcp.json` 自动接入 MCP servers。
    - 记忆块位于请求前缀，按 host 初始化只读取一次，保证供应商侧 Prompt Cache 前缀稳定。
-   - **用户数据根可被宿主整体重定向**：`THUNDER_CONFIG_DIR`（或二进制参数 `--config-dir <path>`）统管 thunder 的全部用户级状态 —— `models.json`、`auth.json`、`models_metadata.json`、`scratchpad/`、`logs/`、`conversations/`、`config.json`、`mcp.json`、`THUNDER.md`、`skills/`，默认 `~/.thunder`；宿主应用（Electron 等）指向自己的私有目录，即可得到一个与用户环境完全隔离的实例。该变量的语义已由「配置文件目录」提升为「全量数据根」：**设过它的用户，会话与草稿等状态也会一并迁到该目录**。跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 API key）不受影响，仍取真实 HOME。
+   - **用户数据根可被宿主整体重定向**：`THUNDER_CONFIG_DIR`（或二进制参数 `--config-dir <path>`）统管 thunder 的全部用户级状态 —— `models.json`、`auth.json`、`models_metadata.json`、`scratchpad/`、`logs/`、`conversations/`、`config.json`、`mcp.json`、`THUNDER.md`、`skills/`、`permissions.json`（宿主同意过的「always allow」规则），默认 `~/.thunder`；宿主应用（Electron 等）指向自己的私有目录，即可得到一个与用户环境完全隔离的实例。该变量的语义已由「配置文件目录」提升为「全量数据根」：**设过它的用户，会话与草稿等状态也会一并迁到该目录**。跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 API key）不受影响，仍取真实 HOME。
 7. **单一工具执行入口 + 全量调用 trace + 可卸载的审批模式插件**：
    - 内核只有**一个**工具执行入口 `ToolExecutor::run_tool`：取消 → 守卫 → 作用域 → 准入判定 → 弹窗 → 执行 → 落 trace。内建工具、Rust 插件工具、MCP 工具、runtime 远程工具全部经过它，**没有工具能绕开 trace**。
    - trace 在**每一步的每一个出口**产生一条记录，并记下**判定本身**（谁拒的、什么作用域、用户答了什么），落盘前统一脱敏（密钥键名、密钥形态、文档正文摘要化）。记录不可关闭。

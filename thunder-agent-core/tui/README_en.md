@@ -11,7 +11,7 @@
 ## 🚀 Key Features
 
 - **Claude Code Frameless Full-Width Layout**:
-  - **Header Bar**: Displays the active model, execution topology, thinking level and run status (Idle / Thinking / Streaming / Tool). The footer carries an always-visible **approval-mode badge** (`plan` / `ask` / `acceptEdits` / `yolo`), cycled with `Shift+Tab`.
+  - **Header Bar**: Displays the active model, execution topology, thinking level and run status (Idle / Thinking / Streaming / Tool). The footer carries an always-visible **approval-mode badge** (`plan` / `ask` / `acceptEdits` / `yolo`), cycled with `Shift+Tab`; a rule agreed to with `Always allow` is persisted to `<data root>/permissions.json` (and is not consulted in `plan`).
   - **Footer Session Line**: A permanent row right under the input box names the current session (its id while the title is still a placeholder, the generated title as soon as it lands); transient status messages (`✔`, queue, pause) stack on the row above it.
   - **Chat Stream**:
     - Markdown formatted rendering with smooth typewriter token streaming (`TokenDelta`).

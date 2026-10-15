@@ -207,6 +207,7 @@ src/
 ├── tools/                 # Tool registry and parallel executor
 │   ├── executor.rs        # run_tool: the one entry (guard -> gate -> ask -> execute -> trace)
 │   ├── guard.rs           # Kernel guard: dangerous commands (token-based) + critical paths
+│   ├── read_only.rs       # Read-only verdict: a plan-mode shell call proved to change nothing
 │   └── trace.rs           # ToolTrace, redaction, ToolTraceSink
 └── types/                 # Messages, events, tools, and config definitions
 ```

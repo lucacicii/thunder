@@ -34,6 +34,12 @@
 
 > **0.4 之后的一处增量（记录用，不是 0.4 的一部分）**：`protocol` 已是 **3**。新增了一类**推送**响应帧 `mode_changed`（`{session_id, task_id?, mode, previous?, source}`，`source` 为 `user` / `plan_approved` / `run_option`），档位真的变了就推、同值不推；`set_mode` 的 `response` 一定先于它写出。这是**纯增量**：不认识这帧的宿主会丢弃它（这正是所有宿主在它出现前的行为），`set_mode` / `get_permission_state` 本身在 0.4 就有，因此**不需要握手**——旧宿主连它、新宿主对旧 daemon 都能工作，只是收不到这帧。
 
+> **0.4 之后的第二处增量（记录用，同上）**：**`protocol` 不变**（没有新的请求/响应形状）。变的是 plan 模式下的判定与「always allow」的寿命：
+>
+> - plan 模式下**只读的 shell 命令免问**（`ls` / `cat` / `grep` / `git status` …）。判据在内核（`thunder-agent-loop/src/tools/read_only.rs`），读不懂就问，凭据路径参数一律问。宿主看到的差别是弹窗变少；`run_task` 的字段、`ui_request` 的形状都没变。
+> - daemon 与 TUI 建会话时把用户同意的规则**落盘**在 `<数据根>/permissions.json`（`ModePlugin::with_persisted_rules`，用户级，与工作区无关），于是「always allow」跨会话有效。删除/编辑该文件即可撤销，下次建会话生效。宿主若想保留"只在本次会话内有效"的旧行为，自己用 `ModePlugin::new`（纯内存）。
+> - 规则键改为**两侧归一化**（命令折叠空白；路径绝对化并折叠 `.`/`..`/尾部分隔符，`under` 按分隔符判后代）。这让同一条规则对 `a.txt` / `./a.txt` / `/ws/a.txt` 一致生效——旧行为是只认弹窗当时那一种写法。
+
 ### 1.2 runtime（JSONL）
 
 - `PROTOCOL_VERSION`：`"1"` → **`"2"`**（`thunder-agent-runtime/src/session.rs`）。它是 `ping`/`response` 帧里那个 `version` 字段的取值，语义就是"线上修订号"，与上面的 daemon `protocol: 2` 同步。

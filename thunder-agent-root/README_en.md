@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`skills`** | Skills Registry | **Permanent Baseline** | Scans `~/.agents/skills`, exposes `load_skill` / `list_skills` |
 | **`mcp`** | MCP Client | Dynamic Keyword Triggers | Connects to external MCP servers and bridges remote tools |
 | **`memory`** | Long-Term Memory | **Permanent Baseline** | Layered load of `.thunder`'s `THUNDER.md` / `memory/*.md`, appended to the system prompt |
-| **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode`; a mode change is announced through `set_mode_announcing` (a no-op is not announced) |
+| **`mode`** | Approval-Mode Gate | **Explicitly installed by the host** | Implements `ToolGate`: `plan` / `ask` / `acceptEdits` / `yolo`, and carries `write_plan` / `exit_plan_mode`; under `plan` a shell command proved read-only runs unprompted (the verdict lives in the kernel's `read_only.rs`); a mode change is announced through `set_mode_announcing` (a no-op is not announced); `with_persisted_rules` writes "always allow" rules to `<data root>/permissions.json` |
 | **`web`** | Web Tools | **Permanent Baseline** | `web_fetch`: fetches a URL, converts the page to markdown, and answers a prompt with the utility model (markdown fallback when none is configured). `web_search`: queries keyless engines (DuckDuckGo first, Exa as a fallback) and returns titles, URLs, and snippets |
 
 

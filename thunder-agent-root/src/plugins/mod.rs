@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod memory;
 pub mod metrics;
 pub mod mode;
+pub mod permission_rules;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "conversation")]

@@ -148,7 +148,12 @@ impl SessionModes {
                 self.by_id.remove(&oldest);
             }
         }
-        let plugin = ModePlugin::new(initial);
+        // Remembering is the daemon's choice, not the gate's: the panel's users
+        // answer "always allow" and expect it to mean *always*, and a session
+        // policy is created once per session id and reused across that session's
+        // runs. The file lives in thunder's data root, so a host that passed
+        // `--config-dir` keeps its grants to itself.
+        let plugin = ModePlugin::with_persisted_rules(initial);
         self.by_id
             .insert(session_id.to_string(), Arc::clone(&plugin));
         self.order.push_back(session_id.to_string());
