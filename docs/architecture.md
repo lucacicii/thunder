@@ -169,7 +169,7 @@ pub struct AgentLoop {
 | 一个 `AgentLoop` 同时只能跑一个任务 | `running.swap(true, SeqCst)` → `AgentError::AlreadyRunning`（`engine.rs:309-313`） |
 | 并行 = 再 `new` 一个实例 | `tests/unit_contract_test.rs:95` |
 | 事件带 `agent_id` 以便解复用 | `ObservedEvent`（`types/event.rs:52-60`） |
-| 事件流可靠（背压、不静默丢弃） | 每 run 一条 `mpsc::channel(512)`（`engine.rs:316`） |
+| 事件流可靠（背压、丢弃可观测） | 每 run 一条 `mpsc::channel(512)`（`engine.rs`）；micro-delta 满时 `try_send` 计数，结构化事件 5 秒 deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读 |
 | `run()` = `start` + 排空事件 + `join` | `engine.rs:337-347` |
 | 释放句柄**不**取消任务 | `handle.rs:14-15` 注释；须显式 `cancel()` |
 | panic 也要清忙标志 | `RunningGuard::drop`（`handle.rs:137-151`） |
@@ -478,7 +478,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 | 事件类别 | 通道 | 策略 |
 |---|---|---|
 | 微增量（`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`） | broadcast + mpsc | `try_send`，**绝不阻塞引擎** |
-| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被静默丢弃（见 §18.5） |
+| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被计数并 `warn!`（`EventDropCounters`，见 §18.5），宿主可从 `AgentLoop::event_drop_counters()` 得知记录不完整 |
 
 `AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。随仓的 kind 有四个：`file_change`（代码包）、`mode_changed`（模式插件，§11.4）、`metrics_update`（遥测插件，§11.8.1）、`agent_status`（状态插件，§11.8.2）——前两个由工具/插件自己发，后两个由**宿主**在 `take_events` 里按 `seq` 变化追加。
 
@@ -522,7 +522,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 
 配置优先级：内置默认 → `~/.thunder` → `<ws>/.thunder` → `<ws>/.thunder/*.local.*`（`.thunder/README.md:46-47`）。`.arp/` 属于 `agent-resume-panel`，Thunder 不读（`.thunder/README.md:8-10`）。
 
-> **`models.json` 的读写优先级不一致（已核实的缺陷）**：读走 `ConfigSource::default_chain`，源顺序是「用户级 → 项目级」且合并用 `entry().or_insert` —— **先到先得，用户级赢**（`providers/src/source.rs:34-41, 62-82`）；写走 `ModelsFile::primary_config_path`，候选是 `[".thunder/models.json", <数据根>/models.json]` —— **项目级在前，而且相对 CWD 而非相对 workspace**（`providers/src/config.rs:195-217`）。后果：探测结果与 `utilityModel` 的回写可能被下一次加载覆盖，等于白写；两处对「项目目录」的定义也不是同一个。`config.rs:195` 那句 "first match wins" 说的是**写**路径，不要拿它推断读路径。
+> **`models.json` 的读写已统一为同一条链（已修复）**：读走 `ConfigSource::default_chain` 合并（用户级先赢），写走同一条链——`utilityModel` 落到读序第一个已存在文件（用户优先），探针结果落到读序第一个定义该 provider 的文件。修之前的缺陷是写走 `ModelsFile::primary_config_path`（项目优先、CWD 相对），探测回写会被下一次加载覆盖；`ModelsFile::load_default` 也已收敛到同一合并语义，不再是第三种读法。回归测试：`providers/src/source.rs` 的 `write_goes_to_first_existing_in_read_order` / `owner_is_the_first_definer_in_read_order` / `write_target_is_visible_to_the_merged_read`。
 
 ---
 
@@ -857,7 +857,7 @@ flowchart TB
 
 范围限定：这条承诺覆盖的是 **daemon 的客户端**。TUI 是另一个进程里另一个 `ModePlugin` 实例，收不到这个帧。新增会改会话档位的调用点时，必须走 `set_mode_announcing` 才会被播报。
 
-`Mode::parse`（`mode.rs:91-104`）接受历史名：`ask|default|manual|mutations|writes|always|all` → `Ask`；`acceptedits|accept_edits|shell_only|ask_shell` → `AcceptEdits`；`yolo|never|none|bypass|bypass_permissions|bypasspermissions` → `Yolo`。**`plan` 的语义被修正**（0.3 把它解析成 `never`，与"计划"完全相反）。`Mode::default() == Yolo`（`mode.rs:54-63`）。
+`Mode::parse`（`mode.rs:91-104`）接受历史名：`ask|default|manual|mutations|writes|always|all` → `Ask`；`acceptedits|accept_edits|shell_only|ask_shell` → `AcceptEdits`；`yolo|never|none|bypass|bypass_permissions|bypasspermissions` → `Yolo`。**`plan` 的语义被修正**（0.3 把它解析成 `never`，与"计划"完全相反）。`Mode::default() == Ask`（`mode.rs`）——secure by default；`yolo` 是显式 opt-in。
 
 ### 11.5 `AllowRule` 的窄化
 
@@ -1006,7 +1006,7 @@ pub const PROTOCOL_VERSION: u32 = 3;
 
 准入优先（`service.rs:1061-1073`）：`concurrency_semaphore.try_acquire_owned()`，**不阻塞**——满了直接回 `"Server busy: maximum concurrent task limit reached"`。上限来自 `THUNDER_MAX_CONCURRENT_TASKS`（默认 **8**，`.max(1)`，`service.rs:243-247`）。
 
-随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
+随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Ask`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
 运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`、`.with_status_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session, status_plugin), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `agent_status` 快照 + `SteerAccepted` 时补发队列快照 + `mode_changed` 的 custom 事件翻成顶层 `mode_changed` 帧）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
 
@@ -1567,11 +1567,11 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | ~~`tools/call` 无超时 + pending 表泄漏~~ | ~~高~~ **已修复** | 根因与修复见 §15.2.2；回归测试 2 条 | 修复前一个不响应的 server 会永久挂住工具调用，且每次超时留一条 pending 残留 |
 | 忽略 `nextCursor` | 中 | `protocol.rs:144` 解析、无人读取 | 多页工具列表被截断 |
 | MCP 图片内容被丢弃 | 中 | `protocol.rs:184-188` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
-| `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
+| ~~`read_file` 的 10 MB 上限可被任意 `limit` 绕过~~ | ~~中~~ **已修复** | 大文件不再走整读：`limit`/`offset` 只选中流式窗口（`BufReader::lines`，`pack-code/builtin/fs.rs` 的 `read_streamed`），流式输出另有 512 KiB 预算封顶并带截断提示；无分页的大文件仍拒（原文案不变）；stat-then-read 竞态有事后长度复核。回归测试 `pack-code/tests/code_tools_test.rs` 的 `read_file_large_*` 两条 | 传 `limit` 即绕过、大文件整读入内存的问题已消除 |
 | ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
 | 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-86,70-74` | 系统提示里出现意外技能条目 |
-| 结构化事件送达超过 5s 即被静默丢弃 | 低 | `engine.rs:1452-1459` 的 `let _ = timeout(5s, send(..)).await` | 消费者被压满超过 5 秒时，`TurnEnd`/`LoopComplete`/trace 等结构性事件会凭空消失，宿主无从得知（`§6` 曾写作"不丢"，已改） |
-| 审批弹窗不带"到底要跑什么" | 中 | 门算出 `detail = describe_call(args)`（`plugins/mode.rs:416`），但内核只把 `title/options/timeout_ms` 塞进 `UiRequest::Select`（`executor.rs:497-507`）；`ApprovalPrompt.detail`（`types/gate.rs:85`）在弹窗路径上无消费者 | 用户看到的是 `Run bash` 而不是那条命令，等于在不知道内容的情况下点"允许" |
+| 结构化事件送达超过 5s 即被计数并告警 | 中 | `engine.rs` 的 `EventDropCounters`（`types/event.rs`）：micro-delta 走 `try_send` 计数，结构化事件 5s  deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读，结算时汇总告警。仍不阻塞引擎（行为不变），但不再是"静默丢弃" | 消费者被压满超过 5 秒时宿主可从计数得知记录不完整（曾写作"不丢"，现为"丢了能知道"） |
+| ~~审批弹窗不带"到底要跑什么"~~ | ~~中~~ **已修复** | 门算出 `detail = describe_call(args)`，内核经 `UiRequest::Select.detail` 透传（`executor.rs` 的 `ask`），TUI 拼进问题正文、daemon 经 flatten 透传给面板（`protocol.rs` 的 `UiRequest` 变体），缺省旧面板忽略。回归测试 `loop/tests/approval_detail_test.rs` + TUI `tui_approval_dialog_shows_what_is_being_approved` | 用户看到的不再只是 `Run bash` |
 | TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现 | 低 | `ALL_COMMANDS` 表里 `export` 带 `save`、`timeline` 带 `rail`、`health` 带 `status`（`commands.rs:69-302`），但 `execute_slash_command` 的分派分支只认 `"export" \| "dump"`、`"timeline"`、`"health" \| "doctor"`（`app.rs:3515,3651,3694`） | 这三个别名会进补全与 `/help`，敲下去却落到"未知命令" |
 
 ---

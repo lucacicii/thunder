@@ -613,11 +613,13 @@ classDiagram
 
 ## 12. 三个值得注意的边界
 
-### 12.1 默认仍是 `yolo`，这依然是刻意的产品决策
+### 12.1 默认是 `ask`：secure by default，`yolo` 是显式 opt-in
 
-`Mode::default() = Yolo`（`mode.rs:63`）。审批门是 fail-closed 的：无面板宿主上每个弹窗都判为"取消＝拒绝"。若默认 `ask`，升级后所有无面板用户的每一次写文件、每一条 shell 都会被静默拒绝——"一个没人要求的安全特性，在第一天就把产品搞坏"。所以审批是 **opt-in**，`config.json` 的 `agent.defaultMode` 可以覆盖它。
+`Mode::default() = Ask`（`mode.rs`）。没选模式的宿主先问再跑；无面板宿主上每个弹窗仍判为"取消＝拒绝"（fail-closed），想要全自主的宿主显式选 `yolo`——`config.json` 的 `agent.defaultMode`、某次 `run_task` 的 `mode` 钉定，或 `set_mode`。
 
-**这条在 0.4 有了新的含义**：默认从"内核里的 `SessionPolicy::new(Bash, Never)`"变成了"没装 gate 时内核自己放行"。两者行为一致，但现在的默认放行是**结构性的**——见下一条。
+历史注记：0.4 时默认是 `Yolo`（"没人要求的安全特性第一天就把产品搞坏"，升级后无面板用户的每次写文件都会被静默拒绝）。翻转到 `ask` 之所以现在可行，有三条结构性兜底：① 无头嵌入宿主（`thunder-runtime`）根本不装 gate，"无 gate 即除守卫外全放行"的红线不受影响；② `PluginContext::gate()` 的 fallback 仍是显式的 `Yolo`，插件反向调用不会被锁死；③ 审批弹窗现在带 `detail`（§5），"问"不再是盲批——默认问的代价从"静默拒绝"变成了"一次有内容的确认"。
+
+**这条在 0.4 有过的含义仍然成立**：默认从"内核里的 `SessionPolicy::new(Bash, Never)`"变成了"没装 gate 时内核自己放行"。两者行为一致，但现在的默认放行是**结构性的**——见下一条。
 
 ### 12.2 不装 gate ＝ 除守卫外全放行（这是红线，不是疏忽）
 
