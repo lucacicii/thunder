@@ -26,6 +26,7 @@ Thunder 自身的用户级与项目级配置目录。
 ├── skills/                          # 既有：全局技能
 ├── logs/                            # TUI 日志文件（tui.log）
 ├── scratchpad/  conversations/      # 运行时产物
+├── permissions.json                 # 同意过的 always allow 规则（daemon / TUI 写）
 
 <workspace>/.thunder/                # 项目级（可提交）
 ├── models.json                      # provider 项目覆盖（读时**不**覆盖用户级，见下）

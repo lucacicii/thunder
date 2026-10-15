@@ -129,7 +129,7 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
 
 | `mode` | 读 | 工作区内写 | 工作区外写 | shell | 说明 |
 |--------|:---:|:---:|:---:|:---:|------|
-| **`plan`** | 允许 | **拒绝** | **拒绝** | **询问** | 只读调研 + 写计划文件；`write_plan` / `exit_plan_mode` 是唯一出口 |
+| **`plan`** | 允许 | **拒绝** | **拒绝** | **只读命令允许，其余询问** | 只读调研 + 写计划文件；`write_plan` / `exit_plan_mode` 是唯一出口 |
 | **`ask`** | 允许 | **询问** | **询问** | **询问** | 标准安全防御：读免问，其余弹窗 |
 | **`acceptEdits`** | 允许 | **允许** | **询问** | **询问** | 工作区内编辑免问，越界与命令仍问 |
 | **`yolo`** | 允许 | 允许 | 允许 | 允许 | 全自动（默认值，与 0.3 的 `never` 行为一致） |
@@ -177,6 +177,8 @@ echo '{"method":"list_models","id":"2"}' | ./daemon.sh
   对一个尚不存在的会话调 `set_mode` 是**以该档位创建**它，因此也没有转变可播报——
   确认来自 `response` 的 `data.mode`。
 - `get_permission_state` 可查看当前模式与已记住的「always allow」规则。
+  daemon 建的会话把规则**落盘**在 `<数据根>/permissions.json`（`ModePlugin::with_persisted_rules`），
+  所以「always allow」跨会话有效；删/改这个文件即可撤销（下次建会话生效）。
   注意它对**从未 run 过**的会话是按 `Mode::default()`（`yolo`）创建插件的，
   而首轮 `run_task` 走的是 `.thunder` 的 `agent.defaultMode`；两者可能不同，
   首轮 run 的 `mode_changed`（`run_option`）会把真实档位推过来。

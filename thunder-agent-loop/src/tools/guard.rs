@@ -37,7 +37,11 @@ const WRAPPERS: &[&str] = &[
 ];
 
 /// Argument keys a shell-ish tool might carry its command in.
-const COMMAND_KEYS: &[&str] = &["command", "cmd", "script"];
+///
+/// Shared with [`read_only`](super::read_only), which asks the opposite question
+/// about the same string: a command the guard would not refuse is one plan mode
+/// may still be able to prove harmless.
+pub(crate) const COMMAND_KEYS: &[&str] = &["command", "cmd", "script"];
 
 /// Keys an argument might name a filesystem target in, for the guard's reports.
 const TARGET_KEYS: &[&str] = &[

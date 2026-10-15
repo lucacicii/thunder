@@ -99,7 +99,7 @@ flowchart TB
 
 | mode | Read | Write · InScope | Write · OutOfScope/Unknown | Exec | PlanArtifact |
 |---|---|---|---|---|---|
-| `plan` | Allow | **Deny** | **Deny** | **Ask** | Allow |
+| `plan` | Allow | **Deny** | **Deny** | Allow（只读命令）/ **Ask** | Allow |
 | `ask` | Allow | Ask | Ask | Ask | Allow |
 | `acceptEdits` | Allow | **Allow** | **Ask** | Ask | Allow |
 | `yolo` | Allow | Allow | Allow | Allow | Allow |
@@ -109,6 +109,7 @@ flowchart TB
 1. **`plan` 跳过 allow 规则。** 规则查询先于矩阵，但 `decide` 用 `if mode != Mode::Plan` 把它挡在 plan 之外（`mode.rs:454`）——"即使命中 allow 规则，plan 模式下编辑也永不自动批准"（`mode_matrix_test.rs::a_rule_does_not_leak_into_plan_mode`）。
 2. **`plan` 下写类调用的拒绝文案必须给出出口**，否则模型会反复重试；文案见 §7。
 3. **`yolo` 不检查规则，但守卫仍然生效**——`Guard` 在 `decide` **之前**运行（`path_scope_test.rs::a_dangerous_command_is_refused_in_every_mode`）。
+4. **`plan` 下的 Exec 先读命令本身**（`mode.rs:583` 的分支）：能证明什么都不改的命令直接 Allow，其余照旧 Ask。判据在内核的 `tools/read_only.rs`，见 §7.5。
 
 `PlanArtifact` 是 plan 模式下唯一可写的效果，但**它只在名字对得上时才算数**，见 §7。
 
@@ -188,15 +189,31 @@ flowchart TB
 
 | 工具类型 | 规则形式 | `matches` 逻辑 |
 |---|---|---|
-| `Exec`（bash） | 命令**到第一个链接符为止**的前缀 | `strip_prefix(prefix)` 后余下部分**不得含** `; & \| \` > < \n $` |
-| 其它（按 `path` 参数） | `path` 参数（文件或其下整个目录） | `path == prefix \|\| path.starts_with(prefix + "/")` |
+| `Exec`（bash） | 命令**到第一个链接符为止**的前缀，空白已折叠 | `strip_prefix(prefix)` 后余下部分**不得含** `; & \| \` > < \n $` |
+| 其它（按 `path` 参数） | `path` 参数**归一化后**（绝对化 + 折叠 `.`/`..`/重复与末尾分隔符） | `under(path, prefix)`：自身或其后代，**按分隔符判**（`src` 不覆盖 `srcfile`） |
 | 其它且无 `path` 参数 | `None` → **不提供**该选项 | — |
 
-`SHELL_CHAINING = [';', '&', '|', '`', '>', '<', '\n', '$']`（`mode.rs:184`）。
+`SHELL_CHAINING = [';', '&', '|', '`', '>', '<', '\n', '$']`（`mode.rs:211`）。
 
 > `git status` 永远不会授权 `git status && rm -rf /`。
 
-**两条不变式**：① `prompt.allow_always` 为假时内核**不提供** `Always allow` 选项（`executor.rs:482`），所以用户点不到一个没有安全规则的项；② 审批是"窄化 + 记忆"两件事都由 gate 负责（`record_answer`，`mode.rs:501`）——内核不再持有任何规则推导逻辑（R10：这是 gate 的责任，`ModePlugin` 是唯一实现且带测试）。
+**键要归一化，两侧都走同一套**（`permission_rules.rs:108` 命令、`:120` 路径、`:140` `under`）。`for_call` 存的是归一化后的键，`matches` 也把待判调用归一化后再比——否则一条规则只对"弹窗当时恰好那一种写法"生效：用户批准了 `a.txt`，模型下次写 `./a.txt` 或 `/ws/a.txt`，就又弹一次。工作区已绑定（`bind_session`）时相对路径会绝对化，这是让两种写法被认成同一个文件的关键；没绑工作区就只做文本清理，两种写法仍然算两回事——**匹配不上只会多问一次，这是本设计允许的失败方向**。
+
+`under` 而不是 `starts_with(prefix + "/")` 修掉了两个真 bug：`prefix` 带尾斜杠时会拼成 `src//` 永不匹配；`/` 前缀只会匹配自己而不覆盖其下。`..` 在这里是**文本**折叠的（不碰文件系统，因为规则命名的文件那时可能已经不存在），所以 `/ws/../etc/passwd` 归一成 `/etc/passwd`，不会继承 `/ws` 那条规则的权限。
+
+**两条不变式**：① `prompt.allow_always` 为假时内核**不提供** `Always allow` 选项（`executor.rs:482`），所以用户点不到一个没有安全规则的项；② 审批是"窄化 + 记忆"两件事都由 gate 负责（`record_answer`，`mode.rs:655`）——内核不再持有任何规则推导逻辑（R10：这是 gate 的责任，`ModePlugin` 是唯一实现且带测试）。
+
+### 5.2 『Always allow』会落盘（用户级）
+
+规则默认只活在 `ModeState.rules` 里（`mode.rs:322`），但两个面向真实会话的宿主会把它写下来：
+
+- daemon 的 `SessionModes::get_or_create` 用 `ModePlugin::with_persisted_rules`（`service.rs:151`），TUI 的 `app.rs:399` 同；
+- 落点是 `<数据根>/permissions.json`（`permission_rules.rs:50`，即 `--config-dir` / `$THUNDER_CONFIG_DIR` / `~/.thunder`），格式 `{"version":1,"rules":[{"tool":…,"arg_prefix":…}]}`；
+- 写是"临时文件 + rename"（`:80`），并在 unix 上设成 `0600`；读失败（缺失/损坏/版本不认识）一律当**空**——这个文件只会**授予**，读不出来就等于没授予，回到"问"。
+
+为什么是用户级而不是每个工作区一份：跨项目再问一遍正是让人干脆关掉询问的原因。规则本身仍然很窄（一个工具 + 一个前缀），plan 模式下仍然一律不查（§3），守卫仍然先跑。
+
+撤销方式：改/删这个文件（下次建会话时生效），或宿主调 `clear_rules`（`mode.rs`）。**注意规则是进程无关的**：daemon 重启、换会话、被 256 条上限 FIFO 挤掉，都不再影响已落盘的规则。
 
 ---
 
@@ -333,6 +350,29 @@ the only way out of plan mode.
 ```
 
 没有这句，模型会把拒绝读成"换个方式再试"，于是陷入旧 jail 最被抱怨的重试循环。
+
+### 7.5 只读命令免问（`tools/read_only.rs`）
+
+plan 模式下 shell 原本一律 Ask，理由是"查看是计划阶段的日常"。但"查看"绝大多数时候就是 `ls` / `cat` / `grep` / `git status`，于是这条理由反过来要求：**能证明什么都不改的命令不该弹窗**——用户选 plan 时已经回答过"可以看"。
+
+判据在内核（`thunder-agent-loop/src/tools/read_only.rs`），`decide` 只在 plan 分支用它：
+
+```rust
+ToolEffect::Exec if call_is_read_only(request.arguments) => GateVerdict::Allow,
+ToolEffect::Exec => self.ask_for(request),
+```
+
+它问的问题很窄，而且**答不出来就问**（与 `guard.rs` 同一种交换：那边读不懂的命令不拒，这边读不懂的命令不放）：
+
+| 要求 | 拒绝的形式 |
+|---|---|
+| 只有一条命令 | 未加引号的 `; & \| \` > < ( ) { }` 换行、`$`（替换是看不见的命令）、未加引号的 `\`（能藏分隔符）。引号内的 `\|` 是参数，`grep "a\|b" src/` 照放 |
+| 动词在白名单里 | 白名单只收**只读**动词；`sudo`/`env`/`xargs` 自然不在（它们跑的是**另一个**动词），`jq`（有了 `system()`）、`rg --pre`、`sed -i`、`uniq in out`、`less` 也不在 |
+| 动词是裸词而非路径 | `/tmp/evil/ls` 不是 `ls`；代价是 `/bin/ls` 会被问 |
+| 有单独的 flag 判断 | `sort -o`、`find -exec/-delete`、`file -C`、`git branch -D` … 会写的那几个 flag 单独拦 |
+| 参数里没有凭据 | `.ssh`/`.aws`/`.env`/`id_rsa` 等**整个路径分量**命中即转为问（只做分量匹配，不做子串：`docs/ssh-notes.md` 照放）。命令中出现的 `.pem`/`.key` 后缀同样转为问 |
+
+边界与代价都写在模块文档里，**并且只对 plan 生效**：ask / acceptEdits 仍然对 shell 一律问（那里问的是"要不要跑点东西"，不是"要不要看一眼"），yolo 本来就全放，守卫在所有模式之前先跑。`~/.ssh/id_rsa` 这类**守卫名单外**的秘密文件是被"凭据分量"这一条挡住的，而不是靠沙箱——这是这个模块诚实的边界。
 
 ---
 

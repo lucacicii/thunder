@@ -103,7 +103,7 @@ thunder/                          # Git Monorepo 根目录与 Cargo Workspace �
 6. **配置归 .thunder/，不碰 .arp**：
    - `.arp/` 属于 `agent-resume-panel`（面板配置 + 共享产物），Thunder 不读取其任何内容。
    - Thunder 自身的项目状态统一在 `.thunder/`：`config.json`（agent 配置）、`mcp.json`（MCP servers）、`THUNDER.md` + `memory/*.md`（长期记忆）、`plans/`（plan 模式产出的计划文件）。用户级 `~/.thunder/` 提供同名默认值，按 用户级 → 项目级 → `*.local.*` 覆盖。
-   - 用户级数据根可用 `THUNDER_CONFIG_DIR`（或 `--config-dir <path>`）整体重定向，默认 `~/.thunder`。它统管 thunder **全部**自有状态 —— 上面这些之外还有 `conversations/`、`scratchpad/`、`logs/`、`models.json`/`auth.json`/`models_metadata.json` —— 所以宿主能把一个实例完全收进自己的目录。解析规则集中在 `thunder-agent-loop/src/core/paths.rs`，跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 key）不受影响，仍取真实 HOME。
+   - 用户级数据根可用 `THUNDER_CONFIG_DIR`（或 `--config-dir <path>`）整体重定向，默认 `~/.thunder`。它统管 thunder **全部**自有状态 —— 上面这些之外还有 `conversations/`、`scratchpad/`、`logs/`、`models.json`/`auth.json`/`models_metadata.json`、`permissions.json`（同意过的 always allow 规则） —— 所以宿主能把一个实例完全收进自己的目录。解析规则集中在 `thunder-agent-loop/src/core/paths.rs`，跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 key）不受影响，仍取真实 HOME。
 
 ---
 

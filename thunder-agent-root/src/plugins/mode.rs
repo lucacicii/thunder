@@ -8,12 +8,21 @@
 //!
 //! The modes line up with Claude Code's, because they encode the same trade:
 //!
-//! | mode          | reads | writes in scope | writes out of scope | shell |
-//! |---------------|-------|-----------------|---------------------|-------|
-//! | `plan`        | allow | deny            | deny                | ask   |
-//! | `ask`         | allow | ask             | ask                 | ask   |
-//! | `acceptEdits` | allow | allow           | ask                 | ask   |
-//! | `yolo`        | allow | allow           | allow               | allow |
+//! | mode          | reads | writes in scope | writes out of scope | shell                 |
+//! |---------------|-------|-----------------|---------------------|-----------------------|
+//! | `plan`        | allow | deny            | deny                | read: allow, else ask |
+//! | `ask`         | allow | ask             | ask                 | ask                   |
+//! | `acceptEdits` | allow | allow           | ask                 | ask                   |
+//! | `yolo`        | allow | allow           | allow               | allow                 |
+//!
+//! "read: allow" in plan's shell column is the one cell that is not a word
+//! about the tool but about the *command*: a call the kernel read and proved
+//! changes nothing runs unattended, and everything else asks as it always did.
+//! Inspecting is ordinary plan work, and a dialog asking "may I look?" is a
+//! question the user already answered by choosing plan mode. The proof lives in
+//! [`is_read_only`](thunder_agent_loop::tools::read_only::is_read_only), and it
+//! errs towards asking: one separator, one flag that writes, one credential in
+//! the arguments, and the dialog appears.
 //!
 //! Two invariants keep the table honest. In `plan`, a non-read call is denied
 //! *even when a rule matches* — an "always allow" recorded in a freer mode is
@@ -25,12 +34,14 @@
 //! plugin registers ([`WRITE_PLAN_TOOL`], [`EXIT_PLAN_MODE_TOOL`]) are exempt
 //! in every mode — by name, never by the effect a tool declares about itself.
 
+use super::permission_rules;
 use crate::plugin::{PluginCapability, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
+use thunder_agent_loop::tools::read_only::call_is_read_only;
 use thunder_agent_loop::types::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest,
 };
@@ -45,7 +56,8 @@ use thunder_agent_pack_code::builtin::fs::WriteFileTool;
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
     /// Read-only. Writes are refused with the way out named; shell is asked
-    /// about, because inspecting is ordinary work in a planning phase.
+    /// about unless the command itself was proved to only read, because
+    /// inspecting is ordinary work in a planning phase.
     Plan,
     /// Ask before anything that changes something.
     Ask,
@@ -207,11 +219,23 @@ impl AllowRule {
     /// * path-shaped arguments (`write_file`, `read_file`, …) → the path, which
     ///   later matches that file or anything under it as a directory.
     /// * anything else → `None` (tool-wide).
-    pub fn for_call(tool: &str, args: &serde_json::Value) -> Option<AllowRule> {
+    ///
+    /// Both keys are stored *normalised*
+    /// ([`permission_rules`](super::permission_rules)), because a rule that only
+    /// paid for the spelling the dialog happened to show would ask again for
+    /// `./a.txt` after the user approved `a.txt`. `workspace` is what lets the
+    /// two spellings be recognised as one file; see
+    /// [`normalize_path`](super::permission_rules::normalize_path).
+    pub fn for_call(
+        tool: &str,
+        args: &serde_json::Value,
+        workspace: Option<&Path>,
+    ) -> Option<AllowRule> {
         let effect = ToolEffect::of(tool);
         let rule = match effect {
             ToolEffect::Exec => {
                 let command = args.get("command")?.as_str()?;
+                let command = permission_rules::normalize_command(command);
                 let head: String = command
                     .chars()
                     .take_while(|c| !SHELL_CHAINING.contains(c))
@@ -227,13 +251,13 @@ impl AllowRule {
             }
             _ => {
                 let path = args.get("path").and_then(|v| v.as_str())?;
-                let path = path.trim();
+                let path = permission_rules::normalize_path(path, workspace);
                 if path.is_empty() {
                     return None;
                 }
                 AllowRule {
                     tool: tool.to_string(),
-                    arg_prefix: Some(path.to_string()),
+                    arg_prefix: Some(path),
                 }
             }
         };
@@ -244,7 +268,11 @@ impl AllowRule {
     ///
     /// For shell tools the remainder after the prefix must contain no chaining
     /// character, so `git status` never authorises `git status && rm -rf /`.
-    pub fn matches(&self, tool: &str, args: &serde_json::Value) -> bool {
+    ///
+    /// The call is normalised exactly as the rule was
+    /// ([`for_call`](Self::for_call)), which is what makes a rule survive the
+    /// model writing the same target another way.
+    pub fn matches(&self, tool: &str, args: &serde_json::Value, workspace: Option<&Path>) -> bool {
         if self.tool != tool {
             return false;
         }
@@ -257,6 +285,7 @@ impl AllowRule {
                 let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
                     return false;
                 };
+                let command = permission_rules::normalize_command(command);
                 let Some(rest) = command.strip_prefix(prefix) else {
                     return false;
                 };
@@ -266,8 +295,9 @@ impl AllowRule {
                 let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
                     return false;
                 };
+                let path = permission_rules::normalize_path(path, workspace);
                 // Exact file, or anything beneath it when the rule names a dir.
-                path == prefix || path.starts_with(&format!("{prefix}/"))
+                permission_rules::under(&path, prefix)
             }
         }
     }
@@ -279,6 +309,19 @@ impl AllowRule {
             None => self.tool.clone(),
         }
     }
+}
+
+/// Append `rule` unless it is already there, reporting whether it was added.
+///
+/// The two ways a rule gets in — the answer the user gave a dialog, and the file
+/// a previous session wrote — share this, so "remembered" describes one list
+/// however it was filled.
+fn push_unique(rules: &mut Vec<AllowRule>, rule: AllowRule) -> bool {
+    if rules.contains(&rule) {
+        return false;
+    }
+    rules.push(rule);
+    true
 }
 
 /// The state a session's mode is made of: the mode, the rules the user agreed
@@ -293,6 +336,10 @@ struct ModeState {
     rules: RwLock<Vec<AllowRule>>,
     workspace: RwLock<Option<PathBuf>>,
     session_id: RwLock<String>,
+    /// Where agreed rules are written, when this plugin was given a file. `None`
+    /// (the default, and what [`ModePlugin::new`] leaves) keeps them in memory
+    /// only — the behaviour every test and embedder had before there was a file.
+    rules_path: RwLock<Option<PathBuf>>,
 }
 
 impl ModeState {
@@ -302,6 +349,17 @@ impl ModeState {
             .mode
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Where the session's files are, when the host bound a workspace.
+    ///
+    /// Read by rule derivation and matching, which need it to see `a.txt` and
+    /// `/ws/a.txt` as one file.
+    fn workspace(&self) -> Option<PathBuf> {
+        self.workspace
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Flip the mode. The next call is judged by it.
@@ -413,6 +471,50 @@ impl ModePlugin {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = session_id.to_string();
     }
 
+    /// A plugin that remembers across sessions.
+    ///
+    /// The same gate as [`ModePlugin::new`], plus the standing rules a user has
+    /// already agreed to: they are read from
+    /// [`rules_path`](super::permission_rules::rules_path) now, and every
+    /// "always allow" from here on is written back there. Without this
+    /// constructor — a test, an embedder, a headless run — rules stay in memory,
+    /// which is what "always allow" meant before there was a file to keep it in.
+    ///
+    /// Note what does *not* change: the rules are still only consulted outside
+    /// plan mode, and still only for calls the guard let through.
+    pub fn with_persisted_rules(mode: Mode) -> Arc<Self> {
+        let plugin = Self::new(mode);
+        plugin.load_rules_from(permission_rules::rules_path());
+        plugin
+    }
+
+    /// Read standing rules from `path` and keep writing there from now on.
+    ///
+    /// Called once per session, when the session's policy is created. The rules
+    /// go into the list directly rather than through [`remember`] so that
+    /// loading never writes: the file was just read, and rewriting it on start-up
+    /// would be traffic with nothing to say.
+    ///
+    /// [`remember`]: Self::remember
+    pub fn load_rules_from(&self, path: PathBuf) {
+        let loaded = permission_rules::load(&path);
+        {
+            let mut rules = self
+                .state
+                .rules
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for rule in loaded {
+                push_unique(&mut rules, rule);
+            }
+        }
+        *self
+            .state
+            .rules_path
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+    }
+
     /// Rules currently in force, for a listing.
     pub fn rules(&self) -> Vec<AllowRule> {
         self.state
@@ -422,13 +524,18 @@ impl ModePlugin {
             .clone()
     }
 
-    /// Forget every remembered rule (e.g. on session end).
+    /// Forget every remembered rule (e.g. on session end), on disk as well.
     pub fn clear_rules(&self) {
-        self.state
-            .rules
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        let snapshot = {
+            let mut rules = self
+                .state
+                .rules
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            rules.clear();
+            rules.clone()
+        };
+        self.persist_replacing(&snapshot);
     }
 
     /// Record a rule the user agreed to, outside the dialog path.
@@ -436,14 +543,49 @@ impl ModePlugin {
     /// `record_answer` is the normal way in; this one exists for hosts that
     /// seed a session with standing grants of their own.
     pub fn remember(&self, rule: AllowRule) {
-        let mut rules = self
-            .state
-            .rules
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !rules.contains(&rule) {
-            rules.push(rule);
+        let snapshot = {
+            let mut rules = self
+                .state
+                .rules
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !push_unique(&mut rules, rule) {
+                // Already remembered: nothing changed, so there is nothing to
+                // write either.
+                return;
+            }
+            rules.clone()
+        };
+        self.persist(&snapshot);
+    }
+
+    /// Add the rules to the file, keeping what another session already wrote.
+    ///
+    /// A failure is swallowed on purpose. It cannot fail the call the user just
+    /// approved — that answer is already in memory and is what the next call is
+    /// judged by — and a permission file that cannot be written is a smaller
+    /// problem than a run that dies remembering one.
+    fn persist(&self, rules: &[AllowRule]) {
+        if let Some(path) = self.rules_file() {
+            let _ = permission_rules::merge(&path, rules);
         }
+    }
+
+    /// Replace the file's contents, for a clearing: here the point *is* removal,
+    /// so merging would put back what is being forgotten.
+    fn persist_replacing(&self, rules: &[AllowRule]) {
+        if let Some(path) = self.rules_file() {
+            let _ = permission_rules::save(&path, rules);
+        }
+    }
+
+    /// Where to write rules, when this plugin was given a file.
+    fn rules_file(&self) -> Option<PathBuf> {
+        self.state
+            .rules_path
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// The prompt for a call this mode wants to ask about.
@@ -461,7 +603,12 @@ impl ModePlugin {
             detail,
             // "Always allow" is offered only when this call can be narrowed to
             // a rule narrow enough to show the user what they are agreeing to.
-            allow_always: AllowRule::for_call(request.tool, request.arguments).is_some(),
+            allow_always: AllowRule::for_call(
+                request.tool,
+                request.arguments,
+                self.state.workspace().as_deref(),
+            )
+            .is_some(),
         })
     }
 }
@@ -487,13 +634,14 @@ impl ToolGate for ModePlugin {
         // it: file edits are never auto-approved in plan mode, even when an
         // allow rule matches.)
         if mode != Mode::Plan {
+            let workspace = self.state.workspace();
             if let Some(rule) = self
                 .state
                 .rules
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .iter()
-                .find(|r| r.matches(request.tool, request.arguments))
+                .find(|r| r.matches(request.tool, request.arguments, workspace.as_deref()))
             {
                 return GateVerdict::AllowByRule { rule: rule.label() };
             }
@@ -516,7 +664,12 @@ impl ToolGate for ModePlugin {
             Mode::Plan => match request.effect {
                 ToolEffect::Read => GateVerdict::Allow,
                 // Inspecting is ordinary plan work, so shell asks rather than
-                // denies — the question a user can answer is "yes, look".
+                // denies — the question a user can answer is "yes, look". A
+                // command the kernel read to the end and proved changes nothing
+                // never reaches that question: asking about `ls` is noise, and
+                // looking around is the one thing a planning phase does
+                // constantly.
+                ToolEffect::Exec if call_is_read_only(request.arguments) => GateVerdict::Allow,
                 ToolEffect::Exec => self.ask_for(request),
                 _ => GateVerdict::Deny {
                     // The exit has to be named, or the refusal reads as "try
@@ -535,7 +688,11 @@ impl ToolGate for ModePlugin {
 
     fn record_answer(&self, request: &ToolGateRequest<'_>, answer: &ApprovalAnswer) {
         if let ApprovalAnswer::AllowAlways = answer {
-            if let Some(rule) = AllowRule::for_call(request.tool, request.arguments) {
+            if let Some(rule) = AllowRule::for_call(
+                request.tool,
+                request.arguments,
+                self.state.workspace().as_deref(),
+            ) {
                 self.remember(rule);
             }
             // No safe rule exists ⇒ the kernel did not offer the option; an

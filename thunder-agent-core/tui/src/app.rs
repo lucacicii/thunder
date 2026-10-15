@@ -396,7 +396,7 @@ impl App {
             active_skill: None,
             pending_raw_transcript: None,
             thinking_level: None,
-            mode_plugin: thunder_agent_root::plugins::mode::ModePlugin::new(
+            mode_plugin: thunder_agent_root::plugins::mode::ModePlugin::with_persisted_rules(
                 thunder_agent_root::plugins::mode::Mode::default(),
             ),
             status_plugin: StatusPlugin::new(),
