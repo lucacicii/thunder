@@ -456,6 +456,9 @@ impl ToolExecutor {
                             UiSource::Host,
                             UiRequest::Select {
                                 title: prompt.clone(),
+                                // The interceptor prompt already inlines
+                                // "title: detail" (see ModePlugin::pre_execute).
+                                detail: None,
                                 options: vec![ALLOW_ONCE.to_string(), DENY.to_string()],
                                 timeout_ms,
                             },
@@ -601,6 +604,10 @@ impl ToolExecutor {
                 UiSource::Host,
                 UiRequest::Select {
                     title,
+                    // The substance being approved. A dialog without it asks
+                    // for a blind yes; the gate computed this string for
+                    // exactly this call.
+                    detail: Some(prompt.detail.clone()),
                     options: options.clone(),
                     timeout_ms,
                 },

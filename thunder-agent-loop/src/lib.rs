@@ -44,7 +44,9 @@ pub mod prelude {
     pub use crate::tools::Guard;
     pub use crate::types::config::{AgentConfig, ContextPruningConfig, LoopGuardConfig};
     pub use crate::types::error::AgentError;
-    pub use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
+    pub use crate::types::event::{
+        AgentEvent, AgentStats, EventDropCounters, FinishReason, ObservedEvent, TurnStats,
+    };
     pub use crate::types::invoke::{
         empty_tool_invoker_slot, ExecutorToolInvoker, NullToolInvoker, ToolInvocationContext,
         ToolInvoker, ToolInvokerSlot,
