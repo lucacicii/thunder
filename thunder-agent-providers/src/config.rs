@@ -3,7 +3,7 @@ use crate::error::ProviderError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use thunder_agent_loop::core::paths::{thunder_config_dir, thunder_config_dir_from};
+use thunder_agent_loop::core::paths::thunder_config_dir_from;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -192,6 +192,12 @@ impl ModelsFile {
 
     /// Where `models.json` may live, first match wins.
     ///
+    /// Legacy search order (project before user), kept for compatibility and
+    /// for locating a project-pinned registry. It is **not** the read-merge
+    /// order (user wins per key — see `source::load_merged`) and **not** the
+    /// write order (see [`Self::primary_config_path`]): do not derive either
+    /// from this list.
+    ///
     /// A project-local `.thunder/models.json` comes first — a workspace may pin
     /// its own registry — then the user data root
     /// ([`thunder_config_dir`]). An explicit root *replaces* the home layer
@@ -205,40 +211,43 @@ impl ModelsFile {
     }
 
     /// The file to write when thunder persists a probe result or a utility-model
-    /// choice: the first candidate that already exists, else the place it would
-    /// be created. Infallible — the data root always resolves.
+    /// choice: the first candidate that already exists **in read-priority
+    /// order** (user file first), else the place it would be created.
+    ///
+    /// Read-priority order is what makes the write visible: the merged reader
+    /// (`source::load_merged`) lets the first source win per key, so writing
+    /// anywhere lower than the first existing file risks being shadowed on the
+    /// next load. Infallible — the data root always resolves.
     pub fn primary_config_path() -> Option<PathBuf> {
-        for path in Self::default_paths() {
-            if path.exists() {
-                return Some(path);
-            }
-        }
-        Some(thunder_config_dir().join("models.json"))
+        Some(crate::source::ConfigSource::primary_write_path(None))
     }
 
+    /// Merged read through the standard chain (user file wins per key).
+    ///
+    /// This used to return the first existing file whole (project shadowing the
+    /// user file entirely); it now goes through the same merge every other
+    /// reader uses, so there is exactly one read semantics.
     pub async fn load_default() -> Self {
-        for path in Self::default_paths() {
-            if path.exists() {
-                if let Ok(parsed) = Self::load_path(path).await {
-                    return parsed;
-                }
-            }
-        }
-        Self::default()
+        crate::source::load_merged(&crate::source::ConfigSource::default_chain(None))
+            .await
+            .map(|(file, _)| file)
+            .unwrap_or_default()
     }
 
     /// Persist probe result to disk and set thinkingLevelsProbed flag to true.
+    ///
+    /// The write goes to the chain file that defines the provider (read order),
+    /// so the merged reader — which takes the whole provider object from the
+    /// first definer — observes it on the next load instead of shadowing it.
     pub async fn update_model_thinking_probed_config(
         provider_id: &str,
         model_id: &str,
         thinking_levels: &[String],
         default_thinking_level: &str,
     ) -> Result<PathBuf, ProviderError> {
-        let config_path = Self::primary_config_path().ok_or_else(|| {
-            ProviderError::Config(
-                "Cannot locate primary models.json configuration path".to_string(),
-            )
-        })?;
+        let chain = crate::source::ConfigSource::default_chain(None);
+        let config_path =
+            crate::source::ConfigSource::owner_path_in_chain(&chain, provider_id).await;
 
         let raw = if config_path.exists() {
             tokio::fs::read_to_string(&config_path)
@@ -299,6 +308,10 @@ impl ModelsFile {
     }
 
     /// Persist utility model identifier to models.json root.
+    ///
+    /// Lands in [`Self::primary_config_path`] — the first existing chain file
+    /// in read-priority order — so the merged reader cannot shadow it with a
+    /// stale higher-priority value on the next load.
     pub async fn update_utility_model_config(
         utility_model: &str,
     ) -> Result<PathBuf, ProviderError> {
