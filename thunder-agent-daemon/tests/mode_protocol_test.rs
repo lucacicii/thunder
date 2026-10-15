@@ -68,8 +68,10 @@ async fn a_host_can_read_and_set_the_mode_over_the_wire() -> Result<(), Box<dyn 
     let mut reader = BufReader::new(stdout).lines();
 
     // A session nobody has configured runs in the default mode. Worth pinning:
-    // `Mode::default()` is Yolo for pre-0.4 continuity, and if that ever drifts
-    // to a fail-closed mode, headless hosts stop working silently.
+    // `Mode::default()` is Ask (secure by default): anything that changes
+    // something asks first. `yolo` is an explicit opt-in, never the silence
+    // default. Headless embedders are unaffected — they install no gate at
+    // all, and no gate still means "everything the guard allows runs".
     let state = ask(
         &mut stdin,
         &mut reader,
@@ -81,7 +83,7 @@ async fn a_host_can_read_and_set_the_mode_over_the_wire() -> Result<(), Box<dyn 
     )
     .await;
     assert_eq!(state["success"], true, "{state}");
-    assert_eq!(state["data"]["mode"], "yolo", "{state}");
+    assert_eq!(state["data"]["mode"], "ask", "{state}");
 
     // Set it.
     let set = ask(
@@ -109,7 +111,7 @@ async fn a_host_can_read_and_set_the_mode_over_the_wire() -> Result<(), Box<dyn 
     assert_eq!(pushed["session_id"], "s-mode", "{pushed}");
     assert_eq!(pushed["mode"], "plan", "{pushed}");
     assert_eq!(
-        pushed["previous"], "yolo",
+        pushed["previous"], "ask",
         "the transition is carried: {pushed}"
     );
     assert_eq!(pushed["source"], "user", "{pushed}");
@@ -132,7 +134,7 @@ async fn a_host_can_read_and_set_the_mode_over_the_wire() -> Result<(), Box<dyn 
     assert_eq!(state["data"]["mode"], "plan", "{state}");
 
     // A different session is a different judgment: one session's mode must not
-    // decide what another session may do.
+    // decide what another session may do. Fresh sessions start at the default.
     let other = ask(
         &mut stdin,
         &mut reader,
@@ -143,7 +145,7 @@ async fn a_host_can_read_and_set_the_mode_over_the_wire() -> Result<(), Box<dyn 
         }),
     )
     .await;
-    assert_eq!(other["data"]["mode"], "yolo", "{other}");
+    assert_eq!(other["data"]["mode"], "ask", "{other}");
 
     // The pre-0.4 names still resolve, because a host pinned to them has no way
     // to know they were renamed.
@@ -221,13 +223,13 @@ async fn a_mode_that_does_not_change_is_not_announced() -> Result<(), Box<dyn st
         }),
     )
     .await;
-    assert_eq!(state["data"]["mode"], "yolo", "{state}");
+    assert_eq!(state["data"]["mode"], "ask", "{state}");
 
     let same = ask(
         &mut stdin,
         &mut reader,
         serde_json::json!({
-            "method": "set_mode", "id": "req-2", "session_id": "s-same", "mode": "yolo",
+            "method": "set_mode", "id": "req-2", "session_id": "s-same", "mode": "ask",
         }),
     )
     .await;

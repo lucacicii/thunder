@@ -63,18 +63,24 @@ pub enum Mode {
     /// inspecting is ordinary work in a planning phase.
     Plan,
     /// Ask before anything that changes something.
+    ///
+    /// The default: a host that never chose a mode asks rather than silently
+    /// running. Hosts without a panel still fail closed (every dialog refuses),
+    /// and hosts that want autonomy say so — `agent.defaultMode`, a pinned run
+    /// mode, or `yolo` itself. The kernel's no-gate contract is unaffected: no
+    /// gate installed still means "everything the guard allows runs", which is
+    /// what headless embedders (the JSONL runtime) rely on.
+    #[default]
     Ask,
     /// Auto-accept edits inside the working area; ask about the rest.
     AcceptEdits,
     /// Ask nothing. The kernel's guard still applies — this mode loosens the
     /// gate, never the floor.
     ///
-    /// The default, because it is what "no mode chosen" has always meant: the
-    /// pre-0.4 kernel defaulted to `Never`, and every headless consumer
-    /// (daemon runs without a panel, embedders without a UI) depends on a
-    /// default that does not ask questions nobody can answer. Hosts that want
-    /// asking install the mode they want, or set `agent.defaultMode`.
-    #[default]
+    /// Explicit opt-in only: it must never be what "no mode chosen" means.
+    /// `PluginContext::gate()` keeps an explicit `Yolo` fallback for hosts
+    /// that installed no mode plugin at all, so this default cannot lock a
+    /// gateless host behind dialogs nobody can answer.
     Yolo,
 }
 

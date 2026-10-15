@@ -99,14 +99,16 @@ const FOOTER_BG: Color = Color::Rgb(10, 14, 20);
 ///
 /// The mode is the one setting that changes what the agent may do without
 /// asking, so it is visible at all times rather than only while it is being
-/// changed. `yolo` is deliberately the quiet one: it is the default, and a
+/// changed. `ask` is deliberately the quiet one: it is the default, and a
 /// badge that shouts about the default is noise.
 fn mode_badge(theme: &Theme, mode: Mode) -> (String, Color) {
     match mode {
         Mode::Plan => ("⏸ plan".to_string(), theme.highlight),
-        Mode::Ask => ("✋ ask".to_string(), theme.accent_primary),
+        Mode::Ask => ("✋ ask".to_string(), theme.text_muted),
         Mode::AcceptEdits => ("✎ acceptEdits".to_string(), theme.tool_bubble),
-        Mode::Yolo => ("⚡ yolo".to_string(), theme.text_muted),
+        // The loud one is the dangerous one now: yolo is opt-in autonomy, and
+        // it should read as such at a glance.
+        Mode::Yolo => ("⚡ yolo".to_string(), theme.error_color),
     }
 }
 
