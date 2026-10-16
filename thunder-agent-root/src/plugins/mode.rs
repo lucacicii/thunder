@@ -45,7 +45,10 @@ use thunder_agent_loop::tools::read_only::call_is_read_only;
 use thunder_agent_loop::types::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest,
 };
-use thunder_agent_loop::types::policy::ToolEffect;
+use thunder_agent_loop::types::plugin::{
+    CallToolResult, InterceptorPlugin, Plugin as CorePlugin, PreExecutionVerdict, ToolPlugin,
+};
+use thunder_agent_loop::types::policy::{Caller, ToolEffect};
 use thunder_agent_loop::types::scope::Scope;
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use thunder_agent_loop::types::ui::{NullHostUi, UiRequest, UiSource};
@@ -60,18 +63,24 @@ pub enum Mode {
     /// inspecting is ordinary work in a planning phase.
     Plan,
     /// Ask before anything that changes something.
+    ///
+    /// The default: a host that never chose a mode asks rather than silently
+    /// running. Hosts without a panel still fail closed (every dialog refuses),
+    /// and hosts that want autonomy say so — `agent.defaultMode`, a pinned run
+    /// mode, or `yolo` itself. The kernel's no-gate contract is unaffected: no
+    /// gate installed still means "everything the guard allows runs", which is
+    /// what headless embedders (the JSONL runtime) rely on.
+    #[default]
     Ask,
     /// Auto-accept edits inside the working area; ask about the rest.
     AcceptEdits,
     /// Ask nothing. The kernel's guard still applies — this mode loosens the
     /// gate, never the floor.
     ///
-    /// The default, because it is what "no mode chosen" has always meant: the
-    /// pre-0.4 kernel defaulted to `Never`, and every headless consumer
-    /// (daemon runs without a panel, embedders without a UI) depends on a
-    /// default that does not ask questions nobody can answer. Hosts that want
-    /// asking install the mode they want, or set `agent.defaultMode`.
-    #[default]
+    /// Explicit opt-in only: it must never be what "no mode chosen" means.
+    /// `PluginContext::gate()` keeps an explicit `Yolo` fallback for hosts
+    /// that installed no mode plugin at all, so this default cannot lock a
+    /// gateless host behind dialogs nobody can answer.
     Yolo,
 }
 
@@ -402,7 +411,7 @@ impl ModeState {
 /// Shared by reference across every run of a session so an "always allow"
 /// survives a turn, and so flipping the mode takes effect on the very next
 /// call — the kernel asks the gate every time and caches nothing.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModePlugin {
     state: Arc<ModeState>,
     manifest: PluginManifest,
@@ -705,6 +714,51 @@ impl ToolGate for ModePlugin {
     }
 }
 
+impl CorePlugin for ModePlugin {
+    fn id(&self) -> &str {
+        "mode_interceptor"
+    }
+
+    fn name(&self) -> &str {
+        "Mode Policy Interceptor"
+    }
+
+    fn description(&self) -> &str {
+        "Enforces plan, ask, acceptEdits, and yolo permission modes before tool execution."
+    }
+}
+
+#[async_trait]
+impl InterceptorPlugin for ModePlugin {
+    fn priority(&self) -> i32 {
+        thunder_agent_loop::types::plugin::priority::GOVERNANCE_MODE
+    }
+
+    async fn pre_execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<PreExecutionVerdict, String> {
+        let effect = ToolEffect::of(tool_name);
+        let req = ToolGateRequest {
+            tool: tool_name,
+            caller: Caller::Model,
+            effect,
+            arguments: args,
+            scope: Scope::Unknown,
+            tool_call_id: "interceptor_check",
+        };
+        match self.decide(&req) {
+            GateVerdict::Allow | GateVerdict::AllowByRule { .. } => Ok(PreExecutionVerdict::Allow),
+            GateVerdict::Deny { reason } => Ok(PreExecutionVerdict::Deny { reason }),
+            GateVerdict::Ask(prompt) => Ok(PreExecutionVerdict::AskUser {
+                prompt: format!("{}: {}", prompt.title, prompt.detail),
+            }),
+        }
+    }
+}
+
 /// `write_plan`: the one write plan mode allows, and it is not the model's to
 /// choose — the path comes from the session, not the arguments.
 struct WritePlanTool {
@@ -759,6 +813,33 @@ impl AgentTool for WritePlanTool {
             content.len(),
             EXIT_PLAN_MODE_TOOL
         ))
+    }
+}
+
+impl CorePlugin for WritePlanTool {
+    fn id(&self) -> &str {
+        WRITE_PLAN_TOOL
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for WritePlanTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::PlanArtifact
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        AgentTool::execute(self, args, ctx)
+            .await
+            .map(CallToolResult::success_text)
     }
 }
 
@@ -833,13 +914,17 @@ impl AgentTool for ExitPlanModeTool {
         // staying in plan mode, and an `is_error` result would read as "retry
         // the call" — the one move that must not follow.
         let Some(choice) = answer.text() else {
-            return Ok("No answer (dismissed or timed out). Still in plan mode.".to_string());
+            return Ok("Decision: dismissed (no answer, source: plan_approved). \
+                        No answer (dismissed or timed out). Still in plan mode."
+                .to_string());
         };
 
         match choice {
-            APPROVE_AND_AUTO_ACCEPT => self.approve(Mode::AcceptEdits, ctx),
-            APPROVE_BUT_ASK => self.approve(Mode::Ask, ctx),
-            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo, ctx),
+            APPROVE_AND_AUTO_ACCEPT => {
+                self.approve(Mode::AcceptEdits, APPROVE_AND_AUTO_ACCEPT, ctx)
+            }
+            APPROVE_BUT_ASK => self.approve(Mode::Ask, APPROVE_BUT_ASK, ctx),
+            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo, APPROVE_FULLY_AUTONOMOUS, ctx),
             KEEP_PLANNING => {
                 let feedback = ui
                     .request(
@@ -858,20 +943,23 @@ impl AgentTool for ExitPlanModeTool {
                     .unwrap_or_default();
                 if feedback.is_empty() {
                     Ok(format!(
-                        "Plan not approved. Still in plan mode; the user wants changes but said \
+                        "Decision: keep_planning (choice: \"{KEEP_PLANNING}\", source: plan_approved). \
+                         Plan not approved. Still in plan mode; the user wants changes but said \
                          nothing — ask what to change, revise with `{}`, and resubmit.",
                         WRITE_PLAN_TOOL
                     ))
                 } else {
                     Ok(format!(
-                        "Plan not approved. Still in plan mode. The user's feedback: {feedback}"
+                        "Decision: keep_planning (choice: \"{KEEP_PLANNING}\", source: plan_approved). \
+                         Plan not approved. Still in plan mode. The user's feedback: {feedback}"
                     ))
                 }
             }
             // An answer outside the offered set changes nothing: a surprising
             // value must never flip a mode.
             other => Ok(format!(
-                "Unrecognised answer '{other}'. Still in plan mode."
+                "Decision: unrecognised (choice: \"{other}\", source: plan_approved). \
+                 Unrecognised answer '{other}'. Still in plan mode."
             )),
         }
     }
@@ -886,7 +974,16 @@ impl ExitPlanModeTool {
     /// which is the only channel a tool has. The sink is optional (a direct
     /// `execute` in a test has none) and the announcement is a pure side
     /// channel: an approval must still succeed without it.
-    fn approve(&self, mode: Mode, ctx: &ToolExecutionContext) -> Result<String, String> {
+    ///
+    /// `choice` is the exact option the user picked (one of the `APPROVE_*`
+    /// constants); it goes into the tool result so the approval decision lands
+    /// in the store as structured text alongside `mode`/`previous`/`source`.
+    fn approve(
+        &self,
+        mode: Mode,
+        choice: &str,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let previous = self.state.mode();
         self.state.set_mode(mode);
         if let Some(sink) = ctx.event_sink.as_ref() {
@@ -900,9 +997,40 @@ impl ExitPlanModeTool {
             );
         }
         Ok(format!(
-            "Plan approved. Mode is now {}. Calls are judged by it from the next one on.",
+            "Plan approved by user (choice: \"{choice}\" -> {}, prev: {}, source: {}). \
+             Mode is now {}. Calls are judged by it from the next one on.",
+            mode.as_str(),
+            previous.as_str(),
+            MODE_CHANGE_SOURCE_PLAN_APPROVED,
             mode.as_str()
         ))
+    }
+}
+
+impl CorePlugin for ExitPlanModeTool {
+    fn id(&self) -> &str {
+        EXIT_PLAN_MODE_TOOL
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for ExitPlanModeTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Read
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        AgentTool::execute(self, args, ctx)
+            .await
+            .map(CallToolResult::success_text)
     }
 }
 
@@ -921,6 +1049,21 @@ impl ThunderPlugin for ModePlugin {
                 state: Arc::clone(&self.state),
             }),
         ]
+    }
+
+    fn tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
+        vec![
+            Arc::new(WritePlanTool {
+                state: Arc::clone(&self.state),
+            }),
+            Arc::new(ExitPlanModeTool {
+                state: Arc::clone(&self.state),
+            }),
+        ]
+    }
+
+    fn interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
+        vec![Arc::new(self.clone())]
     }
 
     fn system_prompt_contribution(&self) -> Option<String> {

@@ -402,3 +402,75 @@ async fn read_file_offset_limit_streaming() {
         .expect("read ok");
     assert_eq!(out, "second line\nhello again");
 }
+
+/// A file over the 10 MB ceiling with no paging must be refused, with the
+/// same message as before (callers match on it).
+#[tokio::test]
+async fn read_file_large_without_paging_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.log");
+    let chunk = "x".repeat(100) + "\n";
+    let mut buf = String::new();
+    while buf.len() < 11 * 1024 * 1024 {
+        buf.push_str(&chunk);
+    }
+    std::fs::write(&path, &buf).unwrap();
+
+    let tool = ReadFileTool::default();
+    let err = tool
+        .execute(json!({ "path": path.to_string_lossy() }), &test_ctx())
+        .await
+        .expect_err("large unpaged read must fail");
+    assert!(
+        err.contains("exceeds maximum allowed single read limit of 10 MB"),
+        "unexpected error: {err}"
+    );
+}
+
+/// A `limit` no longer bypasses the ceiling into a whole-file read: it
+/// selects a streamed window instead.
+#[tokio::test]
+async fn read_file_large_with_limit_streams_a_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.log");
+    let mut buf = String::new();
+    for i in 0..120_000 {
+        buf.push_str(&format!("line-{i:06}-{}\n", "p".repeat(90)));
+    }
+    assert!(
+        buf.len() > 10 * 1024 * 1024,
+        "fixture must exceed the ceiling"
+    );
+    std::fs::write(&path, &buf).unwrap();
+
+    let tool = ReadFileTool::default();
+    let out = tool
+        .execute(
+            json!({ "path": path.to_string_lossy(), "limit": 2 }),
+            &test_ctx(),
+        )
+        .await
+        .expect("paged large read ok");
+    assert_eq!(
+        out,
+        format!(
+            "line-000000-{}\nline-000001-{}",
+            "p".repeat(90),
+            "p".repeat(90)
+        )
+    );
+
+    // offset-only (no limit) also streams instead of refusing or loading all.
+    let out = tool
+        .execute(
+            json!({ "path": path.to_string_lossy(), "offset": 119_999 }),
+            &test_ctx(),
+        )
+        .await
+        .expect("offset large read ok");
+    assert!(out.contains("line-119998"), "unexpected tail: {out}");
+    assert!(
+        out.len() < 512 * 1024,
+        "streamed output must respect the budget"
+    );
+}

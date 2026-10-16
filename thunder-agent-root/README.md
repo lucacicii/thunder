@@ -26,6 +26,11 @@
    - 内置 `DEFAULT_SKILLS_CACHE`，对本地与全局技能目录文件树建立带 120 秒有效期的全局缓存，消除高频对话下的磁盘 I/O 阻塞。
 4. **一键标准插件装配（`StandardHostBuilder`）**：
    - 开箱即用的装配入口，默认挂载会话、遥测、执行状态、记忆、网页、技能与 MCP 标准插件；宿主专属能力（如 daemon 的 `ask_user`）在 `build` 之后用 `ThunderRoot::with_plugin` 追加。
+5. **声明式插件配置与自动装配 (`PluginLoader`)**：
+   - 在 `.thunder/config.json` 及其分层覆盖中声明 `plugins` 块：
+     - `builtin`：白名单控制启用的内置工具（如 `["read_file", "write_file", "grep"]`）；
+     - `disabled`：黑名单屏蔽不需要的工具或拦截器（如 `["bash"]`），支持 `read` <=> `read_file` 等双向别名；
+     - `mcpServers`：声明式外部 MCP 服务进程，启动时由 `PluginLoader` 自动建立连接并桥接为标准 `ToolPlugin` 挂载入循环。
 
 ---
 

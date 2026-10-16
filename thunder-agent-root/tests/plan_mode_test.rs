@@ -470,6 +470,24 @@ async fn approval_flips_the_mode_and_says_which_one() {
             "the model must be told which mode now judges it: {}",
             res.output
         );
+        // The tool result is the approval's audit trail in the store: it must
+        // carry the exact option the user picked, where it came from, and the
+        // source word the daemon's mode_changed frame uses.
+        assert!(
+            res.output.contains(answer),
+            "the result must echo the choice verbatim: {}",
+            res.output
+        );
+        assert!(
+            res.output.contains("prev: plan"),
+            "the result must name the mode it left: {}",
+            res.output
+        );
+        assert!(
+            res.output.contains(MODE_CHANGE_SOURCE_PLAN_APPROVED),
+            "the result must carry the source word: {}",
+            res.output
+        );
     }
 }
 
@@ -612,6 +630,19 @@ async fn declining_keeps_the_mode_and_carries_the_feedback_back() {
         "the feedback is the point: {}",
         res.output
     );
+    // The decline carries the same structured decision prefix as an approval,
+    // so the store can tell whose decision this was.
+    assert!(
+        res.output
+            .contains(r#"Decision: keep_planning (choice: "No, keep planning""#),
+        "the decline must carry the decision prefix with the choice: {}",
+        res.output
+    );
+    assert!(
+        res.output.contains(MODE_CHANGE_SOURCE_PLAN_APPROVED),
+        "the decline must carry the source word: {}",
+        res.output
+    );
     let kinds: Vec<String> = ui.seen().into_iter().map(|(kind, _)| kind).collect();
     assert_eq!(kinds, vec!["review".to_string(), "input".to_string()]);
 }
@@ -637,6 +668,11 @@ async fn declining_silently_still_keeps_the_mode() {
     assert!(!res.is_error);
     assert_eq!(plugin.mode(), Mode::Plan);
     assert!(res.output.contains(WRITE_PLAN_TOOL), "got: {}", res.output);
+    assert!(
+        res.output.contains("Decision: keep_planning"),
+        "the silent decline carries the same decision prefix: {}",
+        res.output
+    );
 }
 
 /// A review nobody answers is not an error — the run is still in plan mode and
@@ -662,6 +698,16 @@ async fn an_unanswered_review_stays_in_plan_mode() {
     assert!(!res.is_error, "{}", res.output);
     assert_eq!(plugin.mode(), Mode::Plan);
     assert!(res.output.contains("plan mode"), "got: {}", res.output);
+    assert!(
+        res.output.contains("Decision: dismissed"),
+        "the unanswered review carries the decision prefix: {}",
+        res.output
+    );
+    assert!(
+        res.output.contains(MODE_CHANGE_SOURCE_PLAN_APPROVED),
+        "the unanswered review carries the source word: {}",
+        res.output
+    );
 }
 
 /// An answer outside the offered set changes nothing: a surprising value is
@@ -686,6 +732,17 @@ async fn an_unrecognised_answer_flips_nothing() {
     .await;
     assert_eq!(plugin.mode(), Mode::Plan);
     assert!(res.output.contains("plan mode"), "got: {}", res.output);
+    // The unrecognised answer is echoed verbatim under the decision prefix.
+    assert!(
+        res.output.contains("Decision: unrecognised"),
+        "got: {}",
+        res.output
+    );
+    assert!(
+        res.output.contains("sure, whatever"),
+        "the surprising value must be echoed, not swallowed: {}",
+        res.output
+    );
 }
 
 /// A headless host has no panel: the review resolves as unanswered, so the

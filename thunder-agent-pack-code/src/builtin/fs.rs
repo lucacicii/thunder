@@ -3,11 +3,21 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
+
+/// Files at or under this size take the fast whole-read path.
+const MAX_SINGLE_READ_BYTES: u64 = 10 * 1024 * 1024;
+/// Larger files are streamed line by line and never fully materialised; the
+/// streamed output itself is capped so a huge `limit` cannot OOM the host.
+const MAX_STREAMED_OUTPUT_BYTES: usize = 512 * 1024;
+
+pub type ReadFilePlugin = ReadFileTool;
+pub type WriteFilePlugin = WriteFileTool;
 
 #[derive(Default)]
 pub struct ReadFileTool {
@@ -22,6 +32,52 @@ impl ReadFileTool {
     pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
         self.default_cwd = Some(cwd);
         self
+    }
+
+    /// Stream a `offset`/`limit` line window of a large file without ever
+    /// holding the whole file in memory. Output stops at
+    /// [`MAX_STREAMED_OUTPUT_BYTES`] with an explicit truncation note, so the
+    /// model learns to page rather than retrying the same window.
+    async fn read_streamed(
+        target_path: &Path,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<String, String> {
+        let file = fs::File::open(target_path)
+            .await
+            .map_err(|e| format!("Failed to read file '{}': {}", target_path.display(), e))?;
+        let mut lines = tokio::io::BufReader::new(file).lines();
+        let take = limit.unwrap_or(usize::MAX);
+        let mut out = String::new();
+        let mut line_no = 0usize;
+        let mut taken = 0usize;
+        let mut truncated = false;
+        while taken < take {
+            let line = lines
+                .next_line()
+                .await
+                .map_err(|e| format!("Failed to read file '{}': {}", target_path.display(), e))?;
+            let Some(line) = line else { break };
+            line_no += 1;
+            if line_no < offset {
+                continue;
+            }
+            if out.len() + line.len() + 1 > MAX_STREAMED_OUTPUT_BYTES {
+                truncated = true;
+                break;
+            }
+            out.push_str(&line);
+            out.push('\n');
+            taken += 1;
+        }
+        if truncated {
+            out.push_str(
+                "…[truncated: output exceeded the 512 KiB streaming budget; \
+                 re-read with a smaller limit/offset window]",
+            );
+            return Ok(out);
+        }
+        Ok(out.trim_end_matches('\n').to_string())
     }
 }
 
@@ -79,20 +135,40 @@ impl AgentTool for ReadFileTool {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
-        if let Ok(meta) = fs::metadata(&target_path).await {
-            let max_bytes = 10 * 1024 * 1024; // 10 MB ceiling
-            if meta.len() > max_bytes && limit.is_none() {
-                return Err(format!(
-                    "File '{}' ({:.2} MB) exceeds maximum allowed single read limit of 10 MB. Please specify 'limit' or 'offset' to read in chunks.",
-                    target_path.display(),
-                    meta.len() as f64 / (1024.0 * 1024.0)
-                ));
-            }
+        let file_len = fs::metadata(&target_path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let paged = offset > 1 || limit.is_some();
+        if file_len > MAX_SINGLE_READ_BYTES && !paged {
+            return Err(format!(
+                "File '{}' ({:.2} MB) exceeds maximum allowed single read limit of 10 MB. Please specify 'limit' or 'offset' to read in chunks.",
+                target_path.display(),
+                file_len as f64 / (1024.0 * 1024.0)
+            ));
+        }
+
+        // Large files never take the whole-read path: a `limit` no longer
+        // bypasses the ceiling, it only selects a streamed window. The streamed
+        // output is additionally capped so an unbounded window cannot exhaust
+        // memory either.
+        if file_len > MAX_SINGLE_READ_BYTES {
+            return Self::read_streamed(&target_path, offset, limit).await;
         }
 
         let content = fs::read_to_string(&target_path)
             .await
             .map_err(|e| format!("Failed to read file '{}': {}", target_path.display(), e))?;
+
+        // Close the stat-then-read race: a file that grew past the ceiling
+        // between the two calls is treated as if it had been large all along.
+        if content.len() as u64 > MAX_SINGLE_READ_BYTES && !paged {
+            return Err(format!(
+                "File '{}' ({:.2} MB) exceeds maximum allowed single read limit of 10 MB. Please specify 'limit' or 'offset' to read in chunks.",
+                target_path.display(),
+                content.len() as f64 / (1024.0 * 1024.0)
+            ));
+        }
 
         if offset <= 1 && limit.is_none() {
             return Ok(content);
@@ -107,6 +183,32 @@ impl AgentTool for ReadFileTool {
             out.push('\n');
         }
         Ok(out.trim_end_matches('\n').to_string())
+    }
+}
+
+impl Plugin for ReadFileTool {
+    fn id(&self) -> &str {
+        "read_file"
+    }
+
+    fn description(&self) -> &str {
+        "Read file contents with optional line offset and limit."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for ReadFileTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
     }
 }
 
@@ -177,6 +279,32 @@ impl AgentTool for WriteFileTool {
             );
         }
         outcome
+    }
+}
+
+impl Plugin for WriteFileTool {
+    fn id(&self) -> &str {
+        "write_file"
+    }
+
+    fn description(&self) -> &str {
+        "Write content to a file on disk."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for WriteFileTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
     }
 }
 

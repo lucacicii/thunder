@@ -158,6 +158,7 @@ impl McpClient {
         let params = CallToolParams {
             name: tool_name.to_string(),
             arguments,
+            meta: None,
         };
 
         let req = JsonRpcRequest::new(

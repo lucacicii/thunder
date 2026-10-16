@@ -57,8 +57,14 @@ pub enum UiSource {
 #[serde(tag = "ui", rename_all = "snake_case")]
 pub enum UiRequest {
     /// Pick one of `options`. Responds with [`UiResponse::Value`].
+    ///
+    /// `detail` is the substance being approved (the command, the path): a
+    /// client must render it alongside `title`. An approval dialog without it
+    /// asks for a blind yes, which is how rubber-stamping happens.
     Select {
         title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
         options: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
@@ -196,6 +202,28 @@ pub trait HostUi: Send + Sync {
         self.select_owned(title, owned).await
     }
 
+    /// Host-initiated single choice with the substance being approved.
+    async fn select_with_detail(
+        &self,
+        title: &str,
+        detail: Option<&str>,
+        options: &[&str],
+    ) -> Option<String> {
+        let owned: Vec<String> = options.iter().map(|s| s.to_string()).collect();
+        self.request(
+            UiSource::Host,
+            UiRequest::Select {
+                title: title.to_string(),
+                detail: detail.map(str::to_string),
+                options: owned,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .text()
+        .map(str::to_string)
+    }
+
     /// Plugin-initiated single choice.
     async fn select_from_plugin(&self, title: &str, options: &[&str]) -> Option<String> {
         let owned: Vec<String> = options.iter().map(|s| s.to_string()).collect();
@@ -203,6 +231,7 @@ pub trait HostUi: Send + Sync {
             UiSource::Plugin,
             UiRequest::Select {
                 title: title.to_string(),
+                detail: None,
                 options: owned,
                 timeout_ms: None,
             },
@@ -217,6 +246,7 @@ pub trait HostUi: Send + Sync {
             UiSource::Host,
             UiRequest::Select {
                 title: title.to_string(),
+                detail: None,
                 options,
                 timeout_ms: None,
             },
@@ -318,6 +348,7 @@ mod tests {
 
         let explicit = UiRequest::Select {
             title: "t".into(),
+            detail: None,
             options: vec![],
             timeout_ms: Some(1_500),
         };
@@ -355,13 +386,25 @@ mod tests {
     fn request_wire_shape_is_internally_tagged() {
         let json = serde_json::to_value(UiRequest::Select {
             title: "Allow?".into(),
+            detail: Some("rm -rf /tmp/build".into()),
             options: vec!["yes".into(), "no".into()],
             timeout_ms: Some(1000),
         })
         .unwrap();
         assert_eq!(json["ui"], "select");
         assert_eq!(json["title"], "Allow?");
+        assert_eq!(json["detail"], "rm -rf /tmp/build");
         assert_eq!(json["options"][1], "no");
+
+        // An absent detail stays off the wire, so old panels keep working.
+        let json = serde_json::to_value(UiRequest::Select {
+            title: "Allow?".into(),
+            detail: None,
+            options: vec!["yes".into()],
+            timeout_ms: None,
+        })
+        .unwrap();
+        assert!(json.get("detail").is_none());
 
         let json = serde_json::to_value(UiRequest::Review {
             title: "Approve this plan?".into(),

@@ -70,13 +70,15 @@ Rules:
 - `LLMClientTrait` transport abstraction (implemented in production by `RpiAiClient`)
 - Tool registry, parallel execution, timeout, UTF-8 truncation
 - In-memory context pruning with checkpoint compaction (`max_context_tokens` / `reserve_tokens` / `keep_recent_tokens`)
-- One tool-execution funnel (`ToolExecutor::run_tool`) with the guard inside it
+- One tool-execution funnel (`ToolExecutor::run_tool`) with the guard and priority-ordered onion interceptor pipeline inside it
+- Safe recursive sub-tool invocation proxy (`ctx.invoke`) with depth limits and cycle/deadlock detection
+- MCP-compliant streaming progress reporting protocol (`ProgressReporter` and `ctx.report_progress`)
 - Three admission/tracing seams a host installs: `ToolScope`, `ToolGate`, `ToolTraceSink`
 - Loop-level repetition / error circuit breaker (bounded default turns = 50)
 - Cancellation via `CancellationToken` and cooperative pausing via `PauseGate`
 
 A ships **no tools and no written-file locking**: those are a capability pack's
-(`thunder-agent-pack-code`). A ships the seam a pack's tools are judged through.
+(`thunder-agent-pack-code`) or external MCP servers'. A ships the microkernel execution pipeline, onion interceptors, and admission seams.
 
 ## What never enters A
 

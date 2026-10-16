@@ -169,7 +169,7 @@ pub struct AgentLoop {
 | 一个 `AgentLoop` 同时只能跑一个任务 | `running.swap(true, SeqCst)` → `AgentError::AlreadyRunning`（`engine.rs:309-313`） |
 | 并行 = 再 `new` 一个实例 | `tests/unit_contract_test.rs:95` |
 | 事件带 `agent_id` 以便解复用 | `ObservedEvent`（`types/event.rs:52-60`） |
-| 事件流可靠（背压、不静默丢弃） | 每 run 一条 `mpsc::channel(512)`（`engine.rs:316`） |
+| 事件流可靠（背压、丢弃可观测） | 每 run 一条 `mpsc::channel(512)`（`engine.rs`）；micro-delta 满时 `try_send` 计数，结构化事件 5 秒 deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读 |
 | `run()` = `start` + 排空事件 + `join` | `engine.rs:337-347` |
 | 释放句柄**不**取消任务 | `handle.rs:14-15` 注释；须显式 `cancel()` |
 | panic 也要清忙标志 | `RunningGuard::drop`（`handle.rs:137-151`） |
@@ -271,10 +271,10 @@ pub struct AgentRunResult {
 | 4 | **守卫** `Guard::check` | `:314` | `Decision::Deny{by: Guard}` → `guard_refusal` |
 | 5 | **判定** `ToolGate::decide` | `:331-341` | 无 gate → `Allow` |
 | 6 | **弹窗**（gate 返回 `Ask`） | `:371` → `ask()` | 超时/无面板/取消/非法答案 → 拒绝 |
-| 7 | **执行** | `:400-414` | 直进 `ToolRegistry::execute_tool_call` |
-| 8 | **关 trace + 发布** | `run_tool:278-279` | 交给 `ToolTraceSink` |
+| 7 | **执行与洋葱流水线** | `:424-508` | `execute_tool`: pre 降序拦截 → 注册表执行 → post 升序解套与结果同步 |
+| 8 | **关 trace + 发布** | `run_tool:302-303` | 交给 `ToolTraceSink` |
 
-内核**自己不落盘 trace**：它不知道 store 在哪（`executor.rs:416-420`）。
+内核**自己不落盘 trace**：它不知道 store 在哪（`executor.rs:516-520`）。
 
 ### 3.2 守卫：内核地板
 
@@ -384,6 +384,28 @@ pub enum DenyBy { Guard, Gate }
 
 两个出口共用一条记录（`engine.rs:1519-1545`）：`AgentEvent::ToolTrace` 给排事件的宿主，`ToolTraceSink` 给不想解析事件的宿主；**内核只序列化、只脱敏一次**。
 
+### 3.9 拦截器洋葱流水线、递归调用防死锁与 MCP 流式进度
+
+`thunder-agent-loop` 内置基于 MCP 规范标准对齐的插件与拦截器流水线（`types/plugin.rs`、`tools/executor.rs`）：
+
+1. **优先级分层契约（`InterceptorPlugin::priority`）**：
+   - `priority(&self) -> i32` 规范了拦截器在洋葱模型中的相对层次：
+     - `CRITICAL_GUARD (1000)`：系统底层硬安全防御（危险命令、破坏性操作熔断）
+     - `SECURITY_POLICY (800)`：工作区路径与权限安全边界（`CodeScope`）
+     - `GOVERNANCE_MODE (500)`：人机协作审批模式门禁（`ModePlugin`）
+     - `OBSERVABILITY (100)`：调用监控与 Trace 遥测包络（`TraceInterceptor`）
+2. **洋葱包络执行规则**：
+   - **`pre_execute`（从外向内）**：按优先级**从高到低**降序执行。一旦高优先级的 Guard 阻断，底层的 Mode 决不会无谓弹窗惊扰用户；
+   - **`post_execute`（从内向外）**：按优先级**从低到高**升序反向解套（Unwinding），保证最外层的观测拦截器能完整包络整个生命周期耗时；解套后的改写结果（脱敏文本、错误状态标记等）双向同步回 `ToolExecutionResult`。
+3. **安全递归互调（`ctx.invoke`）与死锁防御**：
+   - 插件或工具可以通过 `ctx.invoke(sub_tool, arguments)` 安全互调其它工具；
+   - 内核在 `ToolExecutionContext` 自动维护 `call_chain` 与 `depth`：
+     - `depth >= max_depth`（默认 3 层）直接熔断，防御调用栈溢出；
+     - 第一跳即记录根工具，实现自递归（`A -> A`）与跨工具环路（`A -> B -> A`）即时熔断，彻底杜绝死锁。
+4. **流式进度上报（MCP `notifications/progress`）**：
+   - `ToolExecutionContext` 接入 `ProgressReporter` 异步接口；
+   - 工具在长耗时执行中调用 `ctx.report_progress(progress, total, message)`，经由通道直接流式推送给客户端，且子调用自动透明继承。
+
 ---
 
 ## 4. 上下文管理与 Prompt Cache
@@ -456,7 +478,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 | 事件类别 | 通道 | 策略 |
 |---|---|---|
 | 微增量（`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`） | broadcast + mpsc | `try_send`，**绝不阻塞引擎** |
-| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被静默丢弃（见 §18.5） |
+| 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被计数并 `warn!`（`EventDropCounters`，见 §18.5），宿主可从 `AgentLoop::event_drop_counters()` 得知记录不完整 |
 
 `AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。随仓的 kind 有四个：`file_change`（代码包）、`mode_changed`（模式插件，§11.4）、`metrics_update`（遥测插件，§11.8.1）、`agent_status`（状态插件，§11.8.2）——前两个由工具/插件自己发，后两个由**宿主**在 `take_events` 里按 `seq` 变化追加。
 
@@ -500,7 +522,7 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 
 配置优先级：内置默认 → `~/.thunder` → `<ws>/.thunder` → `<ws>/.thunder/*.local.*`（`.thunder/README.md:46-47`）。`.arp/` 属于 `agent-resume-panel`，Thunder 不读（`.thunder/README.md:8-10`）。
 
-> **`models.json` 的读写优先级不一致（已核实的缺陷）**：读走 `ConfigSource::default_chain`，源顺序是「用户级 → 项目级」且合并用 `entry().or_insert` —— **先到先得，用户级赢**（`providers/src/source.rs:34-41, 62-82`）；写走 `ModelsFile::primary_config_path`，候选是 `[".thunder/models.json", <数据根>/models.json]` —— **项目级在前，而且相对 CWD 而非相对 workspace**（`providers/src/config.rs:195-217`）。后果：探测结果与 `utilityModel` 的回写可能被下一次加载覆盖，等于白写；两处对「项目目录」的定义也不是同一个。`config.rs:195` 那句 "first match wins" 说的是**写**路径，不要拿它推断读路径。
+> **`models.json` 的读写已统一为同一条链（已修复）**：读走 `ConfigSource::default_chain` 合并（用户级先赢），写走同一条链——`utilityModel` 落到读序第一个已存在文件（用户优先），探针结果落到读序第一个定义该 provider 的文件。修之前的缺陷是写走 `ModelsFile::primary_config_path`（项目优先、CWD 相对），探测回写会被下一次加载覆盖；`ModelsFile::load_default` 也已收敛到同一合并语义，不再是第三种读法。回归测试：`providers/src/source.rs` 的 `write_goes_to_first_existing_in_read_order` / `owner_is_the_first_definer_in_read_order` / `write_target_is_visible_to_the_merged_read`。
 
 ---
 
@@ -793,13 +815,13 @@ flowchart TB
 9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:559-629`
 10. `agent_cfg`：workspace/extra roots、`thunder_cfg.apply_to`（max_turns、thinking_level）、`route`、合并后的 system prompt `:630-642`
 11. 模型解析：`resolve_ref` → **把真实窗口写进 `pruning.max_context_tokens`**；无 custom client 时 `client_for(spec, timeout)`；失败只 warn，留给 `UnconfiguredLLMClient` `:644-667`
-12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:673-694`
-13. 6 个内建工具（`register_builtins`）逐个 `with_default_cwd(ws)` 后注册 `:696-721`
-14. 插件工具注册 `:723-726`
-15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace 约束 `:737-745`
-16. `dispatch_ready` `:748`
-17. `with_pause_gate` / `with_steer_queues` `:750-759`
-18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:762-775`
+12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:802-815`
+13. 声明式与内建插件加载：`PluginLoader::load_plugins(&thunder_cfg, ws, options.register_builtins)` 发现并构建内建插件集（`code_plugins` 包含 read/write/grep/find/ls/bash）与配置声明的 MCP Servers（`plugins.mcpServers`），按 `disabled` 过滤后注册 `:826-839`
+14. 活动插件集注册与禁用过滤：遍历 `active_set.collect_tools()`、`collect_tool_plugins()`、`collect_interceptors()`，经 `matches_plugin_id` 对照 `plugins.disabled` 过滤后挂载入 `AgentLoop` `:840-865`
+15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace/洋葱拦截器流水线约束 `:876-884`
+16. `dispatch_ready` `:887`
+17. `with_pause_gate` / `with_steer_queues` `:889-898`
+18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:901-914`
 
 `RootRunHandle::join`（`:186-210`）：`handle.join()` → 等事件代理排空（`dispatch_drained`）→ `dispatch_finish`（错误被 `let _ =` 吞掉）→ `RootRunResult`。
 
@@ -835,7 +857,7 @@ flowchart TB
 
 范围限定：这条承诺覆盖的是 **daemon 的客户端**。TUI 是另一个进程里另一个 `ModePlugin` 实例，收不到这个帧。新增会改会话档位的调用点时，必须走 `set_mode_announcing` 才会被播报。
 
-`Mode::parse`（`mode.rs:91-104`）接受历史名：`ask|default|manual|mutations|writes|always|all` → `Ask`；`acceptedits|accept_edits|shell_only|ask_shell` → `AcceptEdits`；`yolo|never|none|bypass|bypass_permissions|bypasspermissions` → `Yolo`。**`plan` 的语义被修正**（0.3 把它解析成 `never`，与"计划"完全相反）。`Mode::default() == Yolo`（`mode.rs:54-63`）。
+`Mode::parse`（`mode.rs:91-104`）接受历史名：`ask|default|manual|mutations|writes|always|all` → `Ask`；`acceptedits|accept_edits|shell_only|ask_shell` → `AcceptEdits`；`yolo|never|none|bypass|bypass_permissions|bypasspermissions` → `Yolo`。**`plan` 的语义被修正**（0.3 把它解析成 `never`，与"计划"完全相反）。`Mode::default() == Ask`（`mode.rs`）——secure by default；`yolo` 是显式 opt-in。
 
 ### 11.5 `AllowRule` 的窄化
 
@@ -861,7 +883,7 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 ### 11.6 plan 模式的两个工具
 
 - `write_plan`（效果 `PlanArtifact`，`:542-544`）：参数 `{ content }`，整体覆盖写到 `<workspace>/.thunder/plans/<sanitize(session)>.md`（`plan_path`，`:157-162`）。`sanitize_session_id`（`:139-154`）把非 `[A-Za-z0-9._-]` 一律换成 `_`，`""`/`"."`/`".."` 落回 `"session"`——**jail 删除后这是真实注入点**（daemon 的 session_id 来自客户端），测试直接钉住 `../../../etc/evil` 逃不出去。写入复用 `WriteFileTool::write_cancellable`，同一把 per-path 锁与原子语义。
-- `exit_plan_mode`（效果 `Read`，`:592-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。批准（`approve`，`:732-756`）在翻完档位后往本次 run 的 event sink 发一条 `mode_changed`（带 `mode`/`previous`/`source:"plan_approved"`，常量 `mode.rs:130-135`），daemon 据此推 `mode_changed` 帧——这是 daemon 自己看不见的那条变化（见 §11.4）。"No, keep planning" 与无答案都**不播报**：没有变化就没有事件。
+- `exit_plan_mode`（效果 `Read`，`:592-594`）：**忽略模型传来的任何参数**，harness 自己从磁盘读计划。文件缺失/空白 → `is_error` 且**不弹窗**。否则弹 `UiRequest::Review`，四个选项（`:125-128`）：`Yes, and auto-accept edits` / `Yes, but ask before each edit` / `Yes, fully autonomous` / `No, keep planning`。**只有用户的答案能改变模式**，无法识别的答案什么都不翻（`:643-684`）。批准（`approve`，`:732-756`）在翻完档位后往本次 run 的 event sink 发一条 `mode_changed`（带 `mode`/`previous`/`source:"plan_approved"`，常量 `mode.rs:130-135`），daemon 据此推 `mode_changed` 帧——这是 daemon 自己看不见的那条变化（见 §11.4）。**tool result 本身就是审批的审计行**：批准返回 `Plan approved by user (choice: "<选项原文>" -> <mode>, prev: <previous>, source: plan_approved). Mode is now <mode>. …`（选项原文逐字回显，`prev` 是被替换的档位）；`No, keep planning`、无答案、无法识别的答案分别带 `Decision: keep_planning …` / `Decision: dismissed …` / `Decision: unrecognised …` 前缀（含 `source: plan_approved`），反馈正文保持逐字嵌入。字符串刻意保持一两行——tool result 超大会被 scratchpad 换成 handle。"No, keep planning" 与无答案都**不播报**：没有变化就没有事件（但 tool result 里的 `Decision:` 前缀照带）。
 
 ### 11.7 记忆与配置
 
@@ -878,6 +900,26 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 **提示缓存稳定性**（`.thunder/README.md:105-109`）：记忆块位于每次请求的 position 0（正是 provider 缓存键控区域），所以**每次 host 初始化只读一次**并缓存；编辑在下次会话生效。`MemoryPlugin::render` 在 `memory.enabled == false` 或没有绑定工作区时返回 `None`。
 
 配置分层（`thunder_config.rs:96-104`）：`$THUNDER_CONFIG_DIR/config.json` → `<ws>/.thunder/config.json` → `<ws>/.thunder/config.local.json`；合并规则是**只在 overlay 声明该字段时才替换**（`:131-148`）；`apply_to` 只改 `max_turns` 与 `thinking_level`。
+
+**插件声明式配置（`plugins` 块）**：在 `.thunder/config.json` 中支持通过 `plugins` 字段配置插件启用、禁用与外部 MCP 服务注入：
+```json
+{
+  "plugins": {
+    "builtin": ["read_file", "write_file", "bash", "grep", "find_by_name", "list_dir"],
+    "disabled": ["bash"],
+    "mcpServers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "..." }
+      }
+    }
+  }
+}
+```
+- `builtin`：内建工具显式列表（默认全启）。
+- `disabled`：禁用列表，支持双向别名匹配（如禁用 `bash` 或 `read`/`read_file` 均会自动匹配其规范名称及别名）。
+- `mcpServers`：声明式外部 MCP 进程定义，由 `PluginLoader` 在初始化时拉起并以双模 `McpToolBridge`（同时实现 `AgentTool` 与 `ToolPlugin`）注入工具漏斗。
 
 上下文文件发现（`instructions.rs`）：候选 `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`（每目录首个命中胜出）；全局目录 `<real_home>/.agents`、`<real_home>/.pi/agent`、`<数据根>`，**只加载第一个命中**；工作区祖先自底向上再反转（最外层在前）；剥离 UTF-8 BOM。开关：`THUNDER_NO_GLOBAL_INSTRUCTIONS` / `THUNDER_SKILLS_NO_GLOBAL`（真值 `"1"`/`"true"`，大小写不敏感）。
 
@@ -964,7 +1006,7 @@ pub const PROTOCOL_VERSION: u32 = 3;
 
 准入优先（`service.rs:1061-1073`）：`concurrency_semaphore.try_acquire_owned()`，**不阻塞**——满了直接回 `"Server busy: maximum concurrent task limit reached"`。上限来自 `THUNDER_MAX_CONCURRENT_TASKS`（默认 **8**，`.max(1)`，`service.rs:243-247`）。
 
-随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Yolo`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
+随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Ask`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
 运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`、`.with_status_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session, status_plugin), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `agent_status` 快照 + `SteerAccepted` 时补发队列快照 + `mode_changed` 的 custom 事件翻成顶层 `mode_changed` 帧）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
 
@@ -1070,13 +1112,15 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 ---
 
-## 15. MCP 客户端：`thunder-agent-mcp`
+## 15. MCP 客户端与服务端生态：`thunder-agent-mcp`
 
 ### 15.1 协议实现
 
 `LATEST_PROTOCOL_VERSION = "2024-11-05"`（`protocol.rs:4`）。JSON-RPC 2.0 结构：`JsonRpcRequest` / `JsonRpcNotification` / `JsonRpcResponse` / `JsonRpcErrorDetail`（`protocol.rs:7-65`）。
 
-已实现的方法（`client.rs`）：`initialize`（`:80`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:196`）→ `close`（`:209`）。
+已实现的方法与通知：
+- 客户端（`client.rs`）：`initialize`（`:80`）→ `notifications/initialized`（`:110-111`）→ `tools/list`（`:128`）→ `tools/call`（`:165`）→ `ping`（`:196`）→ `close`（`:209`）。
+- 进度通知（`protocol.rs` / `server.rs`）：`notifications/progress`（参数含 `progressToken`、`progress`、可选 `total` 与 `message`），供长时间运行工具向客户端回传流式进度。
 
 ### 15.2 stdio 传输
 
@@ -1164,16 +1208,25 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 **第一个存在且 `mcpServers` 非空的胜出**。thunder 自己的 `mcp.json` 跟随数据根，其余是用户的跨工具文件，仍取真实 HOME（`config.rs:137-139`）。解析兼容两种形状：`{"mcpServers": {…}}` 与裸的 `{"server": {…}}` map（`config.rs:85-98`）。
 
-### 15.4 工具桥接
+### 15.4 工具与插件双模桥接
 
-`McpToolBridge`（`tool_bridge.rs:9-100`）把远程工具包装成内核 `AgentTool`，暴露名为：
-
-```
-mcp_<server_name 中 - 换 _>_<tool_name 中 - 换 _>
-```
-（`tool_bridge.rs:19-23`），描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
+`McpToolBridge`（`tool_bridge.rs`）同时实现了 `AgentTool` 与 `ToolPlugin` 双重特征契约：
+- **作为 `AgentTool`**：可被直接注册至 AgentLoop 或工具注册表，暴露命名为：
+  ```
+  mcp_<server_name 中 - 换 _>_<tool_name 中 - 换 _>
+  ```
+  描述前缀 `[MCP:<server>] `，参数 schema 直接透传 `input_schema`。
+- **作为 `ToolPlugin`**：在洋葱拦截器流水线执行时可接收富上下文 `ToolExecutionContext`，支持调用递归调用代理 `ctx.invoke` 以及流式报告进度 `ctx.report_progress`。
 
 `McpManager::discover_all_tools_timeout`（`manager.rs:93-127`）**每 server 10 秒超时**，超时/报错的 server 只 warn 并跳过，防止一个挂死的 server 阻塞整个 run；`is_alive() == false` 的 server 直接跳过。`close_all` 逐个 `close()`（`manager.rs:156-162`）。
+
+### 15.5 MCP 服务端：`McpServer` 与流式进度推送
+
+`thunder-agent-mcp` 提供完整的 MCP 服务端抽象（`server.rs`），能够将任何本地 `ToolPlugin` 集合以标准 MCP Server 协议向外部宿主（Claude Desktop、Cursor、VS Code 或其它 Agent）暴露：
+
+- **基础能力**：`McpServer::new(name, version)` 配合 `with_tool` / `with_tools` 注册任意 `Arc<dyn ToolPlugin>`；
+- **传输服务**：`server.serve(reader, writer)` 提供标准 stdio 流式事件循环，按行处理 JSON-RPC 2.0 请求（`initialize`、`notifications/initialized`、`tools/list`、`tools/call`、`ping`）；
+- **进度中继**：当外部调用传入 `_meta.progressToken` 时，服务端自动构造 `McpStreamProgressReporter` 并通过 `ToolExecutionContext` 传递给插件；插件调用 `ctx.report_progress(...)` 时，以异步 JSON-RPC `notifications/progress` 消息通过 stdout 实时流式通知客户端。
 
 ---
 
@@ -1514,11 +1567,11 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | ~~`tools/call` 无超时 + pending 表泄漏~~ | ~~高~~ **已修复** | 根因与修复见 §15.2.2；回归测试 2 条 | 修复前一个不响应的 server 会永久挂住工具调用，且每次超时留一条 pending 残留 |
 | 忽略 `nextCursor` | 中 | `protocol.rs:144` 解析、无人读取 | 多页工具列表被截断 |
 | MCP 图片内容被丢弃 | 中 | `protocol.rs:184-188` 只渲染 `[Image: mime]` | 视觉结果到不了模型 |
-| `read_file` 的 10 MB 上限可被任意 `limit` 绕过 | 中 | `pack-code/builtin/fs.rs:84` | 大文件仍被整读入内存 |
+| ~~`read_file` 的 10 MB 上限可被任意 `limit` 绕过~~ | ~~中~~ **已修复** | 大文件不再走整读：`limit`/`offset` 只选中流式窗口（`BufReader::lines`，`pack-code/builtin/fs.rs` 的 `read_streamed`），流式输出另有 512 KiB 预算封顶并带截断提示；无分页的大文件仍拒（原文案不变）；stat-then-read 竞态有事后长度复核。回归测试 `pack-code/tests/code_tools_test.rs` 的 `read_file_large_*` 两条 | 传 `limit` 即绕过、大文件整读入内存的问题已消除 |
 | ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
 | 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-86,70-74` | 系统提示里出现意外技能条目 |
-| 结构化事件送达超过 5s 即被静默丢弃 | 低 | `engine.rs:1452-1459` 的 `let _ = timeout(5s, send(..)).await` | 消费者被压满超过 5 秒时，`TurnEnd`/`LoopComplete`/trace 等结构性事件会凭空消失，宿主无从得知（`§6` 曾写作"不丢"，已改） |
-| 审批弹窗不带"到底要跑什么" | 中 | 门算出 `detail = describe_call(args)`（`plugins/mode.rs:416`），但内核只把 `title/options/timeout_ms` 塞进 `UiRequest::Select`（`executor.rs:497-507`）；`ApprovalPrompt.detail`（`types/gate.rs:85`）在弹窗路径上无消费者 | 用户看到的是 `Run bash` 而不是那条命令，等于在不知道内容的情况下点"允许" |
+| 结构化事件送达超过 5s 即被计数并告警 | 中 | `engine.rs` 的 `EventDropCounters`（`types/event.rs`）：micro-delta 走 `try_send` 计数，结构化事件 5s  deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读，结算时汇总告警。仍不阻塞引擎（行为不变），但不再是"静默丢弃" | 消费者被压满超过 5 秒时宿主可从计数得知记录不完整（曾写作"不丢"，现为"丢了能知道"） |
+| ~~审批弹窗不带"到底要跑什么"~~ | ~~中~~ **已修复** | 门算出 `detail = describe_call(args)`，内核经 `UiRequest::Select.detail` 透传（`executor.rs` 的 `ask`），TUI 拼进问题正文、daemon 经 flatten 透传给面板（`protocol.rs` 的 `UiRequest` 变体），缺省旧面板忽略。回归测试 `loop/tests/approval_detail_test.rs` + TUI `tui_approval_dialog_shows_what_is_being_approved` | 用户看到的不再只是 `Run bash` |
 | TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现 | 低 | `ALL_COMMANDS` 表里 `export` 带 `save`、`timeline` 带 `rail`、`health` 带 `status`（`commands.rs:69-302`），但 `execute_slash_command` 的分派分支只认 `"export" \| "dump"`、`"timeline"`、`"health" \| "doctor"`（`app.rs:3515,3651,3694`） | 这三个别名会进补全与 `/help`，敲下去却落到"未知命令" |
 
 ---

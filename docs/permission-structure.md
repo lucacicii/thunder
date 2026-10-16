@@ -321,9 +321,10 @@ Plan 是 `ModePlugin` 的一个档位 + 两个工具，因此**可随插件一�
 | `Yes, fully autonomous` | `Yolo` |
 | `No, keep planning` | **留在 `Plan`** |
 
-- 批准 → `Plan approved. Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:732`）——**显式告诉模型模式变了**。同一次批准还往本次 run 的 event sink 发一条 `mode_changed`（`mode`/`previous`/`source:"plan_approved"`），daemon 把 custom 事件翻成顶层 `mode_changed` 帧推给宿主——这是 daemon 自己看不见的那条变化（`ExitPlanModeTool` 持有的是共享 `Arc<ModeState>`，不是插件）。sink 可选，**没有 sink 也必须批准成功**。
-- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。驳回**不播报**——档位没动。
-- 无答案（关闭/超时）→ `No answer (dismissed or timed out). Still in plan mode.`——**沉默不是同意**。
+- 批准 → `Plan approved by user (choice: "<选项原文>" -> <mode>, prev: <previous>, source: plan_approved). Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:732`）——**显式告诉模型模式变了，选项原文 + `prev` + `source` 逐字进 tool result**，即审批决策在 store 里的审计行（计划书全文不塞，一两行为限，否则 tool result 会被 scratchpad 换成 handle）。同一次批准还往本次 run 的 event sink 发一条 `mode_changed`（`mode`/`previous`/`source:"plan_approved"`），daemon 把 custom 事件翻成顶层 `mode_changed` 帧推给宿主——这是 daemon 自己看不见的那条变化（`ExitPlanModeTool` 持有的是共享 `Arc<ModeState>`，不是插件）。sink 可选，**没有 sink 也必须批准成功**。`mode_changed` 的 emit_custom payload 不动（daemon 帧契约，别碰线形）。
+- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`），前面带 `Decision: keep_planning (choice: "No, keep planning", source: plan_approved).` 前缀；空反馈同理（`Plan not approved. Still in plan mode; …` 前同样带前缀）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。驳回**不播报**——档位没动。
+- 无答案（关闭/超时）→ `Decision: dismissed (no answer, source: plan_approved). No answer (dismissed or timed out). Still in plan mode.`——**沉默不是同意**。
+- 无法识别的答案 → `Decision: unrecognised (choice: "<原样>", source: plan_approved). Unrecognised answer '<原样>'. Still in plan mode.`——原样回显保留，什么都不翻。
 
 模式翻转靠共享 `ModeState` 里的 `set_mode` 直接生效：内核每次调用都重新问 gate，所以"下一次调用立刻生效"（`mode_matrix_test.rs::flipping_the_mode_applies_to_the_next_call`）。**会改用户会话档位的调用点走 `set_mode_announcing`**（它只在真的变了时返回旧档位，供 daemon 播报）；计划批准是唯一走 `set_mode` 的例外，因为它没有通往 daemon 的通道，只能靠 event sink 申报。
 
@@ -613,11 +614,13 @@ classDiagram
 
 ## 12. 三个值得注意的边界
 
-### 12.1 默认仍是 `yolo`，这依然是刻意的产品决策
+### 12.1 默认是 `ask`：secure by default，`yolo` 是显式 opt-in
 
-`Mode::default() = Yolo`（`mode.rs:63`）。审批门是 fail-closed 的：无面板宿主上每个弹窗都判为"取消＝拒绝"。若默认 `ask`，升级后所有无面板用户的每一次写文件、每一条 shell 都会被静默拒绝——"一个没人要求的安全特性，在第一天就把产品搞坏"。所以审批是 **opt-in**，`config.json` 的 `agent.defaultMode` 可以覆盖它。
+`Mode::default() = Ask`（`mode.rs`）。没选模式的宿主先问再跑；无面板宿主上每个弹窗仍判为"取消＝拒绝"（fail-closed），想要全自主的宿主显式选 `yolo`——`config.json` 的 `agent.defaultMode`、某次 `run_task` 的 `mode` 钉定，或 `set_mode`。
 
-**这条在 0.4 有了新的含义**：默认从"内核里的 `SessionPolicy::new(Bash, Never)`"变成了"没装 gate 时内核自己放行"。两者行为一致，但现在的默认放行是**结构性的**——见下一条。
+历史注记：0.4 时默认是 `Yolo`（"没人要求的安全特性第一天就把产品搞坏"，升级后无面板用户的每次写文件都会被静默拒绝）。翻转到 `ask` 之所以现在可行，有三条结构性兜底：① 无头嵌入宿主（`thunder-runtime`）根本不装 gate，"无 gate 即除守卫外全放行"的红线不受影响；② `PluginContext::gate()` 的 fallback 仍是显式的 `Yolo`，插件反向调用不会被锁死；③ 审批弹窗现在带 `detail`（§5），"问"不再是盲批——默认问的代价从"静默拒绝"变成了"一次有内容的确认"。
+
+**这条在 0.4 有过的含义仍然成立**：默认从"内核里的 `SessionPolicy::new(Bash, Never)`"变成了"没装 gate 时内核自己放行"。两者行为一致，但现在的默认放行是**结构性的**——见下一条。
 
 ### 12.2 不装 gate ＝ 除守卫外全放行（这是红线，不是疏忽）
 

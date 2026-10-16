@@ -10,10 +10,14 @@ use crate::types::gate::{
     ALLOW_ONCE, DENY, DENY_WITH_REASON,
 };
 use crate::types::message::ToolCall;
+use crate::types::plugin::{
+    CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker, ToolContent,
+};
 use crate::types::policy::{Caller, ToolEffect};
 use crate::types::scope::{Scope, ToolScope};
 use crate::types::tool::{ToolEventSink, ToolExecutionContext, ToolExecutionResult};
 use crate::types::ui::{HostUi, NullHostUi, UiRequest, UiSource};
+use async_trait::async_trait;
 use futures_util::future::join_all;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -77,6 +81,8 @@ pub struct ToolExecutor {
     /// Installed per run by the loop (which is the only thing that knows the
     /// session and the task), so a trace never has to guess its own identity.
     trace: Arc<Mutex<TraceSlot>>,
+    /// Interceptors executed before and after every tool call.
+    interceptors: Arc<Mutex<Vec<Arc<dyn InterceptorPlugin>>>>,
 }
 
 /// The trace output side: a sink, and the run's identity.
@@ -102,7 +108,19 @@ impl ToolExecutor {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
             trace: Arc::new(Mutex::new(TraceSlot::default())),
+            interceptors: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Add an interceptor plugin into the executor pipeline.
+    pub fn with_interceptor(self, interceptor: Arc<dyn InterceptorPlugin>) -> Self {
+        self.interceptors.lock().push(interceptor);
+        self
+    }
+
+    /// Add an interceptor to the shared pipeline in-place.
+    pub fn add_interceptor(&self, interceptor: Arc<dyn InterceptorPlugin>) {
+        self.interceptors.lock().push(interceptor);
     }
 
     /// Install the sink finished traces go to.
@@ -265,6 +283,12 @@ impl ToolExecutor {
         if ctx.ui.is_none() {
             ctx.ui = Some(crate::types::ui::UiHandle(self.ui()));
         }
+        if ctx.sub_invoker.is_none() {
+            ctx.sub_invoker = Some(Arc::new(ExecutorSubToolInvoker::new(self.clone())));
+        }
+        if ctx.call_chain.is_empty() {
+            ctx.call_chain.push(call.function.name.clone());
+        }
 
         let started = Instant::now();
         let mut draft = TraceDraft::begin(call, &ctx, effect, started);
@@ -404,12 +428,91 @@ impl ToolExecutor {
         custom_timeout: Option<Duration>,
         draft: &mut TraceDraft,
     ) -> ToolExecutionResult {
+        let arguments: serde_json::Value =
+            serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
+
+        // Pre-execute interceptor pipeline sorted by priority descending (highest priority runs first)
+        let mut interceptors = self.interceptors.lock().clone();
+        interceptors.sort_by_key(|a| std::cmp::Reverse(a.priority()));
+
+        for interceptor in &interceptors {
+            match interceptor
+                .pre_execute(&call.function.name, &arguments, ctx)
+                .await
+            {
+                Ok(PreExecutionVerdict::Allow) => {}
+                Ok(PreExecutionVerdict::Deny { reason }) => {
+                    draft.decision = Decision::Deny {
+                        reason: reason.clone(),
+                        by: DenyBy::Gate,
+                    };
+                    return ToolExecutionResult::error(reason, Duration::from_millis(0));
+                }
+                Ok(PreExecutionVerdict::AskUser { prompt }) => {
+                    let timeout_ms = Some(self.approval_timeout.as_millis() as u64);
+                    let resp = self
+                        .ui()
+                        .request(
+                            UiSource::Host,
+                            UiRequest::Select {
+                                title: prompt.clone(),
+                                // The interceptor prompt already inlines
+                                // "title: detail" (see ModePlugin::pre_execute).
+                                detail: None,
+                                options: vec![ALLOW_ONCE.to_string(), DENY.to_string()],
+                                timeout_ms,
+                            },
+                        )
+                        .await;
+                    match resp.text() {
+                        Some(text) if text == ALLOW_ONCE => {}
+                        _ => {
+                            let reason = format!("User denied execution: {}", prompt);
+                            draft.decision = Decision::Deny {
+                                reason: reason.clone(),
+                                by: DenyBy::Gate,
+                            };
+                            return ToolExecutionResult::error(reason, Duration::from_millis(0));
+                        }
+                    }
+                }
+                Err(err) => {
+                    draft.decision = Decision::Deny {
+                        reason: err.clone(),
+                        by: DenyBy::Gate,
+                    };
+                    return ToolExecutionResult::error(err, Duration::from_millis(0));
+                }
+            }
+        }
+
         let started = Instant::now();
-        let result = self
+        let mut result = self
             .registry
             .execute_tool_call(call, ctx.clone(), custom_timeout)
             .await;
         draft.timing.exec_ms = started.elapsed().as_millis() as u64;
+
+        // Post-execute interceptor pipeline executed in reverse order (Onion unwinding)
+        let mut mcp_result = if result.is_error {
+            CallToolResult::error_text(&result.output)
+        } else {
+            CallToolResult::success_text(&result.output)
+        };
+        for interceptor in interceptors.iter().rev() {
+            interceptor
+                .post_execute(&call.function.name, &arguments, &mut mcp_result, ctx)
+                .await;
+        }
+
+        // If post_execute interceptors modified the content or error status, propagate back
+        if let Some(ToolContent::Text { text }) = mcp_result.content.first() {
+            result.output = text.clone();
+        }
+        if let Some(is_err) = mcp_result.is_error {
+            result.is_error = is_err;
+        }
+
         result
     }
 
@@ -501,6 +604,10 @@ impl ToolExecutor {
                 UiSource::Host,
                 UiRequest::Select {
                     title,
+                    // The substance being approved. A dialog without it asks
+                    // for a blind yes; the gate computed this string for
+                    // exactly this call.
+                    detail: Some(prompt.detail.clone()),
                     options: options.clone(),
                     timeout_ms,
                 },
@@ -896,6 +1003,58 @@ fn denied_by_gate(
     .with_guidance(guidance);
 
     ToolExecutionResult::error(message, started.elapsed()).with_telemetry(notice)
+}
+
+/// Concrete `SubToolInvoker` implementation that routes sub-tool calls through `ToolExecutor`.
+#[derive(Clone)]
+pub struct ExecutorSubToolInvoker {
+    executor: ToolExecutor,
+    timeout: Option<Duration>,
+}
+
+impl ExecutorSubToolInvoker {
+    pub fn new(executor: ToolExecutor) -> Self {
+        Self {
+            executor,
+            timeout: None,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+impl std::fmt::Debug for ExecutorSubToolInvoker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExecutorSubToolInvoker(..)")
+    }
+}
+
+#[async_trait]
+impl SubToolInvoker for ExecutorSubToolInvoker {
+    async fn invoke_sub_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let call = ToolCall::new_function(
+            ctx.tool_call_id.clone(),
+            tool_name,
+            serde_json::to_string(&arguments).map_err(|e| e.to_string())?,
+        );
+        let result = self
+            .executor
+            .run_tool(&call, ctx.clone(), self.timeout)
+            .await;
+        if result.is_error {
+            Ok(CallToolResult::error_text(result.output))
+        } else {
+            Ok(CallToolResult::success_text(result.output))
+        }
+    }
 }
 
 #[cfg(test)]

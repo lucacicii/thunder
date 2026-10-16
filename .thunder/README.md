@@ -71,6 +71,20 @@ Schema 版本 `1`。**未声明的分组/字段表示"未配置"，不是空覆�
     // 新会话默认落在哪个审批模式。
     // plan | ask | acceptEdits | yolo（旧名亦可）；未设 = yolo。
     "defaultMode": "ask"
+  },
+  "plugins": {
+    // 显式启用的内建工具插件（未配置或留空则默认全量启用）
+    "builtin": ["read_file", "write_file", "bash", "grep", "find_by_name", "list_dir"],
+    // 禁用的插件或工具（支持别名，如 "bash", "read", "write", "ls"）
+    "disabled": ["bash"],
+    // 声明式挂载的外部 MCP 服务
+    "mcpServers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "..." }
+      }
+    }
   }
 }
 ```
@@ -78,6 +92,7 @@ Schema 版本 `1`。**未声明的分组/字段表示"未配置"，不是空覆�
 **没有 `agent.permission`**：能力档位（tier）在 0.4 已删除，工具始终全量注册。
 能不能跑由 `agent.defaultMode` 选的模式决定，模式本身住在宿主可卸载的
 `ModePlugin` 里——配置文件只能选一个**已有**的模式，不能发明放宽规则。
+若需禁用特定工具或接入外部 MCP 服务，请使用 `plugins.disabled` 与 `plugins.mcpServers`。
 
 `plans/` 目录由 plan 模式使用：计划文件写到
 `<ws>/.thunder/plans/<session>.md`，文件名里的 session 会被消毒成

@@ -30,10 +30,10 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
    - Thunder 读取自身 `.thunder/` 下的项目配置，与 `.arp`（面板所有）完全隔离：`config.json` 分层合并（用户级 / 项目级 / 本机），可追加系统提示文件、限制轮数；`THUNDER.md` 与 `memory/*.md` 作为长期记忆注入系统提示；`mcp.json` 自动接入 MCP servers。
    - 记忆块位于请求前缀，按 host 初始化只读取一次，保证供应商侧 Prompt Cache 前缀稳定。
    - **用户数据根可被宿主整体重定向**：`THUNDER_CONFIG_DIR`（或二进制参数 `--config-dir <path>`）统管 thunder 的全部用户级状态 —— `models.json`、`auth.json`、`models_metadata.json`、`scratchpad/`、`logs/`、`conversations/`、`config.json`、`mcp.json`、`THUNDER.md`、`skills/`、`permissions.json`（宿主同意过的「always allow」规则），默认 `~/.thunder`；宿主应用（Electron 等）指向自己的私有目录，即可得到一个与用户环境完全隔离的实例。该变量的语义已由「配置文件目录」提升为「全量数据根」：**设过它的用户，会话与草稿等状态也会一并迁到该目录**。跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 API key）不受影响，仍取真实 HOME。
-7. **单一工具执行入口 + 全量调用 trace + 可卸载的审批模式插件**：
-   - 内核只有**一个**工具执行入口 `ToolExecutor::run_tool`：取消 → 守卫 → 作用域 → 准入判定 → 弹窗 → 执行 → 落 trace。内建工具、Rust 插件工具、MCP 工具、runtime 远程工具全部经过它，**没有工具能绕开 trace**。
-   - trace 在**每一步的每一个出口**产生一条记录，并记下**判定本身**（谁拒的、什么作用域、用户答了什么），落盘前统一脱敏（密钥键名、密钥形态、文档正文摘要化）。记录不可关闭。
-   - 审批策略（`plan` / `ask` / `acceptEdits` / `yolo`）住在**可卸载的宿主插件**里，内核只留一个 `ToolGate` 钩子：**不装插件＝除守卫外全放行**（无头宿主的红线由此结构性成立）。
+7. **单一工具执行入口 + 优先级洋葱拦截流水线 + 全量调用 trace**：
+   - 内核拥有统一的工具执行漏斗 `ToolExecutor::run_tool`：取消 → 守卫 (1000) → 作用域 (800) → 模式准入 (500) → 弹窗审批 → 执行 → 逆序解套与结果同步 (Trace 100) → 落 trace。内建工具、Rust 插件工具、MCP 工具、runtime 远程工具全部经过它，**没有工具能绕开 trace**。
+   - 工具支持安全递归调用子工具（`ctx.invoke`），内置调用栈深度控制与即时环路死锁检测；原生支持 Anthropic MCP 标准的 `ProgressReporter` 流式进度通知（`notifications/progress`）。
+   - 审批策略（`plan` / `ask` / `acceptEdits` / `yolo`）作为宿主拦截器与 `ToolGate`，内核遵循 Fail-closed 原则保证无头运行安全。
 8. **企业级 STDIO Sidecar 守护进程（`thunder-agent-daemon`）**：
    - 零端口冲突、生命周期天然随父进程绑定，支持并发任务信号量调度、背压 STDOUT 有序推送、协作式暂停（Pause）与反问气泡（Ask User）。
 
@@ -43,14 +43,14 @@ Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用�
 
 | Crate | 路径 | 说明 |
 | :--- | :--- | :--- |
-| **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent 内核**：单 Agent 闭环执行引擎，极致轻量与低延迟，支持检查点式上下文压缩与跨 Agent 文件写入安全锁 |
-| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **编码能力包**：`bash`/`read_file`/`write_file`/`grep`/`find`/`ls` 六个内建工具、原子写入与路径作用域判定（`CodeScope`） |
+| **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent 内核**：单 Agent 闭环执行引擎，极致轻量与低延迟，支持洋葱拦截流水线、递归防死锁与 MCP 流式进度协议 |
+| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **编码能力包**：`bash`/`read_file`/`write_file`/`grep`/`find`/`ls` 六个标准 `ToolPlugin`、原子写入与路径作用域判定（`CodeScope`） |
 | **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **无头运行时**：以 JSONL 协议驱动 `AgentLoop`，供无 UI 的嵌入式宿主使用 |
 | **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **模型目录 + 流式传输**：加载与解析 `models.json` / `auth.json`，并以 `RpiAiClient` 进程内直连模型 |
 | **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **技能引擎**：扫描并解析 Playbook / SKILL.md，支持意图触发匹配与 120s TTL 全局文件缓存 |
-| **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP 客户端**：Model Context Protocol 客户端实现，动态发现与无缝桥接远程工具 |
-| **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **微内核宿主**：基于基线与触发词动态装配插件，驱动单次任务执行并输出结构化结果 |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**：面向 Electron 及外部前端的高性能常驻守护进程，支持审批模式（plan / ask / acceptEdits / yolo）与**模式变化事件**（`mode_changed` 推送）、协作式暂停与反问 |
+| **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP 客户端与服务端**：Model Context Protocol 双向实现，支持 stdio 传输、动态发现、双向桥接与流式进度推送 |
+| **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **微内核宿主**：基于基线与触发词动态装配插件，支持声明式 PluginLoader 配置（`.thunder/config.json`），驱动任务执行 |
+| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**：面向 Electron 及外部前端的高性能常驻守护进程，支持审批模式与模式切换事件、协作式暂停与反问 |
 | **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **会话管理**：支持 Fs 原子存储与内存双模、`index.json` 极速索引与多拓扑阶段追踪 |
 | **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **交互式终端**：基于 Ratatui 的 Claude Code 风格全宽终端，支持打字机流式输出 |
 

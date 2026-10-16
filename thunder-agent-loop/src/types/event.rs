@@ -1,6 +1,8 @@
 use crate::types::message::ToolCall;
 use crate::types::tool::ToolExecutionResult;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TurnStats {
@@ -20,6 +22,50 @@ pub struct TurnStats {
     pub tool_calls_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_second: Option<f64>,
+}
+
+/// Delivery losses the engine accepted rather than stall the loop.
+///
+/// Micro-deltas (`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`) are dropped by
+/// `try_send` when the consumer is behind; structural lifecycle events are
+/// dropped only after a bounded wait (see the emitter). Both used to vanish
+/// silently — a saturated consumer could lose `TurnEnd`/`LoopComplete`/traces
+/// with no party able to tell. The counts make that visible: hosts should
+/// treat `structural() > 0` as "the run's record may be incomplete".
+#[derive(Debug, Default)]
+pub struct EventDropCounters {
+    micro_deltas: AtomicU64,
+    structural: AtomicU64,
+}
+
+impl EventDropCounters {
+    /// Share one counter set between an emitter, its sinks, and the host.
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Streaming micro-deltas discarded because the channel was full.
+    pub fn micro_deltas(&self) -> u64 {
+        self.micro_deltas.load(Ordering::Relaxed)
+    }
+
+    /// Structural events discarded after the delivery deadline.
+    pub fn structural(&self) -> u64 {
+        self.structural.load(Ordering::Relaxed)
+    }
+
+    /// Either kind of loss.
+    pub fn total(&self) -> u64 {
+        self.micro_deltas() + self.structural()
+    }
+
+    pub(crate) fn record_micro(&self) {
+        self.micro_deltas.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_structural(&self) {
+        self.structural.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

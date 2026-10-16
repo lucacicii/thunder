@@ -9,7 +9,11 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+
+pub type FindPlugin = FindTool;
+pub type ListDirPlugin = ListDirTool;
 
 /// Max results (pi's find DEFAULT_LIMIT).
 const DEFAULT_FIND_LIMIT: usize = 1000;
@@ -179,6 +183,32 @@ impl AgentTool for FindTool {
     }
 }
 
+impl Plugin for FindTool {
+    fn id(&self) -> &str {
+        "find"
+    }
+
+    fn description(&self) -> &str {
+        "Fast file lookup based on glob pattern."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for FindTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
+    }
+}
+
 // ────────────────────────────────────────────────────────────
 // ls
 // ────────────────────────────────────────────────────────────
@@ -272,5 +302,31 @@ impl AgentTool for ListDirTool {
             output.push_str("\n[Output truncated at 1000 entries]");
         }
         Ok(output.trim_end_matches('\n').to_string())
+    }
+}
+
+impl Plugin for ListDirTool {
+    fn id(&self) -> &str {
+        "ls"
+    }
+
+    fn description(&self) -> &str {
+        "List directory entries (single level)."
+    }
+}
+
+#[async_trait]
+impl ToolPlugin for ListDirTool {
+    fn definition(&self) -> ToolDefinition {
+        AgentTool::definition(self)
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<CallToolResult, String> {
+        let text = AgentTool::execute(self, args, ctx).await?;
+        Ok(CallToolResult::success_text(text))
     }
 }

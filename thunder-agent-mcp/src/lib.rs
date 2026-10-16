@@ -9,6 +9,7 @@ pub mod config;
 pub mod error;
 pub mod manager;
 pub mod protocol;
+pub mod server;
 pub mod tool_bridge;
 pub mod transport;
 
@@ -21,6 +22,7 @@ pub mod prelude {
         CallToolResult, ImplementationInfo, InitializeParams, InitializeResult, McpTool,
         ToolContent,
     };
+    pub use crate::server::McpServer;
     pub use crate::tool_bridge::McpToolBridge;
     pub use crate::transport::mock::MockTransport;
     pub use crate::transport::stdio::StdioTransport;

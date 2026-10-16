@@ -30,6 +30,22 @@
 
 ## 🛠️ Quick start
 
+### 1. Modern Pluggable Assembly (Recommended)
+
+All six coding tools implement the MCP-aligned `ToolPlugin` contract, discoverable via `code_plugins(...)`:
+
+```rust
+use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::code_plugins;
+
+let ws = Some(std::path::PathBuf::from("/path/to/project"));
+for plugin in code_plugins(ws) {
+    agent.register_plugin(plugin);
+}
+```
+
+### 2. Monolithic Capability Pack Assembly
+
 ```rust
 use thunder_agent_loop::prelude::*;
 use thunder_agent_pack_code::{install_code_pack, CodePackConfig};

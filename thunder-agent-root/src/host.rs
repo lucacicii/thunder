@@ -18,9 +18,6 @@ use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
-use thunder_agent_pack_code::builtin::{
-    BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
-};
 use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
 use tokio::sync::mpsc;
@@ -825,36 +822,46 @@ impl ThunderRoot {
             );
         }
 
-        if options.register_builtins {
-            // Every tool, every run. Registration is no longer a capability
-            // decision: the gate decides what a call may do, and a tool absent
-            // from the model's list is a tool the model cannot even ask to use.
-            let ws = self.workspace_root.clone();
-            let mut tools: Vec<Arc<dyn thunder_agent_loop::types::tool::AgentTool>> = Vec::new();
-            macro_rules! push {
-                ($tool:expr) => {{
-                    let tool = $tool;
-                    let tool = match &ws {
-                        Some(dir) => tool.with_default_cwd(dir.clone()),
-                        None => tool,
-                    };
-                    tools.push(Arc::new(tool));
-                }};
-            }
-            push!(ReadFileTool::default());
-            push!(WriteFileTool::default());
-            push!(BashTool::default());
-            push!(GrepTool::default());
-            push!(FindTool::default());
-            push!(ListDirTool::default());
-            for tool in tools {
+        // Load declarative plugins (built-ins + MCP servers + config filtering)
+        let loaded = crate::loader::PluginLoader::load_plugins(
+            &thunder_cfg,
+            self.workspace_root.as_deref(),
+            options.register_builtins,
+        )
+        .await;
+
+        for plugin in loaded.tool_plugins {
+            agent.register_plugin(plugin);
+        }
+        for interceptor in loaded.interceptors {
+            agent = agent.with_interceptor(interceptor);
+        }
+
+        let disabled_set: std::collections::HashSet<String> = thunder_cfg
+            .plugins()
+            .and_then(|p| p.disabled.as_ref())
+            .map(|list| list.iter().cloned().collect())
+            .unwrap_or_default();
+
+        // Register tools, capability plugins, and interceptors contributed by active plugins
+        for tool in active_set.collect_tools() {
+            if !crate::loader::matches_plugin_id(&disabled_set, &tool.name()) {
                 agent.register_tool(tool);
             }
         }
-
-        // Register tools contributed by active plugins
-        for tool in active_set.collect_tools() {
-            agent.register_tool(tool);
+        for plugin in active_set.collect_tool_plugins() {
+            if !crate::loader::matches_plugin_id(&disabled_set, plugin.id()) {
+                agent.register_plugin(plugin);
+            }
+        }
+        for interceptor in active_set.collect_interceptors() {
+            // Avoid double-registering the mode judge if it is already installed as the primary ToolGate.
+            if interceptor.id() == "mode_interceptor"
+                || crate::loader::matches_plugin_id(&disabled_set, interceptor.id())
+            {
+                continue;
+            }
+            agent = agent.with_interceptor(interceptor);
         }
 
         // Now that every tool is registered, hand the plugin host an invoker

@@ -1,6 +1,7 @@
 pub mod error;
 pub mod host;
 pub mod instructions;
+pub mod loader;
 pub mod plugin;
 pub mod plugins;
 pub mod registry;
@@ -14,6 +15,7 @@ pub mod prelude {
     pub use crate::instructions::{
         discover_context_files, find_context_file_in_dir, ContextInstructionFile,
     };
+    pub use crate::loader::{LoadedPlugins, PluginLoader};
     pub use crate::plugin::{
         PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec,
     };
@@ -37,7 +39,7 @@ pub mod prelude {
         default_selection_cache, invalidate_all_session_selections, invalidate_session_selection,
         PluginSelection, PluginSelector, SelectionCache,
     };
-    pub use crate::thunder_config::{AgentSection, MemorySection, ThunderConfig};
+    pub use crate::thunder_config::{AgentSection, MemorySection, PluginSection, ThunderConfig};
     pub use crate::trace_collector::{TraceCollector, MAX_EVENTS, MAX_TOOL_TRACES};
 }
 

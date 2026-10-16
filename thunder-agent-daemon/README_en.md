@@ -73,9 +73,9 @@ host plugin (`ModePlugin`); the kernel only offers a `ToolGate` hook.
 | `mode` | reads | writes in scope | writes out of scope | shell | Notes |
 | :---: | :---: | :---: | :---: | :---: | :--- |
 | **`plan`** | ✅ | ❌ | ❌ | read-only: ✅, else ask | Read-only research plus one plan file; `write_plan` / `exit_plan_mode` are the only way out |
-| **`ask`** | ✅ | ask | ask | ask | Reads run unprompted; everything else asks |
+| **`ask`** (default) | ✅ | ask | ask | ask | Reads run unprompted; everything else asks — secure by default |
 | **`acceptEdits`** | ✅ | ✅ | ask | ask | In-workspace edits run unprompted; reaching out still asks |
-| **`yolo`** (default) | ✅ | ✅ | ✅ | ✅ | Fully autonomous, matching 0.3's `never` |
+| **`yolo`** (explicit opt-in) | ✅ | ✅ | ✅ | ✅ | Fully autonomous, matching 0.3's `never` |
 
 Old names still parse: `ask` ← `default`/`manual`/`mutations`/`writes`/`always`/`all`;
 `acceptEdits` ← `accept_edits`/`shell_only`/`ask_shell`;
@@ -122,7 +122,7 @@ Three rules that hold in every mode:
   Sessions the daemon creates **persist** those rules to `<data root>/permissions.json`
   (`ModePlugin::with_persisted_rules`), so "always allow" means always — delete or edit
   that file to revoke one, taking effect when the session is next created.
-  Note it *creates* a session that has never run in `Mode::default()` (`yolo`), while
+   Note it *creates* a session that has never run in `Mode::default()` (`ask`), while
   that session's first `run_task` resolves `.thunder`'s `agent.defaultMode` instead;
   the two can differ, and the first run's `mode_changed` (`run_option`) pushes the
   real mode across.

@@ -389,7 +389,12 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
         let (tx, rx) = oneshot::channel();
 
         let ask_question = match &request {
-            UiRequest::Select { title, options, .. } => {
+            UiRequest::Select {
+                title,
+                detail,
+                options,
+                ..
+            } => {
                 let ask_opts = options
                     .iter()
                     .map(|o| AskOption {
@@ -397,8 +402,15 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
                         description: None,
                     })
                     .collect();
+                // The detail is what is actually being approved (the command,
+                // the path). It must reach the screen, or the user approves
+                // blind.
+                let question = match detail {
+                    Some(d) if !d.trim().is_empty() => format!("{title}\n{d}"),
+                    _ => title.clone(),
+                };
                 AskQuestion {
-                    question: title.clone(),
+                    question,
                     header: Some(if source == UiSource::Host {
                         "Approval".to_string()
                     } else {
@@ -743,6 +755,7 @@ mod tests {
                 UiSource::Host,
                 UiRequest::Select {
                     title: "执行 bash".to_string(),
+                    detail: None,
                     options: vec!["允许一次".to_string(), "拒绝".to_string()],
                     timeout_ms: Some(5000),
                 },
@@ -773,6 +786,49 @@ mod tests {
 
         let response = handle.await.unwrap();
         assert_eq!(response, UiResponse::value("允许一次"));
+    }
+
+    #[tokio::test]
+    async fn tui_approval_dialog_shows_what_is_being_approved() {
+        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+
+        let (event_tx, mut rx) = mpsc::unbounded_channel();
+        let ui = TuiHostUi::new(event_tx);
+
+        let handle = tokio::spawn(async move {
+            ui.request(
+                UiSource::Host,
+                UiRequest::Select {
+                    title: "Run bash".to_string(),
+                    detail: Some("rm -rf /tmp/build".to_string()),
+                    options: vec!["Allow once".to_string(), "Deny".to_string()],
+                    timeout_ms: Some(5000),
+                },
+            )
+            .await
+        });
+
+        let event = rx.recv().await.expect("event received");
+        let incoming = match event {
+            AppEvent::UserQuestion(q) => q,
+            _ => panic!("expected UserQuestion"),
+        };
+
+        // Title and detail travel together to the screen: approving without
+        // seeing the command is a blind yes.
+        assert_eq!(
+            incoming.questions[0].question,
+            "Run bash\nrm -rf /tmp/build"
+        );
+
+        let mut pending = PendingQuestion::from_incoming(incoming).expect("pending question");
+        let payload = pending
+            .answer_current("Deny".to_string())
+            .expect("resolves immediately");
+        pending.resolve(payload);
+
+        let response = handle.await.unwrap();
+        assert_eq!(response, UiResponse::value("Deny"));
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
 use thunder_agent_root::plugins::memory::{MemoryPlugin, MEMORY_WRITE_TOOL};
+use thunder_agent_root::plugins::mode::Mode;
 use thunder_agent_root::prelude::*;
 
 /// Bind a plugin to `ws` under a route and return its write tool, initialized.
@@ -210,6 +211,10 @@ async fn memory_write_is_reachable_from_a_run() {
             "remember something",
             RootRunOptions {
                 session_id: Some("mem_sess".to_string()),
+                // This test pins route plumbing, not permission policy: run
+                // unattended. (The host default is Ask, which would refuse the
+                // write with no panel attached.)
+                mode: Mode::Yolo,
                 custom_client: Some(Arc::new(WriteRequestingClient {
                     turn: AtomicUsize::new(0),
                 })),

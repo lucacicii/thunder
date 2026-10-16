@@ -63,13 +63,15 @@ let result = handle.join().await?;
 - `LLMClientTrait` 传输抽象契约（生产环境由 `RpiAiClient` 实现）
 - 工具注册表、并发工具派发、超时熔断与 UTF-8 截断
 - 内存上下文裁剪，支持检查点式压缩（`max_context_tokens` / `reserve_tokens` / `keep_recent_tokens`）
-- 唯一的工具执行入口（`ToolExecutor::run_tool`），守卫就在其中
+- 唯一的工具执行入口（`ToolExecutor::run_tool`），守卫与洋葱拦截器流水线（优先级降序 `pre_execute` 与升序 `post_execute` 解套）就在其中
+- 跨工具递归调用安全代理（`ctx.invoke`），内置调用深度上限与即时循环检测防死锁
+- MCP 规范级流式进度通知契约（`ProgressReporter` 与 `ctx.report_progress`）
 - 三个由宿主安装的准入/观测接缝：`ToolScope`、`ToolGate`、`ToolTraceSink`
 - 循环级防死循环熔断器（默认 50 轮上限）
 - 基于 `CancellationToken` 的任务取消与基于 `PauseGate` 的协作式暂停
 
-A **不自带工具，也不写文件锁**：那些属于能力包（`thunder-agent-pack-code`）。
-A 提供的是「能力包的工具经由哪个接缝被判定」。
+A **不自带具体工具，也不写文件锁**：那些属于能力包（`thunder-agent-pack-code`）或外部 MCP 服务。
+A 提供的是统一的调度微内核、洋葱拦截流水线与工具生命周期判定接缝。
 
 ---
 
