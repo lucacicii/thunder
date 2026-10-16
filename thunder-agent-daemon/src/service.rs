@@ -82,8 +82,8 @@ pub struct DaemonService {
     /// the same connections, while a *different* project with a same-named but
     /// differently-configured server never inherits the first project's
     /// process. Bounded so a long-lived daemon cannot leak server processes.
-    mcp_plugins:
-        Arc<tokio::sync::Mutex<HashMap<PathBuf, Arc<thunder_agent_root::plugins::McpPlugin>>>>,
+    /// Per-workspace MCP plugin pool, evicted oldest-first (FIFO).
+    mcp_plugins: Arc<tokio::sync::Mutex<WorkspaceMcpPool>>,
     /// Optional client factory (tests / embedders). `None` = provider registry.
     client_factory: Option<ClientFactory>,
     /// Pending `ask_user_question` calls, keyed by `task_id:question_id`.
@@ -113,6 +113,45 @@ pub struct DaemonService {
     /// run is parked. Both are facts only this layer knows, and both have to be
     /// visible to the panel while nothing else is happening.
     status_plugin: thunder_agent_root::plugins::StatusPlugin,
+}
+
+/// How many workspaces keep their pooled MCP plugin before the oldest is dropped.
+const MAX_WORKSPACE_MCP: usize = 16;
+
+/// Deterministic FIFO pool of per-workspace MCP plugins.
+#[derive(Default)]
+struct WorkspaceMcpPool {
+    by_workspace: HashMap<PathBuf, Arc<thunder_agent_root::plugins::McpPlugin>>,
+    order: VecDeque<PathBuf>,
+}
+
+impl WorkspaceMcpPool {
+    fn get_or_insert(
+        &mut self,
+        key: PathBuf,
+    ) -> (
+        Arc<thunder_agent_root::plugins::McpPlugin>,
+        Option<Arc<thunder_agent_root::plugins::McpPlugin>>,
+    ) {
+        if let Some(existing) = self.by_workspace.get(&key) {
+            return (Arc::clone(existing), None);
+        }
+        let mut evicted = None;
+        if self.by_workspace.len() >= MAX_WORKSPACE_MCP {
+            if let Some(oldest) = self.order.pop_front() {
+                evicted = self.by_workspace.remove(&oldest);
+            }
+        }
+        let plugin = Arc::new(thunder_agent_root::plugins::McpPlugin::new());
+        self.by_workspace.insert(key.clone(), Arc::clone(&plugin));
+        self.order.push_back(key);
+        (plugin, evicted)
+    }
+
+    fn drain_all(&mut self) -> Vec<Arc<thunder_agent_root::plugins::McpPlugin>> {
+        self.order.clear();
+        self.by_workspace.drain().map(|(_, v)| v).collect()
+    }
 }
 
 /// How many sessions keep their approval state before the oldest is dropped.
@@ -301,7 +340,7 @@ impl DaemonService {
             output_tx,
             concurrency_semaphore,
             default_workspace,
-            mcp_plugins: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            mcp_plugins: Arc::new(tokio::sync::Mutex::new(WorkspaceMcpPool::default())),
             client_factory: None,
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_ui,
@@ -355,26 +394,13 @@ impl DaemonService {
         let key = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
-        let mut pool = self.mcp_plugins.lock().await;
-
-        if let Some(existing) = pool.get(&key) {
-            return Arc::clone(existing);
+        let (plugin, evicted) = {
+            let mut pool = self.mcp_plugins.lock().await;
+            pool.get_or_insert(key)
+        };
+        if let Some(evicted) = evicted {
+            evicted.manager().close_all().await;
         }
-
-        // Capacity guard. Eviction only drops the map's handle; any in-flight
-        // run holds its own `Arc` (and its tool bridges hold `Arc<McpClient>`),
-        // so an evicted-workspace run keeps its processes until it finishes.
-        const MAX_WORKSPACE_MCP: usize = 16;
-        if pool.len() >= MAX_WORKSPACE_MCP {
-            if let Some(oldest) = pool.keys().next().cloned() {
-                if let Some(evicted) = pool.remove(&oldest) {
-                    evicted.manager().close_all().await;
-                }
-            }
-        }
-
-        let plugin = Arc::new(thunder_agent_root::plugins::McpPlugin::new());
-        pool.insert(key, Arc::clone(&plugin));
         plugin
     }
 
@@ -909,27 +935,35 @@ impl DaemonService {
             }
 
             DaemonRequest::ReloadIntegrations { id } => {
-                // Drop and close every pooled MCP connection: the workspace
-                // server set may have changed on disk.
-                {
+                // Drain the pooled MCP connections immediately so subsequent runs
+                // build fresh instances, and close old server processes off the
+                // STDIN dispatch loop.
+                let drained = {
                     let mut pool = self.mcp_plugins.lock().await;
-                    for (_, plugin) in pool.drain() {
-                        plugin.manager().close_all().await;
-                    }
-                }
+                    pool.drain_all()
+                };
                 // The session-locked plugin selection is now stale: a session
                 // that cached its set before this reload would keep spawning the
                 // old toolset. Clear it so the next run re-selects.
                 invalidate_all_session_selections();
-                self.send_response(DaemonResponse::Response {
-                    id,
-                    success: true,
-                    data: Some(serde_json::json!({
-                        "reloaded": true
-                    })),
-                    error: None,
-                })
-                .await;
+                let output_tx = self.output_tx.clone();
+                tokio::spawn(async move {
+                    for plugin in drained {
+                        plugin.manager().close_all().await;
+                    }
+                    write_ndjson(
+                        &output_tx,
+                        &DaemonResponse::Response {
+                            id,
+                            success: true,
+                            data: Some(serde_json::json!({
+                                "reloaded": true
+                            })),
+                            error: None,
+                        },
+                    )
+                    .await;
+                });
             }
 
             DaemonRequest::GenerateTitle {
@@ -937,40 +971,41 @@ impl DaemonService {
                 session_id,
                 force,
             } => {
-                // Reload the registry so the latest utilityModel config is honored
-                if let Ok(fresh) = ProviderRegistry::load_default().await {
-                    *self.provider_registry.write().await = fresh;
-                }
-                let registry = self.provider_registry.read().await.clone();
-                match generate_conversation_title(
-                    &self.store,
-                    &registry,
-                    &session_id,
-                    force,
-                    None,
-                    None,
-                )
-                .await
-                {
-                    Ok(title) => {
-                        self.send_response(DaemonResponse::Response {
+                // Spawn off the STDIN read loop so slow utility-model HTTP calls
+                // never block interactive `answer_ui`, `cancel_task`, or `ping`.
+                let store = Arc::clone(&self.store);
+                let provider_registry = Arc::clone(&self.provider_registry);
+                let output_tx = self.output_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(fresh) = ProviderRegistry::load_default().await {
+                        *provider_registry.write().await = fresh;
+                    }
+                    let registry = provider_registry.read().await.clone();
+                    let resp = match generate_conversation_title(
+                        &store,
+                        &registry,
+                        &session_id,
+                        force,
+                        None,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(title) => DaemonResponse::Response {
                             id,
                             success: true,
                             data: Some(serde_json::json!({ "title": title, "source": "auto" })),
                             error: None,
-                        })
-                        .await;
-                    }
-                    Err(e) => {
-                        self.send_response(DaemonResponse::Response {
+                        },
+                        Err(e) => DaemonResponse::Response {
                             id,
                             success: false,
                             data: Some(serde_json::json!({ "error_kind": e.kind })),
                             error: Some(e.to_string()),
-                        })
-                        .await;
-                    }
-                }
+                        },
+                    };
+                    write_ndjson(&output_tx, &resp).await;
+                });
             }
 
             DaemonRequest::SetConversationTitle {

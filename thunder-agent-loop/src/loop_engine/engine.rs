@@ -1586,28 +1586,44 @@ impl ChannelEventSink {
                 .as_millis() as u64,
         };
         self.dispatcher.emit(observed.clone());
-        // A business event is structural, not a micro-delta: it still must not
-        // stall the tool path, so it goes out on a spawned task with the same
-        // deadline — and a miss is counted and warned, never silent.
-        let sender = self.event_sender.clone();
-        let drops = Arc::clone(&self.drops);
-        let agent_id = self.agent_id.clone();
-        tokio::spawn(async move {
-            let delivered =
-                tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(observed))
+        // Try synchronous non-blocking delivery first so custom events stay in
+        // strict causal order before the tool's subsequent ToolExecResult / LoopComplete.
+        // Fall back to a timed async send only when the bounded channel is full.
+        match self.event_sender.try_send(observed) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(observed)) => {
+                let sender = self.event_sender.clone();
+                let drops = Arc::clone(&self.drops);
+                let agent_id = self.agent_id.clone();
+                tokio::spawn(async move {
+                    let delivered = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        sender.send(observed),
+                    )
                     .await
                     .is_ok();
-            if !delivered {
-                drops.record_structural();
+                    if !delivered {
+                        drops.record_structural();
+                        warn!(
+                            agent_id = %agent_id,
+                            event = "custom",
+                            dropped_structural = drops.structural(),
+                            "Business event dropped after the delivery deadline; \
+                             the run record may be incomplete"
+                        );
+                    }
+                });
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.drops.record_structural();
                 warn!(
-                    agent_id = %agent_id,
+                    agent_id = %self.agent_id,
                     event = "custom",
-                    dropped_structural = drops.structural(),
-                    "Business event dropped after the delivery deadline; \
-                     the run record may be incomplete"
+                    dropped_structural = self.drops.structural(),
+                    "Business event dropped because event channel is closed"
                 );
             }
-        });
+        }
     }
 }
 

@@ -738,16 +738,20 @@ impl InterceptorPlugin for ModePlugin {
         &self,
         tool_name: &str,
         args: &serde_json::Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> Result<PreExecutionVerdict, String> {
         let effect = ToolEffect::of(tool_name);
+        let caller = match ctx.caller.as_deref() {
+            Some(id) => Caller::Plugin(id.to_string()),
+            None => Caller::Model,
+        };
         let req = ToolGateRequest {
             tool: tool_name,
-            caller: Caller::Model,
+            caller,
             effect,
             arguments: args,
             scope: Scope::Unknown,
-            tool_call_id: "interceptor_check",
+            tool_call_id: &ctx.tool_call_id,
         };
         match self.decide(&req) {
             GateVerdict::Allow | GateVerdict::AllowByRule { .. } => Ok(PreExecutionVerdict::Allow),
@@ -1049,21 +1053,6 @@ impl ThunderPlugin for ModePlugin {
                 state: Arc::clone(&self.state),
             }),
         ]
-    }
-
-    fn tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
-        vec![
-            Arc::new(WritePlanTool {
-                state: Arc::clone(&self.state),
-            }),
-            Arc::new(ExitPlanModeTool {
-                state: Arc::clone(&self.state),
-            }),
-        ]
-    }
-
-    fn interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
-        vec![Arc::new(self.clone())]
     }
 
     fn system_prompt_contribution(&self) -> Option<String> {

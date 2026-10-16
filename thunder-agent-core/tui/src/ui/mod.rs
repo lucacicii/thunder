@@ -57,10 +57,18 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     // 1. Render Header (Top status line)
     render_header(f, app, main_chunks[0], theme);
 
-    // 2. Render Main Dialogue Stream (Full screen width, no sidebar)
-    {
-        render_chat(f, app, main_chunks[1], theme);
-    }
+    // 2. Render Main Dialogue Stream (with optional session sidebar when toggled)
+    let chat_area = if app.show_sidebar && main_chunks[1].width >= 48 {
+        let h_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(30), Constraint::Min(18)])
+            .split(main_chunks[1]);
+        crate::ui::sidebar::render_sidebar(f, app, h_chunks[0], theme);
+        h_chunks[1]
+    } else {
+        main_chunks[1]
+    };
+    render_chat(f, app, chat_area, theme);
 
     // 3. Render the metrics bar
     render_metrics_bar(f, app, main_chunks[2], theme);

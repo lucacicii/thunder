@@ -1706,6 +1706,9 @@ impl App {
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
+                if !self.show_sidebar && self.focus == FocusPane::Sidebar {
+                    self.focus = FocusPane::Input;
+                }
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.toggle_details();
@@ -3553,7 +3556,7 @@ impl App {
             }
 
             // 11. /export [path] or /save
-            "export" | "dump" => {
+            "export" | "dump" | "save" => {
                 self.conversation.add_user_message(raw_cmd);
                 let target_path = args.first().map(PathBuf::from).unwrap_or_else(|| {
                     PathBuf::from(format!("thunder_session_{}.md", self.conversation.id))
@@ -3689,7 +3692,7 @@ impl App {
                 true
             }
 
-            "timeline" => {
+            "timeline" | "rail" => {
                 self.conversation.add_user_message(raw_cmd);
                 let visible = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
                     Some("on" | "true" | "yes" | "show") => true,
@@ -3732,7 +3735,7 @@ impl App {
                 true
             }
 
-            "health" | "doctor" => {
+            "health" | "doctor" | "status" => {
                 self.conversation.add_user_message(raw_cmd);
                 let model = self.model.selection_id();
                 let spec = self.provider_registry.resolve(&model);
@@ -4322,6 +4325,7 @@ impl App {
         // Prompt-cache warming: enabled only when the model declares both a
         // promptCache lifetime and cost pricing in models.json.
         if let Some(spec) = self.provider_registry.resolve(&model) {
+            config.pruning.max_context_tokens = spec.context_window;
             config.prompt_cache_warm =
                 spec.prompt_cache_warm_settings(self.effective_thinking_level().as_deref());
         }

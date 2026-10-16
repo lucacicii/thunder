@@ -11,7 +11,7 @@ use crate::types::gate::{
 };
 use crate::types::message::ToolCall;
 use crate::types::plugin::{
-    CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker, ToolContent,
+    CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker,
 };
 use crate::types::policy::{Caller, ToolEffect};
 use crate::types::scope::{Scope, ToolScope};
@@ -449,6 +449,31 @@ impl ToolExecutor {
                     return ToolExecutionResult::error(reason, Duration::from_millis(0));
                 }
                 Ok(PreExecutionVerdict::AskUser { prompt }) => {
+                    let asked_at = Instant::now();
+                    let _serialised = tokio::select! {
+                        biased;
+                        _ = ctx.cancellation_token.cancelled() => {
+                            draft.answer = Some(AskAnswer::Timeout);
+                            draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+                            let reason = "the task was cancelled".to_string();
+                            draft.decision = Decision::Deny {
+                                reason: reason.clone(),
+                                by: DenyBy::Gate,
+                            };
+                            return ToolExecutionResult::error(reason, Duration::from_millis(0));
+                        }
+                        guard = self.prompt_lock.lock() => guard,
+                    };
+                    if self.host_ui.lock().is_none() {
+                        draft.answer = Some(AskAnswer::NoUi);
+                        draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
+                        let reason = format!("User denied execution (no UI attached): {}", prompt);
+                        draft.decision = Decision::Deny {
+                            reason: reason.clone(),
+                            by: DenyBy::Gate,
+                        };
+                        return ToolExecutionResult::error(reason, Duration::from_millis(0));
+                    }
                     let timeout_ms = Some(self.approval_timeout.as_millis() as u64);
                     let resp = self
                         .ui()
@@ -464,9 +489,13 @@ impl ToolExecutor {
                             },
                         )
                         .await;
+                    draft.timing.ask_ms = asked_at.elapsed().as_millis() as u64;
                     match resp.text() {
-                        Some(text) if text == ALLOW_ONCE => {}
+                        Some(text) if text == ALLOW_ONCE => {
+                            draft.answer = Some(AskAnswer::AllowOnce);
+                        }
                         _ => {
+                            draft.answer = Some(AskAnswer::Denied);
                             let reason = format!("User denied execution: {}", prompt);
                             draft.decision = Decision::Deny {
                                 reason: reason.clone(),
@@ -506,8 +535,8 @@ impl ToolExecutor {
         }
 
         // If post_execute interceptors modified the content or error status, propagate back
-        if let Some(ToolContent::Text { text }) = mcp_result.content.first() {
-            result.output = text.clone();
+        if !mcp_result.content.is_empty() {
+            result.output = mcp_result.plain_text();
         }
         if let Some(is_err) = mcp_result.is_error {
             result.is_error = is_err;

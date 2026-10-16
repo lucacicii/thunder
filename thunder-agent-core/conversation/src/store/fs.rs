@@ -267,8 +267,14 @@ impl FsConversationStore {
     ) -> Result<(), ConversationError> {
         let mut merged = Self::merge_index_maps(self.read_disk_index().await, map.clone());
         self.prune_missing_dirs(&mut merged).await;
+        self.write_index_map(&merged).await
+    }
 
-        let json = serde_json::to_vec_pretty(&merged)?;
+    async fn write_index_map(
+        &self,
+        map: &HashMap<String, ConversationSummary>,
+    ) -> Result<(), ConversationError> {
+        let json = serde_json::to_vec_pretty(map)?;
         let index_path = self.index_file();
         let tmp_path = self.root.join(format!(
             ".index.json.tmp.{}.{}",
@@ -308,8 +314,15 @@ impl ConversationStore for FsConversationStore {
         // Update in-memory index and persist
         let summary = conversation.to_summary();
         let mut lock = self.index.write().await;
-        lock.insert(conversation.id.clone(), summary);
-        self.persist_index(&lock).await?;
+        lock.insert(conversation.id.clone(), summary.clone());
+        let mut disk = self.read_disk_index().await;
+        if disk.is_empty() && lock.len() > 1 {
+            // Disk index was missing or unreadable; fall back to full pruned merge.
+            self.persist_index(&lock).await?;
+        } else {
+            disk.insert(conversation.id.clone(), summary);
+            self.write_index_map(&disk).await?;
+        }
 
         Ok(())
     }
@@ -339,8 +352,11 @@ impl ConversationStore for FsConversationStore {
         fs::remove_dir_all(&dir).await?;
 
         let mut lock = self.index.write().await;
-        let removed = lock.remove(id).is_some();
-        if removed {
+        lock.remove(id);
+        let mut disk = self.read_disk_index().await;
+        if disk.remove(id).is_some() || !disk.is_empty() {
+            self.write_index_map(&disk).await?;
+        } else {
             self.persist_index(&lock).await?;
         }
 
