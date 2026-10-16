@@ -42,6 +42,7 @@ pub fn clean_generated_title(raw: &str) -> String {
             c == '"' || c == '\'' || c == '《' || c == '》' || c == '【' || c == '】' || c == '`'
         })
         .trim_start_matches("Title:")
+        .trim_start_matches("title:")
         .trim_start_matches("标题:")
         .trim_start_matches("标题：")
         .trim()
@@ -63,6 +64,21 @@ pub fn clamp_title(cleaned: String) -> String {
         cleaned.chars().take(40).collect()
     } else {
         cleaned
+    }
+}
+
+/// Extract a clean fallback title from user prompt if LLM generation returns empty.
+pub fn fallback_title(user_prompt: &str) -> String {
+    let first_line = user_prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(user_prompt);
+    let cleaned = clean_generated_title(first_line);
+    if cleaned.is_empty() {
+        "Untitled".to_string()
+    } else {
+        clamp_title(cleaned)
     }
 }
 
@@ -124,8 +140,14 @@ pub async fn generate_title(
         model: Some(utility_spec.id.clone()),
         temperature: Some(0.3),
         top_p: Some(0.9),
-        // Generous budget: reasoning models may spend tokens thinking before the answer
-        max_tokens: Some(100),
+        // Generous budget: reasoning models may spend hundreds or even >1000 tokens
+        // thinking before emitting the answer. Capping to 100 caused reasoning models
+        // to run out of tokens mid-thought and return empty titles.
+        max_tokens: Some(if utility_spec.reasoning {
+            utility_spec.max_tokens.min(2048).max(1024)
+        } else {
+            512
+        }),
         thinking_level: Some("off".to_string()),
         // One-off utility call: never pay the prompt-cache write premium.
         cache_retention: Some("none".to_string()),
@@ -175,6 +197,10 @@ pub async fn generate_title(
 
     let cleaned = clean_generated_title(&generated_title);
     if cleaned.is_empty() {
+        let fallback = fallback_title(user_prompt);
+        if !fallback.is_empty() && fallback != "Untitled" {
+            return Ok(fallback);
+        }
         return Err(TitleGenError::new(
             "empty_title",
             format!(
@@ -197,8 +223,18 @@ mod tests {
         assert_eq!(clean_generated_title("Title: News summary"), "News summary");
         assert_eq!(clean_generated_title("标题：新闻总结"), "新闻总结");
         assert_eq!(clean_generated_title("`git help`"), "git help");
+        assert_eq!(clean_generated_title("title: Lowercase prefix"), "Lowercase prefix");
     }
 
+    #[test]
+    fn fallback_title_extracts_first_line_and_clamps() {
+        assert_eq!(fallback_title("Fix title generation bug\nMore details"), "Fix title generation bug");
+        assert_eq!(fallback_title("  \n\nTitle: Cleaned line"), "Cleaned line");
+        assert_eq!(fallback_title(""), "Untitled");
+        assert_eq!(fallback_title("   \n  "), "Untitled");
+        let long = "a".repeat(50);
+        assert_eq!(fallback_title(&long).chars().count(), 40);
+    }
     #[test]
     fn clamps_long_titles_by_chars_not_bytes() {
         assert_eq!(clamp_title("短标题".to_string()), "短标题");

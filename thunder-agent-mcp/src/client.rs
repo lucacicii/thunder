@@ -122,30 +122,47 @@ impl McpClient {
         Ok(init_result)
     }
 
-    /// List all tools exposed by the MCP server.
+    /// List all tools exposed by the MCP server, following `nextCursor` pagination.
     pub async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
-        let id = self.next_request_id();
-        let req = JsonRpcRequest::new(id, "tools/list", None);
+        const MAX_PAGES: usize = 32;
+        let mut all_tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::HashSet::new();
 
-        let resp = self.transport.send_request(req).await?;
+        for _ in 0..MAX_PAGES {
+            let id = self.next_request_id();
+            let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+            let req = JsonRpcRequest::new(id, "tools/list", params);
 
-        if let Some(err) = resp.error {
-            return Err(McpError::JsonRpcError {
-                code: err.code,
-                message: err.message,
-                data: err.data,
-            });
+            let resp = self.transport.send_request(req).await?;
+
+            if let Some(err) = resp.error {
+                return Err(McpError::JsonRpcError {
+                    code: err.code,
+                    message: err.message,
+                    data: err.data,
+                });
+            }
+
+            let result_val = resp.result.ok_or_else(|| {
+                McpError::ProtocolError("Missing result in tools/list response".to_string())
+            })?;
+
+            let list_res: ListToolsResult = serde_json::from_value(result_val).map_err(|e| {
+                McpError::ProtocolError(format!("Failed to deserialize tools/list result: {e}"))
+            })?;
+
+            all_tools.extend(list_res.tools);
+
+            match list_res.next_cursor {
+                Some(next) if !next.is_empty() && seen_cursors.insert(next.clone()) => {
+                    cursor = Some(next);
+                }
+                _ => break,
+            }
         }
 
-        let result_val = resp.result.ok_or_else(|| {
-            McpError::ProtocolError("Missing result in tools/list response".to_string())
-        })?;
-
-        let list_res: ListToolsResult = serde_json::from_value(result_val).map_err(|e| {
-            McpError::ProtocolError(format!("Failed to deserialize tools/list result: {e}"))
-        })?;
-
-        Ok(list_res.tools)
+        Ok(all_tools)
     }
 
     /// Invoke a tool on the remote MCP server.

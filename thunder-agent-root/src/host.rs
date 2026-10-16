@@ -291,10 +291,17 @@ impl RootRunHandle {
         if let Some(drained) = self.dispatch_drained.take() {
             let _ = drained.await;
         }
-        let _ = self
+        if let Err(err) = self
             .active_set
             .dispatch_finish(&run_result, &self.ctx)
-            .await;
+            .await
+        {
+            warn!(
+                session_id = %self.ctx.session_id,
+                error = %err,
+                "Plugin on_finish lifecycle hook returned an error"
+            );
+        }
         let metrics = self
             .ctx
             .metrics_plugin()
@@ -350,12 +357,13 @@ impl ThunderRoot {
 
         let selector = PluginSelector::new(Some(config.clone()));
         let active_model = ModelRef::parse(&config.model);
+        let extra_roots = config.extra_workspace_roots.clone();
         Self {
             config,
             registry: PluginRegistry::new(),
             selector,
             workspace_root: None,
-            extra_roots: Vec::new(),
+            extra_roots,
             scratch_root,
             provider_registry: ProviderRegistry::default(),
             active_model,
@@ -449,6 +457,7 @@ impl ThunderRoot {
     /// resolving against the primary workspace; these roots accept absolute
     /// paths for reads, writes, and shell targets.
     pub fn with_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.config.extra_workspace_roots = roots.clone();
         self.extra_roots = roots;
         self
     }
@@ -712,18 +721,42 @@ impl ThunderRoot {
         // 4b. Appended (not replacing) project instructions from config, per the config contract.
         if let Some(rel) = thunder_cfg.system_prompt_file() {
             if let Some(ws) = &self.workspace_root {
-                let path = ws.join(".thunder").join(rel);
-                match tokio::fs::read_to_string(&path).await {
-                    Ok(text) if !text.trim().is_empty() => {
-                        base_prompt.push_str("\n\n");
-                        base_prompt.push_str(text.trim_end());
+                let rel_path = std::path::Path::new(rel);
+                let has_traversal = rel_path.is_absolute()
+                    || rel_path
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir));
+                if has_traversal {
+                    warn!(
+                        system_prompt_file = %rel,
+                        "Rejected system_prompt_file containing absolute path or parent directory traversal"
+                    );
+                } else {
+                    let thunder_dir = ws.join(".thunder");
+                    let path = thunder_dir.join(rel_path);
+                    let canon_ok = match (path.canonicalize(), ws.canonicalize()) {
+                        (Ok(canon_file), Ok(canon_ws)) => canon_file.starts_with(&canon_ws),
+                        _ => true,
+                    };
+                    if !canon_ok {
+                        warn!(
+                            path = %path.display(),
+                            "Rejected system_prompt_file resolving outside the workspace"
+                        );
+                    } else {
+                        match tokio::fs::read_to_string(&path).await {
+                            Ok(text) if !text.trim().is_empty() => {
+                                base_prompt.push_str("\n\n");
+                                base_prompt.push_str(text.trim_end());
+                            }
+                            Ok(_) => {}
+                            Err(err) => warn!(
+                                path = %path.display(),
+                                error = %err,
+                                "Configured system_prompt_file could not be read"
+                            ),
+                        }
                     }
-                    Ok(_) => {}
-                    Err(err) => warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "Configured system_prompt_file could not be read"
-                    ),
                 }
             }
         }
@@ -799,14 +832,13 @@ impl ThunderRoot {
         // gets the shell/file tools, the atomic writes, and the scope that tells
         // the kernel which paths are inside the working area. The generic loop
         // knows none of that.
+        let code_scope = thunder_agent_pack_code::CodeScope::from_agent_config(
+            &agent_cfg,
+            self.workspace_root.as_deref(),
+        );
         let mut agent = AgentLoop::new(agent_cfg)
             .with_id(format!("root_{}", session_id))
-            .with_tool_scope(Arc::new(
-                thunder_agent_pack_code::CodeScope::from_agent_config(
-                    &self.config,
-                    self.workspace_root.as_deref(),
-                ),
-            ));
+            .with_tool_scope(Arc::new(code_scope));
 
         // The judge. Always installed, including in `yolo`: the mode is what
         // decides whether a call asks, and one code path for every mode means
@@ -822,11 +854,15 @@ impl ThunderRoot {
             );
         }
 
-        // Load declarative plugins (built-ins + MCP servers + config filtering)
-        let loaded = crate::loader::PluginLoader::load_plugins(
+        // Load declarative plugins (built-ins + MCP servers + config filtering).
+        // If `McpPlugin` is already active in `active_set`, it manages workspace and
+        // declarative MCP servers with connection pooling, so skip unpooled spawning here.
+        let mcp_plugin_active = active_set.plugin_ids().iter().any(|id| id == "mcp");
+        let loaded = crate::loader::PluginLoader::load_plugins_with_mcp(
             &thunder_cfg,
             self.workspace_root.as_deref(),
             options.register_builtins,
+            !mcp_plugin_active,
         )
         .await;
 

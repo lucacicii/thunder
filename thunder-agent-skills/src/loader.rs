@@ -73,6 +73,14 @@ impl SkillLoader {
                         stack.push(entry_path);
                     }
                 } else if entry_path.is_file() {
+                    let lower_name = name_str.to_lowercase();
+                    if lower_name == "readme.md"
+                        || lower_name == "readme.markdown"
+                        || lower_name.starts_with("readme_")
+                        || lower_name.starts_with("readme.")
+                    {
+                        continue;
+                    }
                     let ext = entry_path
                         .extension()
                         .and_then(|s| s.to_str())

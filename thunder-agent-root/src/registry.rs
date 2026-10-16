@@ -1,6 +1,6 @@
 use crate::error::PluginError;
 use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::plugin::{InterceptorPlugin, ToolPlugin};
@@ -11,13 +11,13 @@ use tracing::info;
 
 #[derive(Clone, Default)]
 pub struct PluginRegistry {
-    plugins: HashMap<String, Arc<dyn ThunderPlugin>>,
+    plugins: BTreeMap<String, Arc<dyn ThunderPlugin>>,
 }
 
 impl PluginRegistry {
     pub fn new() -> Self {
         Self {
-            plugins: HashMap::new(),
+            plugins: BTreeMap::new(),
         }
     }
 
@@ -196,5 +196,62 @@ impl ActivePluginSet {
             plugin.on_finish(result, ctx).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::TriggerSpec;
+
+    struct DummyPlugin {
+        manifest: PluginManifest,
+        contrib: String,
+    }
+
+    impl DummyPlugin {
+        fn new(id: &str, name: &str, contrib: &str) -> Self {
+            Self {
+                manifest: PluginManifest::new(id, name, "test", "0.1.0")
+                    .with_triggers(TriggerSpec::always()),
+                contrib: contrib.to_string(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ThunderPlugin for DummyPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+
+        fn system_prompt_contribution(&self) -> Option<String> {
+            Some(self.contrib.clone())
+        }
+    }
+
+    #[test]
+    fn active_set_and_system_prompt_order_are_deterministic_regardless_of_registration_order() {
+        let mut reg_a = PluginRegistry::new();
+        reg_a
+            .register(DummyPlugin::new("zebra", "Zebra", "Zebra section"))
+            .register(DummyPlugin::new("alpha", "Alpha", "Alpha section"))
+            .register(DummyPlugin::new("middle", "Middle", "Middle section"));
+
+        let mut reg_b = PluginRegistry::new();
+        reg_b
+            .register(DummyPlugin::new("alpha", "Alpha", "Alpha section"))
+            .register(DummyPlugin::new("middle", "Middle", "Middle section"))
+            .register(DummyPlugin::new("zebra", "Zebra", "Zebra section"));
+
+        let set_a = reg_a.create_active_set(&[]);
+        let set_b = reg_b.create_active_set(&[]);
+
+        assert_eq!(set_a.plugin_ids(), vec!["alpha", "middle", "zebra"]);
+        assert_eq!(set_a.plugin_ids(), set_b.plugin_ids());
+        assert_eq!(
+            set_a.build_combined_system_prompt(Some("Base")),
+            set_b.build_combined_system_prompt(Some("Base"))
+        );
     }
 }

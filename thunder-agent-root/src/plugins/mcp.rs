@@ -1,14 +1,15 @@
 #[cfg(feature = "mcp")]
 use crate::error::PluginError;
 use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::thunder_config::ThunderConfig;
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::tool::AgentTool;
 use thunder_agent_loop::AgentRunResult;
 pub use thunder_agent_mcp::prelude::*;
-use tokio::sync::RwLock;
 use tracing::info;
 
 #[cfg(feature = "mcp")]
@@ -17,6 +18,7 @@ pub struct McpPlugin {
     manifest: PluginManifest,
     manager: McpManager,
     discovered_tools: Arc<RwLock<Vec<Arc<dyn AgentTool>>>>,
+    connected_servers: Arc<RwLock<Vec<String>>>,
 }
 
 #[cfg(feature = "mcp")]
@@ -46,6 +48,7 @@ impl McpPlugin {
             manifest,
             manager: McpManager::new(),
             discovered_tools: Arc::new(RwLock::new(Vec::new())),
+            connected_servers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -59,10 +62,12 @@ impl McpPlugin {
             .await
             .map_err(|e| PluginError::InitFailed(e.to_string()))?;
         let tools = manager.discover_all_tools().await;
+        let servers = manager.list_servers().await;
         Ok(Self {
             manifest: Self::new().manifest,
             manager,
             discovered_tools: Arc::new(RwLock::new(tools)),
+            connected_servers: Arc::new(RwLock::new(servers)),
         })
     }
 
@@ -71,19 +76,21 @@ impl McpPlugin {
             .await
             .map_err(|e| PluginError::InitFailed(e.to_string()))?;
         let tools = manager.discover_all_tools().await;
+        let servers = manager.list_servers().await;
         Ok(Self {
             manifest: Self::new().manifest,
             manager,
             discovered_tools: Arc::new(RwLock::new(tools)),
+            connected_servers: Arc::new(RwLock::new(servers)),
         })
     }
 
     pub async fn with_client(self, client: McpClient) -> Self {
         self.manager.register_client(client).await;
         let tools = self.manager.discover_all_tools().await;
-        let mut guard = self.discovered_tools.write().await;
-        *guard = tools;
-        drop(guard);
+        let servers = self.manager.list_servers().await;
+        *self.discovered_tools.write() = tools;
+        *self.connected_servers.write() = servers;
         self
     }
 
@@ -97,9 +104,9 @@ impl McpPlugin {
             .await
             .map_err(|e| PluginError::InitFailed(e.to_string()))?;
         let tools = self.manager.discover_all_tools().await;
-        let mut guard = self.discovered_tools.write().await;
-        *guard = tools;
-        drop(guard);
+        let servers = self.manager.list_servers().await;
+        *self.discovered_tools.write() = tools;
+        *self.connected_servers.write() = servers;
         Ok(self)
     }
 
@@ -108,8 +115,7 @@ impl McpPlugin {
     }
 
     pub async fn discovered_tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        let guard = self.discovered_tools.read().await;
-        guard.clone()
+        self.discovered_tools.read().clone()
     }
 }
 
@@ -128,34 +134,34 @@ impl ThunderPlugin for McpPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        if let Ok(guard) = self.discovered_tools.try_read() {
-            guard.clone()
-        } else {
-            Vec::new()
-        }
+        self.discovered_tools.read().clone()
     }
 
     fn system_prompt_contribution(&self) -> Option<String> {
-        let servers = futures_util::FutureExt::now_or_never(self.manager.list_servers())?;
+        let mut servers = self.connected_servers.read().clone();
+        if servers.is_empty() {
+            servers = futures_util::FutureExt::now_or_never(self.manager.list_servers())
+                .unwrap_or_default();
+        }
         if servers.is_empty() {
             return None;
         }
+        servers.sort();
 
         let mut out = String::from("Connected MCP Tool Servers:\n");
         for server in &servers {
             out.push_str(&format!("- Server: `{}`\n", server));
         }
 
-        if let Ok(guard) = self.discovered_tools.try_read() {
-            if !guard.is_empty() {
-                out.push_str("\nAvailable remote MCP tools:\n");
-                for tool in guard.iter() {
-                    let def = tool.definition();
-                    out.push_str(&format!(
-                        "- `{}`: {}\n",
-                        def.function.name, def.function.description
-                    ));
-                }
+        let guard = self.discovered_tools.read();
+        if !guard.is_empty() {
+            out.push_str("\nAvailable remote MCP tools:\n");
+            for tool in guard.iter() {
+                let def = tool.definition();
+                out.push_str(&format!(
+                    "- `{}`: {}\n",
+                    def.function.name, def.function.description
+                ));
             }
         }
 
@@ -184,13 +190,29 @@ impl ThunderPlugin for McpPlugin {
             }
         }
 
+        // Also merge declarative `plugins.mcpServers` from `.thunder/config.json`
+        // so pooled `McpPlugin` instances manage them without per-turn re-spawning.
+        let thunder_cfg = ThunderConfig::load(ctx.workspace_dir.as_deref()).await;
+        if let Some(servers) = thunder_cfg
+            .plugins()
+            .and_then(|p| p.mcp_servers.as_ref())
+            .cloned()
+        {
+            self.manager
+                .add_config(McpConfig {
+                    mcp_servers: servers,
+                })
+                .await;
+        }
+
         let tools = self.manager.discover_all_tools().await;
+        let servers = self.manager.list_servers().await;
         info!(
             tool_count = tools.len(),
             "McpPlugin updated discovered tools"
         );
-        let mut guard = self.discovered_tools.write().await;
-        *guard = tools;
+        *self.discovered_tools.write() = tools;
+        *self.connected_servers.write() = servers;
 
         Ok(())
     }

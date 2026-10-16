@@ -26,6 +26,17 @@ impl PluginLoader {
         workspace: Option<&Path>,
         register_builtins: bool,
     ) -> LoadedPlugins {
+        Self::load_plugins_with_mcp(config, workspace, register_builtins, true).await
+    }
+
+    /// Load, filter, and bridge plugins, optionally delegating declarative MCP
+    /// server management to an active [`crate::plugins::McpPlugin`] pool.
+    pub async fn load_plugins_with_mcp(
+        config: &ThunderConfig,
+        workspace: Option<&Path>,
+        register_builtins: bool,
+        spawn_mcp_servers: bool,
+    ) -> LoadedPlugins {
         let mut tool_plugins: Vec<Arc<dyn ToolPlugin>> = Vec::new();
         let interceptors: Vec<Arc<dyn InterceptorPlugin>> = Vec::new();
 
@@ -60,27 +71,31 @@ impl PluginLoader {
             }
         }
 
-        // 2. Declarative MCP Servers
+        // 2. Declarative MCP Servers (skipped when a pooled McpPlugin is already active)
         #[cfg(feature = "mcp")]
-        if let Some(plugin_sec) = plugin_cfg {
-            if let Some(ref servers) = plugin_sec.mcp_servers {
-                let mcp_cfg = thunder_agent_mcp::config::McpConfig {
-                    mcp_servers: servers.clone(),
-                };
-                match thunder_agent_mcp::manager::McpManager::from_config(mcp_cfg).await {
-                    Ok(manager) => {
-                        let mcp_plugins = manager.discover_all_tool_plugins().await;
-                        for bridge in mcp_plugins {
-                            let id = bridge.id();
-                            if disabled_set.contains(id) {
-                                info!(plugin_id = %id, "MCP tool bridge disabled via configuration");
-                                continue;
+        if spawn_mcp_servers {
+            if let Some(plugin_sec) = plugin_cfg {
+                if let Some(ref servers) = plugin_sec.mcp_servers {
+                    let mcp_cfg = thunder_agent_mcp::config::McpConfig {
+                        mcp_servers: servers.clone(),
+                    };
+                    match thunder_agent_mcp::manager::McpManager::from_config(mcp_cfg).await {
+                        Ok(manager) => {
+                            let mcp_plugins = manager.discover_all_tool_plugins().await;
+                            for bridge in mcp_plugins {
+                                let id = bridge.id();
+                                if disabled_set.contains(id) {
+                                    info!(plugin_id = %id, "MCP tool bridge disabled via configuration");
+                                    continue;
+                                }
+                                tool_plugins.push(bridge);
                             }
-                            tool_plugins.push(bridge);
                         }
-                    }
-                    Err(e) => {
-                        warn!("Failed to initialize MCP servers from plugin configuration: {e}");
+                        Err(e) => {
+                            warn!(
+                                "Failed to initialize MCP servers from plugin configuration: {e}"
+                            );
+                        }
                     }
                 }
             }

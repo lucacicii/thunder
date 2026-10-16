@@ -181,6 +181,9 @@ impl CodeScope {
                 if has_git_component(&resolved) {
                     return Scope::Critical;
                 }
+                if is_protected_workspace_config(&resolved) {
+                    return Scope::Critical;
+                }
                 if PROTECTED_WRITE_PREFIXES
                     .iter()
                     .any(|prefix| resolved.starts_with(prefix))
@@ -231,6 +234,38 @@ impl ToolScope for CodeScope {
 fn has_git_component(path: &Path) -> bool {
     path.components()
         .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
+}
+
+/// Whether `path` targets a workspace-level configuration or MCP server
+/// declaration file that could alter host execution policy or spawn commands
+/// on subsequent turns if modified by the agent.
+fn is_protected_workspace_config(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if matches!(file_name, ".mcp.json" | "mcp_servers.json" | ".thunder") {
+        return true;
+    }
+    if let Some(parent_name) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        if parent_name == ".thunder"
+            && matches!(
+                file_name,
+                "config.json"
+                    | "config.local.json"
+                    | "mcp.json"
+                    | "models.json"
+                    | "auth.json"
+                    | "credentials.json"
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// A path made absolute and symlink-free as far as it exists.
@@ -505,6 +540,46 @@ mod tests {
             scope.classify("/dev/tty", ToolEffect::Write),
             Scope::OutOfScope
         );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn writing_workspace_config_and_mcp_files_is_off_limits() {
+        let ws = temp("ws_cfg");
+        std::fs::create_dir_all(ws.join(".thunder/plans")).unwrap();
+        let scope = scope_in(&ws);
+
+        for protected in [
+            ".thunder/config.json",
+            ".thunder/config.local.json",
+            ".thunder/mcp.json",
+            ".thunder/models.json",
+            ".thunder/auth.json",
+            ".mcp.json",
+            "mcp_servers.json",
+        ] {
+            assert_eq!(
+                scope.classify(protected, ToolEffect::Write),
+                Scope::Critical,
+                "writing {protected} must be Critical"
+            );
+            assert_eq!(
+                scope.classify(protected, ToolEffect::Read),
+                Scope::InScope,
+                "reading {protected} stays InScope"
+            );
+        }
+
+        // Plan files and project memory under .thunder remain writable in scope.
+        assert_eq!(
+            scope.classify(".thunder/plans/session.md", ToolEffect::Write),
+            Scope::InScope
+        );
+        assert_eq!(
+            scope.classify(".thunder/THUNDER.md", ToolEffect::Write),
+            Scope::InScope
+        );
+
         let _ = std::fs::remove_dir_all(&ws);
     }
 }
