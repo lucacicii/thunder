@@ -321,9 +321,10 @@ Plan 是 `ModePlugin` 的一个档位 + 两个工具，因此**可随插件一�
 | `Yes, fully autonomous` | `Yolo` |
 | `No, keep planning` | **留在 `Plan`** |
 
-- 批准 → `Plan approved. Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:732`）——**显式告诉模型模式变了**。同一次批准还往本次 run 的 event sink 发一条 `mode_changed`（`mode`/`previous`/`source:"plan_approved"`），daemon 把 custom 事件翻成顶层 `mode_changed` 帧推给宿主——这是 daemon 自己看不见的那条变化（`ExitPlanModeTool` 持有的是共享 `Arc<ModeState>`，不是插件）。sink 可选，**没有 sink 也必须批准成功**。
-- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。驳回**不播报**——档位没动。
-- 无答案（关闭/超时）→ `No answer (dismissed or timed out). Still in plan mode.`——**沉默不是同意**。
+- 批准 → `Plan approved by user (choice: "<选项原文>" -> <mode>, prev: <previous>, source: plan_approved). Mode is now <mode>. Calls are judged by it from the next one on.`（`approve`，`mode.rs:732`）——**显式告诉模型模式变了，选项原文 + `prev` + `source` 逐字进 tool result**，即审批决策在 store 里的审计行（计划书全文不塞，一两行为限，否则 tool result 会被 scratchpad 换成 handle）。同一次批准还往本次 run 的 event sink 发一条 `mode_changed`（`mode`/`previous`/`source:"plan_approved"`），daemon 把 custom 事件翻成顶层 `mode_changed` 帧推给宿主——这是 daemon 自己看不见的那条变化（`ExitPlanModeTool` 持有的是共享 `Arc<ModeState>`，不是插件）。sink 可选，**没有 sink 也必须批准成功**。`mode_changed` 的 emit_custom payload 不动（daemon 帧契约，别碰线形）。
+- 驳回 → 再补一次 `UiRequest::Input` 追问改什么，把输入作为 tool result 返回模型（`The user's feedback: …`），前面带 `Decision: keep_planning (choice: "No, keep planning", source: plan_approved).` 前缀；空反馈同理（`Plan not approved. Still in plan mode; …` 前同样带前缀）；驳回**不算错误**（`is_error: false`），否则模型会当失败重试。驳回**不播报**——档位没动。
+- 无答案（关闭/超时）→ `Decision: dismissed (no answer, source: plan_approved). No answer (dismissed or timed out). Still in plan mode.`——**沉默不是同意**。
+- 无法识别的答案 → `Decision: unrecognised (choice: "<原样>", source: plan_approved). Unrecognised answer '<原样>'. Still in plan mode.`——原样回显保留，什么都不翻。
 
 模式翻转靠共享 `ModeState` 里的 `set_mode` 直接生效：内核每次调用都重新问 gate，所以"下一次调用立刻生效"（`mode_matrix_test.rs::flipping_the_mode_applies_to_the_next_call`）。**会改用户会话档位的调用点走 `set_mode_announcing`**（它只在真的变了时返回旧档位，供 daemon 播报）；计划批准是唯一走 `set_mode` 的例外，因为它没有通往 daemon 的通道，只能靠 event sink 申报。
 
