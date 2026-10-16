@@ -833,13 +833,17 @@ impl AgentTool for ExitPlanModeTool {
         // staying in plan mode, and an `is_error` result would read as "retry
         // the call" — the one move that must not follow.
         let Some(choice) = answer.text() else {
-            return Ok("No answer (dismissed or timed out). Still in plan mode.".to_string());
+            return Ok("Decision: dismissed (no answer, source: plan_approved). \
+                        No answer (dismissed or timed out). Still in plan mode."
+                .to_string());
         };
 
         match choice {
-            APPROVE_AND_AUTO_ACCEPT => self.approve(Mode::AcceptEdits, ctx),
-            APPROVE_BUT_ASK => self.approve(Mode::Ask, ctx),
-            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo, ctx),
+            APPROVE_AND_AUTO_ACCEPT => {
+                self.approve(Mode::AcceptEdits, APPROVE_AND_AUTO_ACCEPT, ctx)
+            }
+            APPROVE_BUT_ASK => self.approve(Mode::Ask, APPROVE_BUT_ASK, ctx),
+            APPROVE_FULLY_AUTONOMOUS => self.approve(Mode::Yolo, APPROVE_FULLY_AUTONOMOUS, ctx),
             KEEP_PLANNING => {
                 let feedback = ui
                     .request(
@@ -858,20 +862,23 @@ impl AgentTool for ExitPlanModeTool {
                     .unwrap_or_default();
                 if feedback.is_empty() {
                     Ok(format!(
-                        "Plan not approved. Still in plan mode; the user wants changes but said \
+                        "Decision: keep_planning (choice: \"{KEEP_PLANNING}\", source: plan_approved). \
+                         Plan not approved. Still in plan mode; the user wants changes but said \
                          nothing — ask what to change, revise with `{}`, and resubmit.",
                         WRITE_PLAN_TOOL
                     ))
                 } else {
                     Ok(format!(
-                        "Plan not approved. Still in plan mode. The user's feedback: {feedback}"
+                        "Decision: keep_planning (choice: \"{KEEP_PLANNING}\", source: plan_approved). \
+                         Plan not approved. Still in plan mode. The user's feedback: {feedback}"
                     ))
                 }
             }
             // An answer outside the offered set changes nothing: a surprising
             // value must never flip a mode.
             other => Ok(format!(
-                "Unrecognised answer '{other}'. Still in plan mode."
+                "Decision: unrecognised (choice: \"{other}\", source: plan_approved). \
+                 Unrecognised answer '{other}'. Still in plan mode."
             )),
         }
     }
@@ -886,7 +893,16 @@ impl ExitPlanModeTool {
     /// which is the only channel a tool has. The sink is optional (a direct
     /// `execute` in a test has none) and the announcement is a pure side
     /// channel: an approval must still succeed without it.
-    fn approve(&self, mode: Mode, ctx: &ToolExecutionContext) -> Result<String, String> {
+    ///
+    /// `choice` is the exact option the user picked (one of the `APPROVE_*`
+    /// constants); it goes into the tool result so the approval decision lands
+    /// in the store as structured text alongside `mode`/`previous`/`source`.
+    fn approve(
+        &self,
+        mode: Mode,
+        choice: &str,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
         let previous = self.state.mode();
         self.state.set_mode(mode);
         if let Some(sink) = ctx.event_sink.as_ref() {
@@ -900,7 +916,11 @@ impl ExitPlanModeTool {
             );
         }
         Ok(format!(
-            "Plan approved. Mode is now {}. Calls are judged by it from the next one on.",
+            "Plan approved by user (choice: \"{choice}\" -> {}, prev: {}, source: {}). \
+             Mode is now {}. Calls are judged by it from the next one on.",
+            mode.as_str(),
+            previous.as_str(),
+            MODE_CHANGE_SOURCE_PLAN_APPROVED,
             mode.as_str()
         ))
     }
