@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use thunder_agent_mcp::prelude::*;
 use std::sync::Arc;
 
-let server = McpServer::new("thunder-service", "0.5.0")
+let server = McpServer::new("thunder-service", "0.6.0")
     .with_tool(my_tool_plugin);
 
 // 通过 Stdio 启动服务（对接 Claude Desktop 或 Cursor）

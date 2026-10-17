@@ -144,7 +144,7 @@ pub async fn generate_title(
         // thinking before emitting the answer. Capping to 100 caused reasoning models
         // to run out of tokens mid-thought and return empty titles.
         max_tokens: Some(if utility_spec.reasoning {
-            utility_spec.max_tokens.min(2048).max(1024)
+            utility_spec.max_tokens.clamp(1024, 2048)
         } else {
             512
         }),
@@ -223,12 +223,18 @@ mod tests {
         assert_eq!(clean_generated_title("Title: News summary"), "News summary");
         assert_eq!(clean_generated_title("标题：新闻总结"), "新闻总结");
         assert_eq!(clean_generated_title("`git help`"), "git help");
-        assert_eq!(clean_generated_title("title: Lowercase prefix"), "Lowercase prefix");
+        assert_eq!(
+            clean_generated_title("title: Lowercase prefix"),
+            "Lowercase prefix"
+        );
     }
 
     #[test]
     fn fallback_title_extracts_first_line_and_clamps() {
-        assert_eq!(fallback_title("Fix title generation bug\nMore details"), "Fix title generation bug");
+        assert_eq!(
+            fallback_title("Fix title generation bug\nMore details"),
+            "Fix title generation bug"
+        );
         assert_eq!(fallback_title("  \n\nTitle: Cleaned line"), "Cleaned line");
         assert_eq!(fallback_title(""), "Untitled");
         assert_eq!(fallback_title("   \n  "), "Untitled");
