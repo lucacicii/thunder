@@ -157,6 +157,9 @@ impl WorkspaceMcpPool {
 /// How many sessions keep their approval state before the oldest is dropped.
 const MAX_SESSION_POLICIES: usize = 256;
 
+/// Distinguishes auto-named sessions created in the same millisecond.
+static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The daemon's per-session approval state, evicted oldest-first.
 ///
 /// `HashMap`'s iteration order is arbitrary, and — worse — sticky: `keys().next()`
@@ -1215,12 +1218,17 @@ impl DaemonService {
             .insert(task_id.clone(), Arc::clone(&pause_gate));
 
         let effective_session_id = session_id.unwrap_or_else(|| {
+            // Same shape as the root's fallback: a bare millisecond stamp
+            // collides for two unnamed tasks submitted in the same tick, and a
+            // collision silently appends one task's turns to the other's
+            // conversation.
+            let seq = SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             format!(
-                "sess_{}",
+                "sess_{}_{seq}",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
             )
         });
 
@@ -1914,10 +1922,23 @@ impl DaemonService {
                             )
                             .await;
 
-                            if res.run_result.finish_reason
-                                == thunder_agent_loop::types::event::FinishReason::Error
-                            {
-                                let err_msg = "Thunder agent task ended with FinishReason::Error (see observed error events for details)".to_string();
+                            // `Cancelled` used to arrive as `TaskCompleted`,
+                            // which a client has no way to tell from a run that
+                            // actually finished. A cancelled run did not complete
+                            // the task; it ended early, and the client needs to
+                            // know that to decide whether to retry.
+                            if matches!(
+                                res.run_result.finish_reason,
+                                thunder_agent_loop::types::event::FinishReason::Error
+                                    | thunder_agent_loop::types::event::FinishReason::Cancelled
+                            ) {
+                                let err_msg = if res.run_result.finish_reason
+                                    == thunder_agent_loop::types::event::FinishReason::Cancelled
+                                {
+                                    "Task was cancelled before it finished".to_string()
+                                } else {
+                                    "Thunder agent task ended with FinishReason::Error (see observed error events for details)".to_string()
+                                };
                                 error!(task_id = %task_id, finish_reason = %finish_reason, "Task finished with error");
                                 let msg = DaemonResponse::TaskFailed {
                                     task_id: task_id.clone(),

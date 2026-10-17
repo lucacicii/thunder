@@ -160,6 +160,7 @@ impl TuiRunner {
                 app.handle_agent_event(observed);
             }
             AppEvent::AgentFinished {
+                run_id,
                 agent_id,
                 success,
                 final_text,
@@ -169,6 +170,7 @@ impl TuiRunner {
                 finish_reason,
             } => {
                 app.handle_agent_finished(
+                    run_id,
                     agent_id,
                     success,
                     final_text,
@@ -215,9 +217,12 @@ impl TuiRunner {
                 // `load_conversation` invalidates the transcript itself; this
                 // only covers the caret and status line that move with it.
                 app.mark_dirty();
-                app.load_conversation(&id).await;
-                app.focus = crate::app::FocusPane::Input;
-                app.set_status_message(format!("Loaded session: {}", id));
+                // A refusal (or a failed load) sets its own status; overwriting
+                // it here would tell the user the switch happened.
+                if app.load_conversation(&id).await {
+                    app.focus = crate::app::FocusPane::Input;
+                    app.set_status_message(format!("Loaded session: {}", id));
+                }
             }
             AppEvent::SessionDeleted(id) => {
                 app.mark_dirty();

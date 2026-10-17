@@ -319,6 +319,8 @@ impl RootRunHandle {
 
 /// Source of per-run route ids, so two runs of one session never collide.
 static RUN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Distinguishes auto-named sessions created in the same millisecond.
+static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub struct ThunderRoot {
     config: AgentConfig,
@@ -544,10 +546,19 @@ impl ThunderRoot {
         // this run is bound to.
         let thunder_cfg = ThunderConfig::load(self.workspace_root.as_deref()).await;
 
+        // A run that names no session gets one of its own. The previous
+        // fallback was a constant (`sess_1`), which made every unnamed run
+        // share one conversation store entry, one mode/rule set and one
+        // status/metrics slot — two such runs in the same process silently
+        // overwrote each other's history.
         let session_id = options.session_id.unwrap_or_else(|| {
+            let seq = SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             format!(
-                "sess_{}",
-                thunder_agent_loop::types::event::TurnStats::default().turn + 1
+                "sess_{}_{seq}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
             )
         });
 
@@ -956,7 +967,15 @@ impl ThunderRoot {
         input: impl Into<ContextInput>,
         options: RootRunOptions,
     ) -> Result<RootRunResult, PluginError> {
-        let handle = self.execute(input, options).await?;
+        let mut handle = self.execute(input, options).await?;
+        // Taking the stream is what installs the proxy that dispatches
+        // `on_event` to plugins and forwards status/metrics. Skipping it — as
+        // this convenience path used to — meant `run()` produced a correct
+        // result but every plugin saw a silent run, and `join()` had nothing
+        // to wait for.
+        if let Some(mut events) = handle.take_events() {
+            tokio::spawn(async move { while events.recv().await.is_some() {} });
+        }
         handle
             .join()
             .await

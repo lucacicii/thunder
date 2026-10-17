@@ -51,7 +51,16 @@ async fn finishing_a_run_clears_the_pause_gate() {
     app.pause_gate = Some(thunder_agent_loop::prelude::PauseGate::new_shared());
     app.trace_meta = None;
 
-    app.handle_agent_finished("agent".to_string(), true, None, None, None, None, None);
+    app.handle_agent_finished(
+        None,
+        "agent".to_string(),
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(app.pause_gate.is_none(), "gate is cleared on finish");
 }
 
@@ -461,7 +470,11 @@ async fn finished_runs_persist_a_trace_and_stats_merge_additively() {
         avg_tokens_per_second: None,
     };
     let turns_before = app.conversation.stats.turn_count;
+    // A real run's result always carries the run it belongs to; only the
+    // host's synthetic slash-command output arrives without one.
+    let run_id = app.active_run_id.clone();
     app.handle_agent_finished(
+        run_id,
         "a".to_string(),
         true,
         Some("done".to_string()),
