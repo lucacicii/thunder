@@ -1,7 +1,12 @@
-//! The `web_search` tool: query the free engines and return sources.
+//! The `web_search` tool: find pages and return sources.
 //!
-//! Two backends, tried in that order, neither of them credentialed:
+//! Three backends, chained according to `web.search.provider`:
 //!
+//! - **DeepSeek's tools API** (`/v1/tools/search`) when the user opted in and a
+//!   key resolves. It is DeepSeek's own index: every hit carries a long
+//!   model-facing summary, a date, and an authority score, and the query
+//!   accepts `site:` / `lang:` / `after:` operators. Billed per request, so it
+//!   never runs unless the configuration names it or `auto`.
 //! - DuckDuckGo's no-JS HTML endpoint (`html.duckduckgo.com/html/`), as a POST.
 //!   A GET is challenged outright, and the POST is what the endpoint wants. The
 //!   request carries the navigation headers a browser sends; measured on this
@@ -14,15 +19,17 @@
 //!   text blocks, so it needs no SDK, only a `data:` line reader. Its free tier
 //!   rate-limits by IP too, and says so in `_meta` rather than with a status.
 //!
-//! Both are third-party services, so both can be rate-limited or withdrawn
-//! without notice, and both see the query. Neither is a search *index* this
-//! crate controls: when both fail the tool reports why and the model decides
-//! what to do next. The engines that would need a stealth browser (Google,
-//! Ecosia, Mojeek) are deliberately absent — thunder ships no browser.
+//! The free engines are third-party services, so both can be rate-limited or
+//! withdrawn without notice, and both see the query. Neither is a search
+//! *index* this crate controls: when every backend fails the tool reports why
+//! and the model decides what to do next. The engines that would need a stealth
+//! browser (Google, Ecosia, Mojeek) are deliberately absent — thunder ships no
+//! browser.
 //!
 //! `web_fetch` remains the way to read a page; this tool only finds them.
 
 use super::convert::truncate_chars;
+use crate::thunder_config::WebSearchBackend;
 use async_trait::async_trait;
 use html5ever::tendril::TendrilSink;
 use html5ever::{parse_document, ParseOpts};
@@ -45,6 +52,9 @@ pub const DEFAULT_RESULTS: usize = 10;
 pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Longest snippet kept per result, in characters.
 pub const MAX_SNIPPET_CHARS: usize = 240;
+/// Longest DeepSeek summary kept per result, in characters. The service writes
+/// 600–800; the cap only guards a runaway reply.
+pub const MAX_SUMMARY_CHARS: usize = 1000;
 
 const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const EXA_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
@@ -54,7 +64,7 @@ const EXA_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 /// endpoint filters out, so the search backends send a browser UA instead.
 const SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
-const DESCRIPTION: &str = "Search the web and return ranked sources with titles, URLs, and snippets.\n\n- Use this when you need to find pages, then read the promising ones with `web_fetch`.\n- Searches run through free engines (DuckDuckGo first, Exa as a fallback); no API key is required and none is used.\n- Results are links and snippets, not answers: fetch a result to read it.\n- `query` supports plain keywords and quoted phrases. Search operators are passed through, but the engines may ignore them.\n- If every engine fails, the tool reports the per-engine reason instead of returning results.";
+const DESCRIPTION: &str = "Search the web and return ranked sources with titles, URLs, dates, and summaries.\n\n- Use this when you need to find pages, then read the promising ones with `web_fetch`.\n- The backend is chosen by configuration: DeepSeek's own index (when the user enabled it) or the keyless engines (DuckDuckGo first, Exa as a fallback). You do not choose it and do not need to know which one answered.\n- Results are links and summaries, not full answers: fetch a result to read it. When DeepSeek's index answers, each result carries a long model-facing summary; otherwise it carries a short snippet.\n- `query` supports plain keywords and quoted phrases. The DeepSeek index additionally understands search operators, passed through verbatim: `site:github.com`, `-site:example.com`, `-word`, `-\"exact phrase\"`, `\"exact phrase\"`, `lang:zh,en`, `after:2025-01-01`, `before:2026-06-01`. The keyless engines may ignore them.\n- `recency` restricts results to a recent window; it is applied as a date bound where the backend supports one.\n- If every backend fails, the tool reports the per-backend reason instead of returning results.";
 
 const QUERY_DESCRIPTION: &str =
     "The search query. Keywords or a quoted phrase; keep it short and specific.";
@@ -67,13 +77,37 @@ const RECENCY_DESCRIPTION: &str =
 pub struct SearchResult {
     pub title: String,
     pub url: String,
+    /// The short blurb the free engines return (100–200 chars).
     pub snippet: String,
+    /// DeepSeek's longer, model-facing summary (600–800 chars). `None` for the
+    /// free engines, which have nothing comparable.
+    pub summary: Option<String>,
+    /// Publication date as the backend reported it (RFC 3339 for DeepSeek).
+    pub date: Option<String>,
+}
+
+impl SearchResult {
+    /// A hit from a backend that only reports a short blurb.
+    pub fn new(
+        title: impl Into<String>,
+        url: impl Into<String>,
+        snippet: impl Into<String>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            url: url.into(),
+            snippet: snippet.into(),
+            summary: None,
+            date: None,
+        }
+    }
 }
 
 /// Which backend produced a result set. Reported in the output so a degraded
 /// chain is visible to the model instead of silently looking normal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchProvider {
+    DeepSeek,
     DuckDuckGo,
     Exa,
 }
@@ -81,6 +115,7 @@ pub enum SearchProvider {
 impl SearchProvider {
     fn label(self) -> &'static str {
         match self {
+            Self::DeepSeek => "DeepSeek",
             Self::DuckDuckGo => "DuckDuckGo",
             Self::Exa => "Exa",
         }
@@ -241,11 +276,7 @@ pub(crate) fn parse_ddg(body: &str) -> Vec<SearchResult> {
                 .get(index)
                 .map(|(_, text)| text.clone())
                 .unwrap_or_default();
-            Some(SearchResult {
-                title,
-                url,
-                snippet,
-            })
+            Some(SearchResult::new(title, url, snippet))
         })
         .collect()
 }
@@ -278,11 +309,7 @@ pub(crate) fn parse_exa(text: &str) -> Vec<SearchResult> {
                 .split_once("Highlights:")
                 .map(|(_, rest)| rest.split_whitespace().collect::<Vec<_>>().join(" "))
                 .unwrap_or_default();
-            Some(SearchResult {
-                title,
-                url,
-                snippet,
-            })
+            Some(SearchResult::new(title, url, snippet))
         })
         .collect()
 }
@@ -308,20 +335,33 @@ pub(crate) fn format_results(
         provider.label()
     );
     for (index, result) in results.iter().enumerate() {
-        let (snippet, total) = truncate_chars(&result.snippet, MAX_SNIPPET_CHARS);
-        let snippet = if snippet.is_empty() {
-            String::new()
-        } else if snippet.chars().count() < total {
-            format!("\n{snippet}…")
-        } else {
-            format!("\n{snippet}")
+        // DeepSeek writes its summary for a model to read, so it replaces the
+        // 100–200 character blurb the free engines return. The blurb is the
+        // fallback: a hit without a summary must not lose its description.
+        let (body, cap) = match result.summary.as_deref() {
+            Some(summary) if !summary.trim().is_empty() => (summary, MAX_SUMMARY_CHARS),
+            _ => (result.snippet.as_str(), MAX_SNIPPET_CHARS),
         };
+        let (body, total) = truncate_chars(body, cap);
+        let body = if body.is_empty() {
+            String::new()
+        } else if body.chars().count() < total {
+            format!("\n{body}…")
+        } else {
+            format!("\n{body}")
+        };
+        let date = result
+            .date
+            .as_deref()
+            .map(|d| format!(" ({})", d.split('T').next().unwrap_or(d)))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "\n\n[{}] {}\n{}{}",
+            "\n\n[{}] {}{}\n{}{}",
             index + 1,
             result.title,
+            date,
             result.url,
-            snippet
+            body
         ));
     }
     out
@@ -333,7 +373,8 @@ pub(crate) fn resolve_limit(value: Option<u64>) -> usize {
     requested.clamp(1, MAX_RESULTS as u64) as usize
 }
 
-/// `web_search`, backed by DuckDuckGo's HTML endpoint with Exa as a fallback.
+/// `web_search`, backed by DeepSeek's index when configured, with the free
+/// engines (DuckDuckGo, then Exa) as the keyless path.
 pub struct WebSearchTool {
     /// One client, so the connection pool is reused across calls. The browser
     /// navigation headers are attached per request — they belong to the
@@ -342,6 +383,15 @@ pub struct WebSearchTool {
     /// Where the backends live. Production uses the constants; tests point
     /// these at a local server so both branches run without the live engines.
     endpoints: Endpoints,
+    /// DeepSeek's tools API. `None` when no credentials resolve; the free
+    /// engines then carry every search.
+    deepseek: Option<super::deepseek::DeepSeekClient>,
+    /// Which chain `execute` walks. `Free` is the default: a key that happens
+    /// to exist in the environment must not start billing on its own.
+    backend: WebSearchBackend,
+    /// The user's turn for this run, sent as DeepSeek's `ori_question`. Only
+    /// the DeepSeek backend uses it; the free engines have no equivalent.
+    ori_question: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,11 +419,33 @@ impl WebSearchTool {
         Self {
             client,
             endpoints: Endpoints::default(),
+            deepseek: None,
+            backend: WebSearchBackend::Free,
+            ori_question: None,
         }
     }
 
-    /// Point both backends at `base` (tests). Keeps the fallback chain and the
-    /// parsers on the real code path while removing the network dependency.
+    /// Use DeepSeek's index as well. Without a client the tool behaves exactly
+    /// as before, so callers can pass `None` unconditionally.
+    pub fn with_deepseek(mut self, deepseek: Option<super::deepseek::DeepSeekClient>) -> Self {
+        self.deepseek = deepseek;
+        self
+    }
+
+    /// Select the backend chain (`free` by default).
+    pub fn with_backend(mut self, backend: WebSearchBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Attach the user's turn, forwarded to DeepSeek as `ori_question`.
+    pub fn with_ori_question(mut self, ori_question: Option<String>) -> Self {
+        self.ori_question = ori_question;
+        self
+    }
+
+    /// Point both free backends at `base` (tests). Keeps the fallback chain and
+    /// the parsers on the real code path while removing the network dependency.
     #[cfg(test)]
     fn with_base_url(mut self, base: &str) -> Self {
         self.endpoints = Endpoints {
@@ -560,6 +632,51 @@ impl AgentTool for WebSearchTool {
 
         let mut failures: Vec<String> = Vec::new();
 
+        // `free` skips DeepSeek entirely — an API key in the environment must
+        // not start billing because a user happened to export one.
+        if matches!(
+            self.backend,
+            WebSearchBackend::Auto | WebSearchBackend::DeepSeek
+        ) {
+            match &self.deepseek {
+                Some(client) => {
+                    let after = recency.as_deref().and_then(|r| {
+                        super::deepseek::recency_operator(r, super::deepseek::now_unix_secs())
+                    });
+                    // The user's sentence helps the index infer intent, but
+                    // repeating the query back adds nothing and costs payload:
+                    // a search issued with the user's own words as the query
+                    // already carries that intent.
+                    let ori = self
+                        .ori_question
+                        .as_deref()
+                        .filter(|q| !q.trim().eq_ignore_ascii_case(query.trim()));
+                    match client
+                        .search(&query, limit, after.as_deref(), ori, &cancel)
+                        .await
+                    {
+                        Ok(results) if !results.is_empty() => {
+                            return Ok(format_results(SearchProvider::DeepSeek, &query, &results));
+                        }
+                        Ok(_) => failures.push("DeepSeek: no results".to_string()),
+                        Err(e) => failures.push(format!("DeepSeek: {e}")),
+                    }
+                }
+                // An explicit `deepseek` that cannot authenticate is an error:
+                // silently answering from another engine would hide the
+                // misconfiguration and make the billed/unbilled distinction
+                // invisible.
+                None if matches!(self.backend, WebSearchBackend::DeepSeek) => {
+                    return Err(
+                        "Error: web.search.provider is \"deepseek\" but no DeepSeek API key was found. \
+                         Set DEEPSEEK_API_KEY, add a `deepseek` entry to auth.json, or configure web.deepseek.apiKey."
+                            .to_string(),
+                    );
+                }
+                None => {}
+            }
+        }
+
         match self
             .duckduckgo(&query, limit, recency.as_deref(), &cancel)
             .await
@@ -716,6 +833,176 @@ data: {"result":{"_meta":{"ai.exa/rateLimited":true},"content":[{"type":"text","
             "the throttle must be named, not reported as no results: {err}"
         );
     }
+
+    /// A DeepSeek client pointed at the mock origin. The mock answers plain
+    /// JSON, which is exactly what the real endpoint sends.
+    fn deepseek_at(base: &str) -> crate::plugins::web::deepseek::DeepSeekClient {
+        use crate::plugins::web::deepseek::{DeepSeekClient, DeepSeekConfig};
+        DeepSeekClient::new(DeepSeekConfig {
+            base_url: base.to_string(),
+            api_key: "sk-test".to_string(),
+            headers: Default::default(),
+            timeout: Some(std::time::Duration::from_secs(5)),
+            retries: 0,
+        })
+    }
+
+    fn deepseek_reply() -> String {
+        json!({
+            "results": [{
+                "rerank_score": 2.4,
+                "title": "Rust Programming Language",
+                "url": "https://rust-lang.org/",
+                "snippet": "short",
+                "summary": "Rust is a language empowering everyone to build reliable and efficient software.",
+                "content": "",
+                "site_name": "rust-lang.org",
+                "site_icon": null,
+                "date": "2026-06-01T00:00:00+00:00",
+                "authority": 4
+            }]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn auto_prefers_deepseek_when_it_answers() {
+        let (base, server) = serve(vec![(200, deepseek_reply())]).await;
+        let tool = WebSearchTool::new()
+            .with_base_url(&base)
+            .with_deepseek(Some(deepseek_at(&base)))
+            .with_backend(WebSearchBackend::Auto);
+        let out = tool
+            .execute(json!({"query": "rust", "limit": 5}), &ctx())
+            .await
+            .expect("DeepSeek answers");
+        assert_eq!(server.await.unwrap(), 1, "the free engines must not run");
+        assert!(out.contains("via DeepSeek"), "{out}");
+        assert!(out.contains("empowering everyone"), "{out}");
+        assert!(out.contains("(2026-06-01)"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn the_users_turn_is_sent_as_ori_question() {
+        // Captures the request so the payload itself can be asserted: the
+        // server-side hint is invisible in the tool's output.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let reply = deepseek_reply();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0u8; 16384];
+            let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buffer)
+                .await
+                .unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await;
+            request
+        });
+
+        let tool = WebSearchTool::new()
+            .with_base_url(&base)
+            .with_deepseek(Some(deepseek_at(&base)))
+            .with_backend(WebSearchBackend::Auto)
+            .with_ori_question(Some("tokio 的调度器是怎么工作的？".to_string()));
+        tool.execute(json!({"query": "tokio scheduler"}), &ctx())
+            .await
+            .expect("DeepSeek answers");
+
+        let request = server.await.unwrap();
+        assert!(
+            request.contains("\"ori_question\":\"tokio 的调度器是怎么工作的？\""),
+            "the user turn should be forwarded: {request}"
+        );
+        assert!(
+            request.contains("\"query\":\"tokio scheduler\""),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_query_that_is_the_users_turn_does_not_repeat_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let reply = deepseek_reply();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0u8; 16384];
+            let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buffer)
+                .await
+                .unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await;
+            request
+        });
+
+        let tool = WebSearchTool::new()
+            .with_base_url(&base)
+            .with_deepseek(Some(deepseek_at(&base)))
+            .with_backend(WebSearchBackend::Auto)
+            .with_ori_question(Some("tokio scheduler".to_string()));
+        tool.execute(json!({"query": "tokio scheduler"}), &ctx())
+            .await
+            .expect("DeepSeek answers");
+
+        let request = server.await.unwrap();
+        assert!(
+            !request.contains("ori_question"),
+            "repeating the query as the hint costs payload and adds nothing: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_falls_back_to_the_free_engines_when_deepseek_is_empty() {
+        let (base, server) = serve(vec![
+            (200, r#"{"results":[]}"#.to_string()),
+            (200, DDG_FIXTURE.to_string()),
+        ])
+        .await;
+        let tool = WebSearchTool::new()
+            .with_base_url(&base)
+            .with_deepseek(Some(deepseek_at(&base)))
+            .with_backend(WebSearchBackend::Auto);
+        let out = tool
+            .execute(json!({"query": "rust"}), &ctx())
+            .await
+            .expect("DuckDuckGo answers");
+        assert_eq!(server.await.unwrap(), 2);
+        assert!(out.contains("via DuckDuckGo"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn free_never_calls_deepseek_even_with_a_client() {
+        let (base, server) = serve(vec![(200, DDG_FIXTURE.to_string())]).await;
+        let tool = WebSearchTool::new()
+            .with_base_url(&base)
+            .with_deepseek(Some(deepseek_at(&base)))
+            .with_backend(WebSearchBackend::Free);
+        let out = tool
+            .execute(json!({"query": "rust"}), &ctx())
+            .await
+            .expect("DuckDuckGo answers");
+        assert_eq!(server.await.unwrap(), 1, "only DuckDuckGo should be asked");
+        assert!(out.contains("via DuckDuckGo"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_deepseek_backend_without_a_key_is_an_error() {
+        let tool = WebSearchTool::new().with_backend(WebSearchBackend::DeepSeek);
+        let err = tool
+            .execute(json!({"query": "rust"}), &ctx())
+            .await
+            .expect_err("no key configured");
+        assert!(err.contains("no DeepSeek API key"), "{err}");
+    }
     #[test]
     fn recency_tokens_are_whitelisted() {
         assert_eq!(recency_token("day"), Some("d"));
@@ -779,16 +1066,34 @@ data: {"result":{"_meta":{"ai.exa/rateLimited":true},"content":[{"type":"text","
 
     #[test]
     fn formatting_names_the_backend_and_truncates_snippets() {
-        let results = vec![SearchResult {
-            title: "T".to_string(),
-            url: "https://x.test/a".to_string(),
-            snippet: "a".repeat(MAX_SNIPPET_CHARS + 50),
-        }];
+        let results = vec![SearchResult::new(
+            "T",
+            "https://x.test/a",
+            "a".repeat(MAX_SNIPPET_CHARS + 50),
+        )];
         let out = format_results(SearchProvider::Exa, "q", &results);
         assert!(out.contains("via Exa"), "{out}");
         assert!(out.contains("[1] T"), "{out}");
         assert!(out.contains("https://x.test/a"), "{out}");
         assert!(out.ends_with('…'), "the snippet should be marked as cut");
+    }
+
+    #[test]
+    fn a_deepseek_summary_replaces_the_short_snippet() {
+        let mut result = SearchResult::new("T", "https://x.test/a", "short blurb");
+        result.summary = Some("long model-facing summary ".repeat(10));
+        result.date = Some("2026-06-01T00:00:00+00:00".to_string());
+        let out = format_results(SearchProvider::DeepSeek, "q", &[result]);
+        assert!(out.contains("via DeepSeek"), "{out}");
+        assert!(
+            out.contains("(2026-06-01)"),
+            "the date should be shown: {out}"
+        );
+        assert!(out.contains("long model-facing summary"), "{out}");
+        assert!(
+            !out.contains("short blurb"),
+            "the summary should win: {out}"
+        );
     }
 
     #[test]
