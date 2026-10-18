@@ -4443,7 +4443,7 @@ impl App {
                 .conversation
                 .system_prompt
                 .clone()
-                .unwrap_or_else(|| DEFAULT_AUTONOMOUS_SYSTEM_PROMPT.to_string());
+                .unwrap_or_else(|| autonomous_system_prompt(Default::default()));
             config.system_prompt = Some(format!("{base}\n\n{}", handle.system_prompt_fragment()));
         }
 
