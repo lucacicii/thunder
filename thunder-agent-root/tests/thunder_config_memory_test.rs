@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 use thunder_agent_loop::prelude::*;
+use thunder_agent_root::prelude::RenderCapabilities;
 use thunder_agent_root::prelude::*;
 use thunder_agent_root::thunder_config::{AgentSection, ThunderConfig};
 use thunder_conversation::prelude::MemoryConversationStore;
@@ -191,6 +192,58 @@ async fn config_system_prompt_file_is_appended() {
         prompt.contains("# Role & Philosophy"),
         "base prompt was replaced instead of appended:\n{prompt}"
     );
+}
+
+/// The diagram rule is assembled from what the host declared, not hard-coded:
+/// a run that says it can draw a diagram gets the rule, one that says nothing
+/// does not. This is the only place the two variants meet the real host.
+#[tokio::test]
+async fn render_capabilities_decide_whether_the_prompt_asks_for_a_diagram() {
+    let capture = |root: ThunderRoot, capabilities: RenderCapabilities| async move {
+        let client = Arc::new(PromptCapturingClient {
+            seen: Mutex::new(None),
+        });
+        let handle = root
+            .execute(
+                "draw it",
+                RootRunOptions {
+                    custom_client: Some(client.clone()),
+                    render_capabilities: capabilities,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let _ = handle.join().await;
+        let seen = client.seen.lock().unwrap().clone().unwrap_or_default();
+        seen
+    };
+
+    let plain_dir = tempfile::tempdir().unwrap();
+    let plain = capture(
+        root_with_ws(plain_dir.path()),
+        RenderCapabilities::default(),
+    )
+    .await;
+    assert!(
+        !plain.contains("mermaid"),
+        "a host that cannot draw a diagram must not be asked for one:\n{plain}"
+    );
+
+    let rich_dir = tempfile::tempdir().unwrap();
+    let rich = capture(
+        root_with_ws(rich_dir.path()),
+        RenderCapabilities { diagrams: true },
+    )
+    .await;
+    assert!(
+        rich.contains("```mermaid"),
+        "a diagram-capable host must get the diagram rule:\n{rich}"
+    );
+    // Everything else is the same prompt, so the model never has to infer which
+    // of the other presentation rules still apply.
+    assert!(rich.contains("# Role & Philosophy"));
+    assert!(rich.contains("Markdown table"));
 }
 
 #[test]

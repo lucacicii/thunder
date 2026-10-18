@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         steer_queues: None,
         ui: None,
         route: None,
+        render_capabilities: Default::default(),
     };
 
     let started = Instant::now();

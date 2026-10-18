@@ -628,7 +628,25 @@ static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()
 
 ### 9.6 工程默认提示词
 
-`DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`（`prompt.rs:12-19`）很短，核心是"先理解再动手"：一句话能说清就不写计划；只读工具随便用；真实爆炸半径的改动先与用户敲定方案（plan 模式时 harness 强制：`write_plan` → `exit_plan_mode`，批准是唯一出口）；意图不明就问，最多三问、每题带具体选项；结尾给出 2-3 个下一步选项。**计划本身不是提示词要求的阶段，而是用户控制的机制**（`prompt.rs:7-10`）。
+`DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`（`prompt.rs:43`）分两段。
+
+**行为段**核心是"先理解再动手"：一句话能说清就不写计划；只读工具随便用；真实爆炸半径的改动先与用户敲定方案（plan 模式时 harness 强制：`write_plan` → `exit_plan_mode`，批准是唯一出口）；意图不明就问，最多三问、每题带具体选项；结尾给出 2-3 个下一步选项。**计划本身不是提示词要求的阶段，而是用户控制的机制**（`prompt.rs:7-10`）。
+
+**展示段**（`# Presentation`）是"输出形态按读者要比较什么来选"：要比较的数字或选项用 Markdown 表格（三行以上就上表，不写成带从句的段落）；步骤/决策/因果/依赖用一层嵌套列表；代码、命令、路径、配置用带语言标记的围栏；改过的文件只给改动 hunk，不整文件回贴；长回答先结论后证据；不堆装饰（无 emoji、无分隔线、不逐条加粗、不写单行表格）。
+
+#### 图表规则按宿主能力装配
+
+展示段是**渲染器的契约**，所以它不是一块固定文本：`RenderCapabilities`（`prompt.rs:29`）声明"这个宿主能画什么"，`autonomous_system_prompt(capabilities)`（`prompt.rs:68`）是唯一入口。
+
+| 宿主 | `diagrams` | 结果 |
+|---|---|---|
+| Thunder TUI | `false`（默认） | 只有表格 + 带语言围栏；围栏在 TUI 里每行截 3 行（`tui/src/ui/markdown.rs`），所以它从不被要求画图 |
+| 桌面可视化聊天 | `true` | 追加一条 ` ```mermaid ` 规则（`prompt.rs:40`） |
+| 桌面定时任务 / headless | 不发送 | 保持默认，没人看它的转录 |
+
+`RootRunOptions::render_capabilities`（`host.rs:58`）承载该字段；daemon 侧 `run_task` 接受可选的 `renderCapabilities`（`protocol.rs`，camelCase 别名），**缺省即不画**——旧客户端不会突然收到一个它渲染不了的围栏。桌面只在可视化聊天那条 IPC 上把它设为 `true`（`thunderIpc.ts`），定时器不设（`thunderScheduler.ts`）。
+
+拼接方式值得注意：图表规则插在 `Skip the decoration.` 之前（`DECORATION_MARKER`），因为约束段必须最后——把"别堆装饰"放在规则前面读起来像又一条建议。`prompt_test.rs` 断言了这个顺序，以及默认变体里不得出现 `mermaid`。
 
 ### 9.7 已知细节
 

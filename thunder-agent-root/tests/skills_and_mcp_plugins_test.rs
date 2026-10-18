@@ -127,6 +127,7 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
         steer_queues: None,
         ui: None,
         route: None,
+        render_capabilities: Default::default(),
     };
 
     let result = root
