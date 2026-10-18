@@ -85,9 +85,49 @@ Schema 版本 `1`。**未声明的分组/字段表示"未配置"，不是空覆�
         "env": { "GITHUB_TOKEN": "..." }
       }
     }
+  },
+  // 网页工具后端（web_fetch / web_search）。整组可省略。
+  "web": {
+    "search": {
+      // free | auto | deepseek；未设 = free（免 key 引擎，不产生费用）
+      "provider": "auto"
+    },
+    "fetch": {
+      // local | auto | deepseek；未设 = local（本地抓取，不产生费用）
+      "provider": "auto"
+    },
+    "deepseek": {
+      // 未设时依次回退：models.json 里指向 api.deepseek.com 的 deepseek
+      // 模型 → auth.json 的 "deepseek" 条目 → DEEPSEEK_API_KEY。
+      // 中转（relay）的 key 不会被借用，THUNDER_API_KEY 也不会。
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      // 未设 = https://api.deepseek.com（末尾的 /v1 会自动去掉）。
+      "baseUrl": "https://api.deepseek.com",
+      // 额外请求头（中转/代理需要路由头时用）。
+      "headers": {},
+      // 单次请求超时；未设 = search 10s / fetch 15s。
+      "timeoutMs": 15000,
+      // 408 / 429 / 5xx 的重试次数；未设 = 1。
+      "retries": 1
+    }
   }
 }
 ```
+
+### 网页工具后端
+
+| `provider` | `web_search` | `web_fetch` |
+| --- | --- | --- |
+| `free` / `local` | DuckDuckGo → Exa | 本地抓取（跨域重定向回传给模型） |
+| `auto` | 有 key 时 DeepSeek → DuckDuckGo → Exa | 本地抓取 → 失败或 403/408/429/5xx 时 DeepSeek Fetch |
+| `deepseek` | 仅 DeepSeek；无 key 直接报错 | DeepSeek Fetch → 失败时本地抓取 |
+
+- **默认不产生费用**：只有配置里写了 `auto` / `deepseek`，且能解析到 key 时才会调用 DeepSeek。
+- DeepSeek Search / Fetch 按**成功请求**计费（5 元 / 1000 次），Search 无结果不计费；账号级限速 5 QPS。
+- DeepSeek 搜索会把本轮用户输入作为 `ori_question` 一并发送，帮助索引理解意图。
+- 本地抓取判定为**跨域重定向**时不降级到 DeepSeek：那条路径要求模型自己决定是否跟随。
+- `auto` 下 404 不触发 DeepSeek：页面确实不存在，付费再问一次没有意义。
+- `web_search` 的 `recency` 在 DeepSeek 后端会翻译成 `after:YYYY-MM-DD` 操作符。
 
 **没有 `agent.permission`**：能力档位（tier）在 0.4 已删除，工具始终全量注册。
 能不能跑由 `agent.defaultMode` 选的模式决定，模式本身住在宿主可卸载的

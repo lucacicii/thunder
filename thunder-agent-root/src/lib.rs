@@ -41,6 +41,10 @@ pub mod prelude {
     };
     pub use crate::thunder_config::{AgentSection, MemorySection, PluginSection, ThunderConfig};
     pub use crate::trace_collector::{TraceCollector, MAX_EVENTS, MAX_TOOL_TRACES};
+    /// What a host's transcript can draw; feeds the default prompt's
+    /// presentation rules. Re-exported so a daemon or TUI need not depend on
+    /// the code pack directly.
+    pub use thunder_agent_pack_code::RenderCapabilities;
 }
 
 pub use prelude::*;

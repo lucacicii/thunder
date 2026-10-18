@@ -109,7 +109,11 @@ impl Runtime {
                 ok,
                 output,
             } => {
-                let sender = self.pending_tools.lock().await.remove(&call_id);
+                let sender = self
+                    .pending_tools
+                    .lock()
+                    .await
+                    .remove(&(run_id.clone(), call_id.clone()));
                 match sender {
                     Some(sender) => {
                         // A closed receiver means the run was cancelled between

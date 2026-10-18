@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         steer_queues: None,
         ui: None,
         route: None,
+        render_capabilities: Default::default(),
     };
 
     let mut handle = root.execute(prompt, options).await?;

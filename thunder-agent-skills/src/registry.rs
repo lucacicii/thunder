@@ -1,7 +1,7 @@
 use crate::error::SkillError;
 use crate::loader::SkillLoader;
 use crate::types::{Skill, SkillSummary};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -10,12 +10,23 @@ use tracing::info;
 #[derive(Clone, Default)]
 pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Skill>>>,
+    /// Name-ordered mirror of `skills`, readable without awaiting.
+    ///
+    /// `ThunderPlugin::system_prompt_contribution` is synchronous by contract
+    /// (prompt assembly cannot await), so it cannot take the async lock. A
+    /// `try_read` there would silently return an empty catalog whenever a
+    /// registration happened to hold the write lock — dropping every skill
+    /// from the prompt and breaking its cache prefix. This mirror is only
+    /// written on register/unregister, which are rare, and never across an
+    /// await.
+    snapshot: Arc<std::sync::RwLock<BTreeMap<String, Skill>>>,
 }
 
 impl SkillRegistry {
     pub fn new() -> Self {
         Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
+            snapshot: Arc::new(std::sync::RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -44,11 +55,19 @@ impl SkillRegistry {
     pub async fn register(&self, skill: Skill) {
         let mut map = self.skills.write().await;
         info!(skill_name = %skill.name, "Registering skill in SkillRegistry");
+        self.mirror(&skill);
         map.insert(skill.name.clone(), skill);
+    }
+
+    fn mirror(&self, skill: &Skill) {
+        if let Ok(mut snap) = self.snapshot.write() {
+            snap.insert(skill.name.clone(), skill.clone());
+        }
     }
 
     /// Synchronous register (creates task or lock for non-async setup).
     pub fn register_sync(&self, skill: Skill) {
+        self.mirror(&skill);
         if let Ok(mut map) = self.skills.try_write() {
             map.insert(skill.name.clone(), skill);
         } else {
@@ -63,7 +82,11 @@ impl SkillRegistry {
     /// Unregister a skill by name.
     pub async fn unregister(&self, name: &str) -> Option<Skill> {
         let mut map = self.skills.write().await;
-        map.remove(name)
+        let removed = map.remove(name);
+        if let Ok(mut snap) = self.snapshot.write() {
+            snap.remove(name);
+        }
+        removed
     }
 
     /// Get a skill by name.
@@ -90,18 +113,28 @@ impl SkillRegistry {
         map.is_empty()
     }
 
-    /// List all registered skills asynchronously.
+    /// List all registered skills asynchronously, ordered by name.
+    ///
+    /// The backing store is a `HashMap`, so iterating it directly gives an
+    /// order that varies between runs and between processes. The catalog goes
+    /// into the system prompt, where a stable order is what keeps prompt-cache
+    /// prefixes identical across turns.
     pub async fn list(&self) -> Vec<Skill> {
         let map = self.skills.read().await;
-        map.values().cloned().collect()
+        let mut skills: Vec<Skill> = map.values().cloned().collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        skills
     }
 
-    /// List all registered skills synchronously (if lock is immediately available).
+    /// List all registered skills synchronously.
+    ///
+    /// Reads the mirror rather than the async map, so it never misses a skill
+    /// because a registration happened to hold the write lock. Ordered by
+    /// name, like [`Self::list`].
     pub fn list_sync(&self) -> Vec<Skill> {
-        if let Ok(map) = self.skills.try_read() {
-            map.values().cloned().collect()
-        } else {
-            Vec::new()
+        match self.snapshot.read() {
+            Ok(snap) => snap.values().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
         }
     }
 
@@ -161,8 +194,10 @@ impl SkillRegistry {
             return None;
         }
 
+        let mut skills: Vec<&Skill> = map.values().collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
         let mut out = String::from("<available_skills>\n");
-        for skill in map.values() {
+        for skill in skills {
             out.push_str("  <skill>\n");
             out.push_str(&format!("    <name>{}</name>\n", skill.name));
             out.push_str(&format!(

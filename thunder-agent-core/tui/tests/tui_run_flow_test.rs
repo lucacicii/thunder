@@ -62,6 +62,7 @@ async fn drive_one_prompt(app: &mut App, prompt: &str) -> Option<String> {
             match event {
                 AppEvent::Agent(observed) => app.handle_agent_event(observed),
                 AppEvent::AgentFinished {
+                    run_id,
                     agent_id,
                     success,
                     final_text,
@@ -71,6 +72,7 @@ async fn drive_one_prompt(app: &mut App, prompt: &str) -> Option<String> {
                     finish_reason,
                 } => {
                     app.handle_agent_finished(
+                        run_id,
                         agent_id,
                         success,
                         final_text.clone(),

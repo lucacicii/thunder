@@ -88,6 +88,7 @@ async fn test_thunder_root_end_to_end_execution() {
         steer_queues: None,
         ui: None,
         route: None,
+        render_capabilities: Default::default(),
     };
 
     let mut handle = root

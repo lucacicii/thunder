@@ -29,5 +29,5 @@ pub mod scope;
 
 pub use file_change::FILE_CHANGE;
 pub use pack::{code_plugins, install_code_pack, CodePackConfig};
-pub use prompt::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
+pub use prompt::{autonomous_system_prompt, RenderCapabilities, DEFAULT_AUTONOMOUS_SYSTEM_PROMPT};
 pub use scope::CodeScope;

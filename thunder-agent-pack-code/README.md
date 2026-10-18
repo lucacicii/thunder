@@ -24,7 +24,7 @@
 4. **变更上报**：
    - `write_file` 每次写后上报；`bash` 在命令前后各取一次 `git status --porcelain` 快照并差分——shell 的文件副作用从参数看不出来，这是唯一仍需要快照的地方。
    - 产出内核不认识的自定义事件 `file_change`（`FILE_CHANGE` 常量，**不要改名**，它是 wire 契约）。
-5. **工程默认提示词**：`DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`——"先理解再动手"，计划本身不是提示词要求的阶段，而是**用户控制的机制**。
+5. **工程默认提示词**：`DEFAULT_AUTONOMOUS_SYSTEM_PROMPT`——"先理解再动手"，计划本身不是提示词要求的阶段，而是**用户控制的机制**；另有一段 `# Presentation`，把回答形态绑定到实际渲染器能画的东西（表格 + 带语言围栏）。图表规则不写死在提示词里：`autonomous_system_prompt(RenderCapabilities)` 按宿主能力装配，TUI 拿到的版本不承诺 mermaid，桌面可视化聊天才追加。
 
 ---
 

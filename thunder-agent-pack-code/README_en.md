@@ -24,7 +24,7 @@
 4. **Change reporting**:
    - `write_file` reports after every write; `bash` takes a `git status --porcelain` snapshot before and after and diffs them — a shell command's file side effects cannot be read off its arguments, which is why this is the one place a snapshot is still needed.
    - The result is a custom event the kernel does not interpret: `file_change` (the `FILE_CHANGE` constant — **do not rename it**, it is a wire contract).
-5. **The engineering default prompt**: `DEFAULT_AUTONOMOUS_SYSTEM_PROMPT` — "understand before acting". Planning is not a phase the prompt asks for; it is a **mechanism the user controls**.
+5. **The engineering default prompt**: `DEFAULT_AUTONOMOUS_SYSTEM_PROMPT` — "understand before acting". Planning is not a phase the prompt asks for; it is a **mechanism the user controls**. A `# Presentation` section binds answer shape to what the shipped renderers actually draw (tables and language-tagged fences). The diagram rule is not hard-coded: `autonomous_system_prompt(RenderCapabilities)` assembles it per host, so the TUI is never asked for a mermaid fence and only the desktop visual chat opts in.
 
 ---
 

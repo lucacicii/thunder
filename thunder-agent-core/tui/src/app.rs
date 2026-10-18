@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::autonomous_system_prompt;
 use thunder_agent_pack_code::builtin::*;
-use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::*;
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
@@ -196,6 +196,10 @@ pub struct App {
     pub client_factory: Option<ClientFactory>,
     pub store: Option<FsConversationStore>,
     pub cancel_token: Option<CancellationToken>,
+    /// Identity of the run the UI is currently following (`run_<ms>`, the same
+    /// id its trace is filed under). `AgentFinished` carries it back so a
+    /// straggler from a superseded run cannot overwrite the transcript.
+    pub active_run_id: Option<String>,
     pub status_message: Option<(String, std::time::Instant)>,
     pub last_error: Option<String>,
     pub last_max_scroll: usize,
@@ -345,7 +349,7 @@ impl App {
         let model = ModelRef::parse(&model_name.into());
         let initial_conv = Conversation::new(format!("sess_{}", now_ms()))
             .with_title("New Conversation")
-            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(autonomous_system_prompt(Default::default()));
 
         Self {
             mode: ViewMode::Chat,
@@ -388,6 +392,7 @@ impl App {
             client_factory: None,
             store: None,
             cancel_token: None,
+            active_run_id: None,
             status_message: None,
             last_error: None,
             last_max_scroll: 0,
@@ -501,7 +506,39 @@ impl App {
         }
     }
 
-    pub async fn load_conversation(&mut self, id: &str) {
+    /// Whether a live run owns the transcript right now.
+    ///
+    /// `cancel_token` outlives the status for the instant between `stop_run`
+    /// and the engine settling, so both are consulted.
+    fn run_owns_transcript(&self) -> bool {
+        self.cancel_token.is_some() || self.is_running()
+    }
+
+    /// Guard for anything that would replace `self.conversation` wholesale.
+    ///
+    /// A running agent writes into the conversation as it streams: deltas,
+    /// tool calls, and finally the authoritative transcript. Swapping the
+    /// session underneath it would splice one session's output into another's
+    /// and then let the finishing run overwrite the newly loaded history. The
+    /// user has to stop the run first (Ctrl+C), which is also the only path
+    /// that returns queued input to the editor.
+    fn refuse_session_switch_while_running(&mut self) -> bool {
+        if self.run_owns_transcript() {
+            self.set_status_message(
+                "Stop the current run first (Ctrl+C) before switching sessions.",
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Returns `false` when the switch was refused (a live run owns the
+    /// transcript) or the session could not be loaded, so a caller does not
+    /// report success for a switch that did not happen.
+    pub async fn load_conversation(&mut self, id: &str) -> bool {
+        if self.refuse_session_switch_while_running() {
+            return false;
+        }
         if let Some(store) = &self.store {
             // Save current in-memory conversation first
             let _ = store.save(&self.conversation).await;
@@ -524,7 +561,9 @@ impl App {
             if let Some(pos) = self.session_list.iter().position(|s| s.id == id) {
                 self.selected_session_idx = pos;
             }
+            return self.conversation.id == id;
         }
+        false
     }
 
     pub fn set_status_message(&mut self, msg: impl Into<String>) {
@@ -942,6 +981,11 @@ impl App {
     /// assembling. Thinking and tool outcomes are *not* touched — they belong
     /// to the session so a finished turn stays expandable across runs.
     fn clear_run_state(&mut self) {
+        // A question belongs to the run that asked it. Leaving it up after the
+        // run is gone leaves a modal the user can answer into a dead channel.
+        if let Some(pending) = self.pending_question.take() {
+            pending.resolve(serde_json::Value::Null);
+        }
         self.streaming_delta.clear();
         self.reasoning_delta.clear();
         self.active_tool_calls.clear();
@@ -1321,19 +1365,21 @@ impl App {
     /// second name here would file tool traces under an id that does not match
     /// the file they are in.
     fn run_id(&self) -> String {
-        match self.trace_meta.as_ref() {
-            Some(meta) => meta.task_id.clone(),
+        self.active_run_id
+            .clone()
+            .or_else(|| self.trace_meta.as_ref().map(|meta| meta.task_id.clone()))
             // A run launched without `begin_trace` still needs an identity to be
             // attributable at all; the session is the only one available.
-            None => format!("tui_{}", self.conversation.id),
-        }
+            .unwrap_or_else(|| format!("tui_{}", self.conversation.id))
     }
 
     /// Start recording a filtered trace for a new run.
     fn begin_trace(&mut self, prompt: &str) {
+        let run_id = format!("run_{}", now_ms());
+        self.active_run_id = Some(run_id.clone());
         self.trace = Some(TraceCollector::new());
         self.trace_meta = Some(TraceRunMeta {
-            task_id: format!("run_{}", now_ms()),
+            task_id: run_id,
             started_at_ms: now_ms(),
             prompt: prompt.to_string(),
             model: self.model.selection_id(),
@@ -1457,6 +1503,7 @@ impl App {
                 None => "❌ No trace found for this session. Run a task first — traces are saved automatically after each run.".to_string(),
             };
             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                run_id: None,
                 agent_id: "trace_viewer".to_string(),
                 success: true,
                 final_text: Some(out),
@@ -1501,6 +1548,7 @@ impl App {
                 out
             };
             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                run_id: None,
                 agent_id: "trace_viewer".to_string(),
                 success: true,
                 final_text: Some(out),
@@ -2608,11 +2656,39 @@ impl App {
         self.save_and_refresh();
     }
 
-    pub fn new_session(&mut self) {
-        let new_id = format!("sess_{}", now_ms());
+    /// A session id that is not already in use.
+    ///
+    /// Millisecond timestamps collide when a session is created immediately
+    /// after another (`/new` twice, or `/new` in the same tick as startup), and
+    /// a collision silently overwrites the other session in the store.
+    fn fresh_session_id(&self) -> String {
+        let base = format!("sess_{}", now_ms());
+        let taken =
+            |id: &str| id == self.conversation.id || self.session_list.iter().any(|s| s.id == id);
+        if !taken(&base) {
+            return base;
+        }
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{base}_{n}");
+            if !taken(&candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+
+    /// Start a fresh conversation. Returns `false` when a live run refused the
+    /// switch; callers that would otherwise append to the new transcript must
+    /// honour that.
+    pub fn new_session(&mut self) -> bool {
+        if self.refuse_session_switch_while_running() {
+            return false;
+        }
+        let new_id = self.fresh_session_id();
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
-            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(autonomous_system_prompt(Default::default()));
         self.title_attempted = false;
         self.clear_run_state();
         self.clear_session_details();
@@ -2625,6 +2701,7 @@ impl App {
         self.metrics.reset_for_session();
         self.reset_timeline();
         self.set_status_message("Created new session.");
+        true
     }
 
     pub fn handle_picker_selection(
@@ -2868,6 +2945,7 @@ impl App {
             };
 
             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                run_id: None,
                 agent_id: "memory".to_string(),
                 success: true,
                 final_text: Some(content),
@@ -3063,6 +3141,7 @@ impl App {
                                     .send(crate::event::AppEvent::LoadSession(conv.id));
                             } else {
                                 let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                    run_id: None,
                                     agent_id: "session_manager".to_string(),
                                     success: false,
                                     final_text: Some(format!("❌ Could not find session `{target_name}` to resume. Use `/resume` to view all saved sessions.")),
@@ -3264,6 +3343,7 @@ impl App {
                                 if let Some(content) = rx.recv().await {
                                     let _ = event_tx_clone.send(
                                         crate::event::AppEvent::AgentFinished {
+                                            run_id: None,
                                             agent_id: "skills_show".to_string(),
                                             success: true,
                                             final_text: Some(content),
@@ -3310,6 +3390,7 @@ impl App {
                             if let Some(content) = rx.recv().await {
                                 let _ =
                                     event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                        run_id: None,
                                         agent_id: "skills_scanner".to_string(),
                                         success: true,
                                         final_text: Some(content),
@@ -3338,6 +3419,7 @@ impl App {
                             if let Some(content) = rx.recv().await {
                                 let _ =
                                     event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                        run_id: None,
                                         agent_id: "skills_lister".to_string(),
                                         success: true,
                                         final_text: Some(content),
@@ -3381,6 +3463,7 @@ impl App {
                     tokio::spawn(async move {
                         if let Some(content) = rx.recv().await {
                             let _ = event_tx_clone.send(crate::event::AppEvent::AgentFinished {
+                                run_id: None,
                                 agent_id: "mcp_manager".to_string(),
                                 success: true,
                                 final_text: Some(content),
@@ -3399,7 +3482,9 @@ impl App {
 
             // 6. /clear or /new or /reset
             "clear" | "new" | "reset" => {
-                self.new_session();
+                if !self.new_session() {
+                    return true;
+                }
                 self.conversation.add_assistant_message(
                     Some(
                         "✨ Started a fresh conversation session. How can I help you today?"
@@ -3428,13 +3513,19 @@ impl App {
                             }
                         }
                         "max_turns" | "turns" => {
-                            if let Ok(turns) = val.parse::<usize>() {
-                                self.max_turns = turns;
-                                self.conversation.add_assistant_message(
-                                    Some(format!("✔ `max_turns` set to `{turns}`")),
-                                    None,
-                                );
-                            }
+                            // The engine checks `turn >= max` before the first
+                            // turn, so `0` would end every run before it starts.
+                            let reply = match val.parse::<usize>() {
+                                Ok(turns) if turns > 0 => {
+                                    self.max_turns = turns;
+                                    format!("✔ `max_turns` set to `{turns}`")
+                                }
+                                Ok(_) => "❌ `max_turns` must be at least 1.".to_string(),
+                                Err(_) => format!(
+                                    "❌ `max_turns` must be a positive integer, got `{val}`."
+                                ),
+                            };
+                            self.conversation.add_assistant_message(Some(reply), None);
                         }
                         "timeout" | "timeout_ms" => {
                             if let Ok(ms) = val.parse::<u64>() {
@@ -4145,7 +4236,10 @@ impl App {
     ) {
         let model = self.model.selection_id();
         let timeout_ms = self.request_timeout_ms;
-        let mut base_cfg = AgentConfig::new(model.clone()).with_unlimited_turns();
+        // `/config max_turns` is a real ceiling, not a display-only knob. A
+        // project `.thunder/config.json` may still override it (the root applies
+        // that layer after this), which is the intended precedence.
+        let mut base_cfg = AgentConfig::new(model.clone()).with_max_turns(self.max_turns);
         base_cfg.temperature = Some(self.temperature);
         base_cfg.request_timeout_ms = timeout_ms;
         // Prompt-cache routing affinity: bind the run to the conversation id.
@@ -4208,6 +4302,7 @@ impl App {
         // run they belong to — so a second name here would put a `task_id` in
         // the file that does not match the file's own name.
         let run_route = self.run_id();
+        let finished_run_id = run_route.clone();
 
         tokio::spawn(async move {
             // Smart baseline set instead of blanket forcing (mirrors the daemon):
@@ -4235,6 +4330,10 @@ impl App {
                 // The TUI is single-run, but a route is still required: the
                 // plugin sidecar refuses calls that cannot be attributed.
                 route: Some(run_route),
+                // The terminal preview renderer draws tables but no diagrams
+                // (`ui/markdown.rs` caps a fenced block at three rows), so the
+                // prompt must not ask for a form this surface cannot show.
+                render_capabilities: Default::default(),
             };
 
             match root.execute(context_input, options).await {
@@ -4267,6 +4366,7 @@ impl App {
                             }
 
                             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                                run_id: Some(finished_run_id.clone()),
                                 agent_id: res.agent_id,
                                 success: res.run_result.finish_reason == FinishReason::Done,
                                 final_text: Some(summary),
@@ -4278,6 +4378,7 @@ impl App {
                         }
                         Err(err) => {
                             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                                run_id: Some(finished_run_id.clone()),
                                 agent_id: "root_agent".to_string(),
                                 success: false,
                                 final_text: Some(err.to_string()),
@@ -4291,6 +4392,7 @@ impl App {
                 }
                 Err(err) => {
                     let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                        run_id: Some(finished_run_id.clone()),
                         agent_id: "root_agent".to_string(),
                         success: false,
                         final_text: Some(err.to_string()),
@@ -4314,7 +4416,7 @@ impl App {
     ) {
         let model = self.model.selection_id();
         let timeout_ms = self.request_timeout_ms;
-        let mut config = AgentConfig::new(model.clone()).with_unlimited_turns();
+        let mut config = AgentConfig::new(model.clone()).with_max_turns(self.max_turns);
         config.temperature = Some(self.temperature);
         config.request_timeout_ms = timeout_ms;
         // Prompt-cache routing affinity: bind the run to the conversation id.
@@ -4332,11 +4434,17 @@ impl App {
         // Multi-root workspaces mirror the host path.
         config.extra_workspace_roots = self.extra_roots.clone();
         if let Some(handle) = &self.active_skill {
-            let fragment = handle.system_prompt_fragment();
-            config.system_prompt = Some(match config.system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{fragment}"),
-                None => fragment,
-            });
+            // The fragment is an *addition* to the session's base prompt, never
+            // a replacement for it. This path builds no `ThunderRoot`, so there
+            // is no host-assembled prompt to append to — the conversation's own
+            // prompt is the base, and the engine treats `config.system_prompt`
+            // as authoritative for the run.
+            let base = self
+                .conversation
+                .system_prompt
+                .clone()
+                .unwrap_or_else(|| autonomous_system_prompt(Default::default()));
+            config.system_prompt = Some(format!("{base}\n\n{}", handle.system_prompt_fragment()));
         }
 
         let context_input = self.conversation.as_context_input();
@@ -4352,6 +4460,7 @@ impl App {
         // One run, one name: the same id the trace is filed under. This path
         // builds no `ThunderRoot`, so nothing else would set it.
         config.route = Some(self.run_id());
+        let finished_run_id = self.run_id();
         // Direct mode builds no `ThunderRoot`, so nothing else binds the plan
         // file's location — without this, plan mode would have nowhere to write.
         mode_plugin.bind_session(Some(ws.clone()), &self.conversation.id);
@@ -4386,6 +4495,7 @@ impl App {
                     Ok((_spec, client)) => Some(client),
                     Err(err) => {
                         let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                            run_id: Some(finished_run_id.clone()),
                             agent_id: "tui_agent".to_string(),
                             success: false,
                             final_text: Some(format!(
@@ -4455,6 +4565,7 @@ impl App {
                             let finish_reason_dbg = format!("{:?}", result.finish_reason);
                             let run_stats = result.stats.clone();
                             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                                run_id: Some(finished_run_id.clone()),
                                 agent_id: result.agent_id,
                                 success: is_ok,
                                 final_text: result.final_content,
@@ -4466,6 +4577,7 @@ impl App {
                         }
                         Err(err) => {
                             let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                                run_id: Some(finished_run_id.clone()),
                                 agent_id: "tui_agent".to_string(),
                                 success: false,
                                 final_text: Some(err.to_string()),
@@ -4479,6 +4591,7 @@ impl App {
                 }
                 Err(err) => {
                     let _ = event_tx.send(crate::event::AppEvent::AgentFinished {
+                        run_id: Some(finished_run_id.clone()),
                         agent_id: "tui_agent".to_string(),
                         success: false,
                         final_text: Some(err.to_string()),
@@ -4680,6 +4793,7 @@ impl App {
 
     pub fn handle_agent_finished(
         &mut self,
+        run_id: Option<String>,
         _agent_id: String,
         success: bool,
         final_text: Option<String>,
@@ -4688,6 +4802,52 @@ impl App {
         run_stats: Option<AgentStats>,
         finish_reason: Option<String>,
     ) {
+        // A run that was stopped and superseded still settles eventually. Its
+        // result describes a transcript the user has already left, so applying
+        // it would splice one run's history into another's.
+        //
+        // Synthetic host completions (slash-command output) carry no run id and
+        // are always applied. A run result that arrives with no active run at
+        // all is a straggler: the only way `active_run_id` is cleared is this
+        // function, so a real run's result always finds itself still active
+        // unless it already settled once.
+        if let Some(finished) = run_id.as_deref() {
+            match self.active_run_id.as_deref() {
+                Some(active) if active == finished => {}
+                Some(active) => {
+                    tracing::debug!(
+                        finished,
+                        active,
+                        "ignoring AgentFinished from a superseded run"
+                    );
+                    return;
+                }
+                None => {
+                    tracing::debug!(finished, "ignoring AgentFinished with no active run");
+                    return;
+                }
+            }
+        } else if self.active_run_id.is_some() {
+            // A slash command's output arriving while a run owns the
+            // transcript is a *display* result, not the end of the run: the
+            // command task outlived the idle window it was started in. Show
+            // the text, but leave the status, cancellation token and run
+            // identity alone — clearing them here would strand the live run's
+            // eventual result on the `None` arm above and let a second run
+            // start on the same conversation.
+            //
+            // `active_run_id` is the test, not the agent status: only a real
+            // run sets it (in `begin_trace`), so this cannot swallow a
+            // transcript-less result from a run that never got an id.
+            if let Some(text) = final_text {
+                if !text.trim().is_empty() {
+                    self.conversation.add_assistant_message(Some(text), None);
+                    self.invalidate_transcript();
+                }
+            }
+            return;
+        }
+
         // The engine's authoritative transcript replaces the host's own, often
         // with the same message count but different bodies.
         self.invalidate_transcript();
@@ -4769,22 +4929,59 @@ impl App {
             }
             self.last_error = None;
         } else {
-            let err_msg = self.last_error.take().or_else(|| {
-                if !self.streaming_delta.is_empty() {
-                    Some(std::mem::take(&mut self.streaming_delta))
-                } else {
-                    final_text.clone()
+            // Every non-`Done` outcome that is not a stop carries the engine's
+            // transcript too: `MaxTurnsExceeded` and `BudgetExceeded` end a run
+            // with a dozen tool results the host never saw land. Keeping the
+            // authoritative copy first is what makes the next turn continue
+            // from the real state instead of replaying stale context.
+            if let Some(messages) = authoritative_messages {
+                if !messages.is_empty() {
+                    self.conversation.messages = messages;
+                    self.conversation.recalculate_stats();
+                    self.reattach_run_thinking();
                 }
+            }
+
+            // A budget stop is not a provider failure and its `final_text` is
+            // just the partial answer already in the transcript; say what
+            // actually happened instead of echoing it a second time.
+            let budget_stop = match finish_reason.as_deref() {
+                Some("MaxTurnsExceeded") => Some(
+                    "Turn budget exhausted before the task finished. Send another message to continue.",
+                ),
+                Some("BudgetExceeded") => Some(
+                    "Token budget exhausted before the task finished. Send another message to continue.",
+                ),
+                _ => None,
+            };
+            let err_msg = budget_stop.map(str::to_string).or_else(|| {
+                self.last_error.take().or_else(|| {
+                    if !self.streaming_delta.is_empty() {
+                        Some(std::mem::take(&mut self.streaming_delta))
+                    } else {
+                        final_text.clone()
+                    }
+                })
             }).unwrap_or_else(|| "Agent execution failed. No available LLM provider or the request was interrupted.".to_string());
 
-            self.agent_status = AgentStatus::Error(err_msg.clone());
-            self.conversation
-                .add_assistant_message(Some(format!("❌ {}", err_msg)), None);
-            self.set_status_message(format!("Error: {}", err_msg));
+            if budget_stop.is_some() {
+                // Not an error state: the session is still healthy and the
+                // user is expected to continue it.
+                self.agent_status = AgentStatus::Idle;
+                self.conversation
+                    .add_assistant_message(Some(format!("⏸ {err_msg}")), None);
+                self.set_status_message(err_msg);
+            } else {
+                self.agent_status = AgentStatus::Error(err_msg.clone());
+                self.conversation
+                    .add_assistant_message(Some(format!("❌ {}", err_msg)), None);
+                self.set_status_message(format!("Error: {}", err_msg));
+            }
         }
 
         self.clear_run_state();
         self.cancel_token = None;
+        self.active_run_id = None;
         self.pause_gate = None;
         self.steer_queues = None;
         self.queued = QueueSnapshot::default();

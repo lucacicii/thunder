@@ -20,6 +20,12 @@ pub enum AppEvent {
     Agent(ObservedEvent),
     /// Agent run finished with final status
     AgentFinished {
+        /// The run this result belongs to. A run that was stopped and replaced
+        /// still settles eventually; its straggler must not rewrite the
+        /// transcript of the run the user is now watching. `None` for the
+        /// host's own synthetic completions (slash-command output), which are
+        /// never racing a run.
+        run_id: Option<String>,
         agent_id: String,
         success: bool,
         final_text: Option<String>,
