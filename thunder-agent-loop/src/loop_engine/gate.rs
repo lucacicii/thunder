@@ -14,6 +14,7 @@
 use crate::types::event::AgentStats;
 use crate::types::message::ChatMessage;
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 /// Everything a gate needs to judge a finished run.
 #[derive(Debug, Clone)]
@@ -29,6 +30,10 @@ pub struct GateRequest {
     pub messages: Vec<ChatMessage>,
     /// Stats as of this evaluation.
     pub stats: AgentStats,
+    /// Cancelled when the run stops waiting for this verdict. A gate whose
+    /// decision is made somewhere else (a host process, a human) uses it to
+    /// stop waiting rather than hold the loop open past its own cancellation.
+    pub cancellation_token: CancellationToken,
 }
 
 /// The gate's verdict.

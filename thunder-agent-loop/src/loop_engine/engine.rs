@@ -14,7 +14,7 @@ use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::config::AgentConfig;
 use crate::types::error::AgentError;
 use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
-use crate::types::message::{ChatMessage, Role};
+use crate::types::message::ChatMessage;
 use crate::types::tool::{AgentTool, ToolExecutionResult};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -400,21 +400,24 @@ impl AgentLoop {
                 ctx.push(ChatMessage::user(prompt));
                 ctx
             }
+            // `config.system_prompt` is the prompt the host assembled for *this*
+            // run (base prompt, AGENTS.md/CLAUDE.md, plugin contributions,
+            // skills catalog, `.thunder` prompt file). A system message carried
+            // in the transcript is whatever the previous run left behind, so it
+            // must not win: every input form is normalised the same way.
             ContextInput::Messages(messages) => {
                 let mut ctx = ContextBuffer::with_messages(messages);
                 if let Some(sys) = &self.config.system_prompt {
-                    if ctx.is_empty()
-                        || ctx
-                            .get_entry(0)
-                            .map(|e| e.message.role() != Role::System)
-                            .unwrap_or(true)
-                    {
-                        ctx.set_system_prompt(sys);
-                    }
+                    ctx.set_system_prompt(sys);
                 }
                 ctx
             }
-            ContextInput::Buffer(ctx) => ctx,
+            ContextInput::Buffer(mut ctx) => {
+                if let Some(sys) = &self.config.system_prompt {
+                    ctx.set_system_prompt(sys);
+                }
+                ctx
+            }
         };
 
         let config = self.config.clone();
@@ -1140,6 +1143,7 @@ impl AgentLoop {
                                         final_text: judged.clone().unwrap_or_default(),
                                         messages: context.get_messages(),
                                         stats: tracker.get_stats(),
+                                        cancellation_token: cancel_token.clone(),
                                     })
                                     .await;
                                 match verdict {
@@ -1212,7 +1216,15 @@ impl AgentLoop {
                                 None
                             }
                         });
-                        loop_finish_reason = FinishReason::Done;
+                        // A gate that answered while the run was being
+                        // cancelled must not turn a stop into a success: the
+                        // cancellation check at the top of the loop never runs
+                        // again after this break.
+                        loop_finish_reason = if cancel_token.is_cancelled() {
+                            FinishReason::Cancelled
+                        } else {
+                            FinishReason::Done
+                        };
                         break;
                     }
                     info!(

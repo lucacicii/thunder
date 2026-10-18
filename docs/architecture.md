@@ -173,6 +173,7 @@ pub struct AgentLoop {
 | `run()` = `start` + 排空事件 + `join` | `engine.rs:337-347` |
 | 释放句柄**不**取消任务 | `handle.rs:14-15` 注释；须显式 `cancel()` |
 | panic 也要清忙标志 | `RunningGuard::drop`（`handle.rs:137-151`） |
+| `config.system_prompt` 是该 run 的唯一事实来源 | 三种 `ContextInput` 形态（`Text` / `Messages` / `Buffer`）在 `spawn_loop` 里统一经 `ContextBuffer::set_system_prompt` 归一：转录里的旧 system 消息只被替换，不会压过宿主本次装配的提示（`engine.rs`）；无宿主提示时才保留转录自带的那条 |
 
 ### 2.4 主循环（`spawn_loop` → `tokio::spawn`）
 
@@ -734,9 +735,9 @@ wire 语义（`client.rs:1-19`）：`prompt_tokens` 是**完整** prompt（rpi-a
 
 **事件**（`protocol.rs:112-158`）：`response` / `observation`（原样转发 `AgentEvent`）/ `tool_call` / `gate_request` / `run_finished`（带完整 `messages` 供宿主持久化）/ `error`。
 
-远程工具 `RemoteTool`（`remote.rs:33-110`）：声明给模型，但 `execute` 不做事——把调用转成 `RuntimeEvent::ToolCall` 发给宿主，然后在 oneshot 上等 `tool_result`。宿主不答（sender 被 drop）→ `Err("the host dropped the tool call without answering")`；宿主已走 → 清理 pending 并 `Err("the host is gone; …")`。
+远程工具 `RemoteTool`（`remote.rs`）：声明给模型，但 `execute` 不做事——把调用转成 `RuntimeEvent::ToolCall` 发给宿主，然后在 oneshot 上等 `tool_result`。pending 表按 **`(run_id, call_id)`** 索引，所以发给 A run 的结果不可能答到 B run 的同名调用。宿主不答（sender 被 drop）→ `Err("the host dropped the tool call without answering")`；宿主已走 → 清理 pending 并 `Err("the host is gone; …")`；run 被取消 → `select!` 立刻返回 `Err("run cancelled while the host was executing the tool")` 并清掉 pending，不把任务挂到宿主答话为止。
 
-`RemoteGate` 实现 `CompletionGate`：完成判定同样发到宿主（`gate_request`）等 `gate_result`。`parse_effect`（`remote.rs:19-29`）把宿主声明的 `read|write|exec|plan_artifact` 映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
+`RemoteGate` 实现 `CompletionGate`：完成判定同样发到宿主（`gate_request`）等 `gate_result`，同样监听 `GateRequest::cancellation_token`——run 在等待裁决时被取消，直接按 `Pass` 放行（唯一能让循环结束的裁决），并清掉该 run 的槽位。`parse_effect`（`remote.rs:19-29`）把宿主声明的 `read|write|exec|plan_artifact` 映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
 
 运行器形态：`Runtime`（`session.rs:19-40`）持有 `runs: HashMap<run_id, CancellationToken>`、两个 pending 表，以及一个 `mpsc::UnboundedSender<RuntimeEvent>` → 单一 writer task，保证一帧一行、不交错。
 
@@ -824,7 +825,7 @@ flowchart TB
 
 1. 取 prompt（`Text` 原样；`Messages`/`Buffer` 取最后一条 user，否则字面 `"General task"`）`:397-416`
 2. `ThunderConfig::load(workspace)` `:421`
-3. session id（缺省 `sess_1`）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:423-438`
+3. session id（缺省 `sess_<ms>_<seq>`，`SESSION_COUNTER` 原子自增）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:423-438`
 4. 插件选择（`forced_plugins` 短路，否则会话锁定启发式）`:440-452`
 5. `create_active_set` `:461-463`
 6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）；随后配置并挂上 `MetricsPlugin`（`:494-528`）`:465-490`，执行状态插件同批解析——选择器没选中它时**直接 push**（`:651-659`），理由是宿主自己也持有这个实例并读它的快照（§11.8.2）
@@ -971,13 +972,13 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 ### 11.9 已知细节
 
-- `create_active_set` 迭代 `HashMap`（`registry.rs:76`），插件顺序（进而工具注册顺序与提示块拼接顺序）**跨 `PluginRegistry` 实例不确定**；TUI/daemon 每请求重建 `ThunderRoot`，因此可能逐轮置换提示段顺序。模式插件是显式 `push` 的，所以它的块总在最后。`[INFERENCE]`（单个注册表实例内稳定，实例间受 `RandomState` 影响）
+- `create_active_set` 迭代 `BTreeMap`（`registry.rs:14,75-84`），插件顺序按 id 字典序**跨实例确定**，因此工具注册顺序与提示块拼接顺序也稳定——这是 prompt cache 前缀命中的前提。模式插件是显式 `push` 的，所以它的块总在最后。
 - **两处死接线**（详见 §11.1.1）：`ThunderPlugin::tool_gate()` 在 `execute` 中从未被调用（总是安装模式插件，`host.rs:532`）；`ToolInvoker::invoke` 只有测试调用，无随仓插件使用 `ctx.tool_slot()`。`ActivePluginSet::dispatch_event` 已在 `RootRunHandle::take_events` 接通，不再是死接线。
 - `ModePlugin::system_prompt_contribution` 在调用时重读 `self.mode()`，但热切换只对**下一次 run 的提示装配**生效；gate 本身立刻生效（`mode.rs:717-726`）。
 - `write_plan` 走原子写，`memory_write` 用普通 `tokio::fs::write`（`mode.rs:561-563` vs `memory.rs:447,451`）。
 - `RootRunHandle::join` 吞掉 `dispatch_finish` 错误 ⇒ 会话持久化失败对调用方不可见。
 - `RootRunOptions` **没有** `#[non_exhaustive]`：新增字段是下游破坏性变更。
-- 缺省 session id 退化（每次新进程都是 `sess_1`），所以宿主被要求自带 id。
+- 缺省 session id 曾是常量 `sess_1`，导致同进程内未显式命名的 run 共享一份会话存储、一套模式规则与一个状态槽；现在退化为 `sess_<ms>_<seq>`（`SESSION_COUNTER` 原子自增，`host.rs`），宿主仍被要求自带 id 以便跨进程稳定。
 
 ---
 
@@ -1074,7 +1075,7 @@ id 归属：daemon 的状态插件实例挂在 `DaemonService` 上（跨 run 共
 
 `RemoteToolSpec.effect` 是可选的 `read|write|exec|plan_artifact`（`protocol.rs:18-21`）；`parse_effect`（`remote.rs:19-29`）映射到内核 `ToolEffect`，**未声明一律 `Other`（按变更处理）**。
 
-`RemoteTool::execute`（`remote.rs:80-110`）把调用转成 `tool_call` 事件并在 oneshot 上等待：宿主答 `ok:false` → `Err(output)`；宿主 drop 了 sender → `Err("the host dropped the tool call without answering")`；宿主进程没了 → `Err("the host is gone; tool call could not be delivered")`。
+`RemoteTool::execute` 把调用转成 `tool_call` 事件并在 oneshot 上等待（键为 `(run_id, call_id)`，且与 run 的取消令牌 `select!`）：宿主答 `ok:false` → `Err(output)`；宿主 drop 了 sender → `Err("the host dropped the tool call without answering")`；宿主进程没了 → `Err("the host is gone; tool call could not be delivered")`；run 被取消 → 立即返回并清理 pending。
 
 `Runtime` 持 `runs: HashMap<run_id, CancellationToken>` 与两张 pending 表，所有输出经单个 `UnboundedSender<RuntimeEvent>` → 一个 writer task（一帧一行，不交错）；关闭时用 `watch` 通道让 writer 排空再退出（`session.rs:19-40`）。
 
@@ -1094,7 +1095,7 @@ Markdown 解析（`parser.rs:25-90`）：以 `---` 开头时取 `\n---` 之前�
 
 ### 14.2 注册表与工具
 
-`SkillRegistry`（`registry.rs:10-13`）：`Arc<RwLock<HashMap<String, Skill>>>`，`register` / `register_sync`（拿不到写锁就 spawn 一个任务）/ `unregister` / `get` / `contains` / `list_sync`；`from_dir` / `from_default_paths`。
+`SkillRegistry`（`registry.rs`）：`Arc<RwLock<HashMap<String, Skill>>>`，`register` / `register_sync`（拿不到写锁就 spawn 一个任务）/ `unregister` / `get` / `contains` / `list` / `list_sync`；`from_dir` / `from_default_paths`。`list`、`list_sync`、`build_xml_catalog` 都按 **name 排序**输出——HashMap 的迭代顺序逐进程随机，而技能目录进的是系统提示前缀，顺序稳定是 prompt cache 命中的前提。`list_sync` 拿不到读锁时返回空表，需要"一条都不能漏"的调用方应使用 `list`。
 
 `tools.rs` 把技能变成三个工具：`list_skills` / `load_skill` / `search_skills`（`lib.rs:19`）。
 
@@ -1329,7 +1330,7 @@ async fn save(&self, conversation: &Conversation) -> Result<(), ConversationErro
 
 ### 16.6 已知细节
 
-- `compact_history` 是**有损且硬编码**的：保留 system prompt、插入一句固定的英文摘要、保留最后 N 条（`types.rs:395-425`），**不调用模型**。
+- `compact_history` 是**有损且不调用模型**的：保留 system prompt、插入一句"已裁剪 N 条，磁盘文件为准"的提示、保留最后 N 条（`types.rs`）。窗口边界会向前回退，避免以孤立的 tool result 开头（provider 会拒绝）；早先版本插入的固定"摘要"是**虚构内容**（没有任何模型读过被删的对话），已删除。
 - 同一 crate 内共存两个 token 估算器：`recalculate_stats` 用 `ContextBuffer::calculate_message_tokens`，`generate_stats_report` 用 `char_count / 3`（`types.rs:471`）。图片按 `mime_type.len() + 24` 计，刻意不数 base64（`types.rs:454-458`）。
 - `fork` 设 `title_source = "auto"`，尽管它自己铸造了 `(Fork)` 标题——自动命名器可能覆盖这个标签。`[INFERENCE]`
 - `ConversationStatus::{Deleted, Paused}` 存在但无人设置：`delete` 直接删行，`archive` 是唯一改 status 的入口。
@@ -1380,7 +1381,7 @@ Ratatui 全宽终端，单事件通道驱动的状态机。`App` 有 74 个 pub 
 0. pending_question  → handle_question_key（agent 被阻塞在这里）
 1. picker.is_open    → picker.handle_key → handle_picker_selection
 2. mode == Help      → 自己的滚动键；只有全局键与 Esc 能穿透
-3. 全局键：Ctrl+C 中断 / Ctrl+Q 退出 / Ctrl+N 新会话 / Ctrl+P 切拓扑 /
+3. 全局键：Ctrl+C 中断 / Ctrl+Q 退出 / Ctrl+N 新会话（run 进行中会被拒绝） / Ctrl+P 切拓扑 /
    Ctrl+B 侧栏 / Ctrl+O 展开详情 / Ctrl+L 链接选择器 / Ctrl+H 帮助 /
    Ctrl+T 时间轴 / PageUp·Down ±10 行 / Home·End / Shift·Alt+↑↓ ±1 行 /
    Tab（参数轮转 → 命令补全 → 焦点循环）/ BackTab（参数反向 → 模式轮转）/
@@ -1490,6 +1491,8 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 默认值（`App::new`）：`temperature = 0.2`、`max_turns = 30`、`request_timeout_ms = 120_000`、tick 50ms、`execution_mode = AutoRouter`、`markdown_enabled = true`、`timeline_visible = true`、`ask_user_enabled = true`、`metrics.enabled = true`、`details_expanded = false`。
 
+`max_turns` 现在真正进入 `AgentConfig`（两条执行路径都用 `with_max_turns`），且 `/config max_turns 0` 被拒绝——引擎在首轮之前就检查 `turn >= max`，`0` 会让每次 run 立即结束。项目级 `.thunder/config.json` 的 `agent.maxTurns` 仍可覆盖它（root 在此之后应用该层）。
+
 ---
 
 ## 18. 横切关注点
@@ -1574,7 +1577,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | `ThunderPlugin::tool_gate` | `root/plugin.rs:297` | `execute` 忽略它，只装 mode 插件 |
 | `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:737-745` 填充 |
 | `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
-| `render_sidebar` | `tui/ui/sidebar.rs:9` | `draw` 从不调用 |
+| ~~`render_sidebar`~~ | ~~`tui/ui/sidebar.rs:9`~~ | **已修**：`ui/mod.rs:66` 在 `show_sidebar` 时调用 |
 以上四项是"接线存在、无人拉"；`thunder-runtime` 是独立二进制、`MemoryConversationStore` 由 TUI 的 `StandardHostBuilder` 正常使用，**不属于**死接线。（`McpServerConfig::timeout_ms` 曾在此列，已在 §15.2.2 接上消费者，移出。）
 
 ### 18.5 已知功能缺陷
@@ -1588,6 +1591,13 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | ~~`read_file` 的 10 MB 上限可被任意 `limit` 绕过~~ | ~~中~~ **已修复** | 大文件不再走整读：`limit`/`offset` 只选中流式窗口（`BufReader::lines`，`pack-code/builtin/fs.rs` 的 `read_streamed`），流式输出另有 512 KiB 预算封顶并带截断提示；无分页的大文件仍拒（原文案不变）；stat-then-read 竞态有事后长度复核。回归测试 `pack-code/tests/code_tools_test.rs` 的 `read_file_large_*` 两条 | 传 `limit` 即绕过、大文件整读入内存的问题已消除 |
 | ~~`ActivePluginSet::dispatch_event` 无调用方~~ | ~~中~~ **已修复** | 根因与修复见 §11.1.1；`RootRunHandle::take_events` 现为唯一派发点 |
 | 技能目录会把 `README.md` 当技能加载 | 低 | `skills/loader.rs:81-86,70-74` | 系统提示里出现意外技能条目 |
+| ~~`ContextInput::Messages`/`Buffer` 让转录里的旧 system 消息压过宿主新装配的提示~~ | ~~高~~ **已修复** | `engine.rs` 的 `spawn_loop` 现在对所有输入形态统一 `set_system_prompt`（`config.system_prompt` 是该 run 的事实来源）；回归测试 `loop/tests/system_prompt_authority_test.rs` 4 条 | 修复前 AGENTS.md / `systemPromptFile` / 技能目录 / 插件提示在 TUI 与 daemon 上从第二轮起全部失效 |
+| ~~运行中切换会话会把两次 run 的输出拼进同一份转录~~ | ~~高~~ **已修复** | `new_session`/`load_conversation` 在 `cancel_token` 或非 Idle 状态时拒绝切换（`app.rs` 的 `refuse_session_switch_while_running`）；`AgentFinished` 现在携带 `run_id`，与 `active_run_id` 不符的迟到结果被丢弃；回归测试 `tui/tests/run_lifecycle_guard_test.rs` | 修复前 Ctrl+N / `/new` / 侧栏 LoadSession 在 run 中会污染目标会话 |
+| ~~`MaxTurnsExceeded`/`BudgetExceeded` 时丢弃引擎转录~~ | ~~中~~ **已修复** | 非 `Done` 分支先采用 `authoritative_messages`，预算耗尽视为可续跑而非错误 | 修复前下一轮从宿主不完整的视图继续，工具结果丢失 |
+| ~~`/config max_turns` 只改显示值~~ | ~~中~~ **已修复** | TUI 两条执行路径改用 `with_max_turns(self.max_turns)`；`0` 被拒绝 | 修复前该配置项对实际运行无影响 |
+| ~~daemon 把 `Cancelled` 报成 `TaskCompleted`~~ | ~~中~~ **已修复** | `service.rs` 现在把 `Cancelled` 与 `Error` 一并映射到 `TaskFailed` | 修复前客户端无法区分"跑完了"与"被取消" |
+| ~~runtime 的 pending 工具表只按 `call_id` 索引、且等待不可取消~~ | ~~中~~ **已修复** | 键改为 `(run_id, call_id)`；`RemoteTool`/`RemoteGate` 用 `select!` 监听 run 的取消令牌；回归测试 `runtime/src/remote.rs` 3 条 | 修复前跨 run 的迟到 `tool_result` 可能答错调用，取消后任务仍挂起 |
+| ~~`ThunderRoot::run()` 不消费事件流~~ | ~~中~~ **已修复** | 该便捷路径现在 `take_events()` 并排空，插件 `on_event` 与状态/指标代理随之生效 | 修复前 `run()` 的插件全程静默 |
 | 结构化事件送达超过 5s 即被计数并告警 | 中 | `engine.rs` 的 `EventDropCounters`（`types/event.rs`）：micro-delta 走 `try_send` 计数，结构化事件 5s  deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读，结算时汇总告警。仍不阻塞引擎（行为不变），但不再是"静默丢弃" | 消费者被压满超过 5 秒时宿主可从计数得知记录不完整（曾写作"不丢"，现为"丢了能知道"） |
 | ~~审批弹窗不带"到底要跑什么"~~ | ~~中~~ **已修复** | 门算出 `detail = describe_call(args)`，内核经 `UiRequest::Select.detail` 透传（`executor.rs` 的 `ask`），TUI 拼进问题正文、daemon 经 flatten 透传给面板（`protocol.rs` 的 `UiRequest` 变体），缺省旧面板忽略。回归测试 `loop/tests/approval_detail_test.rs` + TUI `tui_approval_dialog_shows_what_is_being_approved` | 用户看到的不再只是 `Run bash` |
 | TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现 | 低 | `ALL_COMMANDS` 表里 `export` 带 `save`、`timeline` 带 `rail`、`health` 带 `status`（`commands.rs:69-302`），但 `execute_slash_command` 的分派分支只认 `"export" \| "dump"`、`"timeline"`、`"health" \| "doctor"`（`app.rs:3515,3651,3694`） | 这三个别名会进补全与 `/help`，敲下去却落到"未知命令" |

@@ -242,6 +242,7 @@ fn thinking_survives_the_authoritative_replacement() {
         ChatMessage::assistant(Some(SECOND_ANSWER.to_string()), None),
     ];
     app.handle_agent_finished(
+        None,
         "agent_1".to_string(),
         true,
         Some(SECOND_ANSWER.to_string()),

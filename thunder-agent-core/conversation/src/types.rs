@@ -409,8 +409,9 @@ impl Conversation {
         }
     }
 
-    /// Compact conversation history by keeping the initial system prompt, summarizing
-    /// older turns into a single summary message, and retaining the last `keep_recent_messages`.
+    /// Compact conversation history by keeping the initial system prompt,
+    /// replacing the dropped turns with a notice saying what was removed, and
+    /// retaining the last `keep_recent_messages`.
     /// Returns (count_before, count_after).
     pub fn compact_history(&mut self, keep_recent_messages: usize) -> (usize, usize) {
         let count_before = self.messages.len();
@@ -419,23 +420,60 @@ impl Conversation {
         }
 
         // The kernel ships no default prompt; a conversation without one simply
-        // summarises the turns it has.
+        // trims the turns it has.
         let sys_prompt = self.system_prompt.clone().unwrap_or_default();
 
-        let recent_slice: Vec<_> = self
+        // Index 0 is the pinned prompt; a system message directly after it is a
+        // checkpoint summary written by the loop's own compaction. Both are
+        // part of the prefix, never part of the turn window — if they were,
+        // either one could be "removed" and then dropped, losing the summary
+        // and putting a stale copy of the prompt back at index 0.
+        let prefix = if self
             .messages
-            .iter()
-            .rev()
-            .take(keep_recent_messages)
-            .cloned()
-            .collect();
+            .get(1)
+            .is_some_and(|m| matches!(m, ChatMessage::System { .. }))
+        {
+            2
+        } else {
+            1
+        };
 
+        // The window never starts inside the prefix, and `keep_recent_messages
+        // == 0` puts it at the end — an index that is valid to slice but not to
+        // dereference, hence the bound below.
+        let mut start = self
+            .messages
+            .len()
+            .saturating_sub(keep_recent_messages)
+            .max(prefix)
+            .min(self.messages.len().saturating_sub(1));
+
+        // Never start the kept window on a tool result: its tool call would be
+        // gone, and a provider rejects an orphaned result.
+        while start > prefix && matches!(self.messages[start], ChatMessage::Tool { .. }) {
+            start -= 1;
+        }
+
+        let recent_slice: Vec<_> = self.messages[start..].to_vec();
+        let removed = start.saturating_sub(prefix);
+
+        // State what actually happened. An earlier version inserted a
+        // fabricated "summary" that described work no model had read, which is
+        // worse than no summary: the next turn would reason from it.
         let mut new_msgs = vec![
             ChatMessage::system(sys_prompt),
-            ChatMessage::system("Summary of earlier conversation: dialogue turns discussed system tasks, code reviews, skills and execution instructions."),
+            ChatMessage::user(format!(
+                "[Earlier context trimmed: {removed} message(s) removed to fit the context window. \
+                 The files on disk are the source of truth — re-read anything you need.]"
+            )),
         ];
 
-        for m in recent_slice.into_iter().rev() {
+        // The checkpoint summary sits after the prompt, before the notice.
+        if prefix == 2 {
+            new_msgs.insert(1, self.messages[1].clone());
+        }
+
+        for m in recent_slice {
             new_msgs.push(m);
         }
 
