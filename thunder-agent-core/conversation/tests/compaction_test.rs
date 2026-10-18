@@ -81,7 +81,10 @@ fn a_zero_keep_count_does_not_panic() {
     // the end, so `0` trims to system + notice + that message.
     assert_eq!(after, 3);
     assert_eq!(conv.messages[0].content_str(), Some("SYSTEM PROMPT"));
-    assert_eq!(conv.messages.last().unwrap().content_str(), Some("answer 2"));
+    assert_eq!(
+        conv.messages.last().unwrap().content_str(),
+        Some("answer 2")
+    );
 }
 
 #[test]
