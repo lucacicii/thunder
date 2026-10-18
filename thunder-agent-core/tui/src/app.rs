@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_pack_code::autonomous_system_prompt;
 use thunder_agent_pack_code::builtin::*;
-use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
 use thunder_agent_providers::prelude::*;
 use thunder_agent_root::prelude::*;
 use thunder_conversation::prelude::*;
@@ -345,7 +345,7 @@ impl App {
         let model = ModelRef::parse(&model_name.into());
         let initial_conv = Conversation::new(format!("sess_{}", now_ms()))
             .with_title("New Conversation")
-            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(autonomous_system_prompt(Default::default()));
 
         Self {
             mode: ViewMode::Chat,
@@ -2612,7 +2612,7 @@ impl App {
         let new_id = format!("sess_{}", now_ms());
         self.conversation = Conversation::new(new_id)
             .with_title("New Conversation")
-            .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT);
+            .with_system_prompt(autonomous_system_prompt(Default::default()));
         self.title_attempted = false;
         self.clear_run_state();
         self.clear_session_details();
@@ -4235,6 +4235,10 @@ impl App {
                 // The TUI is single-run, but a route is still required: the
                 // plugin sidecar refuses calls that cannot be attributed.
                 route: Some(run_route),
+                // The terminal preview renderer draws tables but no diagrams
+                // (`ui/markdown.rs` caps a fenced block at three rows), so the
+                // prompt must not ask for a form this surface cannot show.
+                render_capabilities: Default::default(),
             };
 
             match root.execute(context_input, options).await {

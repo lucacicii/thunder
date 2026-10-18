@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use thunder_agent_loop::types::event::ObservedEvent;
 use thunder_agent_loop::types::ui::{NotifyLevel, UiRequest, UiSource};
 use thunder_agent_providers::ModelDescriptor;
+use thunder_agent_root::prelude::RenderCapabilities;
 
 /// The revision of the NDJSON protocol on stdin/stdout.
 ///
@@ -74,6 +75,12 @@ pub enum DaemonRequest {
         /// `user_question`; interactive hosts may explicitly set it to `false`.
         #[serde(default)]
         headless: bool,
+        /// Markdown forms the host's transcript can actually draw, as
+        /// `{"diagrams": true}`. Absent means the Markdown baseline only, which
+        /// is the safe answer: a client that never sends it is never told to
+        /// emit a ` ```mermaid ` fence it cannot render.
+        #[serde(default, alias = "renderCapabilities")]
+        render_capabilities: Option<RenderCapabilities>,
     },
     /// Cooperatively pause a running task at the next tool boundary
     PauseTask { id: Option<String>, task_id: String },
@@ -419,6 +426,46 @@ mod tests {
             headless_req,
             DaemonRequest::RunTask { headless: true, .. }
         ));
+    }
+
+    /// A host that can draw a diagram says so; one that cannot sends nothing.
+    /// The distinction is load-bearing: the prompt's diagram rule is assembled
+    /// from this field, so a client that omits it must never be asked for a
+    /// ` ```mermaid ` fence it cannot render.
+    #[test]
+    fn run_task_carries_the_render_capabilities_it_was_given() {
+        let default_req = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-1",
+            "prompt": "hello"
+        }))
+        .expect("parses");
+        match default_req {
+            DaemonRequest::RunTask {
+                render_capabilities,
+                ..
+            } => assert!(
+                render_capabilities.is_none(),
+                "an absent field must stay absent, not default to a rich client"
+            ),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // The camelCase alias is what a TypeScript host naturally writes.
+        let rich = parse(serde_json::json!({
+            "method": "run_task",
+            "task_id": "task-2",
+            "prompt": "hello",
+            "renderCapabilities": { "diagrams": true }
+        }))
+        .expect("parses");
+        match rich {
+            DaemonRequest::RunTask {
+                render_capabilities: Some(caps),
+                ..
+            } => assert!(caps.diagrams),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     /// A host that owns its provider configuration can hand the daemon a full

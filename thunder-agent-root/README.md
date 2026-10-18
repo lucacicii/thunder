@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **`mcp`** | MCP 客户端 | 触发词动态激活 | 连接外部 MCP 服务器并暴露远程工具 |
 | **`memory`** | 长期记忆 | **基线常驻** | 分层加载 `.thunder` 的 `THUNDER.md` / `memory/*.md`，追加进系统提示 |
 | **`mode`** | 审批模式门 | **宿主显式安装** | 实现 `ToolGate`：`plan` / `ask` / `acceptEdits` / `yolo`，并携带 `write_plan` / `exit_plan_mode`；plan 下能证明只读的 shell 命令免问（判据在内核 `read_only.rs`）；档位变化经 `set_mode_announcing` 播报（同值不播报）；`with_persisted_rules` 把「always allow」落盘到 `<数据根>/permissions.json` |
-| **`web`** | 网页工具 | **基线常驻** | `web_fetch`：抓取 URL、HTML 转 markdown，用 utility 模型按 prompt 提炼答案（无 utility 模型时回退 markdown）；`web_search`：走免 key 引擎（DuckDuckGo 主、Exa 兜底）返回标题/链接/摘要 |
+| **`web`** | 网页工具 | **基线常驻** | `web_fetch`：抓取 URL、HTML 转 markdown，用 utility 模型按 prompt 提炼答案（无 utility 模型时回退 markdown）；`web_search`：返回标题/链接/摘要。后端由 `web.search.provider` / `web.fetch.provider` 决定：默认走免 key 引擎（DuckDuckGo 主、Exa 兜底）与本地抓取；`auto` 时优先/兜底 DeepSeek 的 `/v1/tools/search` 与 `/v1/tools/fetch`（按请求计费）。DeepSeek 搜索会把用户原始问题作为 `ori_question` 一起发送以提升意图理解 |
 
 ---
 

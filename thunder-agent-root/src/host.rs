@@ -18,7 +18,7 @@ use thunder_agent_loop::types::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
-use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
+use thunder_agent_pack_code::{autonomous_system_prompt, RenderCapabilities};
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -55,6 +55,10 @@ pub struct RootRunOptions {
     /// run of a session so "always allow" rules and mid-session mode switches
     /// survive a turn; `None` creates a fresh one for this run only.
     pub mode_plugin: Option<Arc<ModePlugin>>,
+    /// What the surface this run talks to can draw. The default prompt's
+    /// presentation rules are assembled from it, so a host that cannot render
+    /// diagrams never asks the model for one.
+    pub render_capabilities: RenderCapabilities,
 }
 
 impl Default for RootRunOptions {
@@ -72,6 +76,7 @@ impl Default for RootRunOptions {
             steer_queues: None,
             ui: None,
             route: None,
+            render_capabilities: RenderCapabilities::default(),
         }
     }
 }
@@ -694,11 +699,12 @@ impl ThunderRoot {
         active_set.dispatch_init(&ctx).await?;
 
         // 4. Construct Root AgentLoop
+        let default_prompt = autonomous_system_prompt(options.render_capabilities);
         let mut base_prompt = self
             .config
             .system_prompt
             .as_deref()
-            .unwrap_or(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
+            .unwrap_or(default_prompt.as_str())
             .to_string();
         // 4a. Discover and append AGENTS.md / CLAUDE.md instruction context files (aligning with Pi)
         // Two roots: the user's own cross-tool dirs, and thunder's data root, which

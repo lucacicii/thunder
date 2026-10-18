@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent, TurnStats};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use thunder_agent_loop::AgentRunResult;
-use thunder_agent_pack_code::DEFAULT_AUTONOMOUS_SYSTEM_PROMPT;
+use thunder_agent_pack_code::autonomous_system_prompt;
 use thunder_conversation::prelude::*;
 use tokio::sync::RwLock;
 
@@ -165,7 +165,7 @@ impl ThunderPlugin for ConversationPlugin {
             let conv = loaded.unwrap_or_else(|| {
                 Conversation::new(&ctx.session_id)
                     .with_title("Thunder Root Session")
-                    .with_system_prompt(DEFAULT_AUTONOMOUS_SYSTEM_PROMPT)
+                    .with_system_prompt(autonomous_system_prompt(Default::default()))
             });
 
             *active = Some(conv);

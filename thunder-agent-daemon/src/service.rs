@@ -574,6 +574,7 @@ impl DaemonService {
                 attachments,
                 headless,
                 mode,
+                render_capabilities,
             } => {
                 self.handle_run_task(
                     id,
@@ -589,6 +590,7 @@ impl DaemonService {
                     attachments,
                     headless,
                     mode,
+                    render_capabilities.unwrap_or_default(),
                 )
                 .await;
             }
@@ -1154,6 +1156,7 @@ impl DaemonService {
         attachments: Option<Vec<crate::protocol::Attachment>>,
         headless: bool,
         mode: Option<String>,
+        render_capabilities: RenderCapabilities,
     ) {
         // Reject mock-mode requests early when this build has no mock compiled
         // in: a release daemon must never imply it produced real model output.
@@ -1660,6 +1663,7 @@ impl DaemonService {
                 // is the key a plugin's reverse RPC is authorised against.
                 route: Some(run_task_id),
                 mode_plugin: Some(run_policy),
+                render_capabilities,
             };
 
             let initial_messages_count = conversation.messages.len();
