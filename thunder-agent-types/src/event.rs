@@ -1,5 +1,5 @@
-use crate::types::message::ToolCall;
-use crate::types::tool::ToolExecutionResult;
+use crate::message::ToolCall;
+use crate::tool::ToolExecutionResult;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -59,11 +59,11 @@ impl EventDropCounters {
         self.micro_deltas() + self.structural()
     }
 
-    pub(crate) fn record_micro(&self) {
+    pub fn record_micro(&self) {
         self.micro_deltas.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_structural(&self) {
+    pub fn record_structural(&self) {
         self.structural.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -163,7 +163,7 @@ pub enum AgentEvent {
     /// Boxed: a trace dwarfs every other variant, and events are cloned once per
     /// subscriber.
     ToolTrace {
-        trace: Box<crate::tools::trace::ToolTrace>,
+        trace: Box<crate::trace::ToolTrace>,
     },
     TelemetryNotice {
         turn: usize,

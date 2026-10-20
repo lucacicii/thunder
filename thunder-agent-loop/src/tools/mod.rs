@@ -1,6 +1,6 @@
 pub mod executor;
 pub mod guard;
-pub mod notice;
+pub use thunder_agent_types::notice;
 pub mod read_only;
 pub mod registry;
 pub mod registry_tools;

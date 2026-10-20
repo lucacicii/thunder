@@ -1,4 +1,4 @@
-use crate::types::event::TurnStats;
+use crate::event::TurnStats;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

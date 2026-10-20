@@ -2299,6 +2299,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thunder-agent-types",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2419,6 +2420,15 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "thunder-agent-types"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
