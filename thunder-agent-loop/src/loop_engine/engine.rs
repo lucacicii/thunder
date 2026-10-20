@@ -177,6 +177,13 @@ impl AgentLoop {
         self
     }
 
+    /// Install the reference adapter's approval gate and dialog surface.
+    ///
+    /// **Only the reference adapter consults this.** When the host supplies its
+    /// own [`Tools`](crate::seam::Tools) through [`Self::with_tools`], tool
+    /// execution goes straight to that implementation and the gate, scope,
+    /// interceptors and executor configured here are never consulted — the host
+    /// owns those decisions itself.
     pub fn with_tool_gate(
         mut self,
         gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
@@ -331,6 +338,12 @@ impl AgentLoop {
     /// The loop then knows nothing but `specs()` and `call()`: no approval, no
     /// guard, no trace. Whatever a call is allowed to do is decided inside the
     /// implementation.
+    /// Install the host's tools, replacing the reference adapter.
+    ///
+    /// The loop then knows nothing but `specs()` and `call()`. Everything
+    /// configured for the reference adapter — gate, scope, interceptors, the
+    /// executor, the trace sink — is bypassed: a host that supplies tools owns
+    /// approval, policy, tracing and sandboxing.
     pub fn with_tools(mut self, tools: Arc<dyn crate::seam::Tools>) -> Self {
         self.tools_override = Some(tools);
         self
