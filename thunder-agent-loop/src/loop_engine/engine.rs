@@ -454,15 +454,19 @@ impl AgentLoop {
                 host: self.trace_sink.clone(),
                 drops: Arc::clone(&self.drop_counters),
             }));
-        let tool_executor =
-            self.tool_executor
-                .clone()
-                .with_event_sink(Arc::new(ChannelEventSink {
-                    agent_id: self.id.clone(),
-                    dispatcher: self.event_dispatcher.clone(),
-                    event_sender: event_sender.clone(),
-                    drops: Arc::clone(&self.drop_counters),
-                }));
+        // One sink for this run, shared by the executors and by the tool seam:
+        // a host-supplied `Tools` must be able to report the same business
+        // events a built-in tool does.
+        let run_events: Arc<dyn crate::types::tool::ToolEventSink> = Arc::new(ChannelEventSink {
+            agent_id: self.id.clone(),
+            dispatcher: self.event_dispatcher.clone(),
+            event_sender: event_sender.clone(),
+            drops: Arc::clone(&self.drop_counters),
+        });
+        let tool_executor = self
+            .tool_executor
+            .clone()
+            .with_event_sink(Arc::clone(&run_events));
         // The seam the loop actually uses. A host-supplied implementation wins;
         // otherwise the reference adapter wraps the registry and the per-run
         // executor (with this run's event sink already installed).
@@ -1318,6 +1322,7 @@ impl AgentLoop {
                     config.route.as_deref(),
                     &cancel_token,
                     Some(std::time::Duration::from_millis(config.request_timeout_ms)),
+                    Some(Arc::clone(&run_events)),
                     sequential,
                 )
                 .await;

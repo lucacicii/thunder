@@ -21,9 +21,10 @@ use crate::tools::executor::{ExecutedToolResult, ToolExecutor};
 use crate::tools::notice::SystemNotice;
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;
-use crate::types::tool::{ToolDefinition, ToolExecutionContext, ToolExecutionResult};
+use crate::types::tool::{ToolDefinition, ToolEventSink, ToolExecutionContext, ToolExecutionResult};
 use futures_util::future::BoxFuture;
 use futures_util::future::join_all;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -139,6 +140,12 @@ pub struct ToolCallContext<'a> {
     pub route: Option<&'a str>,
     pub cancel: &'a CancellationToken,
     pub timeout: Option<Duration>,
+    /// The run's business-event sink, when the kernel has one.
+    ///
+    /// The loop owns the *run's* stream, so it is the only party that can hand a
+    /// tool the channel its non-model events (a file change, a validation
+    /// failure) belong on. Opaque by design: the kernel never interprets it.
+    pub events: Option<Arc<dyn ToolEventSink>>,
 }
 
 impl<'a> ToolCallContext<'a> {
@@ -148,6 +155,7 @@ impl<'a> ToolCallContext<'a> {
             turn: self.turn,
             cancellation_token: self.cancel.clone(),
             route: self.route.map(str::to_string),
+            event_sink: self.events.clone(),
             ..Default::default()
         }
     }
@@ -212,19 +220,16 @@ impl Tools for RegistryTools {
         ctx: ToolCallContext<'a>,
     ) -> BoxFuture<'a, ToolOutcome> {
         Box::pin(async move {
-            let started = Instant::now();
             let result = self
                 .executor
                 .run_tool(call, ctx.execution_context(), ctx.timeout)
                 .await;
             let mut outcome: ToolOutcome = result.into();
-            // The executor already measured inside the funnel (decision + ask +
-            // exec). Keep its number when it has one; the seam itself does not
-            // need it, but the loop's events do.
+            // The executor already measured inside the funnel; the seam only
+            // needs a sane byte count when the adapter had none to report.
             if outcome.original_bytes == 0 && !outcome.is_error {
                 outcome.original_bytes = outcome.output.len();
             }
-            let _ = started;
             outcome
         })
     }
@@ -247,6 +252,7 @@ pub async fn execute_batch(
     route: Option<&str>,
     cancel: &CancellationToken,
     timeout: Option<Duration>,
+    events: Option<Arc<dyn ToolEventSink>>,
     sequential: bool,
 ) -> Vec<ExecutedToolResult> {
     if calls.is_empty() {
@@ -256,13 +262,13 @@ pub async fn execute_batch(
     if sequential {
         let mut out = Vec::with_capacity(calls.len());
         for call in calls {
-            out.push(run_one(tools, call, turn, route, cancel, timeout).await);
+            out.push(run_one(tools, call, turn, route, cancel, timeout, events.clone()).await);
         }
         return out;
     }
 
     let futures = calls.iter().map(|call| {
-        run_one(tools, call, turn, route, cancel, timeout)
+        run_one(tools, call, turn, route, cancel, timeout, events.clone())
     });
     join_all(futures).await
 }
@@ -274,6 +280,7 @@ async fn run_one(
     route: Option<&str>,
     cancel: &CancellationToken,
     timeout: Option<Duration>,
+    events: Option<Arc<dyn ToolEventSink>>,
 ) -> ExecutedToolResult {
     // A cancelled run still owes a result for every call it announced. The
     // seam is not asked to execute in that case; the refusal is generated here.
@@ -291,6 +298,7 @@ async fn run_one(
         route,
         cancel,
         timeout,
+        events,
     };
     let outcome = tools.call(call, ctx).await;
     let mut result: ToolExecutionResult = outcome.into();
@@ -324,7 +332,6 @@ pub fn definitions(specs: &[ToolSpec]) -> Vec<ToolDefinition> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
     use std::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
@@ -399,6 +406,7 @@ mod tests {
             None,
             &CancellationToken::new(),
             None,
+            None,
             batch_is_sequential(&specs, &calls),
         )
         .await;
@@ -421,6 +429,7 @@ mod tests {
             None,
             &CancellationToken::new(),
             None,
+            None,
             true,
         )
         .await;
@@ -434,7 +443,7 @@ mod tests {
         let calls = vec![call("1", "a"), call("2", "a")];
         let token = CancellationToken::new();
         token.cancel();
-        let out = execute_batch(tools.as_ref(), &calls, 1, None, &token, None, false).await;
+        let out = execute_batch(tools.as_ref(), &calls, 1, None, &token, None, None, false).await;
         assert_eq!(out.len(), 2, "pairing invariant");
         assert!(out.iter().all(|r| r.result.is_error));
         assert!(tools.calls.lock().unwrap().is_empty(), "nothing ran");
@@ -452,6 +461,7 @@ mod tests {
             1,
             None,
             &CancellationToken::new(),
+            None,
             None,
             false,
         )

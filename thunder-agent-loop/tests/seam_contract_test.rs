@@ -130,6 +130,10 @@ impl Tools for PhantomTools {
             let parsed: serde_json::Value =
                 serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
             self.calls.lock().unwrap().push(parsed);
+            // The run's business-event channel must reach a host-supplied tool.
+            if let Some(sink) = &_ctx.events {
+                sink.emit_custom("phantom_probe", json!({ "n": 1 }));
+            }
             if self.fail {
                 ToolOutcome::error("phantom refused")
             } else {
@@ -205,4 +209,31 @@ async fn specs_are_the_only_thing_the_loop_asks_for() {
 
     let sent = client.sent_tools.lock().unwrap();
     assert_eq!(sent.first().map(|v| v.as_slice()), Some(&["phantom".to_string()][..]));
+}
+
+#[tokio::test]
+async fn a_host_tool_can_emit_on_the_runs_event_stream() {
+    let client = ScriptedLLM::new(1);
+    let tools = PhantomTools::new(false);
+
+    let agent = AgentLoop::new(config())
+        .with_custom_client(client)
+        .with_tools(tools.clone());
+
+    let mut handle = agent.start("go", None).expect("start");
+    let mut events = handle.take_events().expect("events");
+
+    let mut saw_probe = false;
+    while let Some(observed) = events.recv().await {
+        if let thunder_agent_loop::types::event::AgentEvent::Custom { kind, .. } = &observed.event {
+            if kind == "phantom_probe" {
+                saw_probe = true;
+            }
+        }
+    }
+
+    let result = handle.join().await.expect("join");
+    assert_eq!(result.finish_reason, FinishReason::Done);
+    assert!(saw_probe, "the run's sink must be handed to a host-supplied Tools");
+    assert_eq!(tools.calls.lock().unwrap().len(), 1);
 }
