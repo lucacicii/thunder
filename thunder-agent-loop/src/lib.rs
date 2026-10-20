@@ -9,6 +9,7 @@ pub mod cache;
 pub mod core;
 pub mod loop_engine;
 pub mod pruning;
+pub mod seam;
 pub mod stream;
 pub mod tools;
 pub mod types;
@@ -28,6 +29,9 @@ pub mod prelude {
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
     pub use crate::loop_engine::gate::{AcceptAllGate, CompletionGate, GateRequest, GateVerdict};
     pub use crate::loop_engine::handle::AgentHandle;
+    pub use crate::seam::{
+        Concurrency, RegistryTools, ToolCallContext, ToolOutcome, ToolSpec, Tools,
+    };
     pub use crate::pruning::error_detector::{
         extract_context_overflow_limit, is_context_overflow_error,
     };

@@ -335,6 +335,16 @@ pub trait AgentTool: Send + Sync {
         ToolEffect::of(&self.definition().function.name)
     }
 
+    /// How this tool may be scheduled relative to its batch peers.
+    ///
+    /// The loop only *schedules*; it never judges. A tool that must not run
+    /// concurrently with its siblings (single writer, serial port, a locking
+    /// editor) says [`Concurrency::Sequential`](crate::seam::Concurrency::Sequential)
+    /// here and the whole batch runs in `tool_calls` order.
+    fn concurrency(&self) -> crate::seam::Concurrency {
+        crate::seam::Concurrency::Parallel
+    }
+
     async fn execute(
         &self,
         args: serde_json::Value,

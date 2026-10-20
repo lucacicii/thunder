@@ -50,6 +50,10 @@ pub struct AgentLoop {
     llm_client: Arc<dyn LLMClientTrait>,
     tool_registry: ToolRegistry,
     tool_executor: ToolExecutor,
+    /// Host-supplied tools. `None` means "use the reference adapter over the
+    /// registry + executor". Installing one severs the loop's dependency on
+    /// the policy layer entirely.
+    tools_override: Option<Arc<dyn crate::seam::Tools>>,
     event_dispatcher: AgentEventDispatcher,
     scratchpad: ScratchpadManager,
     running: Arc<AtomicBool>,
@@ -118,6 +122,7 @@ impl AgentLoop {
             llm_client,
             tool_registry,
             tool_executor,
+            tools_override: None,
             event_dispatcher: AgentEventDispatcher::default(),
             scratchpad,
             running: Arc::new(AtomicBool::new(false)),
@@ -321,6 +326,16 @@ impl AgentLoop {
         self
     }
 
+    /// Install the host's tools, replacing the reference adapter.
+    ///
+    /// The loop then knows nothing but `specs()` and `call()`: no approval, no
+    /// guard, no trace. Whatever a call is allowed to do is decided inside the
+    /// implementation.
+    pub fn with_tools(mut self, tools: Arc<dyn crate::seam::Tools>) -> Self {
+        self.tools_override = Some(tools);
+        self
+    }
+
     pub fn scratchpad(&self) -> &ScratchpadManager {
         &self.scratchpad
     }
@@ -448,6 +463,16 @@ impl AgentLoop {
                     event_sender: event_sender.clone(),
                     drops: Arc::clone(&self.drop_counters),
                 }));
+        // The seam the loop actually uses. A host-supplied implementation wins;
+        // otherwise the reference adapter wraps the registry and the per-run
+        // executor (with this run's event sink already installed).
+        let tools: Arc<dyn crate::seam::Tools> = match self.tools_override.clone() {
+            Some(tools) => tools,
+            None => Arc::new(crate::seam::RegistryTools::new(
+                tool_registry.clone(),
+                tool_executor.clone(),
+            )),
+        };
         let dispatcher = self.event_dispatcher.clone();
         let drop_counters = Arc::clone(&self.drop_counters);
         let completion_gate = self.completion_gate.clone();
@@ -602,6 +627,12 @@ impl AgentLoop {
 
                 let turn = tracker.next_turn();
                 let turn_start_time = Instant::now();
+
+                // The only tool input the loop has. Computed once per turn and
+                // reused by every request of that turn (stream retries and the
+                // cache warmer included), so the prefix stays byte-stable.
+                let tool_specs = tools.specs();
+                let tool_defs = crate::seam::definitions(&tool_specs);
                 let now_ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -673,7 +704,7 @@ impl AgentLoop {
                 loop {
                     let request_opts = ChatRequestOptions {
                         messages: context.get_messages(),
-                        tools: tool_registry.get_definitions(),
+                        tools: tool_defs.clone(),
                         model: Some(config.model.clone()),
                         temperature: config.temperature,
                         top_p: config.top_p,
@@ -1037,7 +1068,7 @@ impl AgentLoop {
                             crate::cache::warmer::WarmSnapshot {
                                 model: config.model.clone(),
                                 messages: context.get_messages(),
-                                tools: tool_registry.get_definitions(),
+                                tools: tool_defs.clone(),
                                 temperature: config.temperature,
                                 top_p: config.top_p,
                                 thinking_level: config.thinking_level.clone(),
@@ -1279,15 +1310,17 @@ impl AgentLoop {
                     info!(agent_id = %agent_id, turn, "Resumed from pause");
                 }
 
-                let exec_results = tool_executor
-                    .execute_all(
-                        &tool_calls,
-                        turn,
-                        cancel_token.clone(),
-                        config.route.clone(),
-                        Some(std::time::Duration::from_millis(config.request_timeout_ms)),
-                    )
-                    .await;
+                let sequential = crate::seam::batch_is_sequential(&tool_specs, &tool_calls);
+                let exec_results = crate::seam::execute_batch(
+                    tools.as_ref(),
+                    &tool_calls,
+                    turn,
+                    config.route.as_deref(),
+                    &cancel_token,
+                    Some(std::time::Duration::from_millis(config.request_timeout_ms)),
+                    sequential,
+                )
+                .await;
 
                 for executed in exec_results {
                     tracker.record_tool_execution(executed.result.duration_ms);
