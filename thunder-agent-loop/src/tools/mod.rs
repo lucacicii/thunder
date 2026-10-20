@@ -3,6 +3,7 @@ pub mod guard;
 pub mod notice;
 pub mod read_only;
 pub mod registry;
+pub mod registry_tools;
 pub mod sanitizer;
 pub mod scratchpad;
 pub mod trace;

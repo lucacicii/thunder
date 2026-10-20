@@ -12,16 +12,17 @@
 //! implementation, i.e. in the host. The loop never asks "may I?"; it asks
 //! "what can I call?" and "please call this".
 //!
-//! The reference implementation here ([`RegistryTools`]) wraps today's
-//! `ToolRegistry` + `ToolExecutor`, so the seam is usable before the policy
-//! layer is physically relocated. A host that wants its own policy supplies its
-//! own `Tools` through [`AgentLoop::with_tools`](crate::AgentLoop::with_tools).
+//! This module is deliberately free of every policy type. The reference
+//! adapter lives in [`crate::tools::registry_tools`]; a host that wants its own
+//! policy supplies its own `Tools` through
+//! [`AgentLoop::with_tools`](crate::loop_engine::engine::AgentLoop::with_tools).
+//!
+//! `thunder-agent-loop/tests/kernel_boundary_test.rs` asserts that this file
+//! never mentions a policy type, so the boundary cannot erode by accident.
 
-use crate::tools::executor::{ExecutedToolResult, ToolExecutor};
 use crate::tools::notice::SystemNotice;
-use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;
-use crate::types::tool::{ToolDefinition, ToolEventSink, ToolExecutionContext, ToolExecutionResult};
+use crate::types::tool::{ToolDefinition, ToolEventSink, ToolExecutionResult};
 use futures_util::future::BoxFuture;
 use futures_util::future::join_all;
 use std::sync::Arc;
@@ -148,19 +149,6 @@ pub struct ToolCallContext<'a> {
     pub events: Option<Arc<dyn ToolEventSink>>,
 }
 
-impl<'a> ToolCallContext<'a> {
-    fn execution_context(&self) -> ToolExecutionContext {
-        ToolExecutionContext {
-            tool_call_id: self.tool_call_id.to_string(),
-            turn: self.turn,
-            cancellation_token: self.cancel.clone(),
-            route: self.route.map(str::to_string),
-            event_sink: self.events.clone(),
-            ..Default::default()
-        }
-    }
-}
-
 /// The host's tools, as the loop sees them.
 ///
 /// Contract for implementors:
@@ -180,59 +168,13 @@ pub trait Tools: Send + Sync {
     ) -> BoxFuture<'a, ToolOutcome>;
 }
 
-/// The reference implementation: today's registry + executor behind the seam.
-///
-/// Kept in the kernel crate deliberately — it is the *adapter*, not the loop.
-/// Moving it to the host is a mechanical relocation; the loop compiles and runs
-/// identically with it or with a host-supplied `Tools`.
-pub struct RegistryTools {
-    registry: ToolRegistry,
-    executor: ToolExecutor,
-}
-
-impl RegistryTools {
-    pub fn new(registry: ToolRegistry, executor: ToolExecutor) -> Self {
-        Self { registry, executor }
-    }
-}
-
-impl Tools for RegistryTools {
-    fn specs(&self) -> Vec<ToolSpec> {
-        // `ToolRegistry` stores tools in a `BTreeMap`, so this order is stable
-        // across runs — the property the prompt cache depends on.
-        self.registry
-            .get_definitions()
-            .into_iter()
-            .map(|definition| {
-                let concurrency = self
-                    .registry
-                    .get(&definition.function.name)
-                    .map(|tool| tool.concurrency())
-                    .unwrap_or_default();
-                ToolSpec::new(definition, concurrency)
-            })
-            .collect()
-    }
-
-    fn call<'a>(
-        &'a self,
-        call: &'a ToolCall,
-        ctx: ToolCallContext<'a>,
-    ) -> BoxFuture<'a, ToolOutcome> {
-        Box::pin(async move {
-            let result = self
-                .executor
-                .run_tool(call, ctx.execution_context(), ctx.timeout)
-                .await;
-            let mut outcome: ToolOutcome = result.into();
-            // The executor already measured inside the funnel; the seam only
-            // needs a sane byte count when the adapter had none to report.
-            if outcome.original_bytes == 0 && !outcome.is_error {
-                outcome.original_bytes = outcome.output.len();
-            }
-            outcome
-        })
-    }
+/// One settled call: the call the model asked for and the result the seam
+/// produced for it. Kept here (rather than reusing the executor's pair type) so
+/// the seam's signatures never mention a policy type.
+#[derive(Debug, Clone)]
+pub struct ExecutedCall {
+    pub tool_call: ToolCall,
+    pub result: ToolExecutionResult,
 }
 
 /// Run one batch of tool calls through the seam.
@@ -254,7 +196,7 @@ pub async fn execute_batch(
     timeout: Option<Duration>,
     events: Option<Arc<dyn ToolEventSink>>,
     sequential: bool,
-) -> Vec<ExecutedToolResult> {
+) -> Vec<ExecutedCall> {
     if calls.is_empty() {
         return Vec::new();
     }
@@ -281,11 +223,11 @@ async fn run_one(
     cancel: &CancellationToken,
     timeout: Option<Duration>,
     events: Option<Arc<dyn ToolEventSink>>,
-) -> ExecutedToolResult {
+) -> ExecutedCall {
     // A cancelled run still owes a result for every call it announced. The
     // seam is not asked to execute in that case; the refusal is generated here.
     if cancel.is_cancelled() {
-        return ExecutedToolResult {
+        return ExecutedCall {
             tool_call: call.clone(),
             result: ToolExecutionResult::error("Tool execution cancelled".to_string(), Duration::ZERO),
         };
@@ -303,7 +245,7 @@ async fn run_one(
     let outcome = tools.call(call, ctx).await;
     let mut result: ToolExecutionResult = outcome.into();
     result.duration_ms = started.elapsed().as_millis() as u64;
-    ExecutedToolResult {
+    ExecutedCall {
         tool_call: call.clone(),
         result,
     }

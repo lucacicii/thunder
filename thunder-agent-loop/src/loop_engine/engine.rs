@@ -472,7 +472,7 @@ impl AgentLoop {
         // executor (with this run's event sink already installed).
         let tools: Arc<dyn crate::seam::Tools> = match self.tools_override.clone() {
             Some(tools) => tools,
-            None => Arc::new(crate::seam::RegistryTools::new(
+            None => Arc::new(crate::tools::registry_tools::RegistryTools::new(
                 tool_registry.clone(),
                 tool_executor.clone(),
             )),

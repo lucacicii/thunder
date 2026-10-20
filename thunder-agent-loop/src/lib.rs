@@ -30,7 +30,7 @@ pub mod prelude {
     pub use crate::loop_engine::gate::{AcceptAllGate, CompletionGate, GateRequest, GateVerdict};
     pub use crate::loop_engine::handle::AgentHandle;
     pub use crate::seam::{
-        Concurrency, RegistryTools, ToolCallContext, ToolOutcome, ToolSpec, Tools,
+        Concurrency, ExecutedCall, ToolCallContext, ToolOutcome, ToolSpec, Tools,
     };
     pub use crate::pruning::error_detector::{
         extract_context_overflow_limit, is_context_overflow_error,
@@ -45,6 +45,7 @@ pub mod prelude {
         AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace, ToolTraceSink,
         TraceInterceptor, TraceResult, TraceTiming, TRACE_SCHEMA,
     };
+    pub use crate::tools::registry_tools::RegistryTools;
     pub use crate::tools::Guard;
     pub use crate::types::config::{AgentConfig, ContextPruningConfig, LoopGuardConfig};
     pub use crate::types::error::AgentError;
