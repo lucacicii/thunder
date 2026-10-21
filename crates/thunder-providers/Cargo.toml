@@ -1,0 +1,29 @@
+[package]
+name = "thunder-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Multi-provider LLM catalog, config resolution and thinking-level probing for Thunder Agent"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thunder-protocol.workspace = true
+rpi-ai = { workspace = true }
+tokio = { workspace = true }
+tokio-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
