@@ -10,22 +10,21 @@
 
 ## 🚀 核心架构设计
 
-1. **一切皆插件（Microkernel Architecture）**：
-   - 宿主仅持有最小运行时调度能力，所有高级业务均以 `ThunderPlugin` 规范动态装配：
+1. **显式装配（Microkernel Architecture）**：
+   - 宿主只做两件事：提供工具（`ToolPack`）与提示词片段（`PromptSection`），并观察运行（`Observer`）；运行期准备走 `Prepared`。没有"插件注册表"，也没有关键词选择——注册即激活。
      - **`ConversationPlugin`**：多轮会话追踪、Turn 归纳与 Fs 原子持久化。
      - **`MemoryPlugin`**：分层加载 `.thunder` 长期记忆（`THUNDER.md` / `memory/*.md`），追加进系统提示。
      - **`SkillsPlugin`**：Playbook 技能库发现、Prompt 注入与动态加载工具。
      - **`McpPlugin`**：Model Context Protocol 远程服务连接与工具桥接。
      - **`MetricsPlugin`**：模型遥测——实时/平均 tok/s、token 明细、prompt cache 命中率、上下文占用与耗时；以 `metrics_update` 自定义事件随流推送，不侵入内核。
      - **`StatusPlugin`**：执行状态——Agent 此刻在思考/流式/跑哪个工具/等谁/是否暂停/跑完了；以 `agent_status` 自定义事件**仅在跃迁时**随流推送，是「现在在干什么」的唯一权威。
-2. **确定性极速意图路由（Zero-LLM Latency Activation）**：
-   - 彻底摒弃带来 1~2 秒延迟的二次 LLM 意图分类。
-   - `PluginSelector` 确立**确定性基线**：会话、技能、记忆、网页、遥测与执行状态插件对每次任务常驻激活；
-   - 复杂扩展（如 MCP 服务器等）仅在用户 Prompt 命中特定意图关键词时精准激活，兼顾**零额外延迟、最小 Token 消耗与最强可扩展性**。
+2. **注册即激活（No Hidden Routing）**：
+   - 没有选择器，也没有二次 LLM 意图分类：宿主装配了哪些 section / pack / observer，这次运行就有哪些。
+   - `.thunder/config.json` 的 `plugins.disabled` 是唯一的减法；工具集与提示词前缀因此不会在轮次之间无声漂移，provider 侧 prompt cache 的前缀保持稳定。
 3. **全局技能扫描缓存（120s TTL）**：
    - 内置 `DEFAULT_SKILLS_CACHE`，对本地与全局技能目录文件树建立带 120 秒有效期的全局缓存，消除高频对话下的磁盘 I/O 阻塞。
-4. **一键标准插件装配（`StandardHostBuilder`）**：
-   - 开箱即用的装配入口，默认挂载会话、遥测、执行状态、记忆、网页、技能与 MCP 标准插件；宿主专属能力（如 daemon 的 `ask_user`）在 `build` 之后用 `ThunderRoot::with_plugin` 追加。
+4. **一键标准装配（`StandardHostBuilder`）**：
+   - 开箱即用的装配入口，默认挂载会话、遥测、执行状态、记忆、网页、技能与 MCP；宿主专属能力（如 daemon 的 `ask_user`）在 `build` 之后用 `ThunderRoot::with_pack(ToolPack::new("ask_user").with_tool(...))` 追加。
 5. **声明式插件配置与自动装配 (`PluginLoader`)**：
    - 在 `.thunder/config.json` 及其分层覆盖中声明 `plugins` 块：
      - `builtin`：白名单控制启用的内置工具（如 `["read_file", "write_file", "grep"]`）；
@@ -54,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = RootRunOptions::default();
     let result = root.run("Check git status and summarize recent commits", options).await?;
 
-    println!("Active Plugins: {:?}", result.selection.active_plugin_ids);
+    // 装了什么，运行前就能读（不再有"选择结果"）
+    println!("Components: {:?}", root.component_ids());
     println!("Final Content: {:?}", result.final_content);
     println!("Total Turns: {}", result.run_result.stats.total_turns);
     println!("Live tok/s: {:?}", result.metrics.map(|m| m.live_tps));

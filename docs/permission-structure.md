@@ -46,11 +46,11 @@ flowchart TB
     end
 
     subgraph HOST["thunder-agent-root（宿主，含产品意见）"]
-        MODE["ModePlugin : ThunderPlugin + ToolGate"]
+        MODE["ModePlugin : ToolGate + ToolPack + PromptSection + Prepared"]
         M1["Mode plan / ask / acceptEdits / yolo"]
         M2["AllowRule + matches 窄化（always allow）"]
         M3["write_plan / exit_plan_mode"]
-        M4["system_prompt_contribution"]
+        M4["PromptSection::render（审批模式说明）"]
         MODE --> M1
         MODE --> M2
         MODE --> M3

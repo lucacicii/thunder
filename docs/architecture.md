@@ -45,18 +45,20 @@ LLMClientTrait  ToolScope   ToolGate      ToolTraceSink     HostUi
 
 | Crate | 目录 | 源文件 | 源码行数 | 角色 |
 |---|---|---|---|---|
-| `thunder-agent-loop` | `thunder-agent-loop` | 43 | 9,820 | Agent 内核（A） |
-| `thunder-agent-pack-code` | `thunder-agent-pack-code` | 10 | 2,192 | 编码能力包：6 工具 + `CodeScope` |
-| `thunder-agent-providers` | `thunder-agent-providers` | 13 | 3,071 | 模型目录 + 进程内流式 HTTP |
-| `thunder-agent-runtime` | `thunder-agent-runtime` | 4 | 898 | JSONL 无头运行时 |
-| `thunder-agent-skills` | `thunder-agent-skills` | 7 | 1,274 | Skill 解析与注册 |
-| `thunder-agent-mcp` | `thunder-agent-mcp` | 10 | 1,454 | MCP 客户端 |
-| `thunder-agent-root` | `thunder-agent-root` | 23 | 7,037 | 微内核宿主 |
-| `thunder-agent-daemon` | `thunder-agent-daemon` | 7 | 3,968 | STDIO sidecar |
-| `thunder-conversation` | `thunder-agent-core/conversation` | 11 | 1,976 | 会话存储 |
-| `thunder-tui` | `thunder-agent-core/tui` | 24 | 13,662 | 终端 UI |
+| `thunder-agent-types` | `thunder-agent-types` | 9 | 1,480 | 纯 wire：消息 / 事件 / 错误 / 工具定义与结果 / policy 声明 / scope / trace 记录 |
+| `thunder-agent-policy` | `thunder-agent-policy` | 13 | 4,525 | 策略层：`AgentTool` / `ToolExecutor`（唯一漏斗）/ `ToolRegistry` / gate / ui / interceptor / read_only |
+| `thunder-agent-loop` | `thunder-agent-loop` | 31 | 6,331 | Agent 内核（A）：loop / context / pruning / stream / cache / seam / scratchpad |
+| `thunder-agent-pack-code` | `thunder-agent-pack-code` | 11 | 2,764 | 编码能力包：fs / shell / search + `CodeScope` |
+| `thunder-agent-providers` | `thunder-agent-providers` | 13 | 3,286 | 模型目录 + 进程内流式 HTTP |
+| `thunder-agent-runtime` | `thunder-agent-runtime` | 4 | 1,072 | JSONL 无头运行时 |
+| `thunder-agent-skills` | `thunder-agent-skills` | 7 | 1,318 | Skill 解析与注册 |
+| `thunder-agent-mcp` | `thunder-agent-mcp` | 11 | 2,101 | MCP 客户端 |
+| `thunder-agent-root` | `thunder-agent-root` | 26 | 10,857 | 宿主装配（`Assembly`）+ 内置 sections/packs/observers |
+| `thunder-agent-daemon` | `thunder-agent-daemon` | 7 | 4,268 | STDIO sidecar |
+| `thunder-conversation` | `thunder-agent-core/conversation` | 11 | 2,050 | 会话存储 |
+| `thunder-tui` | `thunder-agent-core/tui` | 25 | 14,284 | 终端 UI |
 
-口径：各 crate `src/` 下的 `.rs` 文件数与行数（**不含** `tests/`、`examples/`，统计于 `171694d`）。工作区合计 **45,352 行**；把测试与示例一起算则是 62,373 行（`Cargo.toml:3-14` 定义 10 个成员）。
+口径：各 crate `src/` 下的 `.rs` 文件数与行数（**不含** `tests/`、`examples/`，统计于 `8ebbe5e`）。工作区合计 **54,336 行**（`Cargo.toml` 定义 12 个成员）。
 
 > 这张表是**快照**，每改一次代码就过期一分：当量级参考，不要当事实引用。上一版混用了「src only」与「含 tests/examples」两种口径，数字互相矛盾（合计写 58,400，两种口径实测分别是 45,352 与 62,373）。
 
@@ -66,16 +68,20 @@ LLMClientTrait  ToolScope   ToolGate      ToolTraceSink     HostUi
 
 | Crate | 依赖的内部 crate |
 |---|---|
-| `thunder-agent-loop` | —（内核不依赖任何宿主） |
-| `thunder-agent-pack-code` | `loop` |
-| `thunder-agent-providers` | `loop` |
-| `thunder-agent-skills` | `loop` |
-| `thunder-agent-mcp` | `loop` |
+| `thunder-agent-types` | —（纯 wire） |
+| `thunder-agent-loop` | `types`（`policy` 只在 `[dev-dependencies]`，用于测试装配） |
+| `thunder-agent-policy` | `types`、`loop`（`registry_tools` 实现 loop 的 `Tools`） |
+| `thunder-agent-pack-code` | `types`、`policy`、`loop` |
+| `thunder-agent-providers` | `types`、`policy`、`loop` |
+| `thunder-agent-skills` | `types`、`policy`、`loop` |
+| `thunder-agent-mcp` | `types`、`policy`、`loop` |
 | `thunder-conversation` | `loop` |
-| `thunder-agent-runtime` | `loop`、`providers` |
-| `thunder-agent-root` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation` |
-| `thunder-agent-daemon` | `loop`、`providers`、`skills`、`mcp`、`conversation`、`root` |
-| `thunder-tui` | `loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+| `thunder-agent-runtime` | `types`、`policy`、`loop`、`providers` |
+| `thunder-agent-root` | `types`、`policy`、`loop`、`pack-code`、`providers` |
+| `thunder-agent-daemon` | `types`、`policy`、`loop`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+| `thunder-tui` | `types`、`policy`、`loop`、`pack-code`、`providers`、`skills`、`mcp`、`conversation`、`root` |
+
+> 内核不依赖任何宿主仍是硬约束；它依赖 `types`，而 `types` 只含 wire 类型。`policy → loop` 的方向是"策略层实现内核的 `Tools` 接缝"，不是内核反向依赖策略。
 
 > 上一版这里是一张手绘箭头图，它把 `root` / `daemon` / `tui` 画成只依赖 `loop`（和 `root`），漏掉了 `pack-code`、`providers`、`skills`、`mcp`、`conversation` 这几条真实存在的边。
 
@@ -425,7 +431,7 @@ pub enum DenyBy { Guard, Gate }
 1. `find_cut_index(context, keep_recent_tokens)` 从尾部回积累 token，取切点；**不落在 tool result 上**（必须与 tool call 同生共死），优先落在下一条 user 消息（轮次边界），不切入 index 0 的系统提示与 index 1 的既有检查点（`checkpoint.rs:159-210`）。
 2. `region_floor`：有既有检查点时从 2 开始，否则从 1（`checkpoint.rs:137-147`）。
 3. 序列化旧区域（tool result 截 2000 字符、tool args 截 200 字符，`checkpoint.rs:27-28`），机械提取读/写文件清单（按 `ToolEffect` 分类，`checkpoint.rs:306-342`）。
-4. `Summarizer::summarize` 一次性 LLM 调用，**首次用 `INITIAL_SUMMARIZATION_PROMPT`，有前一份摘要时用 `UPDATE_SUMMARIZATION_PROMPT`（迭代 UPDATE-merge）**（`checkpoint.rs:38-112,392-427`）。
+4. `Summarizer::summarize` 一次性 LLM 调用，**首次用 `INITIAL_SUMMARIZATION_PROMPT`，有前一份摘要时用 `UPDATE_SUMMARIZATION_PROMPT`（迭代 UPDATE-merge）**（`checkpoint.rs`）。调用前先取 `Semaphore` 许可：`ContextPruningConfig::max_concurrent_summaries`（默认 2）限制的是**共享该限流器的所有 agent**——多个 agent 往往同时越过压缩阈值。许可覆盖整个重试对，获取过程可取消。
 5. 摘要请求：`cache_retention = Some("none")`（不污染缓存）、`session_id = None`（不做亲和路由）、`thinking_level = None`（`checkpoint.rs:429-444`）；`finish_reason == "length"` 或空输出视为失败。
 6. 成功后一次性替换区间为 `checkpoint_message`（`name = "context_checkpoint"`，`checkpoint.rs:23`）；已有检查点时 `replace_at(1, ...)`，否则 `insert_at(region_start, ...)`。
 
@@ -480,6 +486,8 @@ pub struct ObservedEvent { agent_id: String, event: AgentEvent, timestamp_ms: u6
 |---|---|---|
 | 微增量（`TokenDelta`/`ReasoningDelta`/`ToolCallChunk`） | broadcast + mpsc | `try_send`，**绝不阻塞引擎** |
 | 结构化事件（生命周期、trace、业务事件） | broadcast + mpsc | 在 `Emitter::emit` 里**内联 `await`** `timeout(5 秒, send)`——**不 spawn**；超过 5 秒的送达被计数并 `warn!`（`EventDropCounters`，见 §18.5），宿主可从 `AgentLoop::event_drop_counters()` 得知记录不完整 |
+
+**字节上界**（0.6）：通道同时受 `AgentConfig::max_event_bytes`（默认 8 MiB）约束。`EventBudget` 是字节信号量，生产者在入队前 `reserve(event.approx_bytes())`，`EventStream::recv` 消费时归还；单个事件大于整个预算时直接丢弃并计 `structural`（它永远塞不进去，截断又会改写宿主自己的内容）。所以内存上界不是 `512 × 单事件`，而是一个明确的数。
 
 `AgentEvent::Custom { kind, payload }` 是工具/插件向宿主发业务事件的通用信封，内核**不解释** `kind`（`types/event.rs:162-172`）。随仓的 kind 有四个：`file_change`（代码包）、`mode_changed`（模式插件，§11.4）、`metrics_update`（遥测插件，§11.8.1）、`agent_status`（状态插件，§11.8.2）——前两个由工具/插件自己发，后两个由**宿主**在 `take_events` 里按 `seq` 变化追加。
 
@@ -745,104 +753,87 @@ wire 语义（`client.rs:1-19`）：`prompt_tokens` 是**完整** prompt（rpi-a
 
 ## 11. 微内核宿主：`thunder-agent-root`
 
-### 11.1 插件契约
+### 11.1 装配契约
+
+0.6 起宿主里不再有"插件"这个概念。一个宿主对一次运行的全部贡献是四个显式列表加一个按运行准备钩子（`assembly.rs`）：
 
 ```rust
-#[async_trait]
-pub trait ThunderPlugin: Send + Sync {
-    fn manifest(&self) -> &PluginManifest;
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> { vec![] }
-    fn system_prompt_contribution(&self) -> Option<String> { None }   // 同步：提示词装配不能 await
-    fn tool_gate(&self) -> Option<Arc<dyn ToolGate>> { None }
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError>;
-    async fn on_run_ready(&self, ctx: &PluginContext) -> Result<(), PluginError>;
-    async fn on_event(&self, event: &ObservedEvent, ctx: &PluginContext);
-    async fn on_finish(&self, result: &AgentRunResult, ctx: &PluginContext) -> Result<(), PluginError>;
+pub struct RunEnv {                       // 一次运行的全部上下文
+    session_id: String, workspace: Option<PathBuf>, route: Option<String>,
+    prompt: Option<String>, ui: Arc<dyn HostUi>, cancellation: CancellationToken,
+}
+
+pub trait PromptSection: Send + Sync {    // 系统提示词的一段
+    fn id(&self) -> &str;
+    fn order(&self) -> i32 { 100 }
+    fn render(&self) -> Option<String>;
+}
+
+pub struct ToolPack {                     // 工具与 tool plugin 的集合
+    id: String,
+    tools: Vec<Arc<dyn AgentTool>>,
+    tool_plugins: Vec<Arc<dyn ToolPlugin>>,
+}
+
+pub trait Observer: Send + Sync {         // 事件的观察者
+    fn id(&self) -> &str;
+    fn on_event<'a>(&'a self, event: &'a AgentEvent, env: &'a RunEnv) -> BoxFuture<'a, ()>;
+    fn on_finish<'a>(&'a self, result: &'a AgentRunResult, env: &'a RunEnv) -> BoxFuture<'a, ()>;
+}
+
+pub trait Prepared: Send + Sync {         // 按运行做准备
+    fn id(&self) -> &str;
+    fn prepare<'a>(&'a self, env: &'a RunEnv) -> BoxFuture<'a, Result<(), String>>;
 }
 ```
-（`plugin.rs:277-328`）
 
-**生命周期严格顺序**：`on_init`（全部插件）→ 工具注册 → `on_run_ready` → run → `on_finish`，逐插件 `await`，无 per-plugin 超时。调用点只有三处：`host.rs:556`（`dispatch_init`）、`host.rs:748`（`dispatch_ready`）、`host.rs:196`（`dispatch_finish`，在 `RootRunHandle::join` 里，错误被 `let _ =` 吞掉）。
+`Assembly` 只做四件事：`prompt(base)`（按 `order` 拼接）、`tools()` / `tool_plugins()`、`dispatch_event` / `dispatch_finish`、`without_disabled(&HashSet)`（`plugins.disabled` 的唯一减法）。`ids()` 是 daemon 的 `active_plugins` 字段与日志的来源。
 
-### 11.1.1 「插件执行」到底在哪一层
+**为什么不是 trait 对象大杂烩**：旧 `ThunderPlugin` 把提示词、工具、gate、生命周期塞进同一个形状，于是每个插件都拿到一个足够宽的 `PluginContext`；而四件事的失败方式、调用时机、同步/异步要求都不同（渲染必须同步，观察必须异步，工具只在内核漏斗里被调用）。
 
-本仓有三种不同的"插件执行"，分属两层：
+`PluginContext` 仍在（`context.rs`），但它现在只服务**工具执行期**：session / route / ui / mode / tool-slot。运行装配不再经过它。
 
-| 说法 | 执行位置 | 证据 |
+### 11.1.1 一次 run 的三个阶段
+
+| 阶段 | 谁做 | 做什么 |
 |---|---|---|
-| **插件的生命周期回调**（`on_init`/`on_run_ready`/`on_finish`） | `thunder-agent-root`（插件宿主层） | `registry.rs:148-180` 的 `dispatch_*`，由 `host.rs` 调用 |
-| **插件贡献的工具被调用** | `thunder-agent-loop`（内核层） | `collect_tools()`（`registry.rs:119-125`）→ `agent.register_tool()`（`host.rs:571-573`）→ `ToolRegistry::execute_tool_call` → `ToolExecutor::run_tool`；插件只提供 `AgentTool` 实现，**调度权、守卫、判定、审批、trace 全在内核** |
-| **插件主动发起工具调用**（反向 RPC） | 由内核执行，插件的调用意图经 `ToolInvokerSlot` 进入 | `ExecutorToolInvoker`（`loop/types/invoke.rs:120-238`）由宿主在 `host.rs:737-745` 填槽；`invoke` 最后一行是 `self.executor.run_tool(...)`（`:208`），并带 `caller: Some(plugin_id)`（`:195`） |
+| **装配** | `ThunderRoot::execute` | 解析 route/session、绑定 mode、收集 sections/packs/observers/prepared，`without_disabled` |
+| **准备** | `Assembly::prepare(&RunEnv)` | 逐个 `Prepared`：memory 读工作区并缓存渲染块、skills 扫描目录、mcp 发现工具、web 解析后端配置、mode 绑定会话与 plan 路径 |
+| **运行** | `AgentLoop` + 事件代理 | `take_events` 每收到一条事件先 `assembly.dispatch_event(&event, &env)` 再透传；`join` 时 `dispatch_finish` |
 
-```mermaid
-flowchart TB
-    subgraph HOSTBIN["宿主进程"]
-        H["thunder-tui / thunder-daemon"]
-    end
-    subgraph ROOTLAYER["thunder-agent-root —— 插件宿主层"]
-        EXE["ThunderRoot::execute  host.rs:391"]
-        LIFE["生命周期 dispatch_init :556 / dispatch_ready :748 / dispatch_finish :196"]
-        CONTRIB["贡献收集 collect_tools :119 / build_combined_system_prompt :128"]
-        SET["ActivePluginSet → Arc&lt;dyn ThunderPlugin&gt;"]
-        EXE --> SET
-        SET --> LIFE
-        SET --> CONTRIB
-    end
-    subgraph KERNEL["thunder-agent-loop —— 内核层"]
-        REG["ToolRegistry（BTreeMap）"]
-        FUNNEL["ToolExecutor::run_tool（唯一漏斗）"]
-        REG --> FUNNEL
-    end
-    H --> EXE
-    CONTRIB -->|"register_tool"| REG
-    FUNNEL -->|"插件实现的 AgentTool::execute()"| TOOL["插件工具代码"]
-    SLOT["ExecutorToolInvoker  宿主在 host.rs:737 填入"] -->|"tool_slot().invoke()"| FUNNEL
-    SLOT -.-> SET
-```
+`Prepared` 的顺序就是注册顺序；`ThunderRoot` 在 `execute` 里先跑 mode 的 `prepare`（绑定 plan 路径与会话），再跑 `Assembly::prepare`。
 
-两处**已实现但无生产调用方**的接线（"接线存在、无人拉"）：
+**没有"两阶段握手"了**：旧设计里 `on_init` 之后还有 `on_run_ready`，只为把 tool invoker 交给插件；`RunEnv` 现在就带着它需要的一切，不需要第二段。
 
-- `ThunderPlugin::tool_gate()`（`plugin.rs:297`）被 `execute` 忽略——只安装模式插件（`host.rs:685`）。
-- `ToolInvoker::invoke` 只有测试调用（`pack-code/tests/plugin_call_tool_test.rs`），没有任何随仓插件使用 `ctx.tool_slot()`。
+### 11.2 注册即激活
 
-**`dispatch_event` 已接通**（0.4 起）：`RootRunHandle::take_events`（`host.rs:113`）在宿主的事件接收器前挂了一层代理——每收到一条 `ObservedEvent` 就先 `active_set.dispatch_event(&observed, &ctx).await` 派发给全部活跃插件，再把原事件透传下去，并在指标相关事件后追加一条 `AgentEvent::Custom { kind: "metrics_update" }`、在状态真的跃迁时追加一条 `AgentEvent::Custom { kind: "agent_status" }`（§11.8.2）。`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:241-256`，一个 turn 在它的 `turn_end` 处整体落盘）因此生效。
+旧的 `PluginSelector`（关键词 + 会话锁定 + `SelectionCache`）已删除（PR #17 的最后一步，PR #18 收尾）。
 
-`TriggerSpec`（`plugin.rs:25-47`）：`keywords` + `auto_always` + `description_for_llm`；`TriggerSpec::always()` 是常驻基线。
+- 一个宿主注册了哪些 section / pack / observer，这次运行就有哪些。没有"按提示词挑子集"。
+- `plugins.disabled`（`.thunder/config.json`）是唯一的减法，由 `Assembly::without_disabled` 一次性应用。
+- `forced_plugins` / `PluginSelection` / `with_plugin` 全部删除；`RootRunOptions` 不再有"这次运行用哪些插件"这个字段。
 
-### 11.2 确定性路由
-
-`PluginSelector::select_for_session`（`selector.rs:115`）：
-
-1. **会话锁定**——一条会话的**第一条**消息决定整个会话的插件集，写入 `SelectionCache`；
-2. 缓存缺失时 `heuristic_select` 按关键词匹配 `TriggerSpec.keywords`；
-3. `keyword_matches`（`selector.rs:195-217`）：ASCII 关键词要求**词边界**（`spec` 不匹配 `specifically`，`mcp` 不匹配 `checksumcp`）；含非 ASCII（CJK）时退回子串匹配。
-
-为什么要会话锁定（`selector.rs:15-19`）：逐消息重选会让 position 0 的合并系统提示与工具集在轮次间漂移，**打穿供应商侧 prompt cache**。`SelectionCache` 是 `Arc` 共享而非裸全局，宿主可注入隔离实例（`:20-25`）。
+理由：关键词选择会**无声地**改变工具集与提示词前缀——模型不知道、用户不知道、provider 的 prompt cache 也不知道；而它真正被使用的场景只有一个（`mcp`）。
 
 ### 11.3 `ThunderRoot::execute` 装配序列
 
-18 步，逐条对应 `host.rs`：
+1. 取 prompt（`Text` 原样；`Messages`/`Buffer` 取最后一条 user，否则 `"General task"`）
+2. `ThunderConfig::load(workspace)`
+3. session id（缺省 `sess_<ms>_<seq>`）+ route id（`run_{session}_{seq}`）
+4. 解析 mode：宿主传入的 `ModePlugin` 复用（会话级规则/模式切换得以保留），否则新建；`set_mode` + `bind_session`
+5. 以 `self.assembly.clone()` 为底，追加：
+   - mode 的 `PromptSection` 与 `ToolPack`（`write_plan` / `exit_plan_mode`）
+   - 默认 metrics（`Prepared` + `Observer`），除非宿主已用 `with_metrics_plugin` 注入
+   - 默认 status（同上）
+6. `assembly.without_disabled(plugins.disabled)`
+7. `mode_plugin.prepare(&env)` 然后 `assembly.prepare(&env)`
+8. 构造 `RunEnv`（session / workspace / route / prompt / ui / cancellation）
+9. `PluginContext`（工具执行期上下文）+ 工具槽位
+10. `ToolRegistry` / `ToolExecutor`：注册 `assembly.tools()`、`assembly.tool_plugins()`、`loader` 的声明式插件与拦截器；mode 作为 `ToolGate` **与** `InterceptorPlugin` 显式安装
+11. `agent.with_tools_factory(StaticToolsFactory::new(registry, executor))`
+12. `agent.start(...)`，返回 `RootRunHandle { handle, assembly, ctx, env }`
 
-1. 取 prompt（`Text` 原样；`Messages`/`Buffer` 取最后一条 user，否则字面 `"General task"`）`:397-416`
-2. `ThunderConfig::load(workspace)` `:421`
-3. session id（缺省 `sess_<ms>_<seq>`，`SESSION_COUNTER` 原子自增）+ route id（`run_{session}_{seq}`，`RUN_COUNTER` 原子自增）`:423-438`
-4. 插件选择（`forced_plugins` 短路，否则会话锁定启发式）`:440-452`
-5. `create_active_set` `:461-463`
-6. 模式插件解析：复用宿主给的实例（保规则与热切换）或新建，**无条件 `set_mode` + `bind_session`**，再 `active_set.push`（它不在注册表选择里）；随后配置并挂上 `MetricsPlugin`（`:494-528`）`:465-490`，执行状态插件同批解析——选择器没选中它时**直接 push**（`:651-659`），理由是宿主自己也持有这个实例并读它的快照（§11.8.2）
-7. 构造 `PluginContext`（空 `ToolInvokerSlot`、取消令牌、模式、ui、route、prompt、workspace、scratch）`:540-553`
-8. `dispatch_init`（任一插件 `InitFailed` 中止 execute）`:556`
-9. 系统提示装配：base → `AGENTS.md`/`CLAUDE.md` 上下文文件（`\n\n### Context Instructions (<path>)\n<content>`）→ 配置的 `systemPromptFile` → `### Workspaces` 块（主工作区 + 引用仓库说明）→ `build_combined_system_prompt` `:559-629`
-10. `agent_cfg`：workspace/extra roots、`thunder_cfg.apply_to`（max_turns、thinking_level）、`route`、合并后的 system prompt `:630-642`
-11. 模型解析：`resolve_ref` → **把真实窗口写进 `pruning.max_context_tokens`**；无 custom client 时 `client_for(spec, timeout)`；失败只 warn，留给 `UnconfiguredLLMClient` `:644-667`
-12. `AgentLoop::new().with_id(format!("root_{session}")).with_tool_scope(CodeScope).with_tool_gate(Some(mode_plugin), Some(ui))` —— **gate 永远安装，包括 yolo** `:802-815`
-13. 声明式与内建插件加载：`PluginLoader::load_plugins(&thunder_cfg, ws, options.register_builtins)` 发现并构建内建插件集（`code_plugins` 包含 read/write/grep/find/ls/bash）与配置声明的 MCP Servers（`plugins.mcpServers`），按 `disabled` 过滤后注册 `:826-839`
-14. 活动插件集注册与禁用过滤：遍历 `active_set.collect_tools()`、`collect_tool_plugins()`、`collect_interceptors()`，经 `matches_plugin_id` 对照 `plugins.disabled` 过滤后挂载入 `AgentLoop` `:840-865`
-15. **填充 `tool_slot`**：`ExecutorToolInvoker::new(agent.tool_executor().clone())`——必须在所有注册之后快照，且走 funnel 而非裸注册表，所以插件调用同样受守卫/判定/审批/trace/洋葱拦截器流水线约束 `:876-884`
-16. `dispatch_ready` `:887`
-17. `with_pause_gate` / `with_steer_queues` `:889-898`
-18. `agent.start(input, Some(cancel))` → `RootRunHandle` `:901-914`
-
-`RootRunHandle::join`（`:186-210`）：`handle.join()` → 等事件代理排空（`dispatch_drained`）→ `dispatch_finish`（错误被 `let _ =` 吞掉）→ `RootRunResult`。
+`RootRunHandle` 不再携带 `active_set` 或 `selection`；宿主读 `assembly.ids()`。
 
 ### 11.4 四档模式矩阵（`plugins/mode.rs`）
 
@@ -948,9 +939,9 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 ### 11.8.1 遥测插件：`MetricsPlugin`
 
-`MetricsPlugin`（`plugins/metrics.rs`）是常驻基线插件（`baseline_forced_plugins` 固定包含 `metrics`），把**与模型有关的全部遥测**——实时/平均 tok/s、token 明细、prompt cache 命中率、上下文占用、纯解码耗时与工具耗时——从内核搬到插件层：
+`MetricsPlugin`（`plugins/metrics.rs`）是默认装配的一部分（宿主没有 `.with_metrics_plugin(...)` 时 `ThunderRoot::execute` 追加一个默认实例），把**与模型有关的全部遥测**——实时/平均 tok/s、token 明细、prompt cache 命中率、上下文占用、纯解码耗时与工具耗时——从内核搬到插件层：
 
-- **零侵入内核**：它只实现 `ThunderPlugin::on_event`/`on_finish`，不注册工具、不装 gate，事件派发走 `try_send`/`send` 旁路，内核主循环不知道自己被观测。
+- **零侵入内核**：它只实现 `Observer`（`on_event`/`on_finish`）与 `Prepared`（`begin_run`），不注册工具、不装 gate，事件派发走 `EventBudget` 旁路，内核主循环不知道自己被观测。
 - **生成时钟只计解码**：收到本轮第一个 `TokenDelta`/`ReasoningDelta` 时开表，`ToolExecStart` 或 `TurnEnd` 时结算并暂停——TTFT（prefill + 排队）与工具执行都不计入分母。
 - **一份权威快照**：`MetricsSnapshot`（`metrics.rs`，serde）由 `RootRunHandle::take_events` 随流以 `AgentEvent::Custom { kind: "metrics_update", payload }` 推送；`RootRunHandle::metrics_snapshot()` 与 daemon 的 `get_metrics` 命令可随时读取，trace 文件顶层的 `metrics` 键是同一结构。
 - **两个数的语义不同，别混**：`context_tokens` 是**仪表**（当前这次请求的 prompt + 已生成量，每个 `turn_end` 被精确值**覆盖**）；`session_total_tokens` 是**计数器**（累计计费，每个 `turn_end` **累加**「该轮 prompt + completion」——每轮请求都会把整个 prompt 重新计费一次）。"一轮一次"不是不累加，而是增量只有轮末才由 provider 报出。
@@ -960,7 +951,7 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 ### 11.8.2 执行状态插件：`StatusPlugin`
 
-`StatusPlugin`（`plugins/status.rs`）回答的是**另一个问题**：Agent 现在在干什么。遥测说「多少」，它说「什么」，两者不重叠。装配关系同遥测（`baseline_forced_plugins` 固定含 `agent_status`），但多一层保证：`execute` 在选择器没选中它时仍会 `push` 宿主持有的那个实例（`host.rs:651-659`），所以经 `StandardHostBuilder` 装配的宿主必然发布状态，不会因关键词选择而漂移。
+`StatusPlugin`（`plugins/status.rs`）回答的是**另一个问题**：Agent 现在在干什么。遥测说「多少」，它说「什么」，两者不重叠。装配关系同遥测：宿主没有 `.with_status_plugin(...)` 时 `execute` 追加一个默认实例，所以经 `StandardHostBuilder` 装配的宿主必然发布状态。
 
 - **词汇**：`AgentPhase`（serde `snake_case`）= `idle | thinking | streaming | tool | awaiting_user | paused | compacting | done | error`；载荷 `AgentStatusSnapshot { session_id, phase, tool?, turn, detail?, started_at_ms, seq }`（`tool`/`detail` 省略空值）。`done`/`error` 是黏滞终态（`is_terminal()`）；**`Cancelled` 刻意落在 `idle`**——它是"没有 run"的静止档，因此不算终态。
 - **状态机折自事件流**：`TurnStart→thinking`、`TokenDelta|ReasoningDelta→streaming`、`ToolExecStart→tool`（记工具名）、**整批** `ToolExecResult` 到齐才回 `thinking`（并行调用不会在第一个结果落地时就掉回）、`ContextCompacted→compacting`（detail 记 token 变化）、`LoopComplete→done/error/idle`。**终态必须在 `on_event` 的 `LoopComplete` 里落定，不能放 `on_finish`**：`dispatch_finish` 跑在 `join()` 里，那时事件流已排空，再改状态没有接收方（§11.2 的 `dispatch_drained` oneshot 就是为这个顺序存在的）。run 落定后引擎的解流事件（`tool_exec_result` 之类）不会把状态"复活"。
@@ -972,11 +963,11 @@ pub struct AllowRule { pub tool: String, pub arg_prefix: Option<String> }
 
 ### 11.9 已知细节
 
-- `create_active_set` 迭代 `BTreeMap`（`registry.rs:14,75-84`），插件顺序按 id 字典序**跨实例确定**，因此工具注册顺序与提示块拼接顺序也稳定——这是 prompt cache 前缀命中的前提。模式插件是显式 `push` 的，所以它的块总在最后。
-- **两处死接线**（详见 §11.1.1）：`ThunderPlugin::tool_gate()` 在 `execute` 中从未被调用（总是安装模式插件，`host.rs:532`）；`ToolInvoker::invoke` 只有测试调用，无随仓插件使用 `ctx.tool_slot()`。`ActivePluginSet::dispatch_event` 已在 `RootRunHandle::take_events` 接通，不再是死接线。
+- 顺序稳定靠**注册顺序**：`Assembly` 的四个 `Vec` 按宿主 `with_*` 的调用顺序排列，`PromptSection` 再按 `order()` 排序；工具注册顺序因此跨实例确定，这是 prompt cache 前缀命中的前提。mode 的 section 总是最后追加（`execute` 里显式加入）。
+- **一处仍无人拉的接线**：`ToolInvoker::invoke` 只有测试调用，没有随仓组件使用 `ctx.tool_slot()`（`ask_user` 工具在宿主侧直接用 `HostUi`，不走反向 RPC）。
 - `ModePlugin::system_prompt_contribution` 在调用时重读 `self.mode()`，但热切换只对**下一次 run 的提示装配**生效；gate 本身立刻生效（`mode.rs:717-726`）。
 - `write_plan` 走原子写，`memory_write` 用普通 `tokio::fs::write`（`mode.rs:561-563` vs `memory.rs:447,451`）。
-- `RootRunHandle::join` 吞掉 `dispatch_finish` 错误 ⇒ 会话持久化失败对调用方不可见。
+- `RootRunHandle::join` 里 `dispatch_finish` 不返回错误（`Observer::on_finish` 的签名是 `()`）⇒ 会话持久化失败只会记日志，对调用方不可见。
 - `RootRunOptions` **没有** `#[non_exhaustive]`：新增字段是下游破坏性变更。
 - 缺省 session id 曾是常量 `sess_1`，导致同进程内未显式命名的 run 共享一份会话存储、一套模式规则与一个状态槽；现在退化为 `sess_<ms>_<seq>`（`SESSION_COUNTER` 原子自增，`host.rs`），宿主仍被要求自带 id 以便跨进程稳定。
 
@@ -1027,7 +1018,7 @@ pub const PROTOCOL_VERSION: u32 = 3;
 
 随后依次：`task_id` 重入检查（`"Task '{id}' is already running (conflict)"`）→ session 独占（`stopping` 中的会话回专门的"仍在收尾"错误，否则"忙"；拒绝时**回滚**所有记账）→ `model_descriptor` 构建客户端（失败回滚，含 session 占用）→ 载入会话 → 模型选择优先级 `model` → descriptor 标签 → 会话记录 → 首个可用 → `"openai/gpt-4o"` → **workspace 首绑定不可变**（已有 `conversation.workspace` 胜出；只有 `shared_roots` 合并去重）→ thinking level 四级回退 → 模式（`.thunder/config.json` 的 `agent.defaultMode` → 否则 `Mode::default() = Ask`）→ 附件解析（失败即整请求报错）→ 模态检查（`model_supports_images`）→ 记录用户 turn + `store.save` + ack → `tokio::spawn` 运行体。
 
-运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`、`.with_status_plugin(共享实例)`）→ `!headless` 时挂 `AskUserPlugin` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session, status_plugin), mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(...) }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `agent_status` 快照 + `SteerAccepted` 时补发队列快照 + `mode_changed` 的 custom 事件翻成顶层 `mode_changed` 帧）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
+运行体（`service.rs:1426-1795`）：`AgentConfig::new(model).with_unlimited_turns()`、`request_timeout_ms = REQUEST_TIMEOUT_MS = 120_000`（`service.rs:24`，与 descriptor 客户端共用同一常量）、`session_id` 做 prompt-cache 亲和 → 组装 `ThunderRoot`（`.with_initial_session_total_tokens(会话累计用量)`）+ `StandardHostBuilder`（`.with_metrics_plugin(共享实例)`、`.with_status_plugin(共享实例)`）→ `!headless` 时 `.with_pack(ToolPack::new(ASK_USER_PACK_ID).with_tool(...))` → `RootRunOptions { route: task_id, ui: host_ui.scoped(task_id, session, status_plugin), mode_plugin, pause_gate, steer_queues }` → `root.execute(...)` → 事件泵（`TraceCollector::record` + 转发 `observed_event`，其中含插件派发与 `metrics_update` 快照 + `agent_status` 快照 + `SteerAccepted` 时补发队列快照 + `mode_changed` 的 custom 事件翻成顶层 `mode_changed` 帧）→ `handle.join()`（返回 `res.metrics`）→ 持久化（含 checkpoint 压缩时的 `save_raw_transcript`）→ 首轮/占位标题时后台生成标题 → 写 trace JSON（顶层 `metrics` 键 + `wall_duration_ms`/`session_total_tokens` 校正）→ 终帧 `task_completed` / `task_failed`（`finish_reason` 仅在确实存在一次 run 时携带）→ 清理五张表。
 
 id 归属：daemon 的状态插件实例挂在 `DaemonService` 上（跨 run 共享），`scoped()` 除了 `task_id` 还带 `session_id` 与插件句柄——审批弹窗期间 `AwaitingGuard` 就是从这里报 `awaiting_user` 并保证四条出口都清干净（§11.8.2）。暂停同理：`pause_task`/`resume_task` 拿 `task_id` 去 `active_queues` 换 `session_id` 再报 `paused`，因为任务表和会话是两套 id。
 
@@ -1112,7 +1103,7 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 
 ### 14.4 作为常驻插件的形态
 
-`SkillsPlugin::new()`（`skills.rs:20-38`）显式 `with_triggers(TriggerSpec::always())`——注释直说：关键词在 `spec` 这类通用词上闪烁曾导致逐消息切换插件，破坏缓存前缀。
+`SkillsPlugin` 是常驻 section：关键词选择已删除（见 §11.2），技能目录不再随提示词逐条切换，缓存前缀因此稳定。
 
 `system_prompt_contribution`（`skills.rs:116-137`）把技能库渲染成一行一条的目录（每条描述**截到 100 字符**并加省略号），末尾提示"可用 `load_skill` 查看完整指令"——这是把大 playbook 挡在上下文之外、只暴露索引的设计。
 
@@ -1212,6 +1203,14 @@ static DEFAULT_SKILLS_CACHE: OnceLock<RwLock<Option<(Instant, Vec<Skill>)>>> = .
 | 桥接工具效果分类靠猜名字 | `McpToolBridge` **没有**覆写 `effect()`（`tool_bridge.rs`），落到 `ToolEffect::of("mcp_x_y")` | 只有名字里含 `exec`/`shell`/`terminal`/`powershell`/`command`，或以 `_bash` 结尾的才是 `Exec`（`loop/types/policy.rs:68-80`），其余按 `Other`（≈`Write`）判——再叠加 `CodeScope` 对 `Other` 返回 `Unknown`，实际退化为"每次问" |
 
 （`thunder-agent-mcp/tests/mcp_test.rs` 断言的是 `MockTransport` 往返，不覆盖以上任何一条。）
+
+### 15.2.4 帧上限：在读取过程中中止
+
+`McpServerConfig::max_frame_bytes`（默认 `DEFAULT_MAX_FRAME_BYTES` = 4 MiB）。读取任务不用 `BufReader::lines()`，而是 `read_frame`：逐段消费，累计到上限后**继续读但不再追加**，返回 `Frame::Oversized { bytes }`。
+
+超限帧的 id 在被丢弃的部分里，无法配对，所以读取任务直接 `pending_requests.clear()`：所有在途请求立刻拿到 "channel dropped" 错误，而不是各自等完 120 秒。连接不会因此报废，下一帧照常读取。`StdioTransport::oversized_frames()` 给出计数。
+
+回归测试 `stdio_lifecycle_test.rs::an_oversized_reply_is_discarded_and_fails_the_call` 用真实子进程回 10 MiB，断言"5 秒内失败 + 计数为 1"。
 
 ### 15.3 配置发现顺序
 
@@ -1395,7 +1394,7 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 
 `submit_prompt`（`app.rs:3988-4092`）：剥离 `/single`、`/auto` 前缀 → 折叠 `pending_images` 进用户 turn → 状态 `Thinking` + `clear_run_state` + `auto_scroll` → 把 model/workspace/thinking/shared_roots 绑到会话 → 判断首轮 → 首轮且标题占位时写 `provisional_title` → `begin_trace(prompt)`（`task_id = run_<now_ms>`）→ `save_and_refresh()` → 新建 `CancellationToken` / `PauseGate` / `SteerQueues` / `metrics.begin_run()` → 分派到 `run_single_agent` 或 `run_root_agent`。
 
-`run_root_agent`（`app.rs:4094-4256`）构造 `AgentConfig`（`with_unlimited_turns`、`session_id = conversation.id` 做缓存亲和、`pruning.max_context_tokens = spec.context_window`、`prompt_cache_warm`），包进 `StandardHostBuilder`（带 `.with_status_plugin(App 自己的实例)`，见下），可选挂 `AskUserPlugin`，然后 `RootRunOptions { route: run_id, ui: TuiHostUi, mode_plugin, pause_gate, steer_queues, forced_plugins: baseline_forced_plugins(has_mcp_config) }`。
+`run_root_agent`（`app.rs`）构造 `AgentConfig`（`with_unlimited_turns`、`session_id = conversation.id` 做缓存亲和、`pruning.max_context_tokens = spec.context_window`、`prompt_cache_warm`），包进 `StandardHostBuilder`（带 `.with_status_plugin(App 自己的实例)`，见下），`/ask on` 时 `.with_pack(ToolPack::new(ASK_USER_PACK_ID).with_tool(TuiAskUserTool::new(...)))`，然后 `RootRunOptions { route: run_id, ui: TuiHostUi, mode_plugin, pause_gate, steer_queues }`。
 
 **route 就是 trace 的 task_id**（`app.rs:4154-4160` 注释）：一次 run 两个名字会导致文件里的 `task_id` 与文件名不符。
 
@@ -1574,9 +1573,9 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | 接口 | 定义处 | 状态 |
 |---|---|---|
 | ~~`ActivePluginSet::dispatch_event` → `ThunderPlugin::on_event`~~ | ~~`root/registry.rs:164`~~ | **已接通**：`RootRunHandle::take_events`（`root/host.rs:113`）代理事件流并逐条派发；`ConversationPlugin::on_event` 的逐 turn 增量持久化（`conversation.rs:241-256`）随之生效 |
-| `ThunderPlugin::tool_gate` | `root/plugin.rs:297` | `execute` 忽略它，只装 mode 插件 |
+| ~~`ThunderPlugin::tool_gate`~~ | ~~`root/plugin.rs:297`~~ | **随插件框架删除**：gate 现在由宿主在构造 `ToolExecutor` 时显式安装（`host.rs` 的 `.with_tool_gate(...)`），没有"声明了但没人读"的路径 |
 | `ToolInvoker::invoke` / `ExecutorToolInvoker` | `loop/types/invoke.rs:53,120` | 插件反向 RPC 全链路可用且有 trace 测试，但无随仓插件使用；槽位由 `host.rs:737-745` 填充 |
-| `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs:14,37` | 仅测试调用；字段从未被读取 |
+| `install_code_pack` / `CodePackConfig::apply_default_prompt` | `pack-code/pack.rs` | 仅测试调用；字段从未被读取（仍存在） |
 | ~~`render_sidebar`~~ | ~~`tui/ui/sidebar.rs:9`~~ | **已修**：`ui/mod.rs:66` 在 `show_sidebar` 时调用 |
 以上四项是"接线存在、无人拉"；`thunder-runtime` 是独立二进制、`MemoryConversationStore` 由 TUI 的 `StandardHostBuilder` 正常使用，**不属于**死接线。（`McpServerConfig::timeout_ms` 曾在此列，已在 §15.2.2 接上消费者，移出。）
 
@@ -1598,9 +1597,12 @@ Enter 的语义（`app.rs:1814-1868`）：`/` 开头先试补全；**运行中 E
 | ~~daemon 把 `Cancelled` 报成 `TaskCompleted`~~ | ~~中~~ **已修复** | `service.rs` 现在把 `Cancelled` 与 `Error` 一并映射到 `TaskFailed` | 修复前客户端无法区分"跑完了"与"被取消" |
 | ~~runtime 的 pending 工具表只按 `call_id` 索引、且等待不可取消~~ | ~~中~~ **已修复** | 键改为 `(run_id, call_id)`；`RemoteTool`/`RemoteGate` 用 `select!` 监听 run 的取消令牌；回归测试 `runtime/src/remote.rs` 3 条 | 修复前跨 run 的迟到 `tool_result` 可能答错调用，取消后任务仍挂起 |
 | ~~`ThunderRoot::run()` 不消费事件流~~ | ~~中~~ **已修复** | 该便捷路径现在 `take_events()` 并排空，插件 `on_event` 与状态/指标代理随之生效 | 修复前 `run()` 的插件全程静默 |
-| 结构化事件送达超过 5s 即被计数并告警 | 中 | `engine.rs` 的 `EventDropCounters`（`types/event.rs`）：micro-delta 走 `try_send` 计数，结构化事件 5s  deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读，结算时汇总告警。仍不阻塞引擎（行为不变），但不再是"静默丢弃" | 消费者被压满超过 5 秒时宿主可从计数得知记录不完整（曾写作"不丢"，现为"丢了能知道"） |
+| 结构化事件送达超过 5s 即被计数并告警（现另有 `max_event_bytes` 字节预算，见 §6） | 中 | `engine.rs` 的 `EventDropCounters`（`types/event.rs`）：micro-delta 走 `try_send` 计数，结构化事件 5s  deadline 未送达计数 + `warn!`，`AgentLoop::event_drop_counters()` 可读，结算时汇总告警。仍不阻塞引擎（行为不变），但不再是"静默丢弃" | 消费者被压满超过 5 秒时宿主可从计数得知记录不完整（曾写作"不丢"，现为"丢了能知道"） |
 | ~~审批弹窗不带"到底要跑什么"~~ | ~~中~~ **已修复** | 门算出 `detail = describe_call(args)`，内核经 `UiRequest::Select.detail` 透传（`executor.rs` 的 `ask`），TUI 拼进问题正文、daemon 经 flatten 透传给面板（`protocol.rs` 的 `UiRequest` 变体），缺省旧面板忽略。回归测试 `loop/tests/approval_detail_test.rs` + TUI `tui_approval_dialog_shows_what_is_being_approved` | 用户看到的不再只是 `Run bash` |
-| TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现 | 低 | `ALL_COMMANDS` 表里 `export` 带 `save`、`timeline` 带 `rail`、`health` 带 `status`（`commands.rs:69-302`），但 `execute_slash_command` 的分派分支只认 `"export" \| "dump"`、`"timeline"`、`"health" \| "doctor"`（`app.rs:3515,3651,3694`） | 这三个别名会进补全与 `/help`，敲下去却落到"未知命令" |
+| ~~TUI 的 `/save`、`/rail`、`/status` 别名宣称但未实现~~ | ~~低~~ **已修复** | 分派分支现在同时认别名（`app.rs` 的 `"export" \| "dump" \| "save"`、`"timeline" \| "rail"`、`"health" \| "doctor" \| "status"`） | 别名不再落到"未知命令" |
+| ~~run 结束后仍持有运行的 trace sink（事件通道永不关闭）~~ | ~~阻断~~ **已修复** | `StaticToolsFactory::for_run` 把 sink 装进共享 executor 槽位却不清除；修复为 generation-guarded `install_run_trace` / `clear_run_trace` + `RegistryTools::Drop`（`policy/registry_tools.rs`）。回归测试 `loop/tests/run_lifecycle_test.rs` | 修复前所有"等事件排空再 join"的宿主永久挂起，CI 的 workspace suite 跑不完 |
+| ~~plan 模式下提供 "always allow"，但 plan 永不查规则~~ | ~~中~~ **已修复** | `ask_for` 在 `Mode::Plan` 下把 `allow_always` 置为 `false`；内核仍拒绝"没提供却答了"的 `AlwaysAllow`（`executor.rs`）。回归测试 `plan_mode_test.rs` 的两条成对用例 | 修复前用户点"总是允许"后下一次同样调用照旧弹窗 |
+| ~~MCP 单帧响应无上限~~ | ~~高~~ **已修复** | `max_frame_bytes`（默认 4 MiB）在读取过程中截断；超限帧丢弃并让在途请求立即失败（`stdio.rs` 的 `read_frame`）。回归测试 `stdio_lifecycle_test.rs::an_oversized_reply_is_discarded_and_fails_the_call` | 修复前一个 100 MB 响应会整段进堆 |
 
 ---
 
@@ -1625,14 +1627,14 @@ cargo check --workspace --all-targets --features thunder-agent-daemon/testing-mo
 
 | Crate | 集成测试文件 | 覆盖重点 |
 |---|---|---|
-| loop | 14 个（`tests/*.rs`） | 单元契约（并行/忙/取消隔离）、完整生命周期、流中断三分支、checkpoint 压缩与紧急裁剪、溢出自动修复、pause/steer、trace 的 14 条出口、UTF-8 安全、缓存保温 |
-| pack-code | 8 个 | 工具行为、守卫、路径作用域、权限层、插件调用、安全守卫 |
-| root | 18 个 | 模式矩阵 15 格、plan 模式端到端、host UI 两阶段、记忆写入 jail、配置分层、选择缓存、无 gate 全放行、执行状态流（`agent_status` 只在跃迁时出现、且宿主驱动的等待在无事件时也送达） |
+| loop | 22 个（`tests/*.rs`） | 单元契约（并行/忙/取消隔离）、完整生命周期、流中断三分支、checkpoint 压缩与紧急裁剪、溢出自动修复、pause/steer、trace 的 14 条出口、UTF-8 安全、缓存保温；新增 `event_budget_test`、`compaction_concurrency_test`、`run_lifecycle_test` |
+| pack-code | 10 个 | 工具行为、守卫、路径作用域、权限层、插件调用、安全守卫；新增 `end_to_end_test`（真实 read → 改 → 跑检查） |
+| root | 19 个 | 模式矩阵 15 格、plan 模式端到端、host UI、记忆写入 jail、配置分层、无 gate 全放行、执行状态流；新增 `mcp_pack_parity_test`（pack 与 MCP 工具行为一致） |
 | daemon | 3 个 | 真实二进制的 IPC（`CARGO_BIN_EXE_thunder-daemon`）、模式协议、数据根隔离 |
-| conversation | 5 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
-| tui | 21 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker、窗格状态（OSC 7501） |
+| conversation | 6 个 | CRUD/持久化门禁/多拓扑/构造竞态/标题 |
+| tui | 22 个 + 模块内单测 | 运行流与控制、命令与补全、chrome、输入框、metrics、滚动、transcript 缓存与顺序、时间轴、markdown、链接、会话生命周期、picker、窗格状态（OSC 7501） |
 | providers | 2 个 | 目录解析、思考档位、compat/cost 透传、保温推导、元数据缓存 |
-| skills / mcp / runtime | 1 / 2 / 0 个 | 解析/发现/桥接、JSON-RPC 往返；**`runtime` 没有 `tests/` 集成测试文件**（其 JSONL 协议只由 crate 内单测覆盖）；**`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留** |
+| skills / mcp / runtime | 1 / 3 / 0 个 | 解析/发现/桥接、JSON-RPC 往返；**`runtime` 没有 `tests/` 集成测试文件**（其 JSONL 协议只由 crate 内单测覆盖）；`mcp/tests/stdio_lifecycle_test.rs` 用真实 `sh` 子进程验证 spawn 存活 + close 终止 + 静默 server 超时/不残留 + 超限帧丢弃 |
 
 ### 19.3 关键回归测试（行为契约）
 
@@ -1696,7 +1698,10 @@ cargo clippy -p thunder-agent-mcp --all-targets -- -D warnings  # 通过（exit 
 | 加一个审批策略 | 实现 `ToolGate`（`loop/types/gate.rs:118-142`），在宿主 `with_tool_gate` 安装 |
 | 让某路径免问 | 实现/扩展 `ToolScope`（`loop/types/scope.rs:57-73`），注意它只能放宽 |
 | 收 trace 到自定义存储 | 实现 `ToolTraceSink`（`loop/tools/trace.rs`）或排 `AgentEvent::ToolTrace` |
-| 加一个插件 | 实现 `ThunderPlugin`（`root/plugin.rs:277-328`）→ `ThunderRoot::with_plugin` |
+| 加一个提示词片段 | 实现 `PromptSection`（`root/assembly.rs`）→ `ThunderRoot::with_section` |
+| 加一组工具 | `ToolPack::new(id).with_tool(...)` → `ThunderRoot::with_pack` |
+| 加一个事件观察者 | 实现 `Observer`（异步、带 `RunEnv`）→ `ThunderRoot::with_observer` |
+| 加一个按运行准备 | 实现 `Prepared` → `ThunderRoot::with_prepared` |
 | 加一个 Phase / 状态词汇 | `root/plugins/status.rs` 的 `AgentPhase` + `apply_event`（**同时**改 TUI 的 `pane_status.rs::state_for` 与桌面面板的映射表，否则新档位会被协议丢掉） |
 | 加一个斜杠命令 | `tui/commands.rs:69` 的表 + `tui/app.rs:2965` 的 match（两处都要改） |
 | 加一个 UI 模块 | `tui/ui/mod.rs` 的 `draw` 里插一段布局 |
