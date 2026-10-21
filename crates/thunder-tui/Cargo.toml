@@ -17,6 +17,7 @@ thunder-executor.workspace = true
 thunder-registry.workspace = true
 thunder-providers.workspace = true
 thunder-core.workspace = true
+thunder-plan.workspace = true
 async-trait.workspace = true
 crossterm.workspace = true
 futures-util.workspace = true
