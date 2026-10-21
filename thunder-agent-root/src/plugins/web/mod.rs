@@ -33,10 +33,8 @@ pub use deepseek::{DeepSeekClient, DeepSeekConfig, DeepSeekPage};
 pub use fetch::{WebFetchTool, WEB_FETCH_TOOL};
 pub use search::{SearchProvider, SearchResult, WebSearchTool, WEB_SEARCH_TOOL};
 
-use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
+use crate::assembly::{Prepared, PromptSection, RunEnv};
 use crate::thunder_config::{ThunderConfig, WebFetchBackend, WebSearchBackend};
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use thunder_agent_policy::AgentTool;
@@ -82,7 +80,6 @@ impl WebSettings {
 /// Contributes `web_fetch` and `web_search`: one reads a page, the other finds
 /// them. `web_fetch` is summarised by the registry's utility model.
 pub struct WebPlugin {
-    manifest: PluginManifest,
     registry: ProviderRegistry,
     /// Shared cache. Defaults to the process-wide one, because hosts rebuild
     /// this plugin (and their root) per request.
@@ -94,17 +91,10 @@ pub struct WebPlugin {
 }
 
 impl WebPlugin {
-    pub fn new(registry: ProviderRegistry) -> Self {
-        let manifest = PluginManifest::new(
-            "web",
-            "Thunder Web Tools",
-            "Fetches a URL, converts the page to markdown, and answers a prompt against it with the utility model; also searches the web through DeepSeek or free engines.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::ToolProvider);
+    pub const ID: &'static str = "web";
 
+    pub fn new(registry: ProviderRegistry) -> Self {
         Self {
-            manifest,
             registry,
             cache: global_cache(),
             settings: RwLock::new(WebSettings::default()),
@@ -130,13 +120,19 @@ impl WebPlugin {
     }
 }
 
-#[async_trait]
-impl ThunderPlugin for WebPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl PromptSection for WebPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+    fn render(&self) -> Option<String> {
+        None
+    }
+}
+
+impl WebPlugin {
+    /// The tools this run may call, built from the settings `prepare` resolved.
+    pub fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
         let settings = self.settings();
         let client = settings.deepseek.clone().map(deepseek::DeepSeekClient::new);
         vec![
@@ -153,25 +149,30 @@ impl ThunderPlugin for WebPlugin {
             ),
         ]
     }
+}
 
-    /// Read the per-workspace `web` configuration and resolve the DeepSeek
-    /// credentials once per run.
-    ///
-    /// `on_init` is dispatched before `collect_tools()` in the host, so the
-    /// snapshot taken here is the one the tools are built from. A config error
-    /// must not take the tools away: `ThunderConfig::load` already skips
-    /// malformed files, and an unresolvable key simply leaves `deepseek: None`.
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        let config = ThunderConfig::load(ctx.workspace_dir.as_deref()).await;
-        let auth = AuthFile::load_default().await;
-        let resolved = WebSettings::resolve(&config, &self.registry, &auth, ctx.prompt());
-        tracing::debug!(
-            search = ?resolved.search_backend,
-            fetch = ?resolved.fetch_backend,
-            deepseek = resolved.deepseek.is_some(),
-            "Resolved web tool backends"
-        );
-        *self.settings.write() = resolved;
-        Ok(())
+impl Prepared for WebPlugin {
+    fn id(&self) -> &str {
+        Self::ID
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let config = ThunderConfig::load(env.workspace.as_deref()).await;
+            let auth = AuthFile::load_default().await;
+            let resolved =
+                WebSettings::resolve(&config, &self.registry, &auth, env.prompt.as_deref());
+            tracing::debug!(
+                search = ?resolved.search_backend,
+                fetch = ?resolved.fetch_backend,
+                deepseek = resolved.deepseek.is_some(),
+                "Resolved web tool backends"
+            );
+            *self.settings.write() = resolved;
+            Ok(())
+        })
     }
 }

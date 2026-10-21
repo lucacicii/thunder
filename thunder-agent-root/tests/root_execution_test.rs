@@ -65,10 +65,24 @@ async fn test_thunder_root_end_to_end_execution() {
     let conv_plugin = ConversationPlugin::with_memory_store();
     let store = conv_plugin.store();
 
+    let conv_plugin = Arc::new(conv_plugin);
+    let skills = Arc::new(SkillsPlugin::default());
+    let mcp = Arc::new(McpPlugin::default());
     let root = ThunderRoot::new(base_cfg)
-        .with_plugin(conv_plugin)
-        .with_plugin(SkillsPlugin::default())
-        .with_plugin(McpPlugin::default());
+        .with_prepared(conv_plugin.clone())
+        .with_section(conv_plugin.clone())
+        .with_observer(conv_plugin)
+        .with_prepared(skills.clone())
+        .with_section(skills.clone())
+        .with_pack(
+            thunder_agent_root::assembly::ToolPack::new(SkillsPlugin::ID)
+                .with_tools(skills.tools()),
+        )
+        .with_prepared(mcp.clone())
+        .with_section(mcp.clone())
+        .with_pack(
+            thunder_agent_root::assembly::ToolPack::new(McpPlugin::ID).with_tools(mcp.tools()),
+        );
 
     let session_id = "test_root_sess_1".to_string();
     let custom_client: Arc<dyn LLMClientTrait> = Arc::new(TestMockClient {
@@ -81,7 +95,6 @@ async fn test_thunder_root_end_to_end_execution() {
         session_id: Some(session_id.clone()),
         custom_client: Some(custom_client),
         cancellation_token: None,
-        forced_plugins: None,
         register_builtins: true,
         thinking_level: None,
         pause_gate: None,
@@ -96,15 +109,10 @@ async fn test_thunder_root_end_to_end_execution() {
         .await
         .expect("Root execute should succeed");
 
-    // Verify dynamic plugin selection triggered skills & conversation
-    assert!(handle
-        .selection
-        .active_plugin_ids
-        .contains(&"skills".to_string()));
-    assert!(handle
-        .selection
-        .active_plugin_ids
-        .contains(&"conversation".to_string()));
+    // Every registered piece is active.
+    let ids = handle.assembly.ids();
+    assert!(ids.contains(&"skills".to_string()), "{ids:?}");
+    assert!(ids.contains(&"conversation".to_string()), "{ids:?}");
 
     let mut event_count = 0;
     let mut metrics_updates = 0;

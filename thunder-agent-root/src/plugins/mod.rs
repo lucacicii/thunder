@@ -27,6 +27,6 @@ pub use mode::{AllowRule, Mode, ModePlugin, MODE_CHANGED_EVENT_KIND};
 #[cfg(feature = "skills")]
 pub use skills::SkillsPlugin;
 #[cfg(feature = "conversation")]
-pub use standard::{baseline_forced_plugins, StandardHostBuilder};
+pub use standard::StandardHostBuilder;
 pub use status::{AgentPhase, AgentStatusSnapshot, StatusPlugin, AGENT_STATUS_EVENT_KIND};
 pub use web::WebPlugin;

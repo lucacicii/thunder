@@ -1,68 +1,13 @@
-use crate::error::PluginError;
 use crate::plugins::metrics::MetricsPlugin;
 use crate::plugins::mode::{Mode, ModePlugin};
 use crate::plugins::status::StatusPlugin;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_policy::gate::ToolGate;
 use thunder_agent_policy::invoke::ToolInvokerSlot;
-use thunder_agent_policy::plugin::{InterceptorPlugin, ToolPlugin};
-use thunder_agent_policy::AgentTool;
 use thunder_agent_policy::ui::HostUi;
-use thunder_agent_loop::AgentRunResult;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PluginCapability {
-    MemoryPersistence,
-    ToolProvider,
-    SkillProvider,
-    McpProvider,
-    Custom(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginManifest {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub capabilities: Vec<PluginCapability>,
-}
-
-impl PluginManifest {
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        version: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            description: description.into(),
-            version: version.into(),
-            capabilities: Vec::new(),
-        }
-    }
-
-    pub fn with_capability(mut self, cap: PluginCapability) -> Self {
-        self.capabilities.push(cap);
-        self
-    }
-}
-
 /// The host's user-interaction surface for this run.
-///
-/// Defaults to [`thunder_agent_policy::ui::NullHostUi`], so an embedded
-/// host without a panel still behaves correctly: every dialog resolves as
-/// cancelled, which callers must read as "denied".
-///
-/// Handed over as a trait object, so it is excluded from the derived `Debug`
-/// (implementations are transports, not data).
 pub struct HostUiHandle(pub Arc<dyn HostUi>);
 
 impl std::fmt::Debug for HostUiHandle {
@@ -259,69 +204,5 @@ impl PluginContext {
     /// The run's execution-status plugin, when the host installed one.
     pub fn status_plugin(&self) -> Option<&StatusPlugin> {
         self.status_plugin.as_ref()
-    }
-}
-
-#[async_trait]
-pub trait ThunderPlugin: Send + Sync {
-    /// Return the manifest metadata of the plugin.
-    fn manifest(&self) -> &PluginManifest;
-
-    /// Optional tools to register directly into the core `AgentLoop`.
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        vec![]
-    }
-
-    /// Optional MCP-aligned capability plugins to register into the core `AgentLoop`.
-    fn tool_plugins(&self) -> Vec<Arc<dyn ToolPlugin>> {
-        vec![]
-    }
-
-    /// Optional governance interceptor plugins (guardrails, modes, traces) to wrap around tool execution.
-    fn interceptors(&self) -> Vec<Arc<dyn InterceptorPlugin>> {
-        vec![]
-    }
-
-    /// Optional system prompt fragment to inject into the core context.
-    fn system_prompt_contribution(&self) -> Option<String> {
-        None
-    }
-
-    /// The gate this plugin wants tool calls judged by, if any.
-    ///
-    /// The kernel consults at most one gate per run: the first plugin that
-    /// provides one wins, and a host that wants to combine opinions combines
-    /// them inside its own gate. Returning `None` (the default) keeps the run
-    /// gate-less — everything the kernel's guard allows runs.
-    fn tool_gate(&self) -> Option<Arc<dyn ToolGate>> {
-        None
-    }
-
-    /// Lifecycle hook: Called before the root execution starts.
-    async fn on_init(&self, _ctx: &PluginContext) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    /// Lifecycle hook: Called once every tool is registered and the agent's
-    /// pipeline is final.
-    ///
-    /// Split from [`ThunderPlugin::on_init`] because a plugin host needs two
-    /// different things at two different times: the run's *identity and policy*
-    /// before the agent exists, and its *tool pipeline* after. A plugin that
-    /// exposes other tools needs both, keyed by [`PluginContext::route`].
-    async fn on_run_ready(&self, _ctx: &PluginContext) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    /// Lifecycle hook: Called whenever an `ObservedEvent` occurs in `AgentLoop`.
-    async fn on_event(&self, _event: &ObservedEvent, _ctx: &PluginContext) {}
-
-    /// Lifecycle hook: Called after the root execution completes.
-    async fn on_finish(
-        &self,
-        _result: &AgentRunResult,
-        _ctx: &PluginContext,
-    ) -> Result<(), PluginError> {
-        Ok(())
     }
 }

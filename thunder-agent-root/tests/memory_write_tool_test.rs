@@ -18,7 +18,13 @@ async fn tool_for(ws: &std::path::Path) -> (MemoryPlugin, Arc<dyn AgentTool>) {
     let ctx = PluginContext::new("sess")
         .with_workspace(ws.to_path_buf())
         .with_route("r1");
-    plugin.on_init(&ctx).await.unwrap();
+    let mut env = thunder_agent_root::assembly::RunEnv::new(&ctx.session_id);
+    env.workspace = ctx.workspace_dir.clone();
+    env.route = ctx.route.clone();
+    env.prompt = ctx.prompt.clone();
+    thunder_agent_root::assembly::Prepared::prepare(&plugin, &env)
+        .await
+        .unwrap();
     let tool = plugin.tools().first().cloned().unwrap();
     (plugin, tool)
 }

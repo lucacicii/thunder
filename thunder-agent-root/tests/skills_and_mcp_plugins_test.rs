@@ -105,9 +105,21 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
     let mcp_plugin = McpPlugin::new().with_client(mcp_client).await;
 
     // 3. Assemble ThunderRoot
+    let skills_plugin = Arc::new(skills_plugin);
+    let mcp_plugin = Arc::new(mcp_plugin);
     let root = ThunderRoot::new(base_cfg)
-        .with_plugin(skills_plugin)
-        .with_plugin(mcp_plugin);
+        .with_prepared(skills_plugin.clone())
+        .with_section(skills_plugin.clone())
+        .with_pack(
+            thunder_agent_root::assembly::ToolPack::new(SkillsPlugin::ID)
+                .with_tools(skills_plugin.tools()),
+        )
+        .with_prepared(mcp_plugin.clone())
+        .with_section(mcp_plugin.clone())
+        .with_pack(
+            thunder_agent_root::assembly::ToolPack::new(McpPlugin::ID)
+                .with_tools(mcp_plugin.tools()),
+        );
 
     let session_id = "test_skills_mcp_sess_1".to_string();
     let custom_client: Arc<dyn LLMClientTrait> = Arc::new(SkillsAndMcpMockClient {
@@ -120,7 +132,6 @@ async fn test_thunder_root_skills_and_mcp_tool_execution() {
         session_id: Some(session_id.clone()),
         custom_client: Some(custom_client),
         cancellation_token: None,
-        forced_plugins: Some(vec!["skills".to_string(), "mcp".to_string()]),
         register_builtins: true,
         thinking_level: None,
         pause_gate: None,

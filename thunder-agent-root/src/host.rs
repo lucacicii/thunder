@@ -1,30 +1,28 @@
+use crate::assembly::{Assembly, Observer, Prepared, PromptSection, RunEnv, ToolPack};
+use crate::context::PluginContext;
 use crate::error::PluginError;
 use crate::instructions::discover_context_files;
-use crate::plugin::PluginContext;
+use crate::plugins::mcp::McpPlugin;
 use crate::plugins::metrics::{MetricsPlugin, MetricsSnapshot, METRICS_UPDATE_EVENT_KIND};
 use crate::plugins::mode::{Mode, ModePlugin};
 use crate::plugins::status::{StatusPlugin, AGENT_STATUS_EVENT_KIND};
-use crate::registry::{ActivePluginSet, PluginRegistry};
-use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_policy::registry_tools::StaticToolsFactory;
-use thunder_agent_policy::gate::ToolGate;
-use thunder_agent_types::scope::ToolScope;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_policy::invoke::{
-    empty_tool_invoker_slot, ExecutorToolInvoker, ToolInvokerSlot,
-};
-use thunder_agent_policy::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
 use thunder_agent_pack_code::{autonomous_system_prompt, RenderCapabilities};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::gate::ToolGate;
+use thunder_agent_policy::invoke::{empty_tool_invoker_slot, ExecutorToolInvoker, ToolInvokerSlot};
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::registry_tools::StaticToolsFactory;
+use thunder_agent_policy::ui::HostUi;
 use thunder_agent_providers::prelude::{client_for, ModelRef, ProviderRegistry};
+use thunder_agent_types::scope::ToolScope;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -34,7 +32,6 @@ pub struct RootRunOptions {
     pub session_id: Option<String>,
     pub custom_client: Option<Arc<dyn LLMClientTrait>>,
     pub cancellation_token: Option<CancellationToken>,
-    pub forced_plugins: Option<Vec<String>>,
     pub register_builtins: bool,
     pub thinking_level: Option<String>,
     /// The mode this run is judged in. Hosts that did not choose default to
@@ -72,7 +69,6 @@ impl Default for RootRunOptions {
             session_id: None,
             custom_client: None,
             cancellation_token: None,
-            forced_plugins: None,
             register_builtins: true,
             thinking_level: None,
             mode: Mode::default(),
@@ -89,17 +85,17 @@ impl Default for RootRunOptions {
 pub struct RootRunResult {
     pub agent_id: String,
     pub final_content: Option<String>,
-    pub selection: PluginSelection,
     pub run_result: AgentRunResult,
     pub metrics: Option<MetricsSnapshot>,
 }
 
 pub struct RootRunHandle {
     pub agent_id: String,
-    pub selection: PluginSelection,
     pub handle: AgentHandle,
-    pub active_set: ActivePluginSet,
+    pub assembly: Assembly,
     pub ctx: PluginContext,
+    /// The run identity handed to every section/observer.
+    pub env: RunEnv,
     /// Signalled when the event proxy has drained the loop's stream and
     /// finished dispatching every event to the active plugins.
     ///
@@ -175,8 +171,8 @@ impl RootRunHandle {
         let (tx, rx) = mpsc::channel(512);
         let (drained_tx, drained_rx) = tokio::sync::oneshot::channel();
         self.dispatch_drained = Some(drained_rx);
-        let active_set = self.active_set.clone();
-        let ctx = self.ctx.clone();
+        let assembly = self.assembly.clone();
+        let env = self.env.clone();
         let metrics_plugin = self.ctx.metrics_plugin().cloned();
         let status_plugin = self.ctx.status_plugin().cloned();
         let mut status_changes = status_plugin.as_ref().map(StatusPlugin::subscribe_changes);
@@ -214,7 +210,7 @@ impl RootRunHandle {
                     break;
                 };
 
-                active_set.dispatch_event(&observed, &ctx).await;
+                assembly.dispatch_event(&observed.event, &env).await;
                 let snap = metrics_plugin
                     .as_ref()
                     .and_then(|mp| mp.snapshot(&session_id));
@@ -301,17 +297,7 @@ impl RootRunHandle {
         if let Some(drained) = self.dispatch_drained.take() {
             let _ = drained.await;
         }
-        if let Err(err) = self
-            .active_set
-            .dispatch_finish(&run_result, &self.ctx)
-            .await
-        {
-            warn!(
-                session_id = %self.ctx.session_id,
-                error = %err,
-                "Plugin on_finish lifecycle hook returned an error"
-            );
-        }
+        self.assembly.dispatch_finish(&run_result, &self.env).await;
         let metrics = self
             .ctx
             .metrics_plugin()
@@ -320,7 +306,6 @@ impl RootRunHandle {
         Ok(RootRunResult {
             agent_id: self.agent_id,
             final_content: run_result.final_content.clone(),
-            selection: self.selection,
             run_result,
             metrics,
         })
@@ -334,8 +319,9 @@ static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 pub struct ThunderRoot {
     config: AgentConfig,
-    registry: PluginRegistry,
-    selector: PluginSelector,
+    /// Everything this host contributes to a run: prompt sections, tool packs,
+    /// observers and per-run setup.
+    assembly: Assembly,
     workspace_root: Option<PathBuf>,
     /// Extra roots (e.g. referenced repositories) sharing the workspace's
     /// read/write standing, alongside the primary workspace.
@@ -348,8 +334,8 @@ pub struct ThunderRoot {
     /// Defaults to `NullHostUi`: no panel, every dialog cancelled, every caller
     /// degrades to its safe branch.
     host_ui: Arc<dyn HostUi>,
-    metrics_plugin: Option<MetricsPlugin>,
-    status_plugin: Option<StatusPlugin>,
+    metrics_plugin: Option<Arc<MetricsPlugin>>,
+    status_plugin: Option<Arc<StatusPlugin>>,
     initial_session_total_tokens: Option<usize>,
 }
 impl ThunderRoot {
@@ -367,13 +353,11 @@ impl ThunderRoot {
             });
         }
 
-        let selector = PluginSelector::new(Some(config.clone()));
         let active_model = ModelRef::parse(&config.model);
         let extra_roots = config.extra_workspace_roots.clone();
         Self {
             config,
-            registry: PluginRegistry::new(),
-            selector,
+            assembly: Assembly::new(),
             workspace_root: None,
             extra_roots,
             scratch_root,
@@ -428,9 +412,34 @@ impl ThunderRoot {
 
     /// Attach a shared [`MetricsPlugin`] so session telemetry (token rates,
     /// cache hit rates, context occupancy, durations) persists across runs.
+    pub fn with_section(mut self, section: Arc<dyn PromptSection>) -> Self {
+        self.assembly = self.assembly.with_section(section);
+        self
+    }
+
+    pub fn with_pack(mut self, pack: ToolPack) -> Self {
+        self.assembly = self.assembly.with_pack(pack);
+        self
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.assembly = self.assembly.with_observer(observer);
+        self
+    }
+
+    pub fn with_prepared(mut self, prepared: Arc<dyn Prepared>) -> Self {
+        self.assembly = self.assembly.with_prepared(prepared);
+        self
+    }
+
+    /// Share a metrics tracker across every run of this host.
     pub fn with_metrics_plugin(mut self, plugin: MetricsPlugin) -> Self {
-        self.metrics_plugin = Some(plugin.clone());
-        self.registry.register(plugin);
+        let plugin = Arc::new(plugin);
+        self.metrics_plugin = Some(Arc::clone(&plugin));
+        self.assembly = self
+            .assembly
+            .with_prepared(Arc::clone(&plugin) as Arc<dyn Prepared>)
+            .with_observer(plugin as Arc<dyn Observer>);
         self
     }
 
@@ -448,13 +457,12 @@ impl ThunderRoot {
     /// the baseline set allocate its own is what lets a host *hold* the status it
     /// publishes.
     pub fn with_status_plugin(mut self, plugin: StatusPlugin) -> Self {
-        self.status_plugin = Some(plugin.clone());
-        self.registry.register(plugin);
-        self
-    }
-
-    pub fn with_plugin<P: crate::plugin::ThunderPlugin + 'static>(mut self, plugin: P) -> Self {
-        self.registry.register(plugin);
+        let plugin = Arc::new(plugin);
+        self.status_plugin = Some(Arc::clone(&plugin));
+        self.assembly = self
+            .assembly
+            .with_prepared(Arc::clone(&plugin) as Arc<dyn Prepared>)
+            .with_observer(plugin as Arc<dyn Observer>);
         self
     }
 
@@ -481,49 +489,11 @@ impl ThunderRoot {
 
     /// Inject an isolated session-selection cache.
     ///
-    /// Roots otherwise share the process-wide default, which is what keeps a
-    /// session's plugin set stable across the per-request rebuilds that both the
-    /// TUI and the daemon perform. Pass a fresh [`SelectionCache`] when two
-    /// hosts are embedded in one process and must not share selection state.
-    pub fn with_selection_cache(
-        mut self,
-        cache: std::sync::Arc<crate::selector::SelectionCache>,
-    ) -> Self {
-        self.selector = self.selector.with_cache(cache);
-        self
+    /// The ids of every section, tool pack and observer this host carries.
+    pub fn component_ids(&self) -> Vec<String> {
+        self.assembly.ids()
     }
 
-    pub fn registry(&self) -> &PluginRegistry {
-        &self.registry
-    }
-
-    pub fn registry_mut(&mut self) -> &mut PluginRegistry {
-        &mut self.registry
-    }
-
-    pub fn selector(&self) -> &PluginSelector {
-        &self.selector
-    }
-
-    /// Drop the cached per-session plugin selection so the next execute()
-    /// re-runs the heuristic (e.g. after plugin reloads or registry changes).
-    ///
-    /// Uses *this* root's cache, so it stays correct even when an isolated
-    /// cache was injected.
-    pub fn invalidate_session_selection(&self, session_id: &str) {
-        self.selector.cache().invalidate(session_id);
-    }
-
-    /// Drop the cached selection for **every** session on this root's cache.
-    ///
-    /// A registry-wide change (plugin reload, plugin set change) can invalidate
-    /// any session's cached set, so reload paths should call this rather than
-    /// guessing which session ids are live.
-    pub fn invalidate_all_session_selections(&self) {
-        self.selector.cache().invalidate_all();
-    }
-
-    /// Autonomously select plugins, initialize context, configure and start the root AgentLoop unit.
     pub async fn execute(
         &self,
         input: impl Into<ContextInput>,
@@ -582,32 +552,9 @@ impl ThunderRoot {
             format!("run_{}_{}", session_id, seq)
         });
 
-        // 1. Select active plugins — session-locked: the first message decides
-        // for the whole session so the combined prompt + toolset stay stable.
-        let selection = if let Some(forced) = options.forced_plugins {
-            PluginSelection {
-                active_plugin_ids: forced,
-                reason: "Explicitly forced by execution options".to_string(),
-                confidence: 1.0,
-            }
-        } else {
-            self.selector
-                .select_for_session(Some(&session_id), &prompt_str, &self.registry)
-                .await
-        };
+        info!(session_id = %session_id, "ThunderRoot executing prompt");
 
-        info!(
-            session_id = %session_id,
-            active_plugins = ?selection.active_plugin_ids,
-            reason = %selection.reason,
-            "ThunderRoot executing prompt"
-        );
-
-        let mut active_set = self
-            .registry
-            .create_active_set(&selection.active_plugin_ids);
-
-        // 1b. Resolve the mode this run is judged in.
+        // 1. Resolve the mode this run is judged in.
         //
         // A host-supplied plugin is reused across the session (so remembered
         // rules and mid-session mode switches survive); a fresh one runs in the
@@ -628,15 +575,25 @@ impl ThunderRoot {
             .clone()
             .unwrap_or_else(|| Arc::clone(&self.host_ui));
 
-        // The mode plugin is the host's own, not a registry selection, so it has
-        // to be added to the active set explicitly: the gate it provides judges
-        // every call, and the plan tools it carries are how the model leaves
-        // plan mode at all.
-        active_set.push(Arc::clone(&mode_plugin) as Arc<dyn crate::plugin::ThunderPlugin>);
+        // The mode gate judges every call, and the plan tools it carries are how
+        // the model leaves plan mode at all.
+        let mut assembly = self
+            .assembly
+            .clone()
+            .with_section(Arc::clone(&mode_plugin) as Arc<dyn PromptSection>)
+            .with_pack(ToolPack::new(ModePlugin::ID).with_tools(mode_plugin.tools()));
 
         // Install the telemetry / token-speed plugin so every run tracks live
         // tok/s, context occupancy, prompt-cache hit rates, and wall-clock time.
-        let metrics_plugin = self.metrics_plugin.clone().unwrap_or_default();
+        let metrics_plugin = self
+            .metrics_plugin
+            .clone()
+            .unwrap_or_else(|| Arc::new(MetricsPlugin::new()));
+        if self.metrics_plugin.is_none() {
+            assembly = assembly
+                .with_prepared(Arc::clone(&metrics_plugin) as Arc<dyn Prepared>)
+                .with_observer(Arc::clone(&metrics_plugin) as Arc<dyn Observer>);
+        }
         let initial_ctx_tokens = match &context_input {
             ContextInput::Text(t) => {
                 thunder_agent_loop::core::token_estimator::estimate_token_count(t)
@@ -668,21 +625,16 @@ impl ThunderRoot {
             initial_ctx_tokens,
             self.initial_session_total_tokens.unwrap_or(0),
         );
-        if !selection.active_plugin_ids.iter().any(|id| id == "metrics") {
-            active_set
-                .push(Arc::new(metrics_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
-        }
-
         // Same treatment for the execution status: a host that asked for it gets
-        // it on every run, whether or not the keyword selector picked it.
-        let status_plugin = self.status_plugin.clone().unwrap_or_default();
-        if !selection
-            .active_plugin_ids
-            .iter()
-            .any(|id| id == StatusPlugin::ID)
-        {
-            active_set
-                .push(Arc::new(status_plugin.clone()) as Arc<dyn crate::plugin::ThunderPlugin>);
+        // it on every run.
+        let status_plugin = self
+            .status_plugin
+            .clone()
+            .unwrap_or_else(|| Arc::new(StatusPlugin::new()));
+        if self.status_plugin.is_none() {
+            assembly = assembly
+                .with_prepared(Arc::clone(&status_plugin) as Arc<dyn Prepared>)
+                .with_observer(Arc::clone(&status_plugin) as Arc<dyn Observer>);
         }
 
         info!(
@@ -702,8 +654,8 @@ impl ThunderRoot {
             .with_ui(Arc::clone(&ui))
             .with_route(route.clone())
             .with_mode_plugin(Arc::clone(&mode_plugin))
-            .with_metrics_plugin(metrics_plugin)
-            .with_status_plugin(status_plugin)
+            .with_metrics_plugin((*metrics_plugin).clone())
+            .with_status_plugin((*status_plugin).clone())
             .with_prompt(prompt_str.clone())
             .with_tool_slot(Arc::clone(&tool_slot));
         if let Some(ws) = &self.workspace_root {
@@ -711,8 +663,24 @@ impl ThunderRoot {
         }
         ctx = ctx.with_scratch(self.scratch_root.join(&session_id));
 
-        // 3. Dispatch plugin on_init lifecycle
-        active_set.dispatch_init(&ctx).await?;
+        // 3. Per-run setup. The mode plugin binds the session first, then every
+        // section/observer that reads the workspace is prepared.
+        let env = RunEnv {
+            session_id: session_id.clone(),
+            workspace: self.workspace_root.clone(),
+            route: Some(route.clone()),
+            prompt: Some(prompt_str.clone()),
+            ui: Arc::clone(&ui),
+            cancellation: cancel.clone(),
+        };
+        mode_plugin
+            .prepare(&env)
+            .await
+            .map_err(PluginError::InitFailed)?;
+        assembly
+            .prepare(&env)
+            .await
+            .map_err(PluginError::InitFailed)?;
 
         // 4. Construct Root AgentLoop
         let default_prompt = autonomous_system_prompt(options.render_capabilities);
@@ -810,7 +778,7 @@ impl ThunderRoot {
                 );
             }
         }
-        let combined_system_prompt = active_set.build_combined_system_prompt(Some(&base_prompt));
+        let combined_system_prompt = assembly.prompt(&base_prompt);
         let mut agent_cfg = self.config.clone();
         if let Some(ref ws) = self.workspace_root {
             agent_cfg.workspace_dir = Some(ws.clone());
@@ -873,7 +841,7 @@ impl ThunderRoot {
         // Load declarative plugins (built-ins + MCP servers + config filtering).
         // If `McpPlugin` is already active in `active_set`, it manages workspace and
         // declarative MCP servers with connection pooling, so skip unpooled spawning here.
-        let mcp_plugin_active = active_set.plugin_ids().iter().any(|id| id == "mcp");
+        let mcp_plugin_active = assembly.has_pack(McpPlugin::ID);
         let loaded = crate::loader::PluginLoader::load_plugins_with_mcp(
             &thunder_cfg,
             self.workspace_root.as_deref(),
@@ -895,12 +863,12 @@ impl ThunderRoot {
         )
         .with_scratchpad(agent.scratchpad().clone());
 
-        for tool in active_set.collect_tools() {
+        for tool in assembly.tools() {
             if !crate::loader::matches_plugin_id(&disabled_set, &tool.name()) {
                 registry.register(tool);
             }
         }
-        for plugin in active_set.collect_tool_plugins() {
+        for plugin in assembly.tool_plugins() {
             if !crate::loader::matches_plugin_id(&disabled_set, plugin.id()) {
                 registry.register_plugin(plugin);
             }
@@ -921,14 +889,9 @@ impl ThunderRoot {
         for interceptor in loaded.interceptors {
             executor = executor.with_interceptor(interceptor);
         }
-        for interceptor in active_set.collect_interceptors() {
-            if interceptor.id() == "mode_interceptor"
-                || crate::loader::matches_plugin_id(&disabled_set, interceptor.id())
-            {
-                continue;
-            }
-            executor = executor.with_interceptor(interceptor);
-        }
+        executor = executor
+            .with_interceptor(Arc::clone(&mode_plugin)
+                as Arc<dyn thunder_agent_policy::plugin::InterceptorPlugin>);
 
         agent = agent.with_tools_factory(Arc::new(StaticToolsFactory::new(
             registry,
@@ -947,9 +910,6 @@ impl ThunderRoot {
                     .with_ui(Arc::clone(&ui)),
             ));
         }
-        // Phase two of the plugin handshake: the pipeline now exists, so plugins
-        // that expose tools can be given an invoker for *this* run.
-        active_set.dispatch_ready(&ctx).await?;
 
         // Forward the host's pause gate so the unit can park at tool boundaries.
         if let Some(gate) = &options.pause_gate {
@@ -971,10 +931,10 @@ impl ThunderRoot {
 
         Ok(RootRunHandle {
             agent_id,
-            selection,
             handle,
-            active_set,
+            assembly,
             ctx,
+            env,
             dispatch_drained: None,
         })
     }

@@ -101,7 +101,11 @@ impl StandardHostBuilder {
 
     /// Register the assembled set onto `root`.
     pub fn build(self, mut root: ThunderRoot) -> ThunderRoot {
-        root = root.with_plugin(ConversationPlugin::new(self.store));
+        let conversation = Arc::new(ConversationPlugin::new(self.store));
+        root = root
+            .with_prepared(Arc::clone(&conversation) as Arc<dyn crate::assembly::Prepared>)
+            .with_section(Arc::clone(&conversation) as Arc<dyn crate::assembly::PromptSection>)
+            .with_observer(conversation as Arc<dyn crate::assembly::Observer>);
         root = root.with_metrics_plugin(self.metrics.unwrap_or_default());
         // What the agent is doing right now, on the same footing as the numbers
         // above: a host that wants to *report* the status (TUI pane title, panel
@@ -109,7 +113,11 @@ impl StandardHostBuilder {
         root = root.with_status_plugin(self.status.unwrap_or_default());
         // Long-term memory rides the baseline set: it contributes nothing when
         // no `THUNDER.md` exists, so every host gets it for free.
-        root = root.with_plugin(MemoryPlugin::new());
+        let memory = Arc::new(MemoryPlugin::new());
+        root = root
+            .with_prepared(Arc::clone(&memory) as Arc<dyn crate::assembly::Prepared>)
+            .with_section(Arc::clone(&memory) as Arc<dyn crate::assembly::PromptSection>)
+            .with_pack(crate::assembly::ToolPack::new(MemoryPlugin::ID).with_tools(memory.tools()));
 
         {
             // The provider registry carries the utility model `web_fetch`
@@ -118,42 +126,39 @@ impl StandardHostBuilder {
             // `build` — the doc comment on `StandardHostBuilder` says so — or
             // the tool silently loses its summariser and returns raw markdown.
             let registry = root.provider_registry().clone();
-            root = root.with_plugin(crate::plugins::web::WebPlugin::new(registry));
+            let web = Arc::new(crate::plugins::web::WebPlugin::new(registry));
+            let web_tools = web.tools();
+            root = root
+                .with_prepared(Arc::clone(&web) as Arc<dyn crate::assembly::Prepared>)
+                .with_pack(
+                    crate::assembly::ToolPack::new(crate::plugins::web::WebPlugin::ID)
+                        .with_tools(web_tools),
+                );
         }
 
         #[cfg(feature = "skills")]
         {
-            root = root.with_plugin(self.skills.unwrap_or_default());
+            let skills = Arc::new(self.skills.unwrap_or_default());
+            let tools = skills.tools();
+            root = root
+                .with_prepared(Arc::clone(&skills) as Arc<dyn crate::assembly::Prepared>)
+                .with_section(Arc::clone(&skills) as Arc<dyn crate::assembly::PromptSection>)
+                .with_pack(crate::assembly::ToolPack::new(SkillsPlugin::ID).with_tools(tools));
         }
 
         #[cfg(feature = "mcp")]
         {
-            root = root.with_plugin(self.mcp.unwrap_or_default());
+            let mcp = Arc::new(self.mcp.unwrap_or_default());
+            let tools = mcp.tools();
+            root = root
+                .with_prepared(Arc::clone(&mcp) as Arc<dyn crate::assembly::Prepared>)
+                .with_section(Arc::clone(&mcp) as Arc<dyn crate::assembly::PromptSection>)
+                .with_pack(
+                    crate::assembly::ToolPack::new(crate::plugins::mcp::McpPlugin::ID)
+                        .with_tools(tools),
+                );
         }
 
         root
     }
-}
-
-/// Convenience: the plugin IDs a host should force-active for a normal run.
-///
-/// Mirrors the assembly above so the *forced* set and the *registered* set
-/// cannot drift apart. `mcp` is conditional — only when the workspace actually
-/// configures servers — because dispatching `on_init` is not free, and forcing
-/// it unconditionally would tax every user who has none.
-#[cfg(feature = "conversation")]
-pub fn baseline_forced_plugins(workspace_has_mcp_config: bool) -> Vec<String> {
-    let mut ids = vec![
-        "conversation".to_string(),
-        "metrics".to_string(),
-        "agent_status".to_string(),
-    ];
-    #[cfg(feature = "skills")]
-    {
-        ids.push("skills".to_string());
-    }
-    if workspace_has_mcp_config {
-        ids.push("mcp".to_string());
-    }
-    ids
 }

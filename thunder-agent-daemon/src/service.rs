@@ -948,10 +948,6 @@ impl DaemonService {
                     let mut pool = self.mcp_plugins.lock().await;
                     pool.drain_all()
                 };
-                // The session-locked plugin selection is now stale: a session
-                // that cached its set before this reload would keep spawning the
-                // old toolset. Clear it so the next run re-selects.
-                invalidate_all_session_selections();
                 let output_tx = self.output_tx.clone();
                 tokio::spawn(async move {
                     for plugin in drained {
@@ -1551,12 +1547,6 @@ impl DaemonService {
         let output_tx = self.output_tx.clone();
         let client_factory = self.client_factory.clone();
         let ws_dir = PathBuf::from(&chosen_workspace);
-        // MCP tools must stay reachable for natural-language prompts (the keyword
-        // heuristic would never match them), but only when the workspace actually
-        // configures servers — otherwise forcing the plugin is pure overhead.
-        let workspace_has_mcp_config = ws_dir.join(".thunder").join("mcp.json").exists()
-            || ws_dir.join("mcp_servers.json").exists()
-            || ws_dir.join(".mcp.json").exists();
         let mcp_plugin = self.mcp_plugin_for(&ws_dir).await;
         let pending_questions = self.pending_questions.clone();
         let pause_gate_for_run = Arc::clone(&pause_gate);
@@ -1626,7 +1616,10 @@ impl DaemonService {
                     output_tx.clone(),
                     pending_questions.clone(),
                 );
-                root = root.with_plugin(crate::ask_user::AskUserPlugin::new(tool));
+                root = root.with_pack(
+                    thunder_agent_root::assembly::ToolPack::new(crate::ask_user::ASK_USER_PACK_ID)
+                        .with_tool(Arc::new(tool)),
+                );
             }
 
             #[cfg(feature = "testing-mock")]
@@ -1648,12 +1641,6 @@ impl DaemonService {
                 session_id: Some(effective_session_id.clone()),
                 custom_client,
                 cancellation_token: Some(cancel_token),
-                // Smart baseline set instead of the old blanket forcing:
-                // - conversation: one-line prompt cost, keeps session semantics alive
-                // - skills: catalog is compact one-liners now; keeps `load_skill` reachable
-                // - mcp: only when this workspace actually configures MCP servers
-                // Anything else stays keyword-routed and lightweight.
-                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: chosen_thinking.clone(),
                 mode: chosen_mode,
@@ -1684,7 +1671,7 @@ impl DaemonService {
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
-                    let selection = handle.selection.clone();
+                    let active_plugins = handle.assembly.ids();
                     let collected_events = Arc::new(tokio::sync::Mutex::new(TraceCollector::new()));
                     let collected_for_stream = Arc::clone(&collected_events);
 
@@ -1964,7 +1951,7 @@ impl DaemonService {
                                     session_id: effective_session_id.clone(),
                                     final_content: final_content.clone(),
                                     finish_reason: finish_reason.clone(),
-                                    active_plugins: selection.active_plugin_ids,
+                                    active_plugins,
                                 };
                                 write_ndjson(&output_tx, &msg).await;
                             }

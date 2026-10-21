@@ -1,7 +1,7 @@
 #[cfg(feature = "skills")]
+use crate::assembly::{Prepared, PromptSection, RunEnv};
+#[cfg(feature = "skills")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
-use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_agent_policy::AgentTool;
@@ -9,24 +9,21 @@ pub use thunder_agent_skills::prelude::*;
 
 #[cfg(feature = "skills")]
 pub struct SkillsPlugin {
-    manifest: PluginManifest,
     registry: SkillRegistry,
     search_paths: Vec<PathBuf>,
 }
 
 #[cfg(feature = "skills")]
 impl SkillsPlugin {
-    pub fn new() -> Self {
-        let manifest = PluginManifest::new(
-            "skills",
-            "Thunder Skill Parser & Registry",
-            "Parses, manages and dynamically activates domain-specific agent skills and prompt instructions.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::ToolProvider);
+    pub const ID: &'static str = "skills";
 
+    /// The `load_skill` / `list_skills` tools over this run's registry.
+    pub fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        create_skill_tools(self.registry.clone())
+    }
+
+    pub fn new() -> Self {
         Self {
-            manifest,
             registry: SkillRegistry::new(),
             search_paths: Vec::new(),
         }
@@ -98,17 +95,13 @@ async fn get_cached_default_skills() -> Vec<Skill> {
 }
 
 #[cfg(feature = "skills")]
-#[async_trait]
-impl ThunderPlugin for SkillsPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+
+impl PromptSection for SkillsPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        create_skill_tools(self.registry.clone())
-    }
-
-    fn system_prompt_contribution(&self) -> Option<String> {
+    fn render(&self) -> Option<String> {
         let skills = self.registry.list_sync();
         if skills.is_empty() {
             return None;
@@ -130,45 +123,56 @@ impl ThunderPlugin for SkillsPlugin {
         out.push_str("\nYou can use the `load_skill` tool to inspect full instructions for any of the above skills.\n");
         Some(out)
     }
+}
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // 1. Automatically load default system search paths (cached with 120s TTL)
-        let loaded_defaults = get_cached_default_skills().await;
-        for s in loaded_defaults {
-            self.registry.register(s).await;
-        }
+impl Prepared for SkillsPlugin {
+    fn id(&self) -> &str {
+        Self::ID
+    }
 
-        // 2. Automatically scan workspace directory for .agents/skills or skills/ if configured
-        if let Some(ws) = &ctx.workspace_dir {
-            let candidate1 = ws.join(".agents").join("skills");
-            let candidate2 = ws.join(".pi").join("skills");
-            let candidate3 = ws.join("skills");
-            for candidate in [candidate1, candidate2, candidate3] {
-                if candidate.is_dir() {
-                    if let Ok(loaded) = SkillLoader::load_dir(&candidate).await {
-                        for s in loaded {
-                            self.registry.register(s).await;
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // 1. Automatically load default system search paths (cached with 120s TTL)
+            let loaded_defaults = get_cached_default_skills().await;
+            for s in loaded_defaults {
+                self.registry.register(s).await;
+            }
+
+            // 2. Automatically scan workspace directory for .agents/skills or skills/ if configured
+            if let Some(ws) = &env.workspace {
+                let candidate1 = ws.join(".agents").join("skills");
+                let candidate2 = ws.join(".pi").join("skills");
+                let candidate3 = ws.join("skills");
+                for candidate in [candidate1, candidate2, candidate3] {
+                    if candidate.is_dir() {
+                        if let Ok(loaded) = SkillLoader::load_dir(&candidate).await {
+                            for s in loaded {
+                                self.registry.register(s).await;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 3. Scan explicit custom search paths
-        for path in &self.search_paths {
-            if path.is_dir() {
-                if let Ok(loaded) = SkillLoader::load_dir(path).await {
-                    for s in loaded {
+            // 3. Scan explicit custom search paths
+            for path in &self.search_paths {
+                if path.is_dir() {
+                    if let Ok(loaded) = SkillLoader::load_dir(path).await {
+                        for s in loaded {
+                            self.registry.register(s).await;
+                        }
+                    }
+                } else if path.is_file() {
+                    if let Ok(s) = SkillLoader::load_file(path).await {
                         self.registry.register(s).await;
                     }
                 }
-            } else if path.is_file() {
-                if let Ok(s) = SkillLoader::load_file(path).await {
-                    self.registry.register(s).await;
-                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 }

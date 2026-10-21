@@ -37,14 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("============================================================");
     println!("▶ User Prompt: {}", prompt);
     println!("▶ Mode: LIVE LLM");
-    println!(
-        "▶ Registered Plugins in Registry: {:?}",
-        root.registry()
-            .list_manifests()
-            .iter()
-            .map(|m| &m.id)
-            .collect::<Vec<_>>()
-    );
+    println!("▶ Host Components: {:?}", root.component_ids());
     println!("------------------------------------------------------------");
 
     if registry.resolve(&model).is_none() {
@@ -62,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_id: Some("cli_session_1".to_string()),
         custom_client: None,
         cancellation_token: None,
-        forced_plugins: None,
         register_builtins: true,
         thinking_level: None,
         pause_gate: None,
@@ -73,13 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut handle = root.execute(prompt, options).await?;
-    println!("🔍 Dynamic Plugin Selection Result:");
-    println!(
-        "   Active Plugins : {:?}",
-        handle.selection.active_plugin_ids
-    );
-    println!("   Decision Reason: {}", handle.selection.reason);
-    println!("   Confidence     : {:.2}", handle.selection.confidence);
+    println!("🔍 Active Components: {:?}", handle.assembly.ids());
     println!("------------------------------------------------------------");
 
     if let Some(mut rx) = handle.take_events() {

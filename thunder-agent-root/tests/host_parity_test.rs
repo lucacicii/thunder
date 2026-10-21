@@ -20,12 +20,7 @@ fn baseline_root() -> ThunderRoot {
 #[test]
 fn standard_host_registers_conversation_and_skills() {
     let root = baseline_root();
-    let ids: Vec<String> = root
-        .registry()
-        .list_manifests()
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let ids = root.component_ids();
 
     assert!(
         ids.contains(&"conversation".to_string()),
@@ -40,12 +35,7 @@ fn standard_host_registers_conversation_and_skills() {
 #[test]
 fn standard_host_registers_web() {
     let root = baseline_root();
-    let ids: Vec<String> = root
-        .registry()
-        .list_manifests()
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let ids = root.component_ids();
     assert!(
         ids.contains(&"web".to_string()),
         "web plugin missing: {ids:?}"
@@ -56,12 +46,7 @@ fn standard_host_registers_web() {
 #[test]
 fn standard_host_registers_mcp() {
     let root = baseline_root();
-    let ids: Vec<String> = root
-        .registry()
-        .list_manifests()
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let ids = root.component_ids();
     assert!(
         ids.contains(&"mcp".to_string()),
         "mcp plugin missing: {ids:?}"

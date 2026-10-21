@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
-use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -337,27 +336,8 @@ impl AgentTool for TuiAskUserTool {
 
 /// Plugin wrapper so the tool rides the existing microkernel registration path
 /// (`ThunderPlugin::tools`) instead of growing `RootRunOptions`.
-pub struct AskUserPlugin {
-    manifest: PluginManifest,
-    tool: Arc<TuiAskUserTool>,
-}
-
-impl AskUserPlugin {
-    pub fn new(tool: TuiAskUserTool) -> Self {
-        let manifest = PluginManifest::new(
-            "ask_user",
-            "Ask User Question",
-            "Blocks the agent on a clarifying question rendered as a terminal modal.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::ToolProvider);
-
-        Self {
-            manifest,
-            tool: Arc::new(tool),
-        }
-    }
-}
+/// The id this host's tool pack is registered under.
+pub const ASK_USER_PACK_ID: &str = "ask_user";
 
 /// Terminal-native [`HostUi`] bridge, adapting modal questions to the TUI event loop.
 #[derive(Clone)]
@@ -548,17 +528,6 @@ impl thunder_agent_policy::ui::HostUi for TuiHostUi {
     }
 
     fn set_status(&self, _key: &str, _text: Option<String>) {}
-}
-
-#[async_trait]
-impl ThunderPlugin for AskUserPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        vec![self.tool.clone()]
-    }
 }
 
 #[cfg(test)]

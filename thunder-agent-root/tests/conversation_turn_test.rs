@@ -9,19 +9,11 @@
 
 #![cfg(feature = "conversation")]
 
-use thunder_agent_loop::types::event::{AgentEvent, FinishReason, ObservedEvent, TurnStats};
+use thunder_agent_loop::types::event::{AgentEvent, FinishReason, TurnStats};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
-use thunder_agent_types::tool::ToolExecutionResult;
+use thunder_agent_root::assembly::{Observer, Prepared, RunEnv};
 use thunder_agent_root::plugins::conversation::ConversationPlugin;
-use thunder_agent_root::prelude::*;
-
-fn observed(event: AgentEvent) -> ObservedEvent {
-    ObservedEvent {
-        agent_id: "agent".to_string(),
-        event,
-        timestamp_ms: 1,
-    }
-}
+use thunder_agent_types::tool::ToolExecutionResult;
 
 fn turn_stats(turn: usize, duration_ms: u64, tool_calls_count: usize) -> TurnStats {
     TurnStats {
@@ -50,11 +42,12 @@ fn call(id: &str, name: &str) -> ToolCall {
 }
 
 /// Initialize a plugin for `sess` and return it with its context.
-async fn plugin_with(prompt: &str) -> (ConversationPlugin, PluginContext) {
+async fn plugin_with(prompt: &str) -> (ConversationPlugin, RunEnv) {
     let plugin = ConversationPlugin::with_memory_store();
-    let ctx = PluginContext::new("sess").with_prompt(prompt);
-    plugin.on_init(&ctx).await.unwrap();
-    (plugin, ctx)
+    let mut env = RunEnv::new("sess");
+    env.prompt = Some(prompt.to_string());
+    Prepared::prepare(&plugin, &env).await.unwrap();
+    (plugin, env)
 }
 
 /// The messages the plugin has written so far, cloned out of its live state.
@@ -95,81 +88,81 @@ fn transcript(messages: &[ChatMessage]) -> Vec<String> {
 
 #[tokio::test]
 async fn a_turn_is_written_whole_at_its_end() {
-    let (plugin, ctx) = plugin_with("do the thing").await;
+    let (plugin, env) = plugin_with("do the thing").await;
 
-    plugin
-        .on_event(
-            &observed(AgentEvent::TurnStart {
-                turn: 1,
-                timestamp: 1,
-                estimated_prompt_tokens: 10,
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ReasoningDelta {
-                turn: 1,
-                delta: "先看目录".to_string(),
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ReasoningDelta {
-                turn: 1,
-                delta: "，再读文件".to_string(),
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ToolCallReady {
-                turn: 1,
-                tool_call: call("c1", "read_file"),
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ToolExecResult {
-                turn: 1,
-                tool_call_id: "c1".to_string(),
-                name: "read_file".to_string(),
-                result: tool_result("file body"),
-            }),
-            &ctx,
-        )
-        .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::TurnStart {
+            turn: 1,
+            timestamp: 1,
+            estimated_prompt_tokens: 10,
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ReasoningDelta {
+            turn: 1,
+            delta: "先看目录".to_string(),
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ReasoningDelta {
+            turn: 1,
+            delta: "，再读文件".to_string(),
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ToolCallReady {
+            turn: 1,
+            tool_call: call("c1", "read_file"),
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ToolExecResult {
+            turn: 1,
+            tool_call_id: "c1".to_string(),
+            name: "read_file".to_string(),
+            result: tool_result("file body"),
+        },
+        &env,
+    )
+    .await;
     // Not written yet: the turn is not whole until its `turn_end`.
     assert_eq!(
         transcript(&messages(&plugin).await),
         vec!["user: do the thing"]
     );
 
-    plugin
-        .on_event(
-            &observed(AgentEvent::TokenDelta {
-                turn: 1,
-                delta: "读完了".to_string(),
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::TurnEnd {
-                turn: 1,
-                finish_reason: "done".to_string(),
-                stats: turn_stats(1, 1500, 1),
-            }),
-            &ctx,
-        )
-        .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::TokenDelta {
+            turn: 1,
+            delta: "读完了".to_string(),
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::TurnEnd {
+            turn: 1,
+            finish_reason: "done".to_string(),
+            stats: turn_stats(1, 1500, 1),
+        },
+        &env,
+    )
+    .await;
 
     // One message for the turn — its text, its reasoning, its call — then the
     // result that answered the call.
@@ -213,67 +206,67 @@ async fn a_turn_is_written_whole_at_its_end() {
 
 #[tokio::test]
 async fn each_turn_is_its_own_entry_with_its_own_results() {
-    let (plugin, ctx) = plugin_with("two rounds").await;
+    let (plugin, env) = plugin_with("two rounds").await;
 
     for turn in 1..=2usize {
-        plugin
-            .on_event(
-                &observed(AgentEvent::TurnStart {
-                    turn,
-                    timestamp: turn as u64,
-                    estimated_prompt_tokens: 10,
-                }),
-                &ctx,
-            )
-            .await;
-        plugin
-            .on_event(
-                &observed(AgentEvent::ReasoningDelta {
-                    turn,
-                    delta: format!("想{turn}"),
-                }),
-                &ctx,
-            )
-            .await;
-        plugin
-            .on_event(
-                &observed(AgentEvent::ToolCallReady {
-                    turn,
-                    tool_call: call(&format!("c{turn}"), "read_file"),
-                }),
-                &ctx,
-            )
-            .await;
-        plugin
-            .on_event(
-                &observed(AgentEvent::ToolExecResult {
-                    turn,
-                    tool_call_id: format!("c{turn}"),
-                    name: "read_file".to_string(),
-                    result: tool_result(&format!("out{turn}")),
-                }),
-                &ctx,
-            )
-            .await;
-        plugin
-            .on_event(
-                &observed(AgentEvent::TokenDelta {
-                    turn,
-                    delta: format!("答{turn}"),
-                }),
-                &ctx,
-            )
-            .await;
-        plugin
-            .on_event(
-                &observed(AgentEvent::TurnEnd {
-                    turn,
-                    finish_reason: "tool_calls".to_string(),
-                    stats: turn_stats(turn, 10 * turn as u64, 1),
-                }),
-                &ctx,
-            )
-            .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::TurnStart {
+                turn,
+                timestamp: turn as u64,
+                estimated_prompt_tokens: 10,
+            },
+            &env,
+        )
+        .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::ReasoningDelta {
+                turn,
+                delta: format!("想{turn}"),
+            },
+            &env,
+        )
+        .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::ToolCallReady {
+                turn,
+                tool_call: call(&format!("c{turn}"), "read_file"),
+            },
+            &env,
+        )
+        .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::ToolExecResult {
+                turn,
+                tool_call_id: format!("c{turn}"),
+                name: "read_file".to_string(),
+                result: tool_result(&format!("out{turn}")),
+            },
+            &env,
+        )
+        .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::TokenDelta {
+                turn,
+                delta: format!("答{turn}"),
+            },
+            &env,
+        )
+        .await;
+        Observer::on_event(
+            &plugin,
+            &AgentEvent::TurnEnd {
+                turn,
+                finish_reason: "tool_calls".to_string(),
+                stats: turn_stats(turn, 10 * turn as u64, 1),
+            },
+            &env,
+        )
+        .await;
     }
 
     // A provider reads this back as one assistant message per turn, each
@@ -299,47 +292,47 @@ async fn each_turn_is_its_own_entry_with_its_own_results() {
 
 #[tokio::test]
 async fn a_turn_without_a_turn_end_is_still_written() {
-    let (plugin, ctx) = plugin_with("stop halfway").await;
+    let (plugin, env) = plugin_with("stop halfway").await;
 
-    plugin
-        .on_event(
-            &observed(AgentEvent::TurnStart {
-                turn: 1,
-                timestamp: 1,
-                estimated_prompt_tokens: 10,
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ReasoningDelta {
-                turn: 1,
-                delta: "想了半句".to_string(),
-            }),
-            &ctx,
-        )
-        .await;
-    plugin
-        .on_event(
-            &observed(AgentEvent::ToolCallReady {
-                turn: 1,
-                tool_call: call("c1", "read_file"),
-            }),
-            &ctx,
-        )
-        .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::TurnStart {
+            turn: 1,
+            timestamp: 1,
+            estimated_prompt_tokens: 10,
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ReasoningDelta {
+            turn: 1,
+            delta: "想了半句".to_string(),
+        },
+        &env,
+    )
+    .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::ToolCallReady {
+            turn: 1,
+            tool_call: call("c1", "read_file"),
+        },
+        &env,
+    )
+    .await;
     // The answer streamed before the stop; that partial text is the run's final
     // content, which is why `on_finish` must not write it a second time.
-    plugin
-        .on_event(
-            &observed(AgentEvent::TokenDelta {
-                turn: 1,
-                delta: "半".to_string(),
-            }),
-            &ctx,
-        )
-        .await;
+    Observer::on_event(
+        &plugin,
+        &AgentEvent::TokenDelta {
+            turn: 1,
+            delta: "半".to_string(),
+        },
+        &env,
+    )
+    .await;
 
     // The run is cancelled: no `turn_end`, and a partial answer as the result's
     // final content.
@@ -351,7 +344,7 @@ async fn a_turn_without_a_turn_end_is_still_written() {
         stats: Default::default(),
         finish_reason: FinishReason::Cancelled,
     };
-    plugin.on_finish(&result, &ctx).await.unwrap();
+    Observer::on_finish(&plugin, &result, &env).await;
 
     // The buffered turn survives without its stats, and the partial answer is
     // not written a second time on top of it.
