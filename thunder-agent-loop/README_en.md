@@ -1,221 +1,291 @@
-# ⚡ Thunder Agent Loop
-
-> **Ultra-lightweight, High-Performance, Minimal-Resource Single-Agent Loop Engine in Rust**
-
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
-
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-loop` is the core atomic execution unit (**Agent Kernel**) in the Thunder ecosystem. It drives the complete autonomous lifecycle of a single agent instance on a single task (multi-turn reasoning, streaming token/reasoning parsing, concurrent tool execution, decoupled context eviction, and state persistence), serving as a clean, cohesive substrate for host layers (`thunder-agent-root` / `thunder-agent-daemon` / `thunder-tui`).
+# thunder-agent-loop
 
----
+The kernel of Thunder: one `AgentLoop` is one complete single-agent unit — a model
+conversation, a tool-execution seam, an event stream, cancellation, pause, steering,
+compaction and prompt-cache warming. It knows nothing about approval, policies,
+sandboxes, MCP or workflows; those live in the host.
 
-## 🚀 Key Features
+## What it is
 
-- **Bounded Autonomous Loop**: Configured with a default **50 turns ceiling** to safeguard against infinite loops, paired with an explicit `.with_unlimited_turns()` escape hatch where termination is driven purely by model completion (`finish_reason: "stop"` or absence of tool calls).
-- **Pure Transport Decoupling**: Free of HTTP or provider-specific protocol dependencies. Operates over a clean asynchronous stream contract (`LLMClientTrait`). In production it is powered by `thunder-agent-providers`' `RpiAiClient`, which streams in-process (no child process, no Node dependency).
-- **Checkpoint Context Compaction**: Between two compactions the request prefix stays byte-identical (full provider prompt-cache hits). Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) is older history swapped for a single LLM-generated structured checkpoint (Goal / Progress / Key Decisions / Next Steps / Critical Context + read/modified file lists), keeping the last `keep_recent_tokens` verbatim. Summarization requests opt out of cache writes (`cache_retention: "none"`); when summarization is unavailable it degrades to an **emergency trim** (atomically dropping the oldest complete turns, never splitting a tool call from its result); the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
-- **Unified Tool-Execution Funnel & Onion Interceptor Pipeline**: Every tool call (built-in / plugin / MCP / runtime remote) goes through `ToolExecutor::run_tool`. Supports pluggable tools (`Plugin`, `ToolPlugin`) and ordered interceptors (`InterceptorPlugin`). Interceptors execute strictly based on explicit priorities (`CriticalGuard 1000` -> `SecurityPolicy 800` -> `GovernanceMode 500` -> `Observability 100`) descending on `pre_execute` (fail-fast without prompting) and ascending on `post_execute` (full lifecycle envelopment), syncing modified outputs and errors back seamlessly.
-- **Recursive Sub-Tool Invocations & Cycle / Deadlock Prevention**: Tools can safely invoke downstream tools through `ctx.invoke(sub_tool, args)`. The kernel automatically enforces maximum call depth (default 3 levels) and immediate cycle detection along `call_chain`, eliminating both direct self-recursion (`A -> A`) and multi-node cycles (`A -> B -> A`).
-- **Anthropic MCP Streaming Progress Protocol**: Native support for `ProgressReporter` and `ctx.report_progress(...)`. Tools stream `notifications/progress` in real time during long-running tasks, recursively inherited across nested sub-tool invocations.
-- **Ultra-Low Latency & Footprint**: Framework scheduling overhead is only **~5.7 µs (0.0057 ms)** per task. Resident memory (RSS) under 10k concurrency is **< 10 MB**, with zero garbage collection pause.
-- **Native Parallel Tool Dispatch**: Executes native functions and non-blocking asynchronous Bash subprocesses concurrently with timeout fuses and head/tail smart truncation.
-- **Observable Event Streaming**: Full-lifecycle backpressured broadcast stream supporting `TurnStart`, `TokenDelta`, `ReasoningDelta`, `ToolExecResult`, and `LoopComplete`.
-- **One Turn, One Message**: `ChatMessage::assistant_turn` lets a host write a turn as a single assistant message — its text, all of the turn's `tool_calls`, plus `reasoning` (that turn's chain-of-thought) and `stats` (turn number / tokens / duration). The last two are **transcript fields**: they are always `None` in the engine's own context, and a provider conversion reads only `content`/`tool_calls`, so they never reach a request — while the host is the only party that can keep the reasoning at all (the provider streams it once).
-- **Admission Hooks & a Trace of Every Call**: the kernel offers exactly three named seams — `ToolScope` (the host answers "where does this land"), `ToolGate` (the host answers "may it run"), `ToolTraceSink` (the host takes the record). **No gate installed means everything but the guard runs.** Every call leaves exactly one trace, which records the decision itself (`guard` / `gate` / `answer` / `scope`), redacted before it reaches disk. Tools can be registered directly or assembled via plugins.
+- **A unit, not an app.** Construct it, hand it a model client and tools, call
+  `start`, observe events, `join`. A scheduler composes many units; this crate
+  never depends on the scheduler.
+- **Generic.** No filesystem, shell or coding assumption. `tests/generic_kernel_test.rs`
+  runs a form-submission workflow with no file or shell tool at all.
+- **Policy-free.** The only tool surface is `seam::Tools` — `specs()` and `call()`.
+  `tests/kernel_boundary_test.rs` fails the build if a policy type enters `seam.rs`.
+- **Bounded.** Turns, tokens, event bytes, tool output, summarization concurrency
+  and repetition are all capped, with a documented failure direction for each.
 
----
+Internals — turn pipeline, event budget math, compaction and warmer economics —
+are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## 📊 Benchmark
+## Crate boundary
 
-Benchmarked on Apple Silicon (ARM64):
+Internal dependency: `thunder-agent-types` only (wire vocabulary: messages, events,
+tool definitions, trace, scope, policy tags). Everything else is tokio/serde/regex.
 
-| Metric | Result | Note |
-| :--- | :--- | :--- |
-| **Token Estimation Throughput** | **1,465 MB/s** (1.53B chars/sec) | Zero-allocation, dual English/Chinese |
-| **10k Concurrency Dispatch** | **174,838 loops / sec** | 10,000 concurrent loops completed in 57ms |
-| **Single-Task Framework Overhead** | **5.72 µs (0.0057 ms)** | Clean scheduling latency excluding external network |
-| **10k Concurrency Resident Memory (RSS)** | **8.19 MB** | Minimal footprint for microservices and edge embedding |
+Crates that depend on it: `thunder-agent-policy`, `thunder-agent-pack-code`,
+`thunder-agent-mcp`, `thunder-agent-skills`, `thunder-agent-providers`,
+`thunder-agent-runtime`, `thunder-agent-root`, `thunder-agent-daemon`,
+`thunder-agent-core/tui`, `thunder-agent-core/conversation`.
 
----
+```mermaid
+flowchart LR
+    hosts[hosts: pack-code · mcp · skills · providers · runtime · root · daemon · tui]
+    policy[thunder-agent-policy]
+    loop[thunder-agent-loop]
+    types[thunder-agent-types]
 
-## 🛠️ Quickstart
+    hosts --> policy --> loop --> types
+```
 
-### 1. Basic Loop & Tool Registration
+Arrows point at the dependency: the loop needs only `thunder-agent-types`.
+
+## Embedding a unit
 
 ```rust
+use async_trait::async_trait;
+use futures_util::future::BoxFuture;
+use serde_json::json;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
-// Tools live in the capability pack (`thunder-agent-pack-code`), not the kernel (see §4).
-use thunder_agent_pack_code::builtin::{BashTool, ReadFileTool, WriteFileTool};
+use tokio_util::sync::CancellationToken;
+
+struct EchoClient;
+
+#[async_trait]
+impl LLMClientTrait for EchoClient {
+    async fn stream_chat(
+        &self,
+        _options: ChatRequestOptions,
+        _cancel: CancellationToken,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk, String>>, String> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(LLMStreamChunk::Completed {
+                    content: Some("done".into()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".into(),
+                    prompt_tokens: Some(1),
+                    completion_tokens: Some(1),
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }))
+                .await;
+        });
+        Ok(rx)
+    }
+}
+
+struct NoopTools;
+
+impl Tools for NoopTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec::parallel(ToolDefinition::new_function(
+            "noop",
+            "do nothing",
+            json!({"type": "object", "properties": {}}),
+        ))]
+    }
+
+    fn call<'a>(
+        &'a self,
+        call: &'a ToolCall,
+        _ctx: ToolCallContext<'a>,
+    ) -> BoxFuture<'a, ToolOutcome> {
+        Box::pin(async move { ToolOutcome::success(format!("{}: ok", call.function.name)) })
+    }
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initialize configuration (default 50-turn safety ceiling)
-    let config = AgentConfig::new("gpt-4o")
-        .with_system_prompt("You are a high-speed AI engineering assistant.")
-        .with_max_turns(50); // or .with_unlimited_turns()
+async fn main() -> Result<(), AgentError> {
+    let agent = AgentLoop::new(AgentConfig::new("gpt-4o").with_max_turns(20))
+        .with_custom_client(Arc::new(EchoClient))
+        .with_tools(Arc::new(NoopTools));
 
-    let mut agent = AgentLoop::new(config);
-    
-    // 2. Register required tools
-    agent.register_tool(Arc::new(BashTool::default()));
-    agent.register_tool(Arc::new(ReadFileTool::default()));
-    agent.register_tool(Arc::new(WriteFileTool::default()));
+    let mut handle = agent.start("hello", None)?;
+    let mut events = handle.take_events().expect("the stream is taken once");
+    while let Some(observed) = events.recv().await {
+        if let AgentEvent::TokenDelta { delta, .. } = &observed.event {
+            print!("{delta}");
+        }
+    }
 
-    // 3. Execute closed-loop task
-    let result = agent.run("Check system git status and summarize the repository", None).await?;
-    
-    println!("Final Output: {:?}", result.final_content);
-    println!("Total Turns: {}", result.stats.total_turns);
-    println!("Tool Executions: {}", result.stats.total_tool_executions);
-
+    let result = handle.join().await?;
+    println!("{:?} {:?}", result.finish_reason, result.final_content);
     Ok(())
 }
 ```
 
----
+Rules that the example cannot show:
 
-### 2. Event Subscription & Real-Time Streaming
+- `specs()` is called **once per turn**; its order is part of the provider request
+  prefix. Return a stable order or prompt caching breaks.
+- `call()` must not panic and must observe `ctx.cancel`; every failure becomes
+  `ToolOutcome { is_error: true, .. }` and is fed back to the model — it does not
+  end the run.
+- `join()` returns the result as soon as the run has one, independently of whether
+  the event stream was drained.
 
-```rust
-use thunder_agent_loop::prelude::*;
+## Public surface
 
-let mut agent = AgentLoop::new(config);
-let mut event_rx = agent.subscribe_events();
+### Constructing a unit
 
-tokio::spawn(async move {
-    while let Ok(observed) = event_rx.recv().await {
-        match observed.event {
-            AgentEvent::TurnStart { turn, .. } => {
-                println!("▶ [{}] Turn {} started", observed.agent_id, turn);
-            }
-            AgentEvent::TokenDelta { delta, .. } => {
-                print!("{}", delta);
-            }
-            AgentEvent::ReasoningDelta { delta, .. } => {
-                // Reasoning chain (DeepSeek-R1 / o1)
-                print!("[Thinking] {}", delta);
-            }
-            AgentEvent::ToolExecResult { name, result, .. } => {
-                println!("🛠️ [{}] Tool '{}' finished ({}ms)", observed.agent_id, name, result.duration_ms);
-            }
-            AgentEvent::TurnEnd { finish_reason, stats, .. } => {
-                println!("⏹ Turn concluded ({}, {}ms)", finish_reason, stats.duration_ms);
-            }
-            _ => {}
-        }
-    }
-});
+| Method | Effect |
+|---|---|
+| `AgentLoop::new(config: AgentConfig)` | Generates the unit id, scratchpad, pause gate, steer queues and a per-unit summary limiter (`max_concurrent_summaries`). |
+| `.with_id(id)` | Stable id used in events, errors and the scratchpad path `base_dir/<id>/`. |
+| `.with_custom_client(Arc<dyn LLMClientTrait>)` | Model transport. Default is `UnconfiguredLLMClient`, which returns an error on first use. |
+| `.with_tools(Arc<dyn Tools>)` | Fixed tools. They receive no run event/trace sinks. |
+| `.with_tools_factory(Arc<dyn ToolsFactory>)` | Builds tools per run and hands them `RunContext { session_id, route, events, trace }`. Wins over `with_tools`. |
+| `.with_completion_gate(Arc<dyn CompletionGate>, max_rounds)` | Judges a finished answer; `max_rounds = 0` disables it. |
+| `.with_summary_limit(Arc<Semaphore>)` | Shares one summarization limiter across several agents. |
+| `.with_pause_gate(Arc<PauseGate>)` / `.with_steer_queues(Arc<SteerQueues>)` | Adopt control primitives owned by the host. |
+| `id()` · `status()` · `is_running()` · `config()` · `scratchpad()` · `steer_queues()` · `event_drop_counters()` · `subscribe_events()` | Read-only accessors. `subscribe_events()` is a lossy broadcast sidecar (capacity 128). |
+| `.start(input, cancel_token) -> Result<AgentHandle, AgentError>` | Non-blocking. `input` is `ContextInput::{Text, Messages, Buffer}`; `config.system_prompt`, when set, replaces any system message in the transcript. |
+| `.run(input, cancel_token).await -> Result<AgentRunResult, AgentError>` | `start` + drain the stream in a spawned task + `join`. Events are discarded; subscribe first if you need them. |
+
+### `AgentHandle`
+
+| Method | Effect |
+|---|---|
+| `take_events() -> Option<EventStream>` / `events() -> Option<&mut EventStream>` | The reliable per-run stream. Taken once. |
+| `join(self).await -> Result<AgentRunResult, AgentError>` | Waits for the run's result (`AgentError::Terminated` if the task died without one). |
+| `cancel()` | Cancels this unit's task via `CancellationToken`. Siblings are unaffected. |
+| `pause()` / `resume()` / `is_paused()` | Cooperative pause, applied at the next tool boundary. |
+| `steer(msg)` / `follow_up(msg)` | Enqueue input into the in-flight run. |
+| `steer_queues()` / `clear_queue()` | Inspect both queues / take every queued message back (for editor restore). |
+| `status()` · `is_running()` · `agent_id()` | State snapshot. |
+
+### The tool seam
+
+| Item | Shape |
+|---|---|
+| `ToolSpec` | `{ definition: ToolDefinition, concurrency: Concurrency }`; `ToolSpec::parallel(..)`, `ToolSpec::new(..)`. |
+| `Concurrency` | `Parallel` (default) or `Sequential`. One `Sequential` tool in a batch serializes the **whole** batch in `tool_calls` order. |
+| `ToolOutcome` | `{ output, is_error, truncated, original_bytes, telemetry: Option<SystemNotice> }`; `success(..)`, `error(..)`. |
+| `ToolCallContext<'a>` | `{ tool_call_id, turn, route, cancel, timeout, events: Option<Arc<dyn ToolEventSink>> }`. |
+| `Tools` | `specs() -> Vec<ToolSpec>`; `call(&self, &ToolCall, ToolCallContext) -> BoxFuture<ToolOutcome>`. |
+| `ToolsFactory` | `for_run(&RunContext) -> Arc<dyn Tools>`. |
+| `RunContext` | `{ session_id, route, events: Arc<dyn ToolEventSink>, trace: Arc<dyn ToolTraceSink> }`. |
+| `NoTools` | Empty specs; every call is answered with an error outcome. Installed when neither tools nor a factory exist. |
+| `ExecutedCall` | `{ tool_call, result: ToolExecutionResult }` — always paired, always in request order. |
+
+`thunder-agent-policy` supplies the reference implementation (`RegistryTools`,
+`StaticToolsFactory`, `plain_tools`, `single_tool`); a host that wants its own policy
+implements `Tools` directly.
+
+## Configuration and defaults
+
+`AgentConfig` (`src/types/config.rs`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `model` | `"gpt-4o"` | Requested model id. |
+| `system_prompt` | `None` | Host-assembled prompt for **this** run; wins over a transcript system message. |
+| `temperature` / `top_p` / `max_completion_tokens` | `None` | Forwarded as-is. |
+| `max_turns` | `Some(50)` | `None` = unlimited (`with_unlimited_turns()`). |
+| `max_tokens_budget` | `None` | Estimated context ceiling; exceeding it ends the run as `BudgetExceeded`. |
+| `max_tool_output_bytes` | `64 KiB` | Consumed by the host's tool adapter, not by the loop itself. |
+| `max_event_bytes` | `8 MiB` (`DEFAULT_MAX_EVENT_BYTES`) | Byte budget for the run's event queue. |
+| `request_timeout_ms` | `60_000` | Per-tool-call timeout passed to the seam. |
+| `max_stream_retries` | `2` | Stream reconnects per turn. |
+| `thinking_level` | `None` | Provider reasoning hint. |
+| `workspace_dir` / `extra_workspace_roots` | `None` / `[]` | Used by host tools (path scoping). |
+| `session_id` | `None` | Prompt-cache routing key and warmer identity. |
+| `prompt_cache_warm` | `None` | Warmer settings (`PromptCacheWarmSettings`). |
+| `route` | `None` | Identifies the run to shared services; reaches tools as `ToolCallContext::route`. |
+| `pruning` / `scratchpad` / `loop_guard` | below | |
+
+`ContextPruningConfig`:
+
+| Field | Default |
+|---|---|
+| `max_context_tokens` | `128_000` |
+| `reserve_tokens` | `16_384` (trigger at `estimated > max − reserve`) |
+| `keep_recent_tokens` | `20_000` (never summarized) |
+| `summarizer_model` | `None` (falls back to `model`) |
+| `summarizer_max_tokens` | `4096` |
+| `pin_system_prompt` | `true` (declared; the kernel's `region_floor` pins index 0 regardless) |
+| `max_concurrent_summaries` | `2` |
+
+`LoopGuardConfig`: `max_history = 10`, `repetition_threshold = 3`,
+`hard_repetition_limit = 5`, `max_consecutive_errors = 5`.
+
+`ScratchpadConfig`: `base_dir = <user data root>/scratchpad` (`$THUNDER_CONFIG_DIR`,
+see `core::paths`), `threshold_bytes = 16 KiB`, `preview_bytes = 1024`,
+`auto_cleanup = false`.
+
+## Events
+
+Two delivery paths exist: the reliable per-run `EventStream` (drained by the host)
+and a lossy `broadcast` sidecar (`subscribe_events`, capacity 128) for fire-and-forget
+observers. Both carry the same `ObservedEvent { agent_id, event, timestamp_ms }`.
+
+| Event | When |
+|---|---|
+| `TurnStart` / `TurnEnd` | Turn boundaries; `TurnEnd` carries `TurnStats`. |
+| `TokenDelta` / `ReasoningDelta` / `ToolCallChunk` | Streaming micro-deltas. |
+| `ToolCallReady` / `ToolExecStart` / `ToolExecResult` | Announced call, dispatch, settled result (always paired). |
+| `ToolTrace` | One record per call, produced by the host's executor sink. |
+| `TelemetryNotice` | Structured, model-facing note attached to a tool result. |
+| `ContextCompacted` | A checkpoint compaction rewrote the older history. |
+| `SteerAccepted` | A queued message entered the transcript at a turn boundary. |
+| `GateResult` | Completion gate verdict (`pass` / `retry` / `fail`). |
+| `Custom { kind, payload }` | Host/tool-defined event, forwarded verbatim. |
+| `Error` / `LoopComplete` | Terminal frames. |
+
+Micro-deltas are lossy by contract: if the queue budget is exhausted they are
+dropped immediately and counted in `EventDropCounters::micro_deltas()`. Structural
+events wait up to `DELIVERY_DEADLINE` (5 s) and then count as structural drops.
+Treat `structural() > 0` as "this run's record may be incomplete".
+
+## Failure directions
+
+| Situation | Result |
+|---|---|
+| `start` while running | `AgentError::AlreadyRunning` — one run per unit. |
+| Loop task panicked or dropped | `join()` → `AgentError::Terminated` (the busy flag is still cleared by `RunningGuard`). |
+| No client configured | Every connection attempt fails; after `max_stream_retries` → `AgentEvent::Error`, `FinishReason::Error`. |
+| Context overflow | Compaction + retry, at most 2 times per turn; limit read from the provider error, else 60 % of the window. |
+| Stream interrupted | Up to `max_stream_retries` reconnects (500 ms × 2ⁿ backoff); content is continued, tool-call arguments are re-requested. |
+| Tool returned an error | Fed back to the model as the tool result; a run is not ended by it. |
+| 5 consecutive tool errors / 5 identical calls | Circuit breaker or hard repetition limit → `FinishReason::Error`. |
+| `max_turns` / `max_tokens_budget` reached | `MaxTurnsExceeded` / `BudgetExceeded`. |
+| Cancelled | `FinishReason::Cancelled`; announced-but-unrun tool calls are answered with a cancellation result, the partial answer is kept. |
+| Consumer stops reading events | Micro-deltas dropped and counted; structural events dropped after 5 s and counted; the run continues. |
+| Summarizer unavailable or failing | Emergency trim drops oldest complete turns while over the hard window. |
+
+## Tests
+
+`tests/` is the behavioural contract: `kernel_boundary_test` (seam stays policy-free),
+`seam_contract_test`, `unit_contract_test`, `generic_kernel_test` (no coding concepts),
+`run_lifecycle_test` (a finished run holds no state), `event_budget_test`,
+`checkpoint_compaction_test`, `compaction_concurrency_test`, `cache_warmer_test`,
+`cancel_continuity_test` (a cancelled run is still resumable), `steer_test`,
+`pause_gate_test`, `stream_continuation_test`, `auto_heal_test`,
+`system_prompt_authority_test`, `autonomous_termination_test`, `context_test`,
+`utf8_safety_test`.
+
+```bash
+cargo test -p thunder-agent-loop
+cargo run -p thunder-agent-loop --release --example benchmark
 ```
 
----
+## Extension points
 
-### 3. Checkpoint Context Compaction Configuration
+| Want to change | Implement |
+|---|---|
+| Model transport | `LLMClientTrait` |
+| Tool set, approval, sandbox, traces | `Tools` / `ToolsFactory` |
+| Definition of done | `CompletionGate` |
+| Human-in-the-loop pause | `PauseGate` (or `AgentHandle::pause`) |
+| Mid-run user input | `SteerQueues` (or `AgentHandle::steer` / `follow_up`) |
+| Oversized output handling | `ScratchpadManager` (`process_tool_output`) |
 
-```rust
-use thunder_agent_loop::prelude::*;
-
-let mut config = AgentConfig::new("deepseek-chat");
-config.pruning = ContextPruningConfig {
-    // Total physical context window (e.g. 1,000,000 tokens)
-    max_context_tokens: 1_000_000,
-    // Trigger: compaction fires when estimated > max_context_tokens - reserve_tokens
-    reserve_tokens: 16_384,
-    // Newest tokens kept verbatim (never summarized)
-    keep_recent_tokens: 20_000,
-    // Optional dedicated smaller/faster summarizer model (defaults to the main model)
-    summarizer_model: None,
-    summarizer_max_tokens: 4096,
-    pin_system_prompt: true,
-};
-```
-
----
-
-### 4. Cross-Agent File Concurrency Lock
-
-The lock is **not in the kernel**: `FILE_MUTATION_LOCKS` belongs to the write tool in `thunder-agent-pack-code/src/builtin/fs.rs` — an atomic write is part of what "write a file" *is*, not a layer an assembly could leave out. When multiple agent units or concurrent tool calls target the same file path, the write tool acquires it:
-
-```rust
-// Process-wide normalized path mutex table
-// Concurrent writes to the SAME file are queued safely.
-// Concurrent writes to DIFFERENT files proceed fully parallel.
-static FILE_MUTATION_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<TokioMutex<()>>>>> =
-    LazyLock::new(|| StdMutex::new(HashMap::new()));
-
-// Write flow: acquire path lock → write temp file → atomic shadow-rename commit → release lock + best-effort table cleanup
-let lock = FILE_MUTATION_LOCKS.lock().unwrap()
-    .entry(normalized_path)
-    .or_insert_with(|| Arc::new(TokioMutex::new(())))
-    .clone();
-let _guard = lock.lock().await;
-```
-
-**Scope & lifecycle**: the table is **process-local** — every agent, task, and tool inside one OS process (including all daemon `run_task`s) shares it; it does **not** span processes (a TUI running alongside the daemon gets no mutual exclusion). Each uncontended write releases its entry best-effort (skipped when waiters exist), so long-lived processes never grow the table unboundedly.
-
----
-
-## 🔒 Admission & Cooperative Pausing
-
-### Admission: `ToolGate` / `ToolScope`
-
-The kernel carries **no approval opinion**. It offers two hooks and one guard that cannot be argued with:
-
-```rust
-// The host answers "where does this call land" — a classification, never a verdict.
-pub trait ToolScope { fn scope_of(&self, tool: &str, effect: ToolEffect, args: &Value) -> Scope; }
-
-// The host answers "may it run" — it may only tighten; the dialog is the kernel's.
-pub trait ToolGate {
-    fn decide(&self, request: &ToolGateRequest<'_>) -> GateVerdict;
-    fn record_answer(&self, request: &ToolGateRequest<'_>, answer: &ApprovalAnswer) {}
-    fn label(&self) -> &str { "gate" }
-}
-```
-
-**With neither installed, everything but the guard runs** — that is the headless-host red line. The approval modes (`plan` / `ask` / `acceptEdits` / `yolo`) are implemented by `ModePlugin` in `thunder-agent-root`, and can be unloaded.
-
-```rust
-let agent = AgentLoop::new(cfg)
-    .with_tool_scope(Arc::new(CodeScope::from_agent_config(&cfg, Some(&ws))))
-    .with_tool_gate(Some(mode_plugin as Arc<dyn ToolGate>), Some(ui));
-```
-
-### `PauseGate` (Cooperative Pausing)
-
-`CancellationToken` handles irreversible task termination; `PauseGate` handles non-destructive, resumable task pausing.
-
-```rust
-let handle = agent.start("Long running task", None)?;
-handle.pause();          // Takes effect at next tool boundary
-handle.resume();         // Resumes execution
-```
-
-The pause checkpoint is placed **before tool dispatch**. Active tools finish cleanly before pausing, preventing file corruption.
-
----
-
-## 📂 Module Structure
-
-```text
-src/
-├── core/                  # Context buffer, state tracker, token estimator, PauseGate
-├── loop_engine/           # Core loop engine, event emitter, task state machine
-├── pruning/               # Checkpoint context compaction (+ emergency trim floor)
-├── stream/                # Pure LLMClientTrait contract (+ unconfigured placeholder)
-├── tools/                 # Tool registry and parallel executor
-│   ├── executor.rs        # run_tool: the one entry (guard -> gate -> ask -> execute -> trace)
-│   ├── guard.rs           # Kernel guard: dangerous commands (token-based) + critical paths
-│   ├── read_only.rs       # Read-only verdict: a plan-mode shell call proved to change nothing
-│   └── trace.rs           # ToolTrace, redaction, ToolTraceSink
-└── types/                 # Messages, events, tools, and config definitions
-```
-
----
-
-## 📄 License
-
-This project is licensed under the [Apache License 2.0](LICENSE).
+Nothing else is pluggable by design: the loop has no registry of its own.

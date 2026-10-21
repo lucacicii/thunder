@@ -1,55 +1,148 @@
-# ⚡ Thunder TUI 全键盘与斜杠命令指南 (Keyboard & Slash Commands Guide)
-
 [English](KEYBOARD_en.md) | [简体中文](KEYBOARD.md)
 
-Thunder TUI 采用类似 **Claude Code** 的极简现代全屏终端界面，全宽对话流结合交互式 `❯` 提示行与实时斜杠命令自动补全浮窗。
+# Thunder TUI 按键参考
 
----
+只列出 `src/app.rs`、`src/picker.rs` 实际处理过的按键。未在代码中出现的组合键不做承诺。
 
-## ⚡ 1. 交互式斜杠命令 (Slash Commands)
+## 优先级
 
-在底部 `❯ ` 提示行输入 `/` 即可触发实时命令补全浮窗：
+`App::handle_key`（`src/app.rs`）按以下顺序消费按键，命中即返回：
 
-| 命令 | 别名 | 参数 | 功能说明 |
-| :--- | :--- | :--- | :--- |
-| **`/resume`** | `/sessions`, `/load_session`, `/switch` | `[# \| id]` | **列出所有历史会话，或按序号/ID一键恢复继续对话** |
-| **`/help`** | `/?` | | 呼出命令参考与键盘快捷键说明 |
-| **`/model`** | `/m` | `[name]` | 查看当前模型或热切换模型（如 `deepseek-v4.1-flash`, `gpt-4o`, `claude-3-7-sonnet`） |
-| **`/mode`** | | `[plan \| ask \| acceptEdits \| yolo]` | 切换权限模式（留空则显示当前模式） |
-| **`/topology`** | | `[auto \| single]` | 切换执行拓扑（插件宿主 / 单 Agent 直连） |
-| **`/skills`** | `/skill`, `/sk` | `[list \| load <name> \| scan]` | 浏览技能库目录、读取 Playbook 提示词或重新扫描外部目录 |
-| **`/mcp`** | `/server`, `/tools` | `[list \| servers \| reload]` | 列出已连接的 MCP 服务及动态工具，或重载 MCP 配置文件 |
-| **`/compact`**| `/prune`, `/compress` | | 自动压缩历史上下文，提取会话摘要并裁剪老旧轮次以节约 Token |
-| **`/stats`** | `/cost`, `/tokens`, `/usage` | | 查看当前会话统计（消息数、对话轮次、工具调用数、估计 Token 消耗） |
-| **`/config`** | `/settings`, `/cfg` | `[key] [val]` | 查看或修改运行时配置（`temperature`, `max_turns`, `timeout_ms` 等） |
-| **`/workspace`**| `/cwd`, `/dir` | `[path]` | 查看当前工作区或切换至新的工作目录 |
-| **`/export`** | `/save`, `/dump` | `[path]` | 将当前对话与工具调用链完整导出为 Markdown 报告 |
-| **`/clear`** | `/new`, `/reset` | | 清空当前对话流并创建全新空白会话 |
-| **`/health`** | `/doctor`, `/status` | | 运行多智能体与环境健康检查探针 |
-| **`/timeline`** | `/rail` | `[on \| off]` | 显示 / 隐藏对话区右缘的 turn 时间轴轨道（裸调用 = 切换） |
-| **`/details`** | `/verbose` | `[on \| off]` | 展开 / 收起思考过程与工具调用详情（默认只显示概要，裸调用 = 切换） |
-| **`/quit`** | `/exit`, `/q` | | 优雅退出 Thunder TUI |
+1. 提问弹窗打开 → `handle_question_key`
+2. picker 打开 → `PickerState::handle_key`
+3. 帮助视图（`ViewMode::Help`）→ 滚动键；仅 `Esc` 与全局 `Ctrl+` 组合穿透到下一步
+4. 全局快捷键（表格 A）
+5. 当前焦点面板：`Input` / `Chat` / `Sidebar` / `Monitor`
 
----
+## A. 全局快捷键
 
-## ⌨️ 2. 全局键盘快捷键 (Global Shortcuts)
+| 按键 | 动作 | 位置 |
+|---|---|---|
+| `Ctrl+C` | 依次尝试：复制选中文本 → 清空输入框 → 取消重命名 → 停止运行 → 退出程序；编辑器相关步骤仅在 `Input` 焦点下生效 | `App::handle_interrupt` |
+| `Ctrl+Q` | 退出 | `App::handle_key` |
+| `Ctrl+N` | 新建会话（运行中会拒绝） | `App::new_session` |
+| `Ctrl+P` | 切换执行模式 `AutoRouter` ⇄ `SingleAgent` | `App::handle_key` |
+| `Ctrl+B` | 显示 / 隐藏会话侧栏 | `App::handle_key` |
+| `Ctrl+O` | 展开 / 折叠思考与工具细节 | `App::toggle_details` |
+| `Ctrl+L` | 打开「链接与文件」picker | `App::open_links_picker` |
+| `Ctrl+H` | 打开 / 关闭帮助视图 | `App::handle_key` |
+| `Ctrl+T` | 显示 / 隐藏轮次导轨 | `App::toggle_timeline` |
+| `PageUp` | 对话流上滚 10 行 | `App::scroll_up` |
+| `PageDown` | 对话流下滚 10 行 | `App::scroll_down` |
+| `Ctrl+Home`（或输入框为空时的 `Home`） | 滚到顶部 | `App::scroll_to_top` |
+| `Ctrl+End`（或输入框为空时的 `End`） | 滚到底部 | `App::scroll_to_bottom` |
+| `Shift+↑` / `Alt+↑` | 对话流上滚 1 行（优先于历史记录） | `App::scroll_up` |
+| `Shift+↓` / `Alt+↓` | 对话流下滚 1 行 | `App::scroll_down` |
+| `Tab` | 输入框内：循环命令第一参数 → 补全命令名；否则切换焦点 | `App::handle_key` |
+| `Shift+Tab`（`BackTab`） | 输入框内：反向循环命令参数；无参数可循环时切到下一个审批模式 | `App::handle_key` |
+| `Esc` | 见表格 B | `App::handle_key` |
 
-| 快捷键 | 功能 | 说明 |
-| :--- | :--- | :--- |
-| **`Enter`** | **发送 / 提交** | 提交输入框中的 Prompt，或执行斜杠命令 |
-| **`Shift + Enter`** | **换行** | 在输入框中换行（输入框会随行数变高）。终端不支持该组合键时用 **`Ctrl + J`** 换行 |
-| **`Tab`** | **自动补全 / 切换焦点** | 在输入 `/` 时自动补全命令；其他时候在 Input ➔ Chat ➔ 时间轴轨道之间切换焦点 |
-| **`Shift + Tab`** | **轮转权限模式** | 输入框内没有正在编辑的命令参数时，在 `plan ➔ ask ➔ acceptEdits ➔ yolo` 之间轮转；有参数候选时优先切换参数值（与 `/mode` 等价） |
-| **`↑ / ↓`** | **选择候选 / 历史命令** | 在命令补全弹窗中上下选择；在普通状态下浏览输入历史记录 |
-| **`Ctrl + N`** | **新建会话** | 清空当前对话流，创建并初始化一个新的空白 Session |
-| **`Ctrl + P`** | **轮转执行模式** | 在 `Auto ➔ Single` 之间快速轮转 |
-| **`Ctrl + H`** | **帮助弹窗** | 弹出 / 关闭键盘快捷键帮助速查卡片（用 `↑ / ↓`、`PageUp / PageDown`、`g / G` 滚动，`Esc` 关闭） |
-| **`Ctrl + T`** | **时间轴轨道** | 显示 / 隐藏对话区右缘悬浮的 turn 轨道（`Tab` 聚焦后用 `↑ / ↓` 或 `j / k` 选择、`Enter` 跳到该轮，鼠标悬停看详情、单击直接跳转） |
-| **`Ctrl + O`** | **展开详情** | 展开 / 收起思考过程与工具调用输出：默认只显示「行数 + 首行摘要」和「头部 + 2 行预览」，展开后显示全文（工具输出最多 200 行） |
-| **`Ctrl + L`** | **链接选择器** | 列出本会话中的全部链接与文件路径（`Enter` 打开 / 在 Finder 中显示），等价于 `/links` |
-| **`Ctrl + A`** | **全选输入** | 选中输入框中的全部文本，配合 `Ctrl + C` 复制到系统剪贴板 |
-| **`Ctrl + C`** | **复制 / 清空 / 取消 / 退出** | 有选区时**复制所选文本**；否则输入框非空时**清空输入**；否则取消运行中的任务；空闲时退出 |
-| **`Esc`** | **关闭弹窗 / 清空** | 轨道聚焦时先退回输入框（不打断运行中的任务）；否则有选区时先取消选区、关闭补全浮窗或帮助窗口，最后才取消运行中的任务 |
-| **`Shift + ← / →`** | **扩展选区** | 按住 Shift 移动光标以扩展 / 收缩输入框中的选区（`Shift + Home / End` 同理） |
-| **`PageUp / PageDown`** | **快速翻页** | 快速上下滚动对话流 10 行 |
-| **`Home / End`** | **顶底跳转** | `Home` 滚到对话顶端，`End` 瞬间滚回消息最底部并恢复**自动流式跟随** |
+`Tab` 的焦点顺序（`App::cycle_focus`）：`Input → Chat → Sidebar → Input`（侧栏显示时），或 `Input → Chat → Monitor → Input`（侧栏隐藏且导轨显示时），否则 `Input → Chat → Input`。重命名进行中时 `Tab` 不生效。
+
+## B. `Esc` 的分支
+
+| 前置状态 | 动作 |
+|---|---|
+| 帮助视图 / 会话列表视图 | 回到对话视图，焦点回输入框 |
+| 重命名模式 | 取消重命名（不停止运行） |
+| 焦点在轮次导轨 | 焦点回输入框（不取消运行） |
+| 输入框有选区 | 清除选区 |
+| 输入以 `/` 开头 | 清空输入与命令弹窗索引 |
+| 其他 | 停止当前运行（`App::stop_run`） |
+
+## C. 输入框（`FocusPane::Input`）
+
+| 按键 | 动作 | 位置 |
+|---|---|---|
+| `Enter` | `rename_mode` 时提交新名字；命令名未写完时补全；运行中则作为 steer 消息入队；否则执行斜杠命令或提交提示 | `App::handle_input_key` |
+| `Alt+Enter` | 运行中：作为 follow-up 入队 | `App::enqueue_for_run` |
+| `Shift+Enter` | 插入换行（需要终端支持键盘增强协议） | `App::handle_input_key` |
+| `Ctrl+J` | 插入换行（通用回退） | 同上 |
+| `←` / `→` | 光标左右移动 | `App::cursor_left` / `cursor_right` |
+| `Alt+←` / `Alt+→` | 按词移动 | `App::cursor_prev_word` / `cursor_next_word` |
+| `Super+←` / `Super+→`（`Cmd+←/→`） | 移到行首 / 行尾 | `App::cursor_home` / `cursor_end` |
+| `Home` / `End`（输入非空） | 移到行首 / 行尾 | 同上 |
+| `Shift+←` / `Shift+→` | 扩展选区 | `App::extend_left` / `extend_right` |
+| `Shift+Home` / `Shift+End`（输入非空） | 选区扩展到行首 / 行尾 | `App::extend_home` / `extend_end` |
+| `Ctrl+A` | 全选输入内容 | `App::select_all` |
+| `Ctrl+E` | 光标到行尾 | `App::cursor_end` |
+| `Backspace` / `Delete` | 删除前一个 / 后一个字符 | `App::backspace` / `delete_forward` |
+| `↑` | 命令参数反向循环 → 命令列表上移 → 历史记录上一条 → 输入为空时上滚 1 行 | `App::handle_input_key` |
+| `↓` | 命令参数正向循环 → 命令列表下移 → 历史记录下一条 → 输入为空时下滚 1 行 | 同上 |
+| 其他字符 | 插入到光标处 | `App::insert_char` |
+
+括号粘贴（bracketed paste）走 `App::handle_paste`，不触发提交；模态打开时忽略粘贴。
+
+## D. 对话流（`FocusPane::Chat`）
+
+| 按键 | 动作 |
+|---|---|
+| `↑` / `k` | 上滚 1 行 |
+| `↓` / `j` | 下滚 1 行 |
+| `PageUp` / `PageDown` | 上 / 下滚 10 行 |
+| `Home` | 滚到顶部 |
+| `End` | 滚到底部 |
+
+## E. 会话侧栏（`FocusPane::Sidebar`）
+
+| 按键 | 动作 |
+|---|---|
+| `↑` / `k` | 选中上一行 |
+| `↓` / `j` | 选中下一行 |
+| `Enter` | 加载选中会话（运行中由 `LoadSession` 路径统一拒绝） |
+| `d` / `Delete` | 删除选中会话并刷新列表 |
+
+## F. 轮次导轨（`FocusPane::Monitor`）
+
+| 按键 | 动作 |
+|---|---|
+| `↑` / `k` | 选中上一轮 |
+| `↓` / `j` | 选中下一轮 |
+| `Home` / `g` | 选第一轮 |
+| `End` / `G` | 选最后一轮 |
+| `Enter` | 跳到选中轮次（把该轮滚到顶部） |
+
+## G. 提问弹窗（`PendingQuestion` 存在时）
+
+| 按键 | 动作 |
+|---|---|
+| `Esc` | 以空答案放弃，agent 继续自行假设 |
+| `↑` / `↓` | 在选项间移动（仅当该问题有选项） |
+| `Space` | 多选问题中切换当前选项（仅当 `multi_select`） |
+| `Enter` | 提交当前答案；最后一个问题回答后整组答案回传 |
+| `Backspace` | 自由输入问题中删除一个字符 |
+| 其他字符 | 自由输入问题中追加文本 |
+
+## H. Picker（`PickerState::is_open`）
+
+| 按键 | 动作 |
+|---|---|
+| `Esc` | 关闭 picker |
+| `↑` / `k` | 上移（`k` 仅在过滤文本为空时） |
+| `↓` / `j` | 下移（同上） |
+| `PageUp` / `PageDown` | 上 / 下移 5 项 |
+| `Home` / `End` | 首项 / 末项 |
+| `Enter` | 选中当前项并关闭 |
+| `Backspace` | 删除过滤文本最后一个字符 |
+| 其他字符 | 追加过滤文本 |
+
+## I. 帮助视图（`ViewMode::Help`）
+
+| 按键 | 动作 |
+|---|---|
+| `↑` / `k` | 上滚 1 行 |
+| `↓` / `j` | 下滚 1 行 |
+| `PageUp` | 上滚 10 行 |
+| `PageDown` / `Space` | 下滚 10 行 |
+| `Home` / `g` | 到顶 |
+| `End` / `G` | 到底 |
+
+## J. 鼠标
+
+| 事件 | 动作 |
+|---|---|
+| 左键点击导轨刻度 | 跳到该轮 |
+| 左键点击链接 / 路径 | 打开 URL 或在文件管理器中显示文件；未点中时提示该行链接起始列 |
+| 左键点击（picker / 提问弹窗 / 帮助视图打开时） | 忽略 |
+| 指针移动 | 更新导轨悬停提示 |
+| 滚轮上 / 下 | picker 打开时移动选择，否则滚动 3 行 |

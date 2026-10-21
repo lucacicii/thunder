@@ -1,180 +1,247 @@
-# Thunder Daemon (Sidecar for Electron & Desktop UI)
-
-> **Lightweight STDIO Sidecar Daemon for Electron, Desktop Applications & External Hosts**
-
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-daemon` is a long-running sidecar process specifically designed for desktop clients. Communicating over standard input/output (STDIO) via high-performance NDJSON framing, it provides complete agent execution, tool dispatch, dynamic plugin assembly, and multi-turn session persistence.
+# thunder-agent-daemon
 
----
+A STDIO sidecar: NDJSON requests on stdin, NDJSON responses and event frames on stdout, logs on stderr. The binary is `thunder-daemon`.
 
-## 🚀 Architecture & Key Features
+## Role
 
-- **Zero Port Conflicts & Natural Lifecycle Binding**: Pure STDIO pipe communication avoids TCP/HTTP ports, eliminating port collisions or firewall prompts. When the parent Electron process terminates or crashes, STDIN automatically reaches EOF and `thunder-daemon` exits cleanly within milliseconds, leaving no zombie processes.
-- **Concurrency Semaphore & Backpressured Scheduling**: Employs an internal async task semaphore (tunable via the `THUNDER_MAX_CONCURRENT_TASKS` environment variable, default `8`) to bound parallel reasoning tasks, preventing local compute exhaustion or provider rate-limit spikes.
-- **Asynchronous STDOUT Actor (Zero Line Interleaving)**: All outgoing events are serialized via a dedicated tokio STDOUT actor over a bounded MPSC channel. Under concurrent multi-task streaming, **every NDJSON line is guaranteed atomic and never interleaved**.
-- **Authoritative History Reload & Tiered Trace Retention**: Reloads the latest authoritative conversation from disk before task launch to keep multi-client state consistent. In-memory traces use tiered retention — high-frequency micro-deltas (`TokenDelta` / `ReasoningDelta` / `ToolCallChunk`) are streamed live over stdout but **not** kept in the trace: they are **counted** in `dropped_deltas` (dropping is reported, never silent), preventing unbounded growth in long-lived daemons. A trace file also carries `tool_traces` (cap 2000) and `tool_decisions` (what the caps pushed out, keeping the decision itself).
-- **Cooperative Pausing & User Question Bubbles**:
-  - `pause_task` pauses execution safely at the next tool dispatch boundary without disrupting in-flight disk writes; `resume_task` resumes execution.
-  - `ask_user_question` allows agents to pose blocking questions rendered as interactive question bubbles in the desktop UI, resumed via `answer_question`.
-- **Log Isolation**: All diagnostic and runtime traces are directed to `STDERR`, guaranteeing that `STDOUT` remains 100% valid NDJSON protocol frames.
+It is the process boundary for Electron, desktop panels and headless hosts. It translates "one long-lived process with concurrent tasks" into `thunder-agent-root`'s "one `ThunderRoot` per run":
 
----
+- Protocol: `src/protocol.rs` defines requests, responses and pushed frames.
+- Service: `src/service.rs` owns sessions, tasks, modes, the MCP connection pool, pending questions and UI dialogs.
+- Host implementations: `src/ui.rs` (`HostUi`), `src/ask_user.rs` (the `ask_user_question` tool pack), `src/attachments.rs` (image admission).
 
-## 🛠️ Launch & Testing
+## Crate boundary
 
-```bash
-# 1. Launch daemon
-./daemon.sh
+| Dependency | Purpose |
+|---|---|
+| `thunder-agent-root` | `ThunderRoot`, `StandardHostBuilder`, `ToolPack`, `ModePlugin`, metrics/status, `TraceCollector` |
+| `thunder-agent-loop` | `AgentConfig`, `AgentEvent`, pause / steer |
+| `thunder-agent-policy` | `HostUi`, `UiRequest` / `UiResponse` / `UiSource`, `AgentTool` |
+| `thunder-agent-providers` | `ProviderRegistry`, `ModelDescriptor`, `RpiAiClient`, title generation |
+| `thunder-conversation` | `FsConversationStore` |
+| `thunder-agent-skills` / `thunder-agent-mcp` | Direct dependencies, not referenced in source; compiled alongside the baseline host set |
+| `thunder-agent-types` | Shared wire types |
 
-# 2. Send ping command
-echo '{"method":"ping","id":"1"}' | ./daemon.sh
+No workspace member depends on this crate (it is a binary); hosts launch it as a child process (see `daemon.sh` at the repo root).
 
-# 3. List available models
-echo '{"method":"list_models","id":"2"}' | ./daemon.sh
+## Process and data root
+
+`src/main.rs`:
+
+1. Initialise `tracing` on **stderr**; stdout belongs entirely to the protocol.
+2. Parse `--workspace` / `-w <path>` (defaults to the current directory) and `--config-dir <path>`.
+3. `DaemonService::new(workspace)`.
+4. Read stdin line by line: skip empty lines; parse into `DaemonRequest` and `handle_request`; on a parse failure reply `response { success: false, error: "Invalid JSON command: ..." }`, salvaging `id` from the raw line when possible.
+5. On stdin EOF, `service.shutdown()` cancels every active task's `CancellationToken`.
+
+Data root: `THUNDER_CONFIG_DIR`, or `--config-dir`. The flag is written to the environment with `std::env::set_var` **before** the service is constructed, so it overrides an inherited variable; the conversation store lands under `<root>/conversations`.
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant D as thunder-daemon
+  participant R as ThunderRoot (one per task)
+  C->>D: run_task
+  D->>D: concurrency permit / task_id / session claim / attachments / mode
+  D-->>C: response {task_id, session_id, model, workspace, shared_roots, thinking_level, headless, use_mock}
+  D->>R: StandardHostBuilder + ask_user pack → execute
+  R-->>D: ObservedEvent stream (incl. metrics_update / agent_status)
+  D-->>C: observed_event …
+  C->>D: steer_task / pause_task / answer_question / answer_ui
+  D-->>C: task_queue_update / task_paused / mode_changed
+  D-->>C: task_completed {active_plugins} | task_failed
 ```
 
----
+## Protocol
 
-## 📡 Protocol Specification (NDJSON over STDIN/STDOUT)
+- Encoding: one JSON object per line (NDJSON).
+- Requests are tagged with `"method"`, `snake_case`; field names are the Rust fields (`snake_case`) except where an alias exists (`render_capabilities` also accepts `renderCapabilities`; `Attachment` accepts `path` / `data` / `mimeType` / `mime_type`).
+- Responses and pushes are tagged with `"type"`, `snake_case`.
+- `PROTOCOL_VERSION = 3`. It moves only when a request or response shape changes, independently of the crate version; `ping` returns both and no handshake is performed.
 
-### 1. Inbound Host Requests (STDIN)
+### Requests (`DaemonRequest`)
 
-One valid JSON line per command:
+| `method` | Fields | Purpose |
+|---|---|---|
+| `ping` | `id?` | Returns `{pong: true, version, protocol: 3}` |
+| `list_models` | `id?` | Reloads the registry and returns `{models: [...], utility_model}` |
+| `list_conversations` | `id?` | Conversation list (only conversations with at least one turn) |
+| `get_conversation` | `id?`, `session_id` | Conversation detail |
+| `run_task` | `id?`, `task_id`, `prompt`, `session_id?`, `model?`, `model_descriptor?`, `use_mock?`, `workspace_dir?`, `mode?`, `extra_workspace_dirs?`, `thinking_level?`, `attachments?`, `headless?` (default `false`), `render_capabilities?` | Start one run |
+| `pause_task` | `id?`, `task_id` | Park at the next tool boundary |
+| `resume_task` | `id?`, `task_id` | Release the park |
+| `steer_task` | `id?`, `task_id`, `message`, `behavior?`, `attachments?` | Inject input into a live task; `behavior` must be `steer` or `follow_up` (`followUp` / `followup` also accepted) |
+| `clear_queue` | `id?`, `task_id` | Drop both queues and return their text |
+| `answer_question` | `id?`, `question_id`, `answers?`, `cancelled?` | Answer `ask_user_question`; `question_id` is `<task_id>:qN` |
+| `answer_ui` | `id?`, `request_id`, `value?`, `confirmed?`, `cancelled?` | Answer a `ui_request` dialog |
+| `get_permission_state` | `id?`, `session_id` | Returns the session's `mode` and remembered `rules` |
+| `set_mode` | `id?`, `session_id`, `mode` | Flip the session mode; accepts everything `Mode::parse` accepts, legacy names included |
+| `cancel_task` | `id?`, `task_id` | Cancel a live task |
+| `reload_integrations` | `id?` | Drop the MCP pool so the next run re-reads the workspace |
+| `get_trace` | `id?`, `session_id`, `task_id?` | Read a trace; omitting `task_id` returns the latest |
+| `list_traces` | `id?`, `session_id` | List the session's traces |
+| `generate_title` | `id?`, `session_id`, `force?` | Synchronous title generation; returns a title or a structured error |
+| `set_conversation_title` | `id?`, `session_id`, `title` | Set the title manually |
+| `get_metrics` | `id?`, `session_id` | Returns the session's latest `MetricsSnapshot` |
 
-```json
-{"method":"ping","id":"req-1"}
-{"method":"list_models","id":"req-2"}
-{"method":"run_task","id":"req-4","task_id":"task-1","prompt":"Check repo git status","session_id":"sess-001"}
-{"method":"cancel_task","id":"req-5","task_id":"task-1"}
-{"method":"pause_task","id":"req-6","task_id":"task-1"}
-{"method":"resume_task","id":"req-7","task_id":"task-1"}
-{"method":"answer_question","id":"req-8","question_id":"task-1:q1","answers":{"Which component?":"renderer"}}
-```
+### Responses and pushes (`DaemonResponse`)
 
-### 2. Outbound Daemon Responses (STDOUT)
+| `type` | Fields | Meaning |
+|---|---|---|
+| `response` | `id?`, `success`, `data?`, `error?` | Direct answer to any request |
+| `observed_event` | `task_id`, `event` | Kernel events forwarded verbatim, including the `metrics_update` / `agent_status` custom frames |
+| `task_completed` | `task_id`, `session_id`, `final_content?`, `finish_reason`, `active_plugins` | Normal completion |
+| `task_failed` | `task_id`, `session_id?`, `error`, `finish_reason?` | Failure or cancellation; an absent `finish_reason` means no terminal reason was available (the run never started, or `join` itself failed) |
+| `user_question` | `task_id`, `session_id?`, `question_id`, `questions` | The agent is blocked on a human answer |
+| `task_paused` | `task_id`, `session_id?`, `reason` | Parked |
+| `task_queue_update` | `task_id`, `session_id?`, `steering`, `follow_up` | Full queue snapshot, never a delta |
+| `mode_changed` | `session_id`, `task_id?`, `mode`, `previous?`, `source` | Pushed for every mode change, whatever caused it |
+| `ui_request` | `request_id`, `task_id?`, `session_id?`, `source`, flattened `UiRequest` | Blocking dialog |
+| `ui_notice` | `source`, `message`, `level` | Notification (`info` / `warning` / `error`); a UI-less client drops it |
+| `ui_status` | `key`, `text?` | Set or clear a status-bar entry |
 
-- **Response Confirmation**: `{"type":"response","id":"req-1","success":true,"data":{...}}`
-- **Streaming Event**: `{"type":"observed_event","task_id":"task-1","event":{...}}`
-- **User Question (Awaiting Input)**: `{"type":"user_question","task_id":"task-1","question_id":"task-1:q1","questions":[{"question":"...","options":[{"label":"..."}]}]}`
-- **Approval Mode Changed (pushed)**: `{"type":"mode_changed","session_id":"sess-001","mode":"plan","previous":"yolo","source":"user"}` — `source` is `user` / `plan_approved` / `run_option`, and a change made inside a run also carries `task_id`. A no-op is never announced, so receiving this frame always means the mode really moved.
-- **Task Paused**: `{"type":"task_paused","task_id":"task-1","reason":"..."}`
-- **Task Completed**: `{"type":"task_completed","task_id":"task-1","session_id":"...","final_content":"...","finish_reason":"Done"}`
-- **Task Failed**: `{"type":"task_failed","task_id":"task-1","error":"..."}`
+`mode_changed.source` wire values: `user` (client `set_mode`), `plan_approved` (`exit_plan_mode`'s approval dialog), `run_option` (`run_task` pinned a mode different from the session's).
 
----
+**`task_completed.active_plugins` now carries `assembly.ids()`**: the ids of the run's sections / packs / observers, deduplicated in registration order. It no longer means "plugins selected from a registry"; it means "what this run was actually assembled from".
 
-## 🔒 Approval Modes
+## Service behaviour
 
-As of 0.4 the daemon has **no tiers**. Tools are always registered in full, and
-whether a call runs is decided by the **mode** — which lives in an unloadable
-host plugin (`ModePlugin`); the kernel only offers a `ToolGate` hook.
+### One root per task
 
-| `mode` | reads | writes in scope | writes out of scope | shell | Notes |
-| :---: | :---: | :---: | :---: | :---: | :--- |
-| **`plan`** | ✅ | ❌ | ❌ | read-only: ✅, else ask | Read-only research plus one plan file; `write_plan` / `exit_plan_mode` are the only way out |
-| **`ask`** (default) | ✅ | ask | ask | ask | Reads run unprompted; everything else asks — secure by default |
-| **`acceptEdits`** | ✅ | ✅ | ask | ask | In-workspace edits run unprompted; reaching out still asks |
-| **`yolo`** (explicit opt-in) | ✅ | ✅ | ✅ | ✅ | Fully autonomous, matching 0.3's `never` |
-
-Old names still parse: `ask` ← `default`/`manual`/`mutations`/`writes`/`always`/`all`;
-`acceptEdits` ← `accept_edits`/`shell_only`/`ask_shell`;
-`yolo` ← `never`/`none`/`bypass`/`bypass_permissions`. **`plan` no longer maps to
-`never`** — that 0.3 mapping was wrong.
-
-Three rules that hold in every mode:
-
-1. **The guard cannot be argued with.** Dangerous commands (`mkfs*`, `dd if=`,
-   `rm -rf /`, fork bombs) and critical paths (the credential store, `.git`,
-   system directories) are refused in *every* mode, `yolo` included. Changing the
-   mode does not change that.
-2. **Path classification only ever relaxes.** A scope can turn an "ask" into an
-   "allow"; it can never turn an "allow" into a "refuse" — so a new rule can cost
-   you an extra prompt, never a silent refusal.
-3. **Asking fails closed.** No panel, a timeout, a dismissal, or an answer outside
-   the offered set is a refusal. It comes back as a *tool result* carrying
-   "nothing happened", not as an exception, so the model does not read it as
-   success and retry.
-
-### Setting the mode
-
-```json
-{"method":"set_mode","id":"req-14","session_id":"sess-001","mode":"plan"}
-```
-
-- The response echoes `{"session_id":"...","mode":"plan"}`; an unknown mode returns
-  `success:false` with `unknown mode '…': expected one of plan | ask | acceptEdits | yolo`
-  — it never falls back to the default silently.
-- The mode is remembered per `session_id` (oldest evicted first) and applies to the
-  **very next** call. `run_task` also accepts an optional `mode`; it writes the
-  session's mode too, so later runs of that session keep it rather than reverting.
-- **A mode that really moved is pushed as `mode_changed`** (§2). The `response` is
-  written **first** and the push follows, so a client that reads one line per
-  request still reads the frame it asked for. All three origins share the one frame:
-  a client's `set_mode` (`user`), a mode pinned by `run_task` (`run_option`), and an
-  approved `exit_plan_mode` (`plan_approved` — the one change the daemon only learns
-  from the run's own event stream). **A no-op is never announced**: the host
-  re-applies the run's mode at every run start, so announcing that would put a frame
-  on every turn. A `set_mode` for a session that does not exist yet *creates* it in
-  that mode, so there is no transition to announce either — the `response`'s
-  `data.mode` is the confirmation.
-- `get_permission_state` reports the current mode and the remembered "always allow" rules.
-  Sessions the daemon creates **persist** those rules to `<data root>/permissions.json`
-  (`ModePlugin::with_persisted_rules`), so "always allow" means always — delete or edit
-  that file to revoke one, taking effect when the session is next created.
-   Note it *creates* a session that has never run in `Mode::default()` (`ask`), while
-  that session's first `run_task` resolves `.thunder`'s `agent.defaultMode` instead;
-  the two can differ, and the first run's `mode_changed` (`run_option`) pushes the
-  real mode across.
-
-### Where it takes effect
-
-There is one decision point, and it sits inside the one tool-execution funnel
-(`ToolExecutor::run_tool`): cancellation → scope → guard → gate → dialog →
-execute → trace. **With no gate installed, everything but the guard runs** — the
-red line embedding hosts rely on.
-
-Plugin-initiated calls take the same path: a Rust plugin's
-`ctx.tool_slot().invoke(...)` builds a context with `caller = plugin id` and calls
-the same `run_tool`, so it is guarded, judged, prompted (with the plugin named in
-the title) and traced like any other call.
-
----
-
-## 🔄 State Machine & Cross-Behavior Rules
+`run_task` performs admission first, then spawns a task runner; the `ThunderRoot` is built inside that runner and serves exactly one run. Assembly order:
 
 ```text
-               ┌──────────┐
-               │ Running  │
-               └────┬─────┘
-          pause_task│   ▲ resume_task
-     (tool boundary)│   │
-                    ▼   │
-               ┌──────────┐
-               │  Paused  │
-               └──────────┘
-                    ▲
-                    │ Answered and pause was requested
-                    │
-         ┌─────────────────────┐
-         │ WaitingUserInput    │ ◄── Agent calls ask_user_question
-         │ (user_question wait)│ ──► answer_question resumes Running
-         └─────────────────────┘
+ThunderRoot::new(base_cfg)
+  .with_workspace(ws)
+  .with_extra_roots(shared_roots)
+  .with_provider_registry(registry)
+  .with_initial_session_total_tokens(prior_used_tokens)
+→ StandardHostBuilder::new(store)
+  .with_mcp_plugin(pooled_mcp)
+  .with_metrics_plugin(shared_metrics)
+  .with_status_plugin(shared_status)
+  .build(root)
+→ [not headless] root.with_pack(ToolPack::new("ask_user").with_tool(AskUserQuestionTool))
 ```
 
-1. **Tool Boundary Pausing**: `pause_task` takes effect before the next tool is dispatched. If a write is currently in progress, it finishes completely before the agent suspends.
-2. **Pausing During User Question**: The question continues to await user input; when answered, the tool completes and the task immediately freezes in `Paused`.
-3. **Cancellation Priority**: `cancel_task` overrides any state immediately, waking waiters and aborting the task.
+`base_cfg` is `AgentConfig::new(model).with_unlimited_turns()`, with `request_timeout_ms = 120_000` and `session_id` set so the conversation keeps one prompt-cache shard; the context window comes from the descriptor or the registry.
 
-### Reading the run's status
+### Admission and concurrency
 
-"What is the agent doing right now" is not assembled from the frames above: `thunder-agent-root`'s `StatusPlugin` publishes `{"type":"custom","kind":"agent_status","payload":{...}}` on the same `observed_event` stream, with a phase of `idle | thinking | streaming | tool | awaiting_user | paused | compacting | done | error`, the current tool name, and the turn. It publishes **only on a transition** (deduplicated by `seq`), so every frame a consumer receives means something actually moved.
+- Concurrency limit: `THUNDER_MAX_CONCURRENT_TASKS` (default 8, minimum 1). A failed `try_acquire` answers `Server busy: maximum concurrent task limit reached`.
+- A duplicate `task_id` answers `Task '<id>' is already running (conflict)`.
+- One run per `session_id`. A task that was cancelled but has not unwound reports `still stopping` rather than `busy`: releasing the session early would let two runs write the same conversation store.
+- `use_mock` is rejected in builds without `testing-mock`; it never falls back to a real model and never fabricates output.
 
-- `paused` and `awaiting_user` are not in the event stream at all — the kernel emits nothing while they hold — so the daemon reports them to the plugin itself: `pause_task`/`resume_task` for the former, an `AwaitingGuard` for the latter while an approval or question dialog is on screen. When both hold, the most recently entered one wins.
-- The protocol version stays put: `custom` is transparent to the NDJSON protocol, and a client that does not know the kind simply ignores it.
+### Model, workspace, thinking level
 
----
+- Model resolution: `model` → the descriptor's `provider/id` (when a descriptor is supplied without `model`) → the conversation's remembered model → the first available registry model → `openai/gpt-4o`.
+- `model_descriptor` outranks `models.json`: such a run never reads it. A descriptor that cannot build a client is answered with an error and the claimed task/session bookkeeping is released.
+- The workspace is bound on the first run and is **immutable** afterwards; `extra_workspace_dirs` merge into `shared_roots`, so a referenced repository can become writable mid-task.
+- Thinking level: request → conversation → descriptor-derived → registry default.
 
-## 📄 License
+### Modes
 
-This project is licensed under the [Apache License 2.0](../LICENSE).
+- One `ModePlugin` per session, held by `SessionModes` (FIFO cap 256). A new session starts in `agent.defaultMode` from `.thunder/config.json`, defaulting to `Mode::Ask`.
+- `run_task.mode` pins this run's mode; `set_mode_announcing` returns the previous mode only when it actually changed, and that pushes `mode_changed` with `run_option`.
+- `set_mode` answers first and then pushes `mode_changed` with `user`, so a client that reads one line per request reads the right frame.
+- Plan approval flips the mode inside a tool and reports through the run's event stream as a `mode_changed` custom event; the daemon reshapes it into the same `mode_changed` frame (`source` taken from the payload, defaulting to `plan_approved`).
+
+### Pause, resume, steer
+
+- `pause_task` / `resume_task` operate the run's `PauseGate` and answer `{task_id, paused|resumed}`. Pausing also pushes `task_paused` and marks the shared `StatusPlugin` as `paused`.
+- `steer_task` must state its placement: `steer` enters after the current turn's tool calls and before the next model request; `follow_up` enters only when the run has nothing left to do. Neither interrupts a running tool. Attachments are jailed against that run's workspace plus shared roots.
+- Queue changes always push a full `task_queue_update`; the kernel's `SteerAccepted` event triggers another one so the client can drop the message from its pending list.
+- `clear_queue` empties both queues and returns the discarded text.
+
+### Questions and dialogs
+
+- `ask_user_question` (pack id `ask_user`) emits `user_question` and parks on a oneshot. The wait is capped at 1800 s; on expiry the tool returns an error telling the model to proceed with stated assumptions instead of hanging. A cancelled run returns an error.
+- `question_id` is `<task_id>:qN`; the double key stops two concurrent tasks from crossing answers. An answer for an unknown or expired id returns `delivered: false` and is otherwise inert.
+- `headless: true` omits the pack entirely: a client without a panel never pays a full request timeout per clarification.
+- `DaemonHostUi` emits `ui_request` and parks. `request_id` is minted server-side from process id + counter + time entropy, so a plugin cannot forge one. A timeout, a closed channel and a late answer all resolve to `UiResponse::Cancelled` (fail closed). `answer_ui` returns `{request_id, delivered}`.
+- For the dialog's lifetime an `AwaitingGuard` holds the session at `awaiting_user`: it is the one wait during which nothing is on the wire, so a status bar cannot infer it from the event stream.
+
+### Telemetry, status and traces
+
+- `DaemonService` holds a **shared** `MetricsPlugin` and `StatusPlugin` and injects them into every root, so `get_metrics` reads a session snapshot that spans runs.
+- The root's event proxy emits `metrics_update` / `agent_status` frames; the daemon forwards them unchanged inside `observed_event`.
+- Each run gets a `TraceCollector`: streaming micro-deltas are only counted, events and tool traces are kept within bounds. At the end it is written to `<store>/<session>/traces/<task_id>.json`, with `wall_duration_ms` and the session's cumulative tokens filled in.
+- Conversation persistence: after `join`, the authoritative conversation is re-read from the store; missing turns are backfilled from `run_result`; when compaction ran (`raw_messages` present) the run's projection replaces the messages and the raw transcript is saved separately; token / turn / tool-call / duration counters accumulate across runs.
+
+### MCP pool and `reload_integrations`
+
+`mcp_plugins` pools one `McpPlugin` per canonicalised workspace path, FIFO cap 16; an evicted plugin gets `close_all()`. Consecutive runs in one project therefore reuse server processes, while a same-named but differently configured server in another project never inherits them. `reload_integrations` drains the pool immediately, closes the old processes in the background and then answers `{reloaded: true}`.
+
+### Titles
+
+After the first turn (or whenever the title is still a placeholder) the utility model generates a title and persists it; failures only `warn`, and `use_mock` runs skip generation. `generate_title` awaits the result; `set_conversation_title` overrides it manually.
+
+## Configuration and constants
+
+| Constant | Value | Location |
+|---|---|---|
+| `PROTOCOL_VERSION` | `3` | `src/protocol.rs` |
+| `REQUEST_TIMEOUT_MS` | `120_000` | `src/service.rs` |
+| `THUNDER_MAX_CONCURRENT_TASKS` default | `8` | `src/service.rs` |
+| `MAX_WORKSPACE_MCP` | `16` | `src/service.rs` |
+| `MAX_SESSION_POLICIES` | `256` | `src/service.rs` |
+| `DEFAULT_TIMEOUT_SECS` (ask_user) | `1800` | `src/ask_user.rs` |
+| stdout queue capacity | `1024` (coalesced up to 64 KiB per flush) | `src/service.rs` |
+| `MAX_IMAGES_PER_MESSAGE` / `MAX_IMAGE_BYTES` | `10` / `5 MiB` | `thunder-agent-loop::core::images` |
+
+Environment:
+
+| Variable | Effect |
+|---|---|
+| `RUST_LOG` | Overrides the fallback `EnvFilter` |
+| `THUNDER_CONFIG_DIR` | Data root; overridden by `--config-dir` |
+| `THUNDER_MAX_CONCURRENT_TASKS` | Concurrent task limit |
+
+## Failure directions
+
+| Situation | Result |
+|---|---|
+| Malformed JSON | `response { success: false, error }`, with `id` when it can be salvaged |
+| Concurrency exhausted / duplicate task / session claimed | `response { success: false }`, with `busy` and `still stopping` kept distinct |
+| Too many attachments, oversize image, path jail violation, bad magic bytes, model rejects images | Rejected before the run exists; task/session bookkeeping released |
+| Descriptor cannot build a client | Rejected the same way, with the error prefixed ``model descriptor `<label>`:`` |
+| `use_mock: true` in a build without `testing-mock` | Explicit refusal naming the real-provider path |
+| No usable credentials | Only `warn`; the root falls back to `UnconfiguredLLMClient` and the run ends as `task_failed` |
+| `FinishReason::Error` / `Cancelled` | `task_failed` with `finish_reason`; cancellation is no longer disguised as `task_completed` |
+| `execute` fails (run never started) | `task_failed` with no `finish_reason` |
+| `handle.join()` fails | `task_failed` with no `finish_reason` |
+| Unknown / expired `question_id` or `request_id` | `delivered: false`; never delivered to a later dialog |
+| `steer_task` without `behavior` | Refused; the daemon will not guess the placement |
+
+Every terminal path clears `active_tasks` / `active_pauses` / `active_queues` / `active_sessions` / `stopping`.
+
+## Known issue
+
+The fallback `EnvFilter` in `src/main.rs` names the target `thunder_daemon`:
+
+```rust
+"info,thunder_daemon=debug,thunder_agent_root=debug,thunder_agent_loop=debug,thunder_agent_providers=debug"
+```
+
+The crate is `thunder-agent-daemon`, so its module path is `thunder_agent_daemon`; that directive matches nothing. The daemon's own debug logs therefore stay suppressed by the global `info`, while the other three crates do get debug. `RUST_LOG` bypasses it (e.g. `RUST_LOG=info,thunder_agent_daemon=debug`).
+
+## Tests
+
+3 files, 14 cases, all spawning the real binary (`CARGO_BIN_EXE_thunder-daemon`) over STDIO:
+
+| File | Cases | What is pinned |
+|---|---|---|
+| `daemon_ipc_test.rs` | 10 (6 need `testing-mock`) | `ping` reports `protocol: 3`; a full mock event stream; `list_models` and `cancel_task`; `extra_workspace_dirs` merging; duplicate `task_id` rejection; a malformed line still gets an answer; history preserved across turns; concurrency limit (`THUNDER_MAX_CONCURRENT_TASKS=1` → `Server busy`); no silent mock fallback; a descriptor run needs no `models.json`; a failing descriptor releases its bookkeeping |
+| `mode_protocol_test.rs` | 2 | `get_permission_state` defaults to `ask`; `set_mode` pushes `mode_changed` with `previous` and `source: user`; modes are per-session; legacy names still parse; an unknown mode errors and lists the valid ones; a no-op `set_mode` pushes nothing |
+| `thunder_home_isolation_test.rs` | 2 | Nothing is written outside the injected root (especially `$HOME`); `--config-dir` overrides an inherited `THUNDER_CONFIG_DIR` |
+
+Run: `cargo test -p thunder-agent-daemon --features thunder-agent-daemon/testing-mock`.
+
+## Extension points
+
+- `DaemonService::with_client_factory(ClientFactory)`: injects an LLM client in-process (tests / embedders); the production path always goes through the provider registry.
+- `testing-mock` feature: compiles `DaemonMockClient` and enables `use_mock: true`. Off by default, so release binaries contain no mock code path.
+- Protocol growth: new pushed frames are additive — a host that does not know them drops them. Only a change to a request or response shape requires bumping `PROTOCOL_VERSION`.
