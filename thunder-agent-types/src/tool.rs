@@ -50,7 +50,6 @@ impl ToolDefinition {
     }
 }
 
-
 #[async_trait]
 pub trait ProgressReporter: Send + Sync + std::fmt::Debug {
     /// Report execution progress.
@@ -60,7 +59,6 @@ pub trait ProgressReporter: Send + Sync + std::fmt::Debug {
     /// - `message`: Optional human-readable message describing the current step.
     async fn report_progress(&self, progress: f64, total: Option<f64>, message: Option<String>);
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecutionResult {

@@ -2,11 +2,9 @@
 //! pi-style compaction path; a mock client serves both the one-off
 //! summarization call and the regular turns.
 
-use thunder_agent_policy::ToolExecutionContext;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::pruning::checkpoint::{
     is_checkpoint_message, CHECKPOINT_MESSAGE_NAME, SUMMARIZATION_SYSTEM_PROMPT,
@@ -15,6 +13,8 @@ use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLM
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::event::{AgentEvent, FinishReason};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
+use thunder_agent_policy::registry_tools::single_tool;
+use thunder_agent_policy::ToolExecutionContext;
 use tokio_util::sync::CancellationToken;
 
 /// Mock client that answers summarization requests with a canned checkpoint
@@ -189,7 +189,11 @@ async fn checkpoint_compaction_replaces_history_and_emits_event() {
     let workspace = tempfile::tempdir().unwrap();
     let mut agent = AgentLoop::new(tiny_window_config(workspace.path())).with_id("ckpt_agent");
     agent = agent.with_custom_client(client.clone());
-    agent = agent.with_tools(single_tool(Arc::new(NoopWriteTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(NoopWriteTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let mut handle = agent.start("please do the work", None).unwrap();
     let mut saw_compaction_event = false;
@@ -263,7 +267,11 @@ async fn failed_summarization_falls_back_to_emergency_trim() {
     let workspace = tempfile::tempdir().unwrap();
     let mut agent = AgentLoop::new(tiny_window_config(workspace.path())).with_id("ckpt_fallback");
     agent = agent.with_custom_client(client.clone());
-    agent = agent.with_tools(single_tool(Arc::new(NoopWriteTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(NoopWriteTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let mut handle = agent.start("please do the work", None).unwrap();
     if let Some(mut rx) = handle.take_events() {

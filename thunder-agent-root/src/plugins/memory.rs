@@ -32,8 +32,7 @@
 //! instance keeps a stable prefix for its lifetime; an edit is picked up the
 //! next time the host rebuilds the run.
 
-use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
+use crate::assembly::{Prepared, PromptSection, RunEnv};
 use crate::thunder_config::{MemorySection, ThunderConfig, THUNDER_DIR};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
@@ -63,7 +62,6 @@ pub const MAX_WRITE_BYTES: usize = 64 * 1024;
 /// A plugin that appends layered `.thunder` memory to the system prompt and
 /// exposes a `memory_write` tool.
 pub struct MemoryPlugin {
-    manifest: PluginManifest,
     /// Rendered memory block. `None` before the first init, or when there is
     /// nothing to inject. Shared via `Arc` so clones observe one cache.
     cache: Arc<RwLock<Option<String>>>,
@@ -86,18 +84,17 @@ struct RenderState {
 }
 
 impl MemoryPlugin {
-    pub fn new() -> Self {
-        let manifest = PluginManifest::new(
-            "memory",
-            "Thunder Long-Term Memory",
-            "Loads layered THUNDER.md / memory notes from the user and project scopes, and exposes a `memory_write` tool.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::MemoryPersistence)
-        .with_capability(PluginCapability::ToolProvider);
+    pub const ID: &'static str = "memory";
 
+    /// The `memory_write` tool, bound to whatever workspace `prepare` recorded.
+    pub fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        vec![Arc::new(MemoryWriteTool {
+            workspaces: Arc::clone(&self.workspaces),
+        })]
+    }
+
+    pub fn new() -> Self {
         Self {
-            manifest,
             cache: Arc::new(RwLock::new(None)),
             workspaces: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -328,37 +325,40 @@ impl Default for MemoryPlugin {
     }
 }
 
-#[async_trait]
-impl ThunderPlugin for MemoryPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl PromptSection for MemoryPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        vec![Arc::new(MemoryWriteTool {
-            workspaces: Arc::clone(&self.workspaces),
-        })]
-    }
-
-    fn system_prompt_contribution(&self) -> Option<String> {
-        // Sync by contract: read whatever `on_init` staged. `try_read` keeps a
+    fn render(&self) -> Option<String> {
+        // Sync by contract: read whatever `prepare` staged. `try_read` keeps a
         // contended lock from blocking prompt assembly; a miss simply yields no
         // contribution for this run.
         self.cache.try_read().ok()?.clone()
     }
+}
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // Remember this run's workspace so the write tool can resolve it later.
-        if let (Some(route), Some(ws)) = (ctx.route.as_ref(), ctx.workspace_dir.as_ref()) {
-            self.workspaces
-                .write()
-                .await
-                .insert(route.clone(), ws.clone());
-        }
+impl Prepared for MemoryPlugin {
+    fn id(&self) -> &str {
+        Self::ID
+    }
 
-        let rendered = Self::render(ctx.workspace_dir.as_deref()).await;
-        *self.cache.write().await = rendered;
-        Ok(())
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Remember this run's workspace so the write tool can resolve it later.
+            if let (Some(route), Some(ws)) = (env.route.as_ref(), env.workspace.as_ref()) {
+                self.workspaces
+                    .write()
+                    .await
+                    .insert(route.clone(), ws.clone());
+            }
+
+            *self.cache.write().await = Self::render(env.workspace.as_deref()).await;
+            Ok(())
+        })
     }
 }
 

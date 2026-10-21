@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use thunder_agent_policy::plugin::{ToolContent, ToolPlugin};
-use thunder_agent_types::tool::ProgressReporter;
 use thunder_agent_policy::ToolExecutionContext;
+use thunder_agent_types::tool::ProgressReporter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Progress reporter that sends MCP `notifications/progress` notifications.

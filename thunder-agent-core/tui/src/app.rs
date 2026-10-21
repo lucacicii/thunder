@@ -1,4 +1,4 @@
-use crate::ask_user::{AskUserPlugin, PendingQuestion, TuiAskUserTool};
+use crate::ask_user::{PendingQuestion, TuiAskUserTool};
 use crate::links::{LinkCache, LinkTarget};
 use crate::pane_status::PaneStatus;
 use crate::picker::{PickerItem, PickerKind, PickerResult, PickerState};
@@ -4283,7 +4283,10 @@ impl App {
         // The ask-user capability is on by default; `/ask off` unmounts it.
         let ask_enabled = self.ask_user_enabled;
         let root = if ask_enabled {
-            root.with_plugin(AskUserPlugin::new(TuiAskUserTool::new(event_tx.clone())))
+            root.with_pack(
+                thunder_agent_root::assembly::ToolPack::new(crate::ask_user::ASK_USER_PACK_ID)
+                    .with_tool(Arc::new(TuiAskUserTool::new(event_tx.clone()))),
+            )
         } else {
             root
         };
@@ -4291,7 +4294,6 @@ impl App {
         let session_id = self.conversation.id.clone();
         let context_input = self.conversation.as_context_input();
         let factory_client = self.client_factory.as_ref().and_then(|f| f(&base_cfg));
-        let workspace_dir = self.workspace_dir.clone();
         let mode_plugin = Arc::clone(&self.mode_plugin);
         let run_mode = self.mode_plugin.mode();
         // Captured before the move: a plugin call must be attributable to this
@@ -4306,18 +4308,10 @@ impl App {
 
         tokio::spawn(async move {
             // Smart baseline set instead of blanket forcing (mirrors the daemon):
-            // - conversation: one-line prompt cost, keeps session semantics alive
-            // - skills: catalog is compact one-liners; keeps `load_skill` reachable
-            // - mcp: only when this workspace actually configures MCP servers
-            let workspace_has_mcp_config = workspace_dir.join(".thunder").join("mcp.json").exists()
-                || workspace_dir.join("mcp_servers.json").exists()
-                || workspace_dir.join(".mcp.json").exists();
-
             let options = RootRunOptions {
                 session_id: Some(session_id),
                 custom_client: factory_client,
                 cancellation_token: Some(cancel),
-                forced_plugins: Some(baseline_forced_plugins(workspace_has_mcp_config)),
                 register_builtins: true,
                 thinking_level: None,
                 mode: run_mode,
@@ -4338,7 +4332,6 @@ impl App {
 
             match root.execute(context_input, options).await {
                 Ok(mut handle) => {
-                    let selection = handle.selection.clone();
                     if let Some(mut rx) = handle.take_events() {
                         let tx = event_tx.clone();
                         tokio::spawn(async move {
@@ -4355,12 +4348,6 @@ impl App {
                             let finish_reason_dbg = format!("{:?}", res.run_result.finish_reason);
                             let run_stats = res.run_result.stats.clone();
                             let mut summary = String::new();
-                            if !selection.active_plugin_ids.is_empty() {
-                                summary.push_str(&format!(
-                                    "> ⚡ **Root Active Plugins**: `{:?}` (Reason: {})\n\n",
-                                    selection.active_plugin_ids, selection.reason
-                                ));
-                            }
                             if let Some(content) = &res.final_content {
                                 summary.push_str(content);
                             }
@@ -4527,25 +4514,24 @@ impl App {
             registry.register(Arc::new(BashTool::default().with_default_cwd(ws.clone())));
             // The mode plugin judges every call *and* carries the plan tools:
             // without them, plan mode would be a mode with no way out.
-            for tool in thunder_agent_root::plugin::ThunderPlugin::tools(&*mode_plugin) {
+            for tool in mode_plugin.tools() {
                 registry.register(tool);
             }
 
             let executor = thunder_agent_policy::executor::ToolExecutor::new(registry.clone())
-                .with_tool_scope(Arc::new(
-                    thunder_agent_pack_code::CodeScope::from_agent_config(
+                .with_tool_scope(
+                    Arc::new(thunder_agent_pack_code::CodeScope::from_agent_config(
                         &config,
                         Some(ws.as_path()),
-                    ),
-                ) as Arc<dyn thunder_agent_types::scope::ToolScope>)
-                .with_tool_gate(Some(Arc::clone(&mode_plugin)
-                    as Arc<dyn thunder_agent_policy::gate::ToolGate>))
+                    )) as Arc<dyn thunder_agent_types::scope::ToolScope>,
+                )
+                .with_tool_gate(Some(
+                    Arc::clone(&mode_plugin) as Arc<dyn thunder_agent_policy::gate::ToolGate>
+                ))
                 .with_host_ui(ui)
                 .with_trace_ids(config.session_id.clone(), config.route.clone());
             agent = agent.with_tools_factory(Arc::new(
-                thunder_agent_policy::registry_tools::StaticToolsFactory::new(
-                    registry, executor,
-                ),
+                thunder_agent_policy::registry_tools::StaticToolsFactory::new(registry, executor),
             ));
             agent = agent.with_pause_gate(pause_gate);
             agent = agent.with_steer_queues(steer_queues);

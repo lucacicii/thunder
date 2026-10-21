@@ -3,15 +3,15 @@
 //! `thunder-agent-types`.
 
 pub use thunder_agent_types::trace::{
-    AskAnswer, Decision, DenyBy, GuardHit, GuardKind, TraceResult, TraceTiming, ToolTrace,
-    ToolTraceSink, TRACE_SCHEMA,
+    AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace, ToolTraceSink, TraceResult,
+    TraceTiming, TRACE_SCHEMA,
 };
 
 use crate::plugin::{CallToolResult, InterceptorPlugin, Plugin};
-use thunder_agent_types::policy::{Caller, ToolEffect};
-use thunder_agent_types::scope::Scope;
 use crate::tool_policy::ToolExecutionContext;
 use std::sync::{Arc, LazyLock};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
 
 /// What a value under a secret-looking key is replaced with.
 pub const REDACTED_KEY: &str = "[redacted:key]";
@@ -226,13 +226,6 @@ fn redact_value(value: &mut serde_json::Value, key: Option<&str>, fired: &mut Re
         _ => {}
     }
 }
-
-/// A host's sink for finished traces.
-///
-/// One direction only: the kernel hands over a record and forgets it. The record
-/// arrives serialised and redacted, so a sink that writes it to disk never has to
-/// know which fields were sensitive — one redaction implementation, not one per
-/// host.
 
 /// An [`InterceptorPlugin`] adapter that observes tool completions and records
 /// a [`ToolTrace`] into an underlying [`ToolTraceSink`].

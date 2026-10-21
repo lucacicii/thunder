@@ -25,15 +25,13 @@
 //! answering a dialog raised for a tool call restores `tool` rather than
 //! resetting to `thinking`, because that is still where the run is.
 
-use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
-use async_trait::async_trait;
+use crate::assembly::{Observer, Prepared, RunEnv};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use thunder_agent_loop::types::event::{AgentEvent, FinishReason, ObservedEvent};
+use thunder_agent_loop::types::event::{AgentEvent, FinishReason};
 use tokio::sync::watch;
 
 /// Custom event `kind` carrying an [`AgentStatusSnapshot`].
@@ -357,7 +355,6 @@ fn now_ms() -> u64 {
 /// Rust embedders — see the same status.
 #[derive(Clone)]
 pub struct StatusPlugin {
-    manifest: PluginManifest,
     sessions: Arc<RwLock<HashMap<String, SessionStatus>>>,
     /// Wakes a host that is publishing this plugin's snapshots onto its own wire.
     ///
@@ -378,7 +375,7 @@ impl Default for StatusPlugin {
 impl std::fmt::Debug for StatusPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StatusPlugin")
-            .field("id", &self.manifest.id)
+            .field("id", &Self::ID)
             .finish()
     }
 }
@@ -388,17 +385,9 @@ impl StatusPlugin {
     pub const ID: &'static str = "agent_status";
 
     pub fn new() -> Self {
-        let manifest = PluginManifest::new(
-            Self::ID,
-            "Thunder Agent Execution Status",
-            "Publishes what the agent is doing right now — phase, current tool, turn — as one authoritative snapshot per session.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::Custom("status".to_string()));
         let (changes, change_rx) = watch::channel(0);
 
         Self {
-            manifest,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             changes,
             change_rx,
@@ -473,21 +462,37 @@ impl StatusPlugin {
     }
 }
 
-#[async_trait]
-impl ThunderPlugin for StatusPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl Prepared for StatusPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // A new run on this session restarts the clock and clears the previous
-        // run's settled phase.
-        self.mutate(&ctx.session_id, SessionStatus::begin_run);
-        Ok(())
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // A new run on this session restarts the clock and clears the
+            // previous run's settled phase.
+            self.mutate(&env.session_id, SessionStatus::begin_run);
+            Ok(())
+        })
+    }
+}
+
+impl Observer for StatusPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_event(&self, event: &ObservedEvent, ctx: &PluginContext) {
-        self.record_session_event(&ctx.session_id, &event.event);
+    fn on_event<'a>(
+        &'a self,
+        event: &'a AgentEvent,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.record_session_event(&env.session_id, event);
+        })
     }
 }
 
@@ -797,12 +802,5 @@ mod tests {
         );
         assert_eq!(seq_of(&plugin, session), settled);
         assert_eq!(phase_of(&plugin, session), AgentPhase::Tool);
-    }
-
-    #[test]
-    fn the_manifest_makes_the_plugin_available_to_every_run() {
-        let plugin = StatusPlugin::new();
-        let manifest = plugin.manifest();
-        assert_eq!(manifest.id, "agent_status");
     }
 }

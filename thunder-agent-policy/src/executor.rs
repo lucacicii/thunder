@@ -1,28 +1,26 @@
-use crate::guard::Guard;
-use thunder_agent_types::notice::SystemNotice;
-use crate::registry::ToolRegistry;
-use crate::trace::{
-    redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
-    ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
-};
 use crate::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest, ALLOW_ALWAYS,
     ALLOW_ONCE, DENY, DENY_WITH_REASON,
 };
-use thunder_agent_types::message::ToolCall;
-use crate::plugin::{
-    CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker,
-};
-use thunder_agent_types::policy::{Caller, ToolEffect};
-use thunder_agent_types::scope::{Scope, ToolScope};
-use thunder_agent_types::tool::{ToolEventSink, ToolExecutionResult};
+use crate::guard::Guard;
+use crate::plugin::{CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker};
+use crate::registry::ToolRegistry;
 use crate::tool_policy::ToolExecutionContext;
+use crate::trace::{
+    redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
+    ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
+};
 use crate::ui::{HostUi, NullHostUi, UiRequest, UiSource};
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thunder_agent_types::message::ToolCall;
+use thunder_agent_types::notice::SystemNotice;
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::{Scope, ToolScope};
+use thunder_agent_types::tool::{ToolEventSink, ToolExecutionResult};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -43,6 +41,8 @@ const OUTPUT_PREVIEW_CHARS: usize = 2048;
 #[derive(Clone)]
 pub struct ToolExecutor {
     registry: ToolRegistry,
+    /// Hands out one id per run that installs a trace sink.
+    trace_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Per-run event sink, installed by the loop before it executes anything.
     ///
     /// Held behind a lock rather than cloned into each call because the loop
@@ -96,12 +96,18 @@ struct TraceSlot {
     sink: Option<Arc<dyn ToolTraceSink>>,
     session_id: Option<String>,
     task_id: Option<String>,
+    /// Identifies the run that installed `sink`.
+    ///
+    /// Concurrent runs share one executor, so the run that finishes first must
+    /// not clear the slot of a run still in flight.
+    generation: u64,
 }
 
 impl ToolExecutor {
     pub fn new(registry: ToolRegistry) -> Self {
         Self {
             registry,
+            trace_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             event_sink: Arc::new(Mutex::new(None)),
             tool_scope: Arc::new(Mutex::new(None)),
             tool_gate: Arc::new(Mutex::new(None)),
@@ -145,13 +151,24 @@ impl ToolExecutor {
     /// plugin-initiated call would be the one call in the system with no record.
     /// The loop clears this again when the run settles, so a finished run's
     /// event sender does not stay alive in a slot later clones share.
-    pub fn install_run_trace(&self, sink: Arc<dyn ToolTraceSink>) {
-        self.trace.lock().sink = Some(sink);
+    /// Returns the generation that owns the slot; pass it to
+    /// [`ToolExecutor::clear_run_trace`] when the run settles.
+    pub fn install_run_trace(&self, sink: Arc<dyn ToolTraceSink>) -> u64 {
+        let mut slot = self.trace.lock();
+        let generation = self
+            .trace_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        slot.sink = Some(sink);
+        slot.generation = generation;
+        generation
     }
 
-    /// Forget the run's sink. Called when the run settles.
-    pub fn clear_run_trace(&self) {
-        self.trace.lock().sink = None;
+    /// Forget the run's sink, if it still owns the slot.
+    pub fn clear_run_trace(&self, generation: u64) {
+        let mut slot = self.trace.lock();
+        if slot.generation == generation {
+            slot.sink = None;
+        }
     }
 
     /// Stamp this executor's traces with the run they belong to.
@@ -879,8 +896,7 @@ impl TraceDraft {
         ids: (Option<String>, Option<String>),
     ) -> ToolTrace {
         let output = &result.output;
-        let (preview, output_rules) =
-            crate::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
+        let (preview, output_rules) = crate::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
         // A credential the arguments declared secret is withheld from the
         // output too: a tool that echoes what it was given would otherwise put
         // the value back with the key that named it stripped away, which is

@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_root::assembly::{Prepared, RunEnv};
 use thunder_agent_root::prelude::*;
 use tokio_util::sync::CancellationToken;
 
@@ -45,24 +46,21 @@ struct AskingPlugin {
     answer: Arc<tokio::sync::Mutex<Option<Option<String>>>>,
 }
 
-#[async_trait]
-impl ThunderPlugin for AskingPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        // A leaked manifest keeps this test focused on the UI path; the plugin
-        // is constructed once per test.
-        Box::leak(Box::new(
-            PluginManifest::new("asker", "Asker", "Asks the user", "0.0.0")
-        ))
+impl Prepared for AskingPlugin {
+    fn id(&self) -> &str {
+        "asker"
     }
 
-    async fn on_init(
-        &self,
-        ctx: &PluginContext,
-    ) -> Result<(), thunder_agent_root::error::PluginError> {
-        let choice = ctx.ui().select("Pick one", &["alpha", "beta"]).await;
-        *self.answer.lock().await = Some(choice);
-        self.seen.lock().await.push(UiSource::Host);
-        Ok(())
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let choice = env.ui.select("Pick one", &["alpha", "beta"]).await;
+            *self.answer.lock().await = Some(choice);
+            self.seen.lock().await.push(UiSource::Host);
+            Ok(())
+        })
     }
 }
 
@@ -106,17 +104,16 @@ async fn plugin_dialog_reaches_the_runs_host_ui() {
             answer: "beta",
             seen: Arc::clone(&ui_seen),
         }))
-        .with_plugin(AskingPlugin {
+        .with_prepared(Arc::new(AskingPlugin {
             seen: Arc::clone(&seen),
             answer: Arc::clone(&answer),
-        });
+        }));
 
     root.run(
         "hello",
         RootRunOptions {
             session_id: Some("sess-ui".into()),
             custom_client: Some(Arc::new(OneShotClient)),
-            forced_plugins: Some(vec!["asker".to_string()]),
             register_builtins: false,
             route: None,
             ..Default::default()
@@ -149,10 +146,10 @@ async fn without_a_panel_the_dialog_is_cancelled_not_hung() {
 
     // No `with_host_ui`: the root falls back to NullHostUi.
     let root = ThunderRoot::new(AgentConfig::new("mock/ui".to_string()).with_max_turns(2))
-        .with_plugin(AskingPlugin {
+        .with_prepared(Arc::new(AskingPlugin {
             seen: Arc::clone(&seen),
             answer: Arc::clone(&answer),
-        });
+        }));
 
     // A null UI answers instantly, so this must not need a timeout to pass.
     let result = tokio::time::timeout(
@@ -162,7 +159,6 @@ async fn without_a_panel_the_dialog_is_cancelled_not_hung() {
             RootRunOptions {
                 session_id: Some("sess-null".into()),
                 custom_client: Some(Arc::new(OneShotClient)),
-                forced_plugins: Some(vec!["asker".to_string()]),
                 register_builtins: false,
                 route: None,
                 ..Default::default()
@@ -191,17 +187,16 @@ async fn per_run_ui_overrides_the_root_default() {
             answer: "alpha",
             seen: Arc::clone(&root_seen),
         }))
-        .with_plugin(AskingPlugin {
+        .with_prepared(Arc::new(AskingPlugin {
             seen: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             answer: Arc::clone(&answer),
-        });
+        }));
 
     root.run(
         "hello",
         RootRunOptions {
             session_id: Some("sess-override".into()),
             custom_client: Some(Arc::new(OneShotClient)),
-            forced_plugins: Some(vec!["asker".to_string()]),
             register_builtins: false,
             // The daemon passes a task-scoped handle here.
             ui: Some(Arc::new(ScriptedUi {
@@ -223,100 +218,6 @@ async fn per_run_ui_overrides_the_root_default() {
     );
 }
 
-/// The two-phase handshake a plugin host needs.
-///
-/// Phase one (`on_init`) happens before the agent exists, so only identity and
-/// policy are available. Phase two (`on_run_ready`) happens once the pipeline is
-/// final, and is when a tool invoker can be handed over. A host that skipped the
-/// second phase would leave `ctx.callTool` permanently refused.
-#[tokio::test]
-async fn run_services_arrive_in_two_phases() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct Phases {
-        init: AtomicUsize,
-        ready: AtomicUsize,
-        invoker_at_init: AtomicUsize,
-        route: std::sync::Mutex<String>,
-    }
-
-    struct PhasePlugin(Arc<Phases>);
-
-    #[async_trait]
-    impl ThunderPlugin for PhasePlugin {
-        fn manifest(&self) -> &PluginManifest {
-            Box::leak(Box::new(
-                PluginManifest::new("phases", "Phases", "records lifecycle", "0.0.0")
-            ))
-        }
-
-        async fn on_init(
-            &self,
-            ctx: &PluginContext,
-        ) -> Result<(), thunder_agent_root::error::PluginError> {
-            self.0.init.fetch_add(1, Ordering::SeqCst);
-            if ctx.tools.0.read().await.is_some() {
-                self.0.invoker_at_init.fetch_add(1, Ordering::SeqCst);
-            }
-            *self.0.route.lock().unwrap() = ctx.route.clone().unwrap_or_default();
-            Ok(())
-        }
-
-        async fn on_run_ready(
-            &self,
-            ctx: &PluginContext,
-        ) -> Result<(), thunder_agent_root::error::PluginError> {
-            self.0.ready.fetch_add(1, Ordering::SeqCst);
-            assert!(
-                ctx.tools.0.read().await.is_some(),
-                "the invoker must exist by the time a plugin is told the run is ready"
-            );
-            Ok(())
-        }
-    }
-
-    let phases = Arc::new(Phases {
-        init: AtomicUsize::new(0),
-        ready: AtomicUsize::new(0),
-        invoker_at_init: AtomicUsize::new(0),
-        route: std::sync::Mutex::new(String::new()),
-    });
-
-    let root = ThunderRoot::new(AgentConfig::new("mock/ready".to_string()).with_max_turns(1))
-        .with_plugin(PhasePlugin(Arc::clone(&phases)));
-
-    root.run(
-        "hello",
-        RootRunOptions {
-            session_id: Some("sess-phases".into()),
-            custom_client: Some(Arc::new(OneShotClient)),
-            forced_plugins: Some(vec!["phases".to_string()]),
-            register_builtins: false,
-            route: Some("task-42".into()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("run should succeed");
-
-    assert_eq!(phases.init.load(Ordering::SeqCst), 1, "on_init dispatched");
-    assert_eq!(
-        phases.ready.load(Ordering::SeqCst),
-        1,
-        "on_run_ready dispatched"
-    );
-    assert_eq!(
-        phases.invoker_at_init.load(Ordering::SeqCst),
-        0,
-        "the invoker must NOT exist at on_init — the pipeline is not built yet"
-    );
-    assert_eq!(
-        phases.route.lock().unwrap().clone(),
-        "task-42",
-        "the host's route must reach the plugin verbatim"
-    );
-}
-
 /// Two runs must get two different routes. Sharing one would put them in the same
 /// per-run service slot, which is the bug the whole registry exists to prevent.
 #[tokio::test]
@@ -324,27 +225,28 @@ async fn two_runs_get_distinct_routes() {
     let routes = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     struct Recorder(Arc<std::sync::Mutex<Vec<String>>>);
-    #[async_trait]
-    impl ThunderPlugin for Recorder {
-        fn manifest(&self) -> &PluginManifest {
-            Box::leak(Box::new(
-                PluginManifest::new("rec", "Rec", "records routes", "0.0.0")
-            ))
+    impl Prepared for Recorder {
+        fn id(&self) -> &str {
+            "rec"
         }
-        async fn on_init(
-            &self,
-            ctx: &PluginContext,
-        ) -> Result<(), thunder_agent_root::error::PluginError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(ctx.route.clone().unwrap_or_default());
-            Ok(())
+
+        fn prepare<'a>(
+            &'a self,
+            env: &'a RunEnv,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(env.route.clone().unwrap_or_default());
+                Ok(())
+            })
         }
     }
 
     let root = ThunderRoot::new(AgentConfig::new("mock/route".to_string()).with_max_turns(1))
-        .with_plugin(Recorder(Arc::clone(&routes)));
+        .with_prepared(Arc::new(Recorder(Arc::clone(&routes))));
 
     for _ in 0..2 {
         root.run(
@@ -352,7 +254,6 @@ async fn two_runs_get_distinct_routes() {
             RootRunOptions {
                 session_id: Some("sess-same".into()),
                 custom_client: Some(Arc::new(OneShotClient)),
-                forced_plugins: Some(vec!["rec".to_string()]),
                 register_builtins: false,
                 // Same session, no explicit route: the host must still
                 // distinguish the two runs.

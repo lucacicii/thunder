@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
 use tokio_util::sync::CancellationToken;
@@ -90,7 +90,11 @@ fn make_agent(id: &str) -> AgentLoop {
         .with_custom_client(Arc::new(CountingClient {
             turn: AtomicUsize::new(0),
         }));
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
     agent
 }
 

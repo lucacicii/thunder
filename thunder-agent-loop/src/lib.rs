@@ -16,7 +16,6 @@ pub mod types;
 
 /// Stable product surface for a single agent unit and for a scheduler composing many units.
 pub mod prelude {
-    pub use thunder_agent_types::tool::{FunctionDefinition, ProgressReporter, ToolDefinition, ToolEventSink, ToolExecutionResult};
     pub use crate::cache::warmer::{CacheWarmDecision, PromptCacheWarmSettings, WarmSnapshot};
     pub use crate::core::images::{
         base64_decode, base64_encode, decode_image_data_url, is_allowed_image_mime,
@@ -30,12 +29,12 @@ pub mod prelude {
     pub use crate::loop_engine::engine::{AgentLoop, AgentRunResult, ContextInput};
     pub use crate::loop_engine::gate::{AcceptAllGate, CompletionGate, GateRequest, GateVerdict};
     pub use crate::loop_engine::handle::AgentHandle;
-    pub use crate::seam::{
-        Concurrency, ExecutedCall, NoTools, RunContext, ToolCallContext, ToolOutcome, ToolSpec, Tools,
-        ToolsFactory,
-    };
     pub use crate::pruning::error_detector::{
         extract_context_overflow_limit, is_context_overflow_error,
+    };
+    pub use crate::seam::{
+        Concurrency, ExecutedCall, NoTools, RunContext, ToolCallContext, ToolOutcome, ToolSpec,
+        Tools, ToolsFactory,
     };
     pub use crate::stream::client::{
         ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient,
@@ -49,6 +48,9 @@ pub mod prelude {
         AgentEvent, AgentStats, EventDropCounters, FinishReason, ObservedEvent, TurnStats,
     };
     pub use crate::types::message::{ChatMessage, ContentPart, Role, ToolCall, ToolCallFunction};
+    pub use thunder_agent_types::tool::{
+        FunctionDefinition, ProgressReporter, ToolDefinition, ToolEventSink, ToolExecutionResult,
+    };
     // `GateVerdict` is deliberately not re-exported from `types::gate` here:
     // the completion gate already owns that name in this prelude, and a host
     // that wants the tool gate's verdict says so by naming the module.

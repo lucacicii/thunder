@@ -3,14 +3,13 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_policy::executor::ToolExecutor;
 use thunder_agent_policy::plugin::{
     CallToolResult, InterceptorPlugin, Plugin, PreExecutionVerdict, ToolPlugin,
 };
-use thunder_agent_policy::executor::ToolExecutor;
 use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_types::tool::ToolDefinition;
 use thunder_agent_policy::ToolExecutionContext;
-
+use thunder_agent_types::tool::ToolDefinition;
 
 fn executor_with(
     plugins: Vec<Arc<dyn ToolPlugin>>,
@@ -179,7 +178,13 @@ async fn test_tool_plugin_registration_and_execution() {
 
 #[tokio::test]
 async fn test_sub_tool_invocation_via_context() {
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>, Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>], vec![]);
+    let executor = executor_with(
+        vec![
+            Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>,
+            Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>,
+        ],
+        vec![],
+    );
     let call = ToolCall::new_function(
         "call_2",
         "forward",
@@ -211,7 +216,13 @@ async fn test_cycle_detection_prevents_deadlock() {
 
 #[tokio::test]
 async fn test_max_depth_prevents_deep_recursion() {
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>, Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>], vec![]);
+    let executor = executor_with(
+        vec![
+            Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>,
+            Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>,
+        ],
+        vec![],
+    );
     let call = ToolCall::new_function("call_4", "forward", json!({ "text": "hi" }).to_string());
 
     // Set max_depth to 0, which should forbid any sub-invocation
@@ -237,7 +248,10 @@ async fn test_interceptor_pipeline_pre_and_post_execution() {
         deny_tool: None,
     });
 
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
+    let executor = executor_with(
+        vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>],
+        vec![interceptor as Arc<dyn InterceptorPlugin>],
+    );
     let call = ToolCall::new_function("call_5", "echo", json!({ "msg": "audit test" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -256,7 +270,10 @@ async fn test_interceptor_pipeline_denial() {
         deny_tool: Some("echo".to_string()),
     });
 
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
+    let executor = executor_with(
+        vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>],
+        vec![interceptor as Arc<dyn InterceptorPlugin>],
+    );
     let call = ToolCall::new_function(
         "call_6",
         "echo",
@@ -291,7 +308,10 @@ async fn test_trace_interceptor_records_telemetry() {
     });
     let interceptor = Arc::new(TraceInterceptor::new(sink.clone()));
 
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
+    let executor = executor_with(
+        vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>],
+        vec![interceptor as Arc<dyn InterceptorPlugin>],
+    );
     let call = ToolCall::new_function("call_7", "echo", json!({ "msg": "trace test" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -361,7 +381,13 @@ async fn test_interceptor_priority_ordering() {
         log: log.clone(),
     });
 
-    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![low as Arc<dyn InterceptorPlugin>, high as Arc<dyn InterceptorPlugin>]);
+    let executor = executor_with(
+        vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>],
+        vec![
+            low as Arc<dyn InterceptorPlugin>,
+            high as Arc<dyn InterceptorPlugin>,
+        ],
+    );
     let call = ToolCall::new_function("call_prio", "echo", json!({ "msg": "prio" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)

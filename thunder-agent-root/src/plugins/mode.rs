@@ -34,26 +34,26 @@
 //! plugin registers ([`WRITE_PLAN_TOOL`], [`EXIT_PLAN_MODE_TOOL`]) are exempt
 //! in every mode — by name, never by the effect a tool declares about itself.
 
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use super::permission_rules;
-use crate::plugin::{PluginCapability, PluginManifest, ThunderPlugin};
+use crate::assembly::{Prepared, PromptSection, RunEnv};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
-use thunder_agent_policy::read_only::call_is_read_only;
+use thunder_agent_pack_code::builtin::fs::WriteFileTool;
 use thunder_agent_policy::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest,
 };
 use thunder_agent_policy::plugin::{
     CallToolResult, InterceptorPlugin, Plugin as CorePlugin, PreExecutionVerdict, ToolPlugin,
 };
+use thunder_agent_policy::read_only::call_is_read_only;
+use thunder_agent_policy::ui::{NullHostUi, UiRequest, UiSource};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::policy::{Caller, ToolEffect};
 use thunder_agent_types::scope::Scope;
 use thunder_agent_types::tool::ToolDefinition;
-use thunder_agent_policy::ui::{NullHostUi, UiRequest, UiSource};
-use thunder_agent_pack_code::builtin::fs::WriteFileTool;
 
 /// What the agent may do without asking, this mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,7 +415,6 @@ impl ModeState {
 #[derive(Debug, Clone)]
 pub struct ModePlugin {
     state: Arc<ModeState>,
-    manifest: PluginManifest,
 }
 
 impl ModePlugin {
@@ -425,15 +424,21 @@ impl ModePlugin {
                 mode: RwLock::new(mode),
                 ..ModeState::default()
             }),
-            manifest: PluginManifest::new(
-                "mode",
-                "Thunder Mode Gate",
-                "Judges tool calls against the active mode (plan / ask / acceptEdits / yolo) and \
-                 the rules the user has agreed to this session.",
-                "0.1.0",
-            )
-            .with_capability(PluginCapability::ToolProvider),
         })
+    }
+
+    pub const ID: &'static str = "mode";
+
+    /// The plan-mode tools: record the plan, submit it.
+    pub fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        vec![
+            Arc::new(WritePlanTool {
+                state: Arc::clone(&self.state),
+            }),
+            Arc::new(ExitPlanModeTool {
+                state: Arc::clone(&self.state),
+            }),
+        ]
     }
 
     /// The mode currently in force.
@@ -1039,24 +1044,28 @@ impl ToolPlugin for ExitPlanModeTool {
     }
 }
 
-#[async_trait]
-impl ThunderPlugin for ModePlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl Prepared for ModePlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        vec![
-            Arc::new(WritePlanTool {
-                state: Arc::clone(&self.state),
-            }),
-            Arc::new(ExitPlanModeTool {
-                state: Arc::clone(&self.state),
-            }),
-        ]
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.bind_session(env.workspace.clone(), &env.session_id);
+            Ok(())
+        })
+    }
+}
+
+impl PromptSection for ModePlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn system_prompt_contribution(&self) -> Option<String> {
+    fn render(&self) -> Option<String> {
         Some(
             "### Approval mode\n             Tool calls are judged by the mode the user chose (plan / ask / acceptEdits / yolo); \
              the user can change it at any time. In plan mode every write is refused: record the \

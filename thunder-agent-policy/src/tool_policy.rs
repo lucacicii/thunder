@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use thunder_agent_types::tool::{ProgressReporter, ToolDefinition, ToolEventSink};
-use thunder_agent_types::policy::ToolEffect;
 use crate::ui::UiHandle;
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_types::tool::{ProgressReporter, ToolDefinition, ToolEventSink};
 
 #[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
@@ -68,8 +68,6 @@ pub struct ToolExecutionContext {
     pub progress_reporter: Option<Arc<dyn ProgressReporter>>,
 }
 
-/// Streaming progress reporter interface (aligned with Anthropic MCP `notifications/progress`).
-
 impl Default for ToolExecutionContext {
     fn default() -> Self {
         Self {
@@ -120,10 +118,7 @@ impl ToolExecutionContext {
     }
 
     /// Set sub-tool invoker.
-    pub fn with_sub_invoker(
-        mut self,
-        invoker: Arc<dyn crate::plugin::SubToolInvoker>,
-    ) -> Self {
+    pub fn with_sub_invoker(mut self, invoker: Arc<dyn crate::plugin::SubToolInvoker>) -> Self {
         self.sub_invoker = Some(invoker);
         self
     }
@@ -209,7 +204,6 @@ impl ToolExecutionContext {
         invoker.invoke_sub_tool(tool, args, &child_ctx).await
     }
 }
-
 
 #[async_trait]
 pub trait AgentTool: Send + Sync {

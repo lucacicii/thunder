@@ -1,14 +1,14 @@
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::event::FinishReason;
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
+use thunder_agent_policy::registry_tools::single_tool;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
 use tokio_util::sync::CancellationToken;
 
@@ -126,7 +126,11 @@ async fn test_agent_loop_full_lifecycle() {
 
     let mock_client = Arc::new(MockLLMClient::new(1));
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let mut event_sub = agent.subscribe_events();
     let result = agent.run("Please add 15 and 25", None).await.unwrap();
@@ -176,7 +180,11 @@ async fn test_agent_loop_unlimited_turns() {
     // Mock client executes 12 progressive tool turns before finishing
     let mock_client = Arc::new(MockLLMClient::new(12));
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let result = agent
         .run("Execute multi-step long task", None)
@@ -285,7 +293,11 @@ async fn test_hard_repetition_limit_trips_circuit_breaker() {
 
     let config = AgentConfig::new("test-model");
     let mut agent = AgentLoop::new(config).with_custom_client(Arc::new(InfiniteRepeatingClient));
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let result = agent.run("Test repetition guard", None).await.unwrap();
 
@@ -420,7 +432,11 @@ async fn test_reasoning_on_tool_turn_is_not_written_into_assistant_content() {
         turn_counter: AtomicUsize::new(0),
     });
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let result = agent.run("Add 1 and 2", None).await.unwrap();
 
@@ -456,7 +472,11 @@ async fn test_max_turns_exit_does_not_keep_partial_final_content() {
     let config = AgentConfig::new("test-model").with_max_turns(1);
     let mock_client = Arc::new(MockLLMClient::new(5));
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent = agent.with_tools(single_tool(Arc::new(AddTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(AddTool),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let result = agent.run("Keep calling tools", None).await.unwrap();
 

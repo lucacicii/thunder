@@ -115,14 +115,6 @@ impl AgentLoop {
         self
     }
 
-    /// Install the host's judge and the panel its dialogs render through.
-    ///
-    /// Both are held by the unit and travel with every executor rebuild, so a
-    /// tool registered later is judged the same way. A gate that carries a live
-    /// mode is asked on every call, so flipping the mode mid-session takes
-    /// effect on the next call without rebuilding anything. Passing `None`
-    /// removes the gate — which is what "uninstall the mode plugin" is.
-
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).
     /// Recreates the scratchpad so files land under `base_dir/<id>/`.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
@@ -135,19 +127,13 @@ impl AgentLoop {
         &self.id
     }
 
-
-
     pub fn status(&self) -> LoopStatus {
         LoopStatus::from_u8(self.status.load(Ordering::Acquire))
     }
 
-
-
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
-
-
 
     /// Adopt an externally owned pause gate, so a host can hold and release this
     /// unit without reaching into its internals.
@@ -155,8 +141,6 @@ impl AgentLoop {
         self.pause_gate = gate;
         self
     }
-
-
 
     /// Adopt externally owned steering / follow-up queues.
     ///
@@ -169,14 +153,10 @@ impl AgentLoop {
         self
     }
 
-
-
     /// This unit's steering / follow-up queues.
     pub fn steer_queues(&self) -> &Arc<crate::core::steer::SteerQueues> {
         &self.steer_queues
     }
-
-
 
     pub fn with_custom_client(mut self, client: Arc<dyn LLMClientTrait>) -> Self {
         self.llm_client = client;

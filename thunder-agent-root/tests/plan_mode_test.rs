@@ -11,19 +11,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_policy::gate::ALLOW_ONCE;
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
-use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_types::tool::ToolDefinition;
 use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
-use thunder_agent_root::plugin::ThunderPlugin;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::gate::ALLOW_ONCE;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_root::plugins::mode::{
     Mode, ModePlugin, APPROVE_AND_AUTO_ACCEPT, APPROVE_BUT_ASK, APPROVE_FULLY_AUTONOMOUS,
     EXIT_PLAN_MODE_TOOL, KEEP_PLANNING, MODE_CHANGED_EVENT_KIND, MODE_CHANGE_SOURCE_PLAN_APPROVED,
     WRITE_PLAN_TOOL,
 };
+use thunder_agent_types::tool::ToolDefinition;
 
 /// A panel that answers from a script and records every request it was handed.
 struct ScriptedUi {

@@ -26,13 +26,13 @@
 //! What it can do is spend the run's own authority — which is the honest
 //! description of "a plugin running inside the agent".
 
-use thunder_agent_types::message::ToolCall;
-use thunder_agent_types::tool::ToolExecutionResult;
 use crate::tool_policy::ToolExecutionContext;
 use crate::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
+use thunder_agent_types::message::ToolCall;
+use thunder_agent_types::tool::ToolExecutionResult;
 
 /// Who is asking, and in what run.
 #[derive(Debug, Clone, Default)]

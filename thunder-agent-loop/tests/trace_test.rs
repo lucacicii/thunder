@@ -9,22 +9,22 @@
 //! Redaction is pinned here too. A trace is a durable artifact that travels to
 //! disk, and the args and output of a real call are where credentials live.
 
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_policy::trace::{AskAnswer, Decision, DenyBy, ToolTrace, ToolTraceSink};
 use thunder_agent_policy::gate::{
     ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest, ALLOW_ALWAYS, ALLOW_ONCE, DENY,
 };
-use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::trace::{AskAnswer, Decision, DenyBy, ToolTrace, ToolTraceSink};
+use thunder_agent_policy::ui::{HostUi, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::policy::{Caller, ToolEffect};
 use thunder_agent_types::scope::{Scope, ToolScope};
 use thunder_agent_types::tool::{ToolDefinition, ToolExecutionResult};
-use thunder_agent_policy::ui::{HostUi, UiRequest, UiResponse, UiSource};
 
 // ───────────────────────────────── fixtures ─────────────────────────────────
 

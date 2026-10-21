@@ -5,11 +5,11 @@
 use serde_json::json;
 use std::path::PathBuf;
 use thunder_agent_policy::gate::{ApprovalAnswer, GateVerdict, ToolGate, ToolGateRequest};
-use thunder_agent_types::policy::{Caller, ToolEffect};
-use thunder_agent_types::scope::Scope;
 use thunder_agent_root::plugins::mode::{
     AllowRule, Mode, ModePlugin, EXIT_PLAN_MODE_TOOL, WRITE_PLAN_TOOL,
 };
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
 
 fn decide(
     plugin: &ModePlugin,

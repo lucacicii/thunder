@@ -11,8 +11,8 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::Notify;
@@ -144,9 +144,13 @@ fn unanswered(messages: &[ChatMessage]) -> Vec<String> {
 async fn cancelling_at_a_tool_boundary_answers_the_tool_calls() {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut agent = AgentLoop::new(AgentConfig::new("mock").with_max_turns(4));
-    agent = agent.with_tools(single_tool(Arc::new(CountingTool {
-        runs: Arc::clone(&runs),
-    }), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(CountingTool {
+            runs: Arc::clone(&runs),
+        }),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
     agent = agent.with_custom_client(Arc::new(ToolFirstClient {
         calls: AtomicUsize::new(0),
     }));

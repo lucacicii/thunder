@@ -1,7 +1,6 @@
 //! Fast file-lookup and directory-listing tools built on the `ignore` crate
 //! (fd's traversal core) and `globset` — in-process, .gitignore-aware.
 
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use crate::builtin::search::{build_glob_set, build_walker, relative_display};
 use async_trait::async_trait;
 use ignore::WalkState;
@@ -11,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_policy::plugin::{CallToolResult, Plugin, ToolPlugin};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
 
 pub type FindPlugin = FindTool;

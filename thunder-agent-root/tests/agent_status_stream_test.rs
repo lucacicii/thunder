@@ -84,8 +84,11 @@ fn status_of(event: &ObservedEvent) -> Option<AgentStatusSnapshot> {
 #[tokio::test]
 async fn a_run_publishes_its_status_and_reports_a_host_reported_wait_without_an_event() {
     let status = StatusPlugin::new();
+    let conversation = Arc::new(ConversationPlugin::with_memory_store());
     let root = ThunderRoot::new(AgentConfig::new("gpt-4o").with_unlimited_turns())
-        .with_plugin(ConversationPlugin::with_memory_store())
+        .with_prepared(conversation.clone())
+        .with_section(conversation.clone())
+        .with_observer(conversation)
         .with_status_plugin(status.clone());
 
     let session_id = "test_status_sess_1".to_string();

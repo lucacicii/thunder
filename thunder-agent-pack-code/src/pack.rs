@@ -40,7 +40,10 @@ impl Default for CodePackConfig {
 /// transaction layer joined the workspace root, and the meaning a bare tool
 /// would lose by resolving against the process working directory instead.
 pub fn install_code_pack(agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
-    let scope = Arc::new(crate::scope::CodeScope::from_agent_config(agent.config(), None));
+    let scope = Arc::new(crate::scope::CodeScope::from_agent_config(
+        agent.config(),
+        None,
+    ));
     let ws = agent.config().workspace_dir.clone();
 
     let mut tools: Vec<Arc<dyn AgentTool>> = Vec::new();
@@ -92,8 +95,9 @@ impl ToolsFactory for CodePackFactory {
             registry.register(Arc::clone(tool));
         }
         let executor = ToolExecutor::new(registry.clone())
-            .with_tool_scope(Arc::clone(&self.scope)
-                as Arc<dyn thunder_agent_types::scope::ToolScope>)
+            .with_tool_scope(
+                Arc::clone(&self.scope) as Arc<dyn thunder_agent_types::scope::ToolScope>
+            )
             .with_trace_ids(run.session_id.clone(), run.route.clone());
         executor.install_run_trace(Arc::clone(&run.trace));
         Arc::new(RegistryTools::new(registry, executor))

@@ -20,13 +20,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_policy::gate::DENY;
-use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
-use thunder_agent_policy::{ToolExecutionContext};
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_pack_code::builtin::*;
 use thunder_agent_pack_code::CodeScope;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::gate::DENY;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::ToolExecutionContext;
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("thunder_scope_{name}_{}", std::process::id()));

@@ -23,12 +23,7 @@ fn root_with_ws(ws: &std::path::Path) -> ThunderRoot {
 #[test]
 fn memory_plugin_is_part_of_the_baseline_set() {
     let root = root_with_ws(std::path::Path::new("."));
-    let ids: Vec<String> = root
-        .registry()
-        .list_manifests()
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let ids = root.component_ids();
     assert!(
         ids.contains(&"memory".to_string()),
         "memory plugin missing from baseline: {ids:?}"
@@ -59,7 +54,7 @@ async fn memory_files_are_rendered_into_the_prompt() {
         .await
         .unwrap();
 
-    let prompt = handle.active_set.build_combined_system_prompt(Some("BASE"));
+    let prompt = handle.assembly.prompt("BASE");
     assert!(
         prompt.contains("Use tabs, not spaces."),
         "project memory missing:\n{prompt}"
@@ -99,7 +94,7 @@ async fn memory_import_is_jailed_to_the_workspace() {
 
     let root = root_with_ws(ws);
     let handle = root.execute("hi", RootRunOptions::default()).await.unwrap();
-    let prompt = handle.active_set.build_combined_system_prompt(Some("BASE"));
+    let prompt = handle.assembly.prompt("BASE");
     assert!(
         !prompt.contains("TOP_SECRET_PAYLOAD"),
         "import escaped the jail:\n{prompt}"

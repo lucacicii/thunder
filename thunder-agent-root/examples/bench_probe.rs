@@ -70,7 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_id: Some(session_id),
         custom_client: None,
         cancellation_token: None,
-        forced_plugins: None,
         register_builtins: true,
         thinking_level: thinking,
         pause_gate: None,
@@ -82,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let started = Instant::now();
     let mut handle = root.execute(prompt, options).await?;
-    let active_plugins = handle.selection.active_plugin_ids.clone();
+    let active_plugins = handle.assembly.ids();
 
     let collector = Arc::new(Mutex::new(Collector::default()));
     let sink = Arc::clone(&collector);

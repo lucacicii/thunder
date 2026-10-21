@@ -6,17 +6,14 @@
 //! while every host (`thunder-tui`, `thunder-daemon`, `agent-resume-panel`)
 //! consumes one authoritative [`MetricsSnapshot`].
 
-use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
-use async_trait::async_trait;
+use crate::assembly::{Observer, Prepared, RunEnv};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use thunder_agent_loop::core::token_estimator::estimate_token_count;
-use thunder_agent_loop::types::event::{AgentEvent, AgentStats, ObservedEvent, TurnStats};
-use thunder_agent_loop::AgentRunResult;
+use thunder_agent_loop::types::event::{AgentEvent, AgentStats, TurnStats};
 
 /// Custom event `kind` emitted alongside `ObservedEvent` streams whenever the
 /// metrics snapshot updates.
@@ -536,7 +533,6 @@ impl SessionMetricsTracker {
 /// agent loop.
 #[derive(Clone)]
 pub struct MetricsPlugin {
-    manifest: PluginManifest,
     sessions: Arc<RwLock<HashMap<String, SessionMetricsTracker>>>,
 }
 
@@ -549,23 +545,16 @@ impl Default for MetricsPlugin {
 impl std::fmt::Debug for MetricsPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetricsPlugin")
-            .field("id", &self.manifest.id)
+            .field("id", &Self::ID)
             .finish()
     }
 }
 
 impl MetricsPlugin {
-    pub fn new() -> Self {
-        let manifest = PluginManifest::new(
-            "metrics",
-            "Thunder Telemetry & Token Speed Tracker",
-            "Tracks live streaming token rates, context window occupancy, prompt cache hit rates, and turn/run durations.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::Custom("telemetry".to_string()));
+    pub const ID: &'static str = "metrics";
 
+    pub fn new() -> Self {
         Self {
-            manifest,
             sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -620,36 +609,53 @@ impl MetricsPlugin {
     }
 }
 
-#[async_trait]
-impl ThunderPlugin for MetricsPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl Prepared for MetricsPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        let mut guard = self.sessions.write();
-        let tracker = guard
-            .entry(ctx.session_id.clone())
-            .or_insert_with(|| SessionMetricsTracker::new(&ctx.session_id));
-        tracker.begin_run(ctx.route.clone());
-        Ok(())
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut guard = self.sessions.write();
+            let tracker = guard
+                .entry(env.session_id.clone())
+                .or_insert_with(|| SessionMetricsTracker::new(&env.session_id));
+            tracker.begin_run(env.route.clone());
+            Ok(())
+        })
+    }
+}
+
+impl Observer for MetricsPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_event(&self, event: &ObservedEvent, ctx: &PluginContext) {
-        let _ = self.record_session_event(&ctx.session_id, &event.event);
+    fn on_event<'a>(
+        &'a self,
+        event: &'a AgentEvent,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = self.record_session_event(&env.session_id, event);
+        })
     }
 
-    async fn on_finish(
-        &self,
-        result: &AgentRunResult,
-        ctx: &PluginContext,
-    ) -> Result<(), PluginError> {
-        let mut guard = self.sessions.write();
-        let tracker = guard
-            .entry(ctx.session_id.clone())
-            .or_insert_with(|| SessionMetricsTracker::new(&ctx.session_id));
-        tracker.on_finish(Some(&result.stats));
-        Ok(())
+    fn on_finish<'a>(
+        &'a self,
+        result: &'a thunder_agent_loop::AgentRunResult,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let mut guard = self.sessions.write();
+            let tracker = guard
+                .entry(env.session_id.clone())
+                .or_insert_with(|| SessionMetricsTracker::new(&env.session_id));
+            tracker.on_finish(Some(&result.stats));
+        })
     }
 }
 

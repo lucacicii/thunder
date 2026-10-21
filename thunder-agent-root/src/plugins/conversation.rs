@@ -1,9 +1,7 @@
 #[cfg(feature = "conversation")]
-use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
-use async_trait::async_trait;
+use crate::assembly::{Observer, Prepared, PromptSection, RunEnv};
 use std::sync::{Arc, Mutex};
-use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent, TurnStats};
+use thunder_agent_loop::types::event::{AgentEvent, TurnStats};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
 use thunder_agent_loop::AgentRunResult;
 use thunder_agent_pack_code::autonomous_system_prompt;
@@ -12,7 +10,6 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "conversation")]
 pub struct ConversationPlugin {
-    manifest: PluginManifest,
     store: Arc<dyn ConversationStore>,
     active_conversation: Arc<RwLock<Option<Conversation>>>,
     /// The turn being accumulated. A turn arrives as hundreds of deltas with its
@@ -97,17 +94,10 @@ fn write_turn(conv: &mut Conversation, pending: Option<PendingTurn>, stats: Opti
 
 #[cfg(feature = "conversation")]
 impl ConversationPlugin {
-    pub fn new(store: Arc<dyn ConversationStore>) -> Self {
-        let manifest = PluginManifest::new(
-            "conversation",
-            "Thunder Conversation & Session Manager",
-            "Manages multi-turn conversation context, session history, and atomic file-system persistence.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::MemoryPersistence);
+    pub const ID: &'static str = "conversation";
 
+    pub fn new(store: Arc<dyn ConversationStore>) -> Self {
         Self {
-            manifest,
             store,
             active_conversation: Arc::new(RwLock::new(None)),
             pending_turn: Mutex::new(None),
@@ -133,164 +123,190 @@ impl ConversationPlugin {
 }
 
 #[cfg(feature = "conversation")]
-#[async_trait]
-impl ThunderPlugin for ConversationPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl PromptSection for ConversationPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn system_prompt_contribution(&self) -> Option<String> {
+    fn render(&self) -> Option<String> {
         Some("Session history and multi-turn state are tracked automatically.".to_string())
     }
+}
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        let mut active = self.active_conversation.write().await;
-        if active.is_none()
-            || active
-                .as_ref()
-                .map(|c| c.id != ctx.session_id)
-                .unwrap_or(false)
-        {
-            // Load or initialize conversation for this session
-            let loaded = self
-                .store
-                .load(&ctx.session_id)
-                .await
-                .map_err(|e| PluginError::InitFailed(e.to_string()))?;
-
-            let conv = loaded.unwrap_or_else(|| {
-                Conversation::new(&ctx.session_id)
-                    .with_title("Thunder Root Session")
-                    .with_system_prompt(autonomous_system_prompt(Default::default()))
-            });
-
-            *active = Some(conv);
-        }
-
-        // The user's turn is never in the event stream, so seed it from the run
-        // context: a conversation with no user turn is not a session and is not
-        // persisted at all. Re-running the same prompt on the same session must
-        // not duplicate its trailing user turn.
-        let prompt = ctx.prompt().map(str::trim).filter(|p| !p.is_empty());
-        if let (Some(prompt), Some(conv)) = (prompt, active.as_mut()) {
-            let already_recorded = matches!(
-                conv.messages.last(),
-                Some(ChatMessage::User { content, .. }) if content == prompt
-            );
-            if !already_recorded {
-                conv.add_user_message(prompt);
-            }
-        }
-        Ok(())
+#[cfg(feature = "conversation")]
+impl Prepared for ConversationPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_event(&self, event: &ObservedEvent, _ctx: &PluginContext) {
-        let mut active = self.active_conversation.write().await;
-        let Some(conv) = active.as_mut() else { return };
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut active = self.active_conversation.write().await;
+            if active.is_none()
+                || active
+                    .as_ref()
+                    .map(|c| c.id != env.session_id)
+                    .unwrap_or(false)
+            {
+                // Load or initialize conversation for this session
+                let loaded = self
+                    .store
+                    .load(&env.session_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-        // The buffer is taken out of its lock for the length of the match and put
-        // back after: no guard is held across the checkpoint save below, which a
-        // plugin's future (it has to stay `Send`) would not survive.
-        let mut pending = take_pending(&self.pending_turn);
-        let mut turn_ended = false;
-        match &event.event {
-            AgentEvent::TurnStart { turn, .. } => {
-                begin_turn(conv, &mut pending, *turn);
+                let conv = loaded.unwrap_or_else(|| {
+                    Conversation::new(&env.session_id)
+                        .with_title("Thunder Root Session")
+                        .with_system_prompt(autonomous_system_prompt(Default::default()))
+                });
+
+                *active = Some(conv);
             }
-            AgentEvent::ReasoningDelta { turn, delta } => {
-                begin_turn(conv, &mut pending, *turn);
-                if let Some(state) = pending.as_mut() {
-                    state.reasoning.push_str(delta);
+
+            // The user's turn is never in the event stream, so seed it from the run
+            // context: a conversation with no user turn is not a session and is not
+            // persisted at all. Re-running the same prompt on the same session must
+            // not duplicate its trailing user turn.
+            let prompt = env
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty());
+            if let (Some(prompt), Some(conv)) = (prompt, active.as_mut()) {
+                let already_recorded = matches!(
+                    conv.messages.last(),
+                    Some(ChatMessage::User { content, .. }) if content == prompt
+                );
+                if !already_recorded {
+                    conv.add_user_message(prompt);
                 }
             }
-            AgentEvent::TokenDelta { turn, delta } => {
-                begin_turn(conv, &mut pending, *turn);
-                if let Some(state) = pending.as_mut() {
-                    state.text.push_str(delta);
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "conversation")]
+impl Observer for ConversationPlugin {
+    fn id(&self) -> &str {
+        Self::ID
+    }
+
+    fn on_event<'a>(
+        &'a self,
+        event: &'a AgentEvent,
+        _env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let mut active = self.active_conversation.write().await;
+            let Some(conv) = active.as_mut() else { return };
+
+            // The buffer is taken out of its lock for the length of the match and put
+            // back after: no guard is held across the checkpoint save below, which a
+            // plugin's future (it has to stay `Send`) would not survive.
+            let mut pending = take_pending(&self.pending_turn);
+            let mut turn_ended = false;
+            match event {
+                AgentEvent::TurnStart { turn, .. } => {
+                    begin_turn(conv, &mut pending, *turn);
                 }
-            }
-            AgentEvent::ToolCallReady { turn, tool_call } => {
-                begin_turn(conv, &mut pending, *turn);
-                if let Some(state) = pending.as_mut() {
-                    let known = state.calls.iter().any(|call| call.id == tool_call.id);
-                    if !known {
-                        state.calls.push(tool_call.clone());
+                AgentEvent::ReasoningDelta { turn, delta } => {
+                    begin_turn(conv, &mut pending, *turn);
+                    if let Some(state) = pending.as_mut() {
+                        state.reasoning.push_str(delta);
                     }
                 }
-            }
-            AgentEvent::ToolExecResult {
-                turn,
-                tool_call_id,
-                name,
-                result,
-                ..
-            } => {
-                begin_turn(conv, &mut pending, *turn);
-                if let Some(state) = pending.as_mut() {
-                    state.results.push(PendingToolResult {
-                        tool_call_id: tool_call_id.clone(),
-                        name: name.clone(),
-                        output: result.output.clone(),
-                    });
+                AgentEvent::TokenDelta { turn, delta } => {
+                    begin_turn(conv, &mut pending, *turn);
+                    if let Some(state) = pending.as_mut() {
+                        state.text.push_str(delta);
+                    }
                 }
-            }
-            AgentEvent::TurnEnd { turn, stats, .. } => {
-                // The turn is whole here: its text, its reasoning and its calls
-                // become one message, with the results that answered them right
-                // after it — the order a provider expects to read back, and the
-                // order a transcript wants (one entry per turn, not one per call).
-                // A turn whose events never arrived is not written: an empty entry
-                // in the transcript is worse than a missing one.
-                if pending.as_ref().is_some_and(|state| state.turn == *turn) {
-                    write_turn(conv, pending.take(), Some(stats.clone()));
+                AgentEvent::ToolCallReady { turn, tool_call } => {
+                    begin_turn(conv, &mut pending, *turn);
+                    if let Some(state) = pending.as_mut() {
+                        let known = state.calls.iter().any(|call| call.id == tool_call.id);
+                        if !known {
+                            state.calls.push(tool_call.clone());
+                        }
+                    }
                 }
-                turn_ended = true;
+                AgentEvent::ToolExecResult {
+                    turn,
+                    tool_call_id,
+                    name,
+                    result,
+                    ..
+                } => {
+                    begin_turn(conv, &mut pending, *turn);
+                    if let Some(state) = pending.as_mut() {
+                        state.results.push(PendingToolResult {
+                            tool_call_id: tool_call_id.clone(),
+                            name: name.clone(),
+                            output: result.output.clone(),
+                        });
+                    }
+                }
+                AgentEvent::TurnEnd { turn, stats, .. } => {
+                    // The turn is whole here: its text, its reasoning and its calls
+                    // become one message, with the results that answered them right
+                    // after it — the order a provider expects to read back, and the
+                    // order a transcript wants (one entry per turn, not one per call).
+                    // A turn whose events never arrived is not written: an empty entry
+                    // in the transcript is worse than a missing one.
+                    if pending.as_ref().is_some_and(|state| state.turn == *turn) {
+                        write_turn(conv, pending.take(), Some(stats.clone()));
+                    }
+                    turn_ended = true;
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        put_pending(&self.pending_turn, pending);
+            put_pending(&self.pending_turn, pending);
 
-        if turn_ended {
-            // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
-            let _ = self.store.save(conv).await;
-        }
+            if turn_ended {
+                // Turn-level checkpoint: persist session incrementally to protect against unexpected termination
+                let _ = self.store.save(conv).await;
+            }
+        })
     }
 
-    async fn on_finish(
-        &self,
-        result: &AgentRunResult,
-        _ctx: &PluginContext,
-    ) -> Result<(), PluginError> {
-        let mut active = self.active_conversation.write().await;
-        if let Some(conv) = active.as_mut() {
-            // A run that ended without a `turn_end` for its last turn (error,
-            // cancel) still has that turn's events; write them before the final
-            // text is considered, so nothing the user watched stream is lost.
-            let pending = take_pending(&self.pending_turn);
-            write_turn(conv, pending, None);
+    fn on_finish<'a>(
+        &'a self,
+        result: &'a AgentRunResult,
+        _env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let mut active = self.active_conversation.write().await;
+            if let Some(conv) = active.as_mut() {
+                // A run that ended without a `turn_end` for its last turn (error,
+                // cancel) still has that turn's events; write them before the final
+                // text is considered, so nothing the user watched stream is lost.
+                let pending = take_pending(&self.pending_turn);
+                write_turn(conv, pending, None);
 
-            if let Some(final_text) = &result.final_content {
-                let already_present = conv
-                    .messages
-                    .last()
-                    .map(|m| match m {
-                        ChatMessage::Assistant {
-                            content: Some(c), ..
-                        } => c == final_text,
-                        _ => false,
-                    })
-                    .unwrap_or(false);
+                if let Some(final_text) = &result.final_content {
+                    let already_present = conv
+                        .messages
+                        .last()
+                        .map(|m| match m {
+                            ChatMessage::Assistant {
+                                content: Some(c), ..
+                            } => c == final_text,
+                            _ => false,
+                        })
+                        .unwrap_or(false);
 
-                if !already_present && !final_text.is_empty() {
-                    conv.add_assistant_message(Some(final_text.clone()), None);
+                    if !already_present && !final_text.is_empty() {
+                        conv.add_assistant_message(Some(final_text.clone()), None);
+                    }
                 }
-            }
 
-            self.store
-                .save(conv)
-                .await
-                .map_err(|e| PluginError::ExecutionFailed(e.to_string()))?;
-        }
-        Ok(())
+                let _ = self.store.save(conv).await;
+            }
+        })
     }
 }

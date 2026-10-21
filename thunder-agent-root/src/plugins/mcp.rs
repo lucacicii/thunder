@@ -1,21 +1,18 @@
 #[cfg(feature = "mcp")]
+use crate::assembly::{Prepared, PromptSection, RunEnv};
+#[cfg(feature = "mcp")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::ThunderConfig;
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
-use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_policy::AgentTool;
-use thunder_agent_loop::AgentRunResult;
 pub use thunder_agent_mcp::prelude::*;
+use thunder_agent_policy::AgentTool;
 use tracing::info;
 
 #[cfg(feature = "mcp")]
 #[derive(Clone)]
 pub struct McpPlugin {
-    manifest: PluginManifest,
     manager: McpManager,
     discovered_tools: Arc<RwLock<Vec<Arc<dyn AgentTool>>>>,
     connected_servers: Arc<RwLock<Vec<String>>>,
@@ -23,19 +20,10 @@ pub struct McpPlugin {
 
 #[cfg(feature = "mcp")]
 impl McpPlugin {
-    pub fn new() -> Self {
-        let manifest = PluginManifest::new(
-            "mcp",
-            "Model Context Protocol (MCP) Client",
-            "Discovers, connects to, and dynamically registers tools from external MCP servers.",
-            "0.1.0",
-        )
-        .with_capability(PluginCapability::McpProvider)
-        .with_capability(PluginCapability::ToolProvider)
-;
+    pub const ID: &'static str = "mcp";
 
+    pub fn new() -> Self {
         Self {
-            manifest,
             manager: McpManager::new(),
             discovered_tools: Arc::new(RwLock::new(Vec::new())),
             connected_servers: Arc::new(RwLock::new(Vec::new())),
@@ -54,7 +42,6 @@ impl McpPlugin {
         let tools = manager.discover_all_tools().await;
         let servers = manager.list_servers().await;
         Ok(Self {
-            manifest: Self::new().manifest,
             manager,
             discovered_tools: Arc::new(RwLock::new(tools)),
             connected_servers: Arc::new(RwLock::new(servers)),
@@ -68,7 +55,6 @@ impl McpPlugin {
         let tools = manager.discover_all_tools().await;
         let servers = manager.list_servers().await;
         Ok(Self {
-            manifest: Self::new().manifest,
             manager,
             discovered_tools: Arc::new(RwLock::new(tools)),
             connected_servers: Arc::new(RwLock::new(servers)),
@@ -116,18 +102,12 @@ impl Default for McpPlugin {
     }
 }
 
-#[cfg(feature = "mcp")]
-#[async_trait]
-impl ThunderPlugin for McpPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
+impl PromptSection for McpPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        self.discovered_tools.read().clone()
-    }
-
-    fn system_prompt_contribution(&self) -> Option<String> {
+    fn render(&self) -> Option<String> {
         let mut servers = self.connected_servers.read().clone();
         if servers.is_empty() {
             servers = futures_util::FutureExt::now_or_never(self.manager.list_servers())
@@ -157,67 +137,74 @@ impl ThunderPlugin for McpPlugin {
 
         Some(out)
     }
+}
 
-    async fn on_init(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        // Auto-check workspace MCP config. Project convention (`.thunder/mcp.json`)
-        // takes precedence over the generic `.mcp.json` / `mcp_servers.json`.
-        if let Some(ws) = &ctx.workspace_dir {
-            let project_mcp = ws.join(".thunder").join("mcp.json");
-            let mcp_cfg_path = ws.join("mcp_servers.json");
-            let mcp_dot_json = ws.join(".mcp.json");
-            if project_mcp.exists() {
-                if let Ok(cfg) = McpConfig::from_file(&project_mcp).await {
-                    let _ = self.manager.add_config(cfg).await;
-                }
-            } else if mcp_cfg_path.exists() {
-                if let Ok(cfg) = McpConfig::from_file(&mcp_cfg_path).await {
-                    let _ = self.manager.add_config(cfg).await;
-                }
-            } else if mcp_dot_json.exists() {
-                if let Ok(cfg) = McpConfig::from_file(&mcp_dot_json).await {
-                    let _ = self.manager.add_config(cfg).await;
-                }
-            }
-        }
-
-        // Also merge declarative `plugins.mcpServers` from `.thunder/config.json`
-        // so pooled `McpPlugin` instances manage them without per-turn re-spawning.
-        let thunder_cfg = ThunderConfig::load(ctx.workspace_dir.as_deref()).await;
-        if let Some(servers) = thunder_cfg
-            .plugins()
-            .and_then(|p| p.mcp_servers.as_ref())
-            .cloned()
-        {
-            self.manager
-                .add_config(McpConfig {
-                    mcp_servers: servers,
-                })
-                .await;
-        }
-
-        let tools = self.manager.discover_all_tools().await;
-        let servers = self.manager.list_servers().await;
-        info!(
-            tool_count = tools.len(),
-            "McpPlugin updated discovered tools"
-        );
-        *self.discovered_tools.write() = tools;
-        *self.connected_servers.write() = servers;
-
-        Ok(())
+impl Prepared for McpPlugin {
+    fn id(&self) -> &str {
+        Self::ID
     }
 
-    async fn on_event(&self, _event: &ObservedEvent, _ctx: &PluginContext) {}
+    fn prepare<'a>(
+        &'a self,
+        env: &'a RunEnv,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Auto-check workspace MCP config. Project convention (`.thunder/mcp.json`)
+            // takes precedence over the generic `.mcp.json` / `mcp_servers.json`.
+            if let Some(ws) = &env.workspace {
+                let project_mcp = ws.join(".thunder").join("mcp.json");
+                let mcp_cfg_path = ws.join("mcp_servers.json");
+                let mcp_dot_json = ws.join(".mcp.json");
+                if project_mcp.exists() {
+                    if let Ok(cfg) = McpConfig::from_file(&project_mcp).await {
+                        let _ = self.manager.add_config(cfg).await;
+                    }
+                } else if mcp_cfg_path.exists() {
+                    if let Ok(cfg) = McpConfig::from_file(&mcp_cfg_path).await {
+                        let _ = self.manager.add_config(cfg).await;
+                    }
+                } else if mcp_dot_json.exists() {
+                    if let Ok(cfg) = McpConfig::from_file(&mcp_dot_json).await {
+                        let _ = self.manager.add_config(cfg).await;
+                    }
+                }
+            }
 
-    async fn on_finish(
-        &self,
-        _result: &AgentRunResult,
-        _ctx: &PluginContext,
-    ) -> Result<(), PluginError> {
-        Ok(())
+            // Also merge declarative `plugins.mcpServers` from `.thunder/config.json`
+            // so pooled `McpPlugin` instances manage them without per-turn re-spawning.
+            let thunder_cfg = ThunderConfig::load(env.workspace.as_deref()).await;
+            if let Some(servers) = thunder_cfg
+                .plugins()
+                .and_then(|p| p.mcp_servers.as_ref())
+                .cloned()
+            {
+                self.manager
+                    .add_config(McpConfig {
+                        mcp_servers: servers,
+                    })
+                    .await;
+            }
+
+            let tools = self.manager.discover_all_tools().await;
+            let servers = self.manager.list_servers().await;
+            info!(
+                tool_count = tools.len(),
+                "McpPlugin updated discovered tools"
+            );
+            *self.discovered_tools.write() = tools;
+            *self.connected_servers.write() = servers;
+
+            Ok(())
+        })
     }
 }
 
+impl McpPlugin {
+    /// The tools discovered by the last `prepare`.
+    pub fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        self.discovered_tools.read().clone()
+    }
+}
 // Add helper method to McpManager in thunder_agent_mcp or extension
 #[cfg(feature = "mcp")]
 trait McpManagerExt {
