@@ -17,7 +17,7 @@ use thunder_protocol::{
     ContextEnvelopeMeta, ExecutionContext, McpCallToolResult, McpToolCallParams, McpToolInfo,
     ToolExecutionError,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as TokioMutex;
 
 static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -330,16 +330,15 @@ pub async fn dispatch_tool_call(params: McpToolCallParams) -> McpCallToolResult 
     }
 }
 
+const MAX_SINGLE_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+const MAX_STREAMED_OUTPUT_BYTES: usize = 512 * 1024; // 512 KB
+
 async fn handle_read_file(args: &Value, ctx: &ExecutionContext) -> Result<String, String> {
     let raw_path = args
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required parameter 'path'".to_string())?;
     let target = resolve_path(&ctx.workspace_cwd, raw_path);
-
-    let content = tokio::fs::read_to_string(&target)
-        .await
-        .map_err(|e| format!("Failed to read '{}': {e}", target.display()))?;
 
     let offset = args
         .get("offset")
@@ -351,16 +350,29 @@ async fn handle_read_file(args: &Value, ctx: &ExecutionContext) -> Result<String
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
 
-    let sliced = if offset > 1 || limit.is_some() {
-        let lines: Vec<&str> = content.lines().collect();
-        let start = (offset - 1).min(lines.len());
-        let end = match limit {
-            Some(l) => (start + l).min(lines.len()),
-            None => lines.len(),
-        };
-        lines[start..end].join("\n")
+    let meta = tokio::fs::metadata(&target)
+        .await
+        .map_err(|e| format!("Failed to read file metadata '{}': {e}", target.display()))?;
+
+    let sliced = if meta.len() > MAX_SINGLE_READ_BYTES {
+        // Streamed line-by-line reading for files > 10MB to avoid OOM
+        read_streamed(&target, offset, limit).await?
     } else {
-        content
+        let content = tokio::fs::read_to_string(&target)
+            .await
+            .map_err(|e| format!("Failed to read '{}': {e}", target.display()))?;
+
+        if offset > 1 || limit.is_some() {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = (offset - 1).min(lines.len());
+            let end = match limit {
+                Some(l) => (start + l).min(lines.len()),
+                None => lines.len(),
+            };
+            lines[start..end].join("\n")
+        } else {
+            content
+        }
     };
 
     let guarded = drain_stream_with_flood_guard(
@@ -373,6 +385,48 @@ async fn handle_read_file(args: &Value, ctx: &ExecutionContext) -> Result<String
     .map_err(|e| format!("Flood guard error: {e}"))?;
 
     Ok(guarded.text)
+}
+
+async fn read_streamed(
+    target_path: &Path,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<String, String> {
+    let file = tokio::fs::File::open(target_path)
+        .await
+        .map_err(|e| format!("Failed to read file '{}': {e}", target_path.display()))?;
+    let mut lines = tokio::io::BufReader::new(file).lines();
+    let take = limit.unwrap_or(usize::MAX);
+    let mut out = String::new();
+    let mut line_no = 0usize;
+    let mut taken = 0usize;
+    let mut truncated = false;
+
+    while taken < take {
+        let line = lines
+            .next_line()
+            .await
+            .map_err(|e| format!("Failed to read file '{}': {e}", target_path.display()))?;
+        let Some(line) = line else { break };
+        line_no += 1;
+        if line_no < offset {
+            continue;
+        }
+        if out.len() + line.len() + 1 > MAX_STREAMED_OUTPUT_BYTES {
+            truncated = true;
+            break;
+        }
+        out.push_str(&line);
+        out.push('\n');
+        taken += 1;
+    }
+
+    if truncated {
+        out.push_str("…[truncated: output exceeded the 512 KiB streaming budget; re-read with a smaller limit/offset window]");
+        return Ok(out);
+    }
+
+    Ok(out.trim_end_matches('\n').to_string())
 }
 
 async fn handle_write_file(args: &Value, ctx: &ExecutionContext) -> Result<String, String> {
