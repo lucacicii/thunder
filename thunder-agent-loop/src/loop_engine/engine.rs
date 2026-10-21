@@ -73,11 +73,16 @@ pub struct AgentLoop {
     /// emitter and sink of each run, and readable by the host at any time:
     /// `structural() > 0` means the run's record may be incomplete.
     drop_counters: Arc<crate::types::event::EventDropCounters>,
+    /// Caps summarization requests in flight across the agents sharing it.
+    summary_limit: Arc<tokio::sync::Semaphore>,
 }
 
 impl AgentLoop {
     pub fn new(config: AgentConfig) -> Self {
         let id = generate_agent_id();
+        let summary_limit = Arc::new(tokio::sync::Semaphore::new(
+            config.pruning.max_concurrent_summaries.max(1),
+        ));
         let scratchpad = ScratchpadManager::new(&id, config.scratchpad.clone());
         let llm_client = Arc::new(UnconfiguredLLMClient);
 
@@ -96,6 +101,7 @@ impl AgentLoop {
             completion_gate: None,
             max_gate_rounds: 3,
             drop_counters: crate::types::event::EventDropCounters::shared(),
+            summary_limit,
         }
     }
 
@@ -105,6 +111,18 @@ impl AgentLoop {
     /// before the run is allowed to finish; a `retry` feeds its feedback back to
     /// the model and continues the loop. `max_rounds` is a hard ceiling so a
     /// gate that never passes cannot spin forever — `0` disables the gate.
+    /// Share one summarization limiter with every other agent the host runs.
+    ///
+    /// Without this each agent gets its own permit, which bounds nothing: the
+    /// pressure on the provider is the sum across agents, and they tend to
+    /// cross the compaction threshold together (same model, same window).
+    /// The limiter is host-owned, so the kernel stays free of global state; a
+    /// host that runs N agents passes the same `Arc` to all of them.
+    pub fn with_summary_limit(mut self, limit: Arc<tokio::sync::Semaphore>) -> Self {
+        self.summary_limit = limit;
+        self
+    }
+
     pub fn with_completion_gate(
         mut self,
         gate: Arc<dyn crate::loop_engine::gate::CompletionGate>,
@@ -344,7 +362,11 @@ impl AgentLoop {
         let running = self.running.clone();
         let pause_gate = Arc::clone(&self.pause_gate);
         let steer_queues = Arc::clone(&self.steer_queues);
-        let summarizer = crate::pruning::checkpoint::Summarizer::new(llm_client.clone(), &config);
+        let summarizer = crate::pruning::checkpoint::Summarizer::new(
+            llm_client.clone(),
+            &config,
+            Arc::clone(&self.summary_limit),
+        );
 
         tokio::spawn(async move {
             let _busy = RunningGuard::new(running);

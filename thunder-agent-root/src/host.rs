@@ -337,9 +337,14 @@ pub struct ThunderRoot {
     metrics_plugin: Option<Arc<MetricsPlugin>>,
     status_plugin: Option<Arc<StatusPlugin>>,
     initial_session_total_tokens: Option<usize>,
+    /// One summarization budget for every agent this host runs.
+    summary_limit: Arc<tokio::sync::Semaphore>,
 }
 impl ThunderRoot {
     pub fn new(config: AgentConfig) -> Self {
+        let summary_limit = Arc::new(tokio::sync::Semaphore::new(
+            config.pruning.max_concurrent_summaries.max(1),
+        ));
         let scratch_root = std::env::temp_dir().join("thunder_root_scratch");
         // Best-effort cleanup of stale per-session scratch dirs. Only schedule
         // it when a Tokio runtime is present: `ThunderRoot::new` is also called
@@ -367,6 +372,7 @@ impl ThunderRoot {
             metrics_plugin: None,
             status_plugin: None,
             initial_session_total_tokens: None,
+            summary_limit,
         }
     }
 
@@ -827,7 +833,9 @@ impl ThunderRoot {
             self.workspace_root.as_deref(),
         );
         let run_cfg = agent_cfg.clone();
-        let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
+        let mut agent = AgentLoop::new(agent_cfg)
+            .with_id(format!("root_{}", session_id))
+            .with_summary_limit(Arc::clone(&self.summary_limit));
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);

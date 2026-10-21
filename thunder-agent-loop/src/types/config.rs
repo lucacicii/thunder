@@ -28,6 +28,20 @@ pub struct ContextPruningConfig {
     pub summarizer_max_tokens: usize,
     /// Keep the leading system prompt pinned during compaction.
     pub pin_system_prompt: bool,
+    /// How many summarization requests may be in flight at once across the
+    /// agents that share a limiter.
+    ///
+    /// The kernel runs one loop per agent, so within one agent this is already
+    /// one; the cap matters when a host runs several agents and they all cross
+    /// the compaction threshold at the same moment. Hosts that want one budget
+    /// for all of them share one limiter with
+    /// [`AgentLoop::with_summary_limit`](crate::loop_engine::engine::AgentLoop::with_summary_limit).
+    #[serde(default = "default_max_concurrent_summaries")]
+    pub max_concurrent_summaries: usize,
+}
+
+fn default_max_concurrent_summaries() -> usize {
+    2
 }
 
 fn default_reserve_tokens() -> usize {
@@ -51,6 +65,7 @@ impl Default for ContextPruningConfig {
             summarizer_model: None,
             summarizer_max_tokens: default_summarizer_max_tokens(),
             pin_system_prompt: true,
+            max_concurrent_summaries: default_max_concurrent_summaries(),
         }
     }
 }
