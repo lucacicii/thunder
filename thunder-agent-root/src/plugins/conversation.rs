@@ -1,6 +1,6 @@
 #[cfg(feature = "conversation")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent, TurnStats};
@@ -104,11 +104,7 @@ impl ConversationPlugin {
             "Manages multi-turn conversation context, session history, and atomic file-system persistence.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::MemoryPersistence)
-        // Baseline plugin: always active. Session history semantics must not
-        // flicker per message — a changing system prompt / toolset busts the
-        // provider prompt cache for the whole request prefix.
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::MemoryPersistence);
 
         Self {
             manifest,

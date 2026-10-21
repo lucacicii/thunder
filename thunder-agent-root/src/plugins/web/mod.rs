@@ -34,7 +34,7 @@ pub use fetch::{WebFetchTool, WEB_FETCH_TOOL};
 pub use search::{SearchProvider, SearchResult, WebSearchTool, WEB_SEARCH_TOOL};
 
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::{ThunderConfig, WebFetchBackend, WebSearchBackend};
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -101,10 +101,7 @@ impl WebPlugin {
             "Fetches a URL, converts the page to markdown, and answers a prompt against it with the utility model; also searches the web through DeepSeek or free engines.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::ToolProvider)
-        // Baseline plugin: the tool must be in the model's tool table from the
-        // first turn, not after a keyword happens to match.
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,

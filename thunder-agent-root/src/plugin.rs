@@ -24,31 +24,6 @@ pub enum PluginCapability {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TriggerSpec {
-    pub keywords: Vec<String>,
-    pub auto_always: bool,
-    pub description_for_llm: String,
-}
-
-impl TriggerSpec {
-    pub fn new(keywords: Vec<&str>, description_for_llm: &str) -> Self {
-        Self {
-            keywords: keywords.into_iter().map(|s| s.to_lowercase()).collect(),
-            auto_always: false,
-            description_for_llm: description_for_llm.to_string(),
-        }
-    }
-
-    pub fn always() -> Self {
-        Self {
-            keywords: Vec::new(),
-            auto_always: true,
-            description_for_llm: "Always active plugin".to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
@@ -56,7 +31,6 @@ pub struct PluginManifest {
     pub description: String,
     pub version: String,
     pub capabilities: Vec<PluginCapability>,
-    pub triggers: TriggerSpec,
 }
 
 impl PluginManifest {
@@ -72,17 +46,11 @@ impl PluginManifest {
             description: description.into(),
             version: version.into(),
             capabilities: Vec::new(),
-            triggers: TriggerSpec::default(),
         }
     }
 
     pub fn with_capability(mut self, cap: PluginCapability) -> Self {
         self.capabilities.push(cap);
-        self
-    }
-
-    pub fn with_triggers(mut self, triggers: TriggerSpec) -> Self {
-        self.triggers = triggers;
         self
     }
 }

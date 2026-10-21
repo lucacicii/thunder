@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::tool::ToolDefinition;
-use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin, TriggerSpec};
+use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
@@ -265,8 +265,7 @@ impl AskUserPlugin {
             "Blocks the agent on a clarifying question rendered as a panel bubble.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,

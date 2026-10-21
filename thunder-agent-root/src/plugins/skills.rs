@@ -1,6 +1,6 @@
 #[cfg(feature = "skills")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,12 +23,7 @@ impl SkillsPlugin {
             "Parses, manages and dynamically activates domain-specific agent skills and prompt instructions.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::SkillProvider)
-        .with_capability(PluginCapability::ToolProvider)
-        // Baseline plugin: always active (documented as "会话与技能常驻").
-        // Keyword flicker on generic words like "spec" previously toggled this
-        // plugin per message, destabilizing the cached request prefix.
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,

@@ -33,7 +33,7 @@
 //! next time the host rebuilds the run.
 
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::{MemorySection, ThunderConfig, THUNDER_DIR};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
@@ -94,10 +94,7 @@ impl MemoryPlugin {
             "0.1.0",
         )
         .with_capability(PluginCapability::MemoryPersistence)
-        .with_capability(PluginCapability::ToolProvider)
-        // Baseline plugin: stays active so the prompt block is stable across
-        // turns, whether or not any memory file currently exists.
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,

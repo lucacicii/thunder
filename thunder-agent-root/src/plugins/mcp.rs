@@ -1,6 +1,6 @@
 #[cfg(feature = "mcp")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::ThunderConfig;
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -32,17 +32,7 @@ impl McpPlugin {
         )
         .with_capability(PluginCapability::McpProvider)
         .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::new(
-            vec![
-                "mcp",
-                "model context protocol",
-                "server tool",
-                "external tool",
-                "mcp server",
-                "stdio tool",
-            ],
-            "Connects to external MCP servers to discover and invoke external tool endpoints.",
-        ));
+;
 
         Self {
             manifest,

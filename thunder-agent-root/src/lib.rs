@@ -17,7 +17,7 @@ pub mod prelude {
     };
     pub use crate::loader::{LoadedPlugins, PluginLoader};
     pub use crate::plugin::{
-        PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec,
+        PluginCapability, PluginContext, PluginManifest, ThunderPlugin,
     };
     #[cfg(feature = "mcp")]
     pub use crate::plugins::mcp::*;

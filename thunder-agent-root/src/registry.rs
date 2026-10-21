@@ -71,12 +71,15 @@ impl PluginRegistry {
             .collect()
     }
 
-    /// Build an active plugin set for a given subset of plugin IDs (always includes auto_always plugins).
+    /// Build an active plugin set for a given subset of plugin IDs.
+    ///
+    /// There is no `auto_always` any more: the selector returns every
+    /// registered plugin, so "active" is simply "registered".
     pub fn create_active_set(&self, selected_ids: &[String]) -> ActivePluginSet {
         let mut active = Vec::new();
         for plugin in self.plugins.values() {
             let manifest = plugin.manifest();
-            if manifest.triggers.auto_always || selected_ids.contains(&manifest.id) {
+            if selected_ids.is_empty() || selected_ids.contains(&manifest.id) {
                 active.push(plugin.clone());
             }
         }
@@ -202,7 +205,6 @@ impl ActivePluginSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::TriggerSpec;
 
     struct DummyPlugin {
         manifest: PluginManifest,
@@ -212,8 +214,7 @@ mod tests {
     impl DummyPlugin {
         fn new(id: &str, name: &str, contrib: &str) -> Self {
             Self {
-                manifest: PluginManifest::new(id, name, "test", "0.1.0")
-                    .with_triggers(TriggerSpec::always()),
+                manifest: PluginManifest::new(id, name, "test", "0.1.0"),
                 contrib: contrib.to_string(),
             }
         }
