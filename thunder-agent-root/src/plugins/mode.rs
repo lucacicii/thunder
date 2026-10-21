@@ -20,7 +20,7 @@
 //! changes nothing runs unattended, and everything else asks as it always did.
 //! Inspecting is ordinary plan work, and a dialog asking "may I look?" is a
 //! question the user already answered by choosing plan mode. The proof lives in
-//! [`is_read_only`](thunder_agent_loop::tools::read_only::is_read_only), and it
+//! [`is_read_only`](thunder_agent_policy::read_only::is_read_only), and it
 //! errs towards asking: one separator, one flag that writes, one credential in
 //! the arguments, and the dialog appears.
 //!
@@ -34,6 +34,7 @@
 //! plugin registers ([`WRITE_PLAN_TOOL`], [`EXIT_PLAN_MODE_TOOL`]) are exempt
 //! in every mode — by name, never by the effect a tool declares about itself.
 
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use super::permission_rules;
 use crate::plugin::{PluginCapability, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
@@ -41,17 +42,17 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
-use thunder_agent_loop::tools::read_only::call_is_read_only;
-use thunder_agent_loop::types::gate::{
+use thunder_agent_policy::read_only::call_is_read_only;
+use thunder_agent_policy::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest,
 };
-use thunder_agent_loop::types::plugin::{
+use thunder_agent_policy::plugin::{
     CallToolResult, InterceptorPlugin, Plugin as CorePlugin, PreExecutionVerdict, ToolPlugin,
 };
-use thunder_agent_loop::types::policy::{Caller, ToolEffect};
-use thunder_agent_loop::types::scope::Scope;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
-use thunder_agent_loop::types::ui::{NullHostUi, UiRequest, UiSource};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
+use thunder_agent_types::tool::ToolDefinition;
+use thunder_agent_policy::ui::{NullHostUi, UiRequest, UiSource};
 use thunder_agent_pack_code::builtin::fs::WriteFileTool;
 
 /// What the agent may do without asking, this mode.
@@ -599,7 +600,7 @@ impl ModePlugin {
 
     /// The prompt for a call this mode wants to ask about.
     fn ask_for(&self, request: &ToolGateRequest<'_>) -> GateVerdict {
-        let detail = thunder_agent_loop::types::policy::describe_call(request.arguments);
+        let detail = thunder_agent_types::policy::describe_call(request.arguments);
         GateVerdict::Ask(ApprovalPrompt {
             title: match request.effect {
                 ToolEffect::Exec => format!("Run {}", request.tool),
@@ -731,7 +732,7 @@ impl CorePlugin for ModePlugin {
 #[async_trait]
 impl InterceptorPlugin for ModePlugin {
     fn priority(&self) -> i32 {
-        thunder_agent_loop::types::plugin::priority::GOVERNANCE_MODE
+        thunder_agent_policy::plugin::priority::GOVERNANCE_MODE
     }
 
     async fn pre_execute(

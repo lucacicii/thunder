@@ -20,8 +20,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_policy::gate::DENY;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::{ToolExecutionContext};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_pack_code::builtin::*;
 use thunder_agent_pack_code::CodeScope;
 
@@ -48,7 +51,7 @@ fn executor(
     asking: bool,
     ui: Option<Arc<dyn HostUi>>,
 ) -> ToolExecutor {
-    let gate: Option<Arc<dyn thunder_agent_loop::types::gate::ToolGate>> = if asking {
+    let gate: Option<Arc<dyn thunder_agent_policy::gate::ToolGate>> = if asking {
         Some(support::AskGate::mutations())
     } else {
         None

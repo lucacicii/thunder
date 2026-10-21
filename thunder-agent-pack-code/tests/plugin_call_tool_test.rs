@@ -10,16 +10,19 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::types::gate::ToolGate;
+use thunder_agent_policy::invoke::{ExecutorToolInvoker, NullToolInvoker, ToolInvocationContext, ToolInvoker};
+use thunder_agent_policy::ui::{NotifyLevel, NullHostUi};
+use thunder_agent_policy::gate::{ALLOW_ONCE, DENY};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::gate::ToolGate;
 use thunder_agent_pack_code::builtin::*;
 
 /// The executor a host hands the invoker: real tools, an optional judge, an
 /// optional panel.
 fn executor(
     gate: Option<Arc<dyn ToolGate>>,
-    ui: Option<Arc<dyn thunder_agent_loop::types::ui::HostUi>>,
+    ui: Option<Arc<dyn thunder_agent_policy::ui::HostUi>>,
     ws: &std::path::Path,
 ) -> ToolExecutor {
     let mut registry = ToolRegistry::new(64 * 1024, Duration::from_secs(5));
@@ -163,13 +166,13 @@ async fn a_plugin_cannot_run_a_guarded_command() {
 async fn a_plugin_initiated_call_is_gated_and_attributed() {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource};
+    use thunder_agent_policy::ui::{UiRequest, UiResponse, UiSource};
 
     struct Recorder {
         titles: Arc<StdMutex<Vec<String>>>,
     }
     #[async_trait]
-    impl thunder_agent_loop::types::ui::HostUi for Recorder {
+    impl thunder_agent_policy::ui::HostUi for Recorder {
         async fn request(&self, _source: UiSource, request: UiRequest) -> UiResponse {
             if let UiRequest::Select { title, .. } = request {
                 self.titles.lock().unwrap().push(title);
@@ -227,13 +230,13 @@ async fn a_plugin_initiated_call_is_gated_and_attributed() {
 async fn a_model_call_is_not_labelled_as_a_plugin() {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
-    use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource};
+    use thunder_agent_policy::ui::{UiRequest, UiResponse, UiSource};
 
     struct Recorder {
         titles: Arc<StdMutex<Vec<String>>>,
     }
     #[async_trait]
-    impl thunder_agent_loop::types::ui::HostUi for Recorder {
+    impl thunder_agent_policy::ui::HostUi for Recorder {
         async fn request(&self, _source: UiSource, request: UiRequest) -> UiResponse {
             if let UiRequest::Select { title, .. } = request {
                 self.titles.lock().unwrap().push(title);

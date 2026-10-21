@@ -10,7 +10,7 @@
 //! The tempting implementation is "find the tool in the registry and call it".
 //! That would skip the kernel's guard, the host's gate and the user's approval.
 //! [`ExecutorToolInvoker`] instead runs the call through the *same* funnel as a
-//! model-initiated one — [`crate::tools::executor::ToolExecutor::run_tool`] — so:
+//! model-initiated one — [`crate::executor::ToolExecutor::run_tool`] — so:
 //!
 //! * the kernel's guard still applies, and cannot be argued with;
 //! * the approval gate still applies, and now names the plugin;
@@ -20,15 +20,16 @@
 //!
 //! * run a call the guard would refuse;
 //! * get a privileged call approved without the user seeing that a *plugin* is
-//!   asking ([`crate::types::tool::ToolExecutionContext::caller`]);
+//!   asking ([`crate::tool_policy::ToolExecutionContext::caller`]);
 //! * act untraced.
 //!
 //! What it can do is spend the run's own authority — which is the honest
 //! description of "a plugin running inside the agent".
 
-use crate::types::message::ToolCall;
-use crate::types::tool::{ToolExecutionContext, ToolExecutionResult};
-use crate::types::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_types::message::ToolCall;
+use thunder_agent_types::tool::ToolExecutionResult;
+use crate::tool_policy::ToolExecutionContext;
+use crate::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -118,7 +119,7 @@ pub fn empty_tool_invoker_slot() -> ToolInvokerSlot {
 /// goes through `ToolExecutor::run_tool` exactly like the model's, so it is
 /// guarded, judged, asked about and traced the same way.
 pub struct ExecutorToolInvoker {
-    executor: crate::tools::executor::ToolExecutor,
+    executor: crate::executor::ToolExecutor,
     turn: usize,
     timeout: Option<Duration>,
     /// Notifies the user that a plugin acted on its own initiative.
@@ -129,7 +130,7 @@ pub struct ExecutorToolInvoker {
 }
 
 impl ExecutorToolInvoker {
-    pub fn new(executor: crate::tools::executor::ToolExecutor) -> Self {
+    pub fn new(executor: crate::executor::ToolExecutor) -> Self {
         Self {
             executor,
             turn: 0,

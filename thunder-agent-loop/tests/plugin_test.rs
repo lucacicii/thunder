@@ -3,12 +3,13 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thunder_agent_loop::types::message::ToolCall;
-use thunder_agent_loop::types::plugin::{
+use thunder_agent_policy::plugin::{
     CallToolResult, InterceptorPlugin, Plugin, PreExecutionVerdict, ToolPlugin,
 };
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::types::tool::{ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_types::tool::ToolDefinition;
+use thunder_agent_policy::ToolExecutionContext;
 
 
 fn executor_with(
@@ -274,7 +275,7 @@ async fn test_interceptor_pipeline_denial() {
 #[tokio::test]
 async fn test_trace_interceptor_records_telemetry() {
     use std::sync::Mutex;
-    use thunder_agent_loop::tools::trace::{ToolTrace, ToolTraceSink, TraceInterceptor};
+    use thunder_agent_policy::trace::{ToolTrace, ToolTraceSink, TraceInterceptor};
 
     struct TestSink {
         records: Mutex<Vec<ToolTrace>>,

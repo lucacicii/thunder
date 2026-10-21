@@ -1,14 +1,15 @@
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use thunder_agent_loop::tools::registry_tools::single_tool;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::core::token_estimator::estimate_token_count;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::config::AgentConfig;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use tokio_util::sync::CancellationToken;
 
 struct BenchmarkMockLLM;

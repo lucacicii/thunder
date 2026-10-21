@@ -18,7 +18,7 @@ use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLM
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::event::FinishReason;
 use thunder_agent_loop::types::message::ToolCall;
-use thunder_agent_loop::types::tool::ToolDefinition;
+use thunder_agent_types::tool::ToolDefinition;
 use tokio_util::sync::CancellationToken;
 
 /// Answers with a tool call for the first `turns_with_calls` requests, then stops.

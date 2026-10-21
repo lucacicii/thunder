@@ -16,6 +16,8 @@ categories = ["command-line-utilities", "asynchronous"]
 workspace = true
 
 [dependencies]
+thunder-agent-types.workspace = true
+thunder-agent-policy.workspace = true
 thunder-agent-loop.workspace = true
 thunder-agent-pack-code.workspace = true
 thunder-conversation = { workspace = true, optional = true }

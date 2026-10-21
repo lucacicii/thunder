@@ -29,5 +29,7 @@ tracing.workspace = true
 regex.workspace = true
 
 [dev-dependencies]
+thunder-agent-policy.workspace = true
+thunder-agent-types.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile.workspace = true

@@ -9,11 +9,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::types::gate::{GateVerdict, ToolGate, ToolGateRequest};
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::ui::HostUi;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::gate::{GateVerdict, ToolGate, ToolGateRequest};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::ui::HostUi;
 
 /// The executor as a host assembles it: registry, pipeline, optional gate,
 /// optional panel.
@@ -80,7 +80,7 @@ impl ToolGate for AskGate {
         if !asks {
             return GateVerdict::Allow;
         }
-        GateVerdict::Ask(thunder_agent_loop::types::gate::ApprovalPrompt {
+        GateVerdict::Ask(thunder_agent_policy::gate::ApprovalPrompt {
             title: match request.effect {
                 ToolEffect::Exec => format!("Run {}", request.tool),
                 ToolEffect::Write | ToolEffect::PlanArtifact => {
@@ -89,7 +89,7 @@ impl ToolGate for AskGate {
                 ToolEffect::Read => format!("Read {}", request.tool),
                 ToolEffect::Other => format!("Use {}", request.tool),
             },
-            detail: thunder_agent_loop::types::policy::describe_call(request.arguments),
+            detail: thunder_agent_types::policy::describe_call(request.arguments),
             allow_always: false,
         })
     }

@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_mcp::prelude::*;
 use tokio_util::sync::CancellationToken;
 
@@ -107,7 +107,7 @@ async fn test_mcp_tool_bridge_as_agent_tool() {
 
 #[tokio::test]
 async fn test_mcp_tool_bridge_as_tool_plugin() {
-    use thunder_agent_loop::types::plugin::ToolPlugin;
+    use thunder_agent_policy::plugin::ToolPlugin;
 
     let mock_transport = Arc::new(MockTransport::new());
     let client = McpClient::from_transport("test_srv", mock_transport);

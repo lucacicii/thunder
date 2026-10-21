@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::AgentTool;
 use thunder_agent_loop::AgentRunResult;
 pub use thunder_agent_mcp::prelude::*;
 use tracing::info;

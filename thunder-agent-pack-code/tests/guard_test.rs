@@ -12,9 +12,10 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::tools::trace::GuardKind;
+use thunder_agent_policy::{Guard, ToolExecutionContext};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::trace::GuardKind;
 use thunder_agent_pack_code::builtin::*;
 use tokio_util::sync::CancellationToken;
 

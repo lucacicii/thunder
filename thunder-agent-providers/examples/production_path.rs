@@ -13,15 +13,16 @@
 //! built from the descriptor" and "the descriptor lost a field" are observed,
 //! not assumed.
 
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use thunder_agent_loop::tools::registry_tools::single_tool;
+use thunder_agent_policy::registry_tools::single_tool;
+use thunder_agent_types::tool::{FunctionDefinition, ToolDefinition};
 use thunder_agent_loop::prelude::{
-    AgentConfig, AgentLoop, AgentTool, FunctionDefinition, LLMClientTrait, ToolDefinition,
-    ToolExecutionContext,
+    AgentConfig, AgentLoop, LLMClientTrait,
 };
 use thunder_agent_providers::catalog::{ModelSpec, ProviderRegistry};
 use thunder_agent_providers::client_for;

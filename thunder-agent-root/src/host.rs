@@ -9,17 +9,17 @@ use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::tools::registry_tools::StaticToolsFactory;
-use thunder_agent_loop::types::gate::ToolGate;
-use thunder_agent_loop::types::scope::ToolScope;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::registry_tools::StaticToolsFactory;
+use thunder_agent_policy::gate::ToolGate;
+use thunder_agent_types::scope::ToolScope;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
-use thunder_agent_loop::types::invoke::{
+use thunder_agent_policy::invoke::{
     empty_tool_invoker_slot, ExecutorToolInvoker, ToolInvokerSlot,
 };
-use thunder_agent_loop::types::ui::HostUi;
+use thunder_agent_policy::ui::HostUi;
 use thunder_agent_loop::{
     AgentConfig, AgentError, AgentLoop, AgentRunResult, ChatMessage, ContextInput, ObservedEvent,
 };
@@ -379,7 +379,7 @@ impl ThunderRoot {
             scratch_root,
             provider_registry: ProviderRegistry::default(),
             active_model,
-            host_ui: Arc::new(thunder_agent_loop::types::ui::NullHostUi),
+            host_ui: Arc::new(thunder_agent_policy::ui::NullHostUi),
             metrics_plugin: None,
             status_plugin: None,
             initial_session_total_tokens: None,

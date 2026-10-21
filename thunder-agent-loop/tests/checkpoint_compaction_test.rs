@@ -2,10 +2,11 @@
 //! pi-style compaction path; a mock client serves both the one-off
 //! summarization call and the regular turns.
 
+use thunder_agent_policy::ToolExecutionContext;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_loop::tools::registry_tools::single_tool;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::pruning::checkpoint::{
     is_checkpoint_message, CHECKPOINT_MESSAGE_NAME, SUMMARIZATION_SYSTEM_PROMPT,
@@ -140,7 +141,7 @@ impl LLMClientTrait for CheckpointMockClient {
 struct NoopWriteTool;
 
 #[async_trait]
-impl thunder_agent_loop::types::tool::AgentTool for NoopWriteTool {
+impl thunder_agent_policy::AgentTool for NoopWriteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new_function(
             "write_file",
@@ -158,7 +159,7 @@ impl thunder_agent_loop::types::tool::AgentTool for NoopWriteTool {
     }
 }
 
-use thunder_agent_loop::types::tool::{ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 
 /// Tiny window + a throwaway workspace: the transaction middleware really
 /// writes `write_file` targets, so tests must never touch the crate directory.

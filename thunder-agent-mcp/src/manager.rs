@@ -5,7 +5,7 @@ use crate::tool_bridge::McpToolBridge;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::AgentTool;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -92,7 +92,7 @@ impl McpManager {
     /// Discover and bridge all tools as `ToolPlugin` trait objects with default 10s timeout per server.
     pub async fn discover_all_tool_plugins(
         &self,
-    ) -> Vec<Arc<dyn thunder_agent_loop::types::plugin::ToolPlugin>> {
+    ) -> Vec<Arc<dyn thunder_agent_policy::plugin::ToolPlugin>> {
         self.discover_all_tool_plugins_timeout(std::time::Duration::from_secs(10))
             .await
     }
@@ -101,8 +101,8 @@ impl McpManager {
     pub async fn discover_all_tool_plugins_timeout(
         &self,
         timeout: std::time::Duration,
-    ) -> Vec<Arc<dyn thunder_agent_loop::types::plugin::ToolPlugin>> {
-        let mut all_tools: Vec<Arc<dyn thunder_agent_loop::types::plugin::ToolPlugin>> = Vec::new();
+    ) -> Vec<Arc<dyn thunder_agent_policy::plugin::ToolPlugin>> {
+        let mut all_tools: Vec<Arc<dyn thunder_agent_policy::plugin::ToolPlugin>> = Vec::new();
         let map = self.clients.read().await;
 
         for (name, client) in map.iter() {

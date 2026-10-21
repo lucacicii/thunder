@@ -16,6 +16,8 @@ categories = ["asynchronous", "api-bindings"]
 workspace = true
 
 [dependencies]
+thunder-agent-types.workspace = true
+thunder-agent-policy.workspace = true
 thunder-agent-loop.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros", "fs"] }
 tokio-util = { workspace = true, features = ["codec", "io"] }

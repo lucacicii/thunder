@@ -1,10 +1,10 @@
 //! The reference [`Tools`] implementation.
 
-use crate::seam::{RunContext, ToolCallContext, ToolOutcome, ToolSpec, Tools, ToolsFactory};
-use crate::tools::executor::ToolExecutor;
-use crate::tools::registry::ToolRegistry;
-use crate::types::message::ToolCall;
-use crate::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_loop::seam::{RunContext, ToolCallContext, ToolOutcome, ToolSpec, Tools, ToolsFactory};
+use crate::executor::ToolExecutor;
+use crate::registry::ToolRegistry;
+use thunder_agent_types::message::ToolCall;
+use crate::tool_policy::{AgentTool, ToolExecutionContext};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 

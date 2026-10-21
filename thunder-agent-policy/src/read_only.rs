@@ -174,7 +174,7 @@ const SECRET_SUFFIXES: &[&str] = &[".key", ".keystore", ".p12", ".pem", ".pfx"];
 /// one that spells it `command`. A call with no readable command is not a read —
 /// the same fail-closed answer as a command this cannot parse.
 pub fn call_is_read_only(arguments: &serde_json::Value) -> bool {
-    crate::tools::guard::COMMAND_KEYS
+    crate::guard::COMMAND_KEYS
         .iter()
         .find_map(|key| arguments.get(*key).and_then(serde_json::Value::as_str))
         .is_some_and(is_read_only)

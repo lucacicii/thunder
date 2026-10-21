@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_loop::types::ui::{NotifyLevel, UiRequest, UiSource};
+use thunder_agent_policy::ui::{NotifyLevel, UiRequest, UiSource};
 use thunder_agent_providers::ModelDescriptor;
 use thunder_agent_root::prelude::RenderCapabilities;
 

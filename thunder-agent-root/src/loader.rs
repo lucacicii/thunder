@@ -7,7 +7,7 @@ use crate::thunder_config::ThunderConfig;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use thunder_agent_loop::types::plugin::{InterceptorPlugin, ToolPlugin};
+use thunder_agent_policy::plugin::{InterceptorPlugin, ToolPlugin};
 use tracing::{info, warn};
 
 /// Collection of plugins loaded and filtered by the [`PluginLoader`].

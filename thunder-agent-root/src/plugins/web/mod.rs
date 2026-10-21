@@ -39,7 +39,7 @@ use crate::thunder_config::{ThunderConfig, WebFetchBackend, WebSearchBackend};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::AgentTool;
 use thunder_agent_providers::auth::AuthFile;
 use thunder_agent_providers::prelude::ProviderRegistry;
 

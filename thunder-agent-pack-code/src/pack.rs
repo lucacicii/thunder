@@ -4,10 +4,10 @@ use crate::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, Wr
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::seam::{RunContext, Tools, ToolsFactory};
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::tools::registry_tools::RegistryTools;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::registry_tools::RegistryTools;
+use thunder_agent_policy::AgentTool;
 
 /// What to install. Defaults match the historical "coding agent" behaviour.
 #[derive(Debug, Clone)]
@@ -93,7 +93,7 @@ impl ToolsFactory for CodePackFactory {
         }
         let executor = ToolExecutor::new(registry.clone())
             .with_tool_scope(Arc::clone(&self.scope)
-                as Arc<dyn thunder_agent_loop::types::scope::ToolScope>)
+                as Arc<dyn thunder_agent_types::scope::ToolScope>)
             .with_trace_ids(run.session_id.clone(), run.route.clone());
         executor.install_run_trace(Arc::clone(&run.trace));
         Arc::new(RegistryTools::new(registry, executor))
@@ -105,7 +105,7 @@ impl ToolsFactory for CodePackFactory {
 /// Enables modular, Lego-style assembly into any `AgentLoop` via `agent.register_plugin(...)`.
 pub fn code_plugins(
     workspace_dir: Option<std::path::PathBuf>,
-) -> Vec<Arc<dyn thunder_agent_loop::types::plugin::ToolPlugin>> {
+) -> Vec<Arc<dyn thunder_agent_policy::plugin::ToolPlugin>> {
     let mut bash = BashTool::default();
     let mut read = ReadFileTool::default();
     let mut write = WriteFileTool::default();

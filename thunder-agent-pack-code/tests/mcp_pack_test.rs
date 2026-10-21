@@ -1,10 +1,10 @@
+use thunder_agent_policy::{ToolExecutionContext};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::tempdir;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_loop::types::message::ToolCall;
-use thunder_agent_loop::types::tool::ToolExecutionContext;
 use thunder_agent_pack_code::builtin::{
     BashPlugin, FindPlugin, GrepPlugin, ListDirPlugin, ReadFilePlugin, WriteFilePlugin,
 };

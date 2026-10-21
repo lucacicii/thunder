@@ -756,7 +756,7 @@ mod tests {
             turn: 1,
             tool_call_id: "c1".to_string(),
             name: "bash".to_string(),
-            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+            result: thunder_agent_types::tool::ToolExecutionResult::success(
                 "x".repeat(400),
                 std::time::Duration::from_millis(5),
             ),
@@ -788,7 +788,7 @@ mod tests {
             turn: 1,
             tool_call_id: "c2".to_string(),
             name: "bash".to_string(),
-            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+            result: thunder_agent_types::tool::ToolExecutionResult::success(
                 "y".repeat(400),
                 std::time::Duration::from_millis(5),
             ),

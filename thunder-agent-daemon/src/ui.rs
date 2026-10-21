@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use thunder_agent_root::prelude::StatusPlugin;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{info, warn};

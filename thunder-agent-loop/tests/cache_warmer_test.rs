@@ -13,7 +13,7 @@ use thunder_agent_loop::cache::warmer::{
 };
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::message::ChatMessage;
-use thunder_agent_loop::types::tool::ToolDefinition;
+use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio_util::sync::CancellationToken;

@@ -4,7 +4,7 @@ use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlug
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::AgentTool;
 pub use thunder_agent_skills::prelude::*;
 
 #[cfg(feature = "skills")]

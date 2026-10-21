@@ -497,7 +497,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use thunder_agent_loop::types::event::{AgentStats, TurnStats};
-    use thunder_agent_loop::types::tool::ToolExecutionResult;
+    use thunder_agent_types::tool::ToolExecutionResult;
 
     fn turn_start(turn: usize) -> AgentEvent {
         AgentEvent::TurnStart {

@@ -6,9 +6,10 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::tools::registry_tools::single_tool;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::Notify;
 
 /// Requests the tool on the first turn, then concludes on the second.

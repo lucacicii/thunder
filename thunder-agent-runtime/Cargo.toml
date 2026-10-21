@@ -19,6 +19,8 @@ name = "thunder-runtime"
 path = "src/main.rs"
 
 [dependencies]
+thunder-agent-types.workspace = true
+thunder-agent-policy.workspace = true
 thunder-agent-loop.workspace = true
 thunder-agent-providers.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "io-std"] }

@@ -1553,12 +1553,12 @@ struct ChannelTraceSink {
     agent_id: String,
     dispatcher: AgentEventDispatcher,
     event_sender: mpsc::Sender<ObservedEvent>,
-    host: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
+    host: Option<Arc<dyn thunder_agent_types::trace::ToolTraceSink>>,
     drops: Arc<crate::types::event::EventDropCounters>,
 }
 
-impl crate::tools::trace::ToolTraceSink for ChannelTraceSink {
-    fn record(&self, trace: &crate::tools::trace::ToolTrace) {
+impl thunder_agent_types::trace::ToolTraceSink for ChannelTraceSink {
+    fn record(&self, trace: &thunder_agent_types::trace::ToolTrace) {
         if let Some(host) = &self.host {
             host.record(trace);
         }

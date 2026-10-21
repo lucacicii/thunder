@@ -11,6 +11,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use thunder_agent_root::prelude::*;
 use tokio_util::sync::CancellationToken;
 

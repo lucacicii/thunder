@@ -6,10 +6,10 @@
 //! live here rather than once per host — two implementations of "what gets
 //! dropped" would eventually disagree about what a trace file means.
 
-use thunder_agent_loop::tools::trace::{AskAnswer, Decision, GuardHit, ToolTrace, TraceTiming};
+use thunder_agent_policy::trace::{AskAnswer, Decision, GuardHit, ToolTrace, TraceTiming};
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
-use thunder_agent_loop::types::policy::{Caller, ToolEffect};
-use thunder_agent_loop::types::scope::Scope;
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
 
 /// Keeps one run's events and tool traces, within bounds.
 ///
@@ -169,7 +169,7 @@ impl DecisionRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thunder_agent_loop::tools::trace::{Decision, TraceResult, TRACE_SCHEMA};
+    use thunder_agent_policy::trace::{Decision, TraceResult, TRACE_SCHEMA};
     use thunder_agent_loop::types::event::AgentEvent;
 
     fn observed(event: AgentEvent) -> ObservedEvent {

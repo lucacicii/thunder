@@ -111,4 +111,3 @@ impl ToolExecutionResult {
         self
     }
 }
-

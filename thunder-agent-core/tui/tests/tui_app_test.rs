@@ -3,7 +3,7 @@ use std::sync::Arc;
 use thunder_agent_loop::prelude::SteerQueues;
 use thunder_agent_loop::types::event::{AgentEvent, ObservedEvent};
 use thunder_agent_loop::types::message::{ChatMessage, ContentPart, ToolCall};
-use thunder_agent_loop::types::tool::ToolExecutionResult;
+use thunder_agent_types::tool::ToolExecutionResult;
 use thunder_tui::app::ExecutionMode;
 use thunder_tui::prelude::*;
 use tokio::sync::mpsc;

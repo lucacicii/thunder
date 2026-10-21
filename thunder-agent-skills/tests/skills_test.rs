@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::io::Write;
 use tempfile::tempdir;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_skills::prelude::*;
 use tokio_util::sync::CancellationToken;
 

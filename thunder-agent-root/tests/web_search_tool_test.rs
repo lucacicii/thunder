@@ -5,8 +5,8 @@
 //! free engines — run it with
 //! `cargo test -p thunder-agent-root --test web_search_tool_test -- --ignored --nocapture`.
 
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_root::plugins::web::{WebSearchTool, WEB_SEARCH_TOOL};
 
 fn tool() -> WebSearchTool {

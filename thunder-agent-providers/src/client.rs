@@ -36,7 +36,7 @@ use rpi_ai::types::ToolResultRole;
 use serde_json::{json, Value};
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::message::{ChatMessage, ContentPart, ToolCall};
-use thunder_agent_loop::types::tool::ToolDefinition;
+use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 

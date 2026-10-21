@@ -1,10 +1,11 @@
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 use thunder_agent_loop::core::utf8::{safe_slice_from, safe_slice_to};
-use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_loop::types::message::ToolCall;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use tokio_util::sync::CancellationToken;
 
 /// Regression test: truncation of CJK (multi-byte) output must NOT panic.

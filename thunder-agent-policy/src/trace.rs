@@ -7,10 +7,10 @@ pub use thunder_agent_types::trace::{
     ToolTraceSink, TRACE_SCHEMA,
 };
 
-use crate::types::plugin::{CallToolResult, InterceptorPlugin, Plugin};
-use crate::types::policy::{Caller, ToolEffect};
-use crate::types::scope::Scope;
-use crate::types::tool::ToolExecutionContext;
+use crate::plugin::{CallToolResult, InterceptorPlugin, Plugin};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
+use crate::tool_policy::ToolExecutionContext;
 use std::sync::{Arc, LazyLock};
 
 /// What a value under a secret-looking key is replaced with.
@@ -268,7 +268,7 @@ impl Plugin for TraceInterceptor {
 #[async_trait::async_trait]
 impl InterceptorPlugin for TraceInterceptor {
     fn priority(&self) -> i32 {
-        crate::types::plugin::priority::OBSERVABILITY
+        crate::plugin::priority::OBSERVABILITY
     }
 
     async fn post_execute(

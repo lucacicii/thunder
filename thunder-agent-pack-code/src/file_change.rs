@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use thunder_agent_loop::types::tool::ToolEventSink;
+use thunder_agent_types::tool::ToolEventSink;
 
 /// The event kind a host matches on. Part of the wire contract — do not rename.
 pub const FILE_CHANGE: &str = "file_change";
@@ -91,7 +91,7 @@ pub async fn emit_bash_changes(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use thunder_agent_loop::types::tool::ToolEventSink;
+    use thunder_agent_types::tool::ToolEventSink;
 
     #[derive(Default, Debug)]
     struct Recorder {

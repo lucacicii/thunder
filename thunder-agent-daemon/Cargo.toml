@@ -27,6 +27,8 @@ testing-mock = []
 workspace = true
 
 [dependencies]
+thunder-agent-types.workspace = true
+thunder-agent-policy.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 thunder-agent-loop.workspace = true

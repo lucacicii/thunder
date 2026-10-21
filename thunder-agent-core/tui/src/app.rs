@@ -4471,7 +4471,7 @@ impl App {
             // the scope that tells the kernel which paths are in the project,
             // and the mode plugin that judges every call. The gate is shared
             // with the App so /mode flips take effect mid-session.
-            let ui: Arc<dyn thunder_agent_loop::types::ui::HostUi> =
+            let ui: Arc<dyn thunder_agent_policy::ui::HostUi> =
                 Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()));
             let mut agent = agent;
 
@@ -4508,7 +4508,7 @@ impl App {
             }
             // The registry and the judge are the host's; the kernel only
             // sees specs and calls.
-            let mut registry = thunder_agent_loop::tools::registry::ToolRegistry::new(
+            let mut registry = thunder_agent_policy::registry::ToolRegistry::new(
                 config.max_tool_output_bytes,
                 std::time::Duration::from_millis(config.request_timeout_ms),
             )
@@ -4531,19 +4531,19 @@ impl App {
                 registry.register(tool);
             }
 
-            let executor = thunder_agent_loop::tools::executor::ToolExecutor::new(registry.clone())
+            let executor = thunder_agent_policy::executor::ToolExecutor::new(registry.clone())
                 .with_tool_scope(Arc::new(
                     thunder_agent_pack_code::CodeScope::from_agent_config(
                         &config,
                         Some(ws.as_path()),
                     ),
-                ) as Arc<dyn thunder_agent_loop::types::scope::ToolScope>)
+                ) as Arc<dyn thunder_agent_types::scope::ToolScope>)
                 .with_tool_gate(Some(Arc::clone(&mode_plugin)
-                    as Arc<dyn thunder_agent_loop::types::gate::ToolGate>))
+                    as Arc<dyn thunder_agent_policy::gate::ToolGate>))
                 .with_host_ui(ui)
                 .with_trace_ids(config.session_id.clone(), config.route.clone());
             agent = agent.with_tools_factory(Arc::new(
-                thunder_agent_loop::tools::registry_tools::StaticToolsFactory::new(
+                thunder_agent_policy::registry_tools::StaticToolsFactory::new(
                     registry, executor,
                 ),
             ));

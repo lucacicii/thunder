@@ -16,6 +16,8 @@ categories = ["asynchronous", "api-bindings"]
 workspace = true
 
 [dependencies]
+thunder-agent-types.workspace = true
+thunder-agent-policy.workspace = true
 thunder-agent-loop.workspace = true
 # The streaming HTTP stack. `providers` pulls reqwest + eventsource-stream;
 # without it only the types and the `faux` test provider build.
