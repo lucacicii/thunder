@@ -13,7 +13,7 @@ use std::time::Duration;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::gate::ALLOW_ONCE;
+use thunder_agent_policy::gate::{ALLOW_ALWAYS, ALLOW_ONCE};
 use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
@@ -99,6 +99,27 @@ impl AgentTool for ClaimsPlanEffect {
     }
 }
 
+/// A shell-shaped tool: an exec call whose arguments name a command.
+struct ShellTool;
+#[async_trait::async_trait]
+impl AgentTool for ShellTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new_function("bash", "runs a command", serde_json::json!({}))
+    }
+
+    fn effect(&self) -> thunder_agent_types::policy::ToolEffect {
+        thunder_agent_types::policy::ToolEffect::Exec
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<String, String> {
+        Ok("EXECUTED".into())
+    }
+}
+
 /// A workspace, a bound plan mode, and an executor judged by it.
 fn fixture(mode: Mode, session_id: &str) -> (tempfile::TempDir, Arc<ModePlugin>, ToolExecutor) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -123,6 +144,7 @@ fn fixture(mode: Mode, session_id: &str) -> (tempfile::TempDir, Arc<ModePlugin>,
         ReadFileTool::default().with_default_cwd(ws.clone()),
     ));
     registry.register(Arc::new(ClaimsPlanEffect));
+    registry.register(Arc::new(ShellTool));
 
     let executor = ToolExecutor::new(registry).with_tool_gate(Some(Arc::clone(&plugin) as _));
     (dir, plugin, executor)
@@ -770,4 +792,58 @@ async fn a_headless_host_stays_in_plan_mode() {
     let res = exec.run_tool(&call, ctx, None).await;
     assert!(!res.is_error, "{}", res.output);
     assert_eq!(plugin.mode(), Mode::Plan, "silence is not consent");
+}
+
+// --------------------------------------------------- the "always allow" offer
+
+/// Plan mode never consults a remembered rule, so it must not offer one.
+///
+/// The option used to appear anyway: the user picked "Always allow", the gate
+/// recorded the rule, and the next identical call asked again because plan mode
+/// skips rules entirely. An affordance whose effect the very next call ignores
+/// reads as a broken dialog.
+#[tokio::test]
+async fn plan_mode_does_not_offer_always_allow() {
+    let (_dir, _plugin, executor) = fixture(Mode::Plan, "sess-offer");
+    let ui = ScriptedUi::new(vec![UiResponse::Cancelled]);
+
+    let _ = run(
+        &executor,
+        Arc::clone(&ui),
+        "bash",
+        serde_json::json!({"command": "rm -rf build"}),
+    )
+    .await;
+
+    let options = ui.options();
+    assert_eq!(options.len(), 1, "the exec call must have asked");
+    assert!(
+        !options[0].iter().any(|o| o == ALLOW_ALWAYS),
+        "plan mode cannot honour a rule, so it must not offer one: {:?}",
+        options[0]
+    );
+    assert!(options[0].iter().any(|o| o == ALLOW_ONCE));
+}
+
+/// The same call in ask mode does offer it — the rule is honoured there.
+#[tokio::test]
+async fn ask_mode_still_offers_always_allow() {
+    let (_dir, _plugin, executor) = fixture(Mode::Ask, "sess-offer-ask");
+    let ui = ScriptedUi::new(vec![UiResponse::Cancelled]);
+
+    let _ = run(
+        &executor,
+        Arc::clone(&ui),
+        "bash",
+        serde_json::json!({"command": "rm -rf build"}),
+    )
+    .await;
+
+    let options = ui.options();
+    assert_eq!(options.len(), 1);
+    assert!(
+        options[0].iter().any(|o| o == ALLOW_ALWAYS),
+        "ask mode consults rules, so the option must be offered: {:?}",
+        options[0]
+    );
 }

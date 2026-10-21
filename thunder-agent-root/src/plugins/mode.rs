@@ -617,13 +617,20 @@ impl ModePlugin {
             },
             detail,
             // "Always allow" is offered only when this call can be narrowed to
-            // a rule narrow enough to show the user what they are agreeing to.
-            allow_always: AllowRule::for_call(
-                request.tool,
-                request.arguments,
-                self.state.workspace().as_deref(),
-            )
-            .is_some(),
+            // a rule narrow enough to show the user what they are agreeing to,
+            // *and* when the mode would consult that rule. Plan mode never
+            // consults rules — a rule recorded under a freer mode must not
+            // become a way to write while planning — so offering the option
+            // here would promise something the very next identical call
+            // ignores. It is not offered, and the kernel already refuses an
+            // answer that arrives anyway.
+            allow_always: self.mode() != Mode::Plan
+                && AllowRule::for_call(
+                    request.tool,
+                    request.arguments,
+                    self.state.workspace().as_deref(),
+                )
+                .is_some(),
         })
     }
 }

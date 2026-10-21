@@ -47,6 +47,7 @@
 /// file, `sed -i` and `uniq in out` write, `less` waits for a keystroke — and the
 /// ones with a single dangerous flag got an arm of their own below instead.
 const READ_VERBS: &[&str] = &[
+    "arch",
     "basename",
     "cat",
     "cksum",
@@ -59,26 +60,38 @@ const READ_VERBS: &[&str] = &[
     "du",
     "echo",
     "grep",
+    "groups",
     "head",
     "hexdump",
+    "hostname",
+    "id",
     "ls",
     "md5",
     "md5sum",
     "nl",
+    "nproc",
     "od",
+    "printenv",
     "printf",
     "pwd",
     "readlink",
     "realpath",
     "sha1sum",
+    "seq",
     "sha256sum",
     "shasum",
     "stat",
+    "sw_vers",
     "tail",
+    "test",
     "tr",
+    "tty",
     "type",
+    "uname",
     "wc",
     "which",
+    "whoami",
+    "[",
 ];
 
 /// `find` flags that run something or write a file, rather than print a name.
@@ -185,9 +198,16 @@ pub fn call_is_read_only(arguments: &serde_json::Value) -> bool {
 /// `true` means plan mode runs it without a dialog. `false` means the gate asks,
 /// which is the answer for everything this cannot read.
 pub fn is_read_only(command: &str) -> bool {
-    let Some(words) = single_command(command) else {
+    let Some(mut words) = single_command(command) else {
         return false;
     };
+    // `LC_ALL=C sort file` is `sort file` with a variable in front. The
+    // assignment is literal — `single_command` refuses `$` and backticks, so
+    // there is nothing to expand — and dropping it can only ever widen a
+    // question into an allowance for the verb that follows.
+    while words.first().is_some_and(|w| is_assignment(w)) {
+        words.remove(0);
+    }
     let Some((verb, args)) = words.split_first() else {
         return false;
     };
@@ -215,6 +235,8 @@ pub fn is_read_only(command: &str) -> bool {
     match verb.as_str() {
         // A magic-file compile writes the compiled result out.
         "file" => !args.iter().any(|a| a == "-C" || a == "--compile"),
+        // `-o FILE` writes the listing instead of printing it.
+        "tree" => !args.iter().any(|a| a == "-o" || a.starts_with("--output")),
         "find" => !args.iter().any(|a| FIND_WRITE_FLAGS.contains(&a.as_str())),
         "git" => git_reads(args),
         // `--pre` runs a command for every file it matches.
@@ -225,6 +247,19 @@ pub fn is_read_only(command: &str) -> bool {
             .any(|a| a.starts_with("-o") || a.starts_with("--output")),
         verb => READ_VERBS.contains(&verb),
     }
+}
+
+/// Whether `word` is a shell variable assignment (`NAME=value`).
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether a `git` invocation only reads.
@@ -263,6 +298,12 @@ fn git_reads(args: &[String]) -> bool {
         "remote" => rest
             .iter()
             .all(|a| matches!(a.as_str(), "-v" | "--verbose")),
+        // Only the explicit read forms: `git config <key> <value>` writes, and
+        // the bare `<key>` form is one word away from it.
+        "config" => matches!(
+            rest.first().map(String::as_str),
+            Some("--get") | Some("--get-all") | Some("--get-regexp") | Some("--list") | Some("-l")
+        ),
         "reflog" => matches!(rest.first().map(String::as_str), None | Some("show")),
         "stash" => matches!(
             rest.first().map(String::as_str),
@@ -369,6 +410,31 @@ mod tests {
             "realpath ./src",
             "which cargo",
             "echo hello",
+            // Environment probes and text helpers agents reach for constantly.
+            "uname -a",
+            "whoami",
+            "id -u",
+            "hostname",
+            "nproc",
+            "sw_vers",
+            "arch",
+            "groups",
+            "tty",
+            "printenv HOME",
+            "seq 1 10",
+            "test -f Cargo.toml",
+            "[ -d src ]",
+            // Listings, with the one flag that writes excluded.
+            "tree src",
+            "tree -L 2 src",
+            // `git config` in its read forms.
+            "git config --list",
+            "git config -l",
+            "git config --get user.email",
+            // A variable assignment in front of an allowed verb.
+            "LC_ALL=C sort src/lib.rs",
+            "RUST_LOG=debug cat Cargo.toml",
+            "FOO=1 BAR=2 ls -la",
         ] {
             assert!(allowed(command), "{command} should run in plan mode");
         }
@@ -410,6 +476,8 @@ mod tests {
             // A reader with a flag that changes it into a writer.
             "sort -o sorted.txt numbers.txt",
             "sort --output=sorted.txt numbers.txt",
+            "tree -o listing.txt src",
+            "tree --output=listing.txt src",
             "find . -delete",
             "find . -exec rm {} ;",
             "rg --pre 'cat' pattern",
@@ -429,7 +497,14 @@ mod tests {
             "git worktree add ../wt",
             "git reflog expire --all",
             "git config user.email x",
+            "git config --global user.email x",
             "git clean -fd",
+            // An assignment with no verb after it, and one that is not a name.
+            "FOO=bar",
+            "=x ls",
+            // An assignment does not launder the verb that follows.
+            "RUST_LOG=debug rm -rf build",
+            "LC_ALL=C find . -delete",
             // A verb reached by a path, or a shape that is not one command.
             "/bin/ls",
             "./ls",

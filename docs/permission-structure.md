@@ -109,7 +109,8 @@ flowchart TB
 1. **`plan` 跳过 allow 规则。** 规则查询先于矩阵，但 `decide` 用 `if mode != Mode::Plan` 把它挡在 plan 之外（`mode.rs:454`）——"即使命中 allow 规则，plan 模式下编辑也永不自动批准"（`mode_matrix_test.rs::a_rule_does_not_leak_into_plan_mode`）。
 2. **`plan` 下写类调用的拒绝文案必须给出出口**，否则模型会反复重试；文案见 §7。
 3. **`yolo` 不检查规则，但守卫仍然生效**——`Guard` 在 `decide` **之前**运行（`path_scope_test.rs::a_dangerous_command_is_refused_in_every_mode`）。
-4. **`plan` 下的 Exec 先读命令本身**（`mode.rs:583` 的分支）：能证明什么都不改的命令直接 Allow，其余照旧 Ask。判据在内核的 `tools/read_only.rs`，见 §7.5。
+4. **`plan` 下的 Exec 先读命令本身**（`mode.rs:583` 的分支）：能证明什么都不改的命令直接 Allow，其余照旧 Ask。判据在 `thunder-agent-policy/src/read_only.rs`，见 §7.5。
+5. **`plan` 下不提供 "always allow"。** 既然 plan 永不查规则，这个选项在这里承诺不了任何东西——用户点了它，下一次一样的调用照旧弹窗。`ask_for` 因此在 `Mode::Plan` 下把 `allow_always` 置为 `false`；内核仍然会拒绝一个"没提供却答了"的 `AllowAlways`（fail closed）。
 
 `PlanArtifact` 是 plan 模式下唯一可写的效果，但**它只在名字对得上时才算数**，见 §7。
 
@@ -339,6 +340,26 @@ if request.tool == WRITE_PLAN_TOOL || request.tool == EXIT_PLAN_MODE_TOOL {
 ```
 
 `plan_mode_test.rs::a_self_declared_plan_effect_is_not_an_exemption` 用一个自称 `PlanArtifact` 的 `sneaky_writer` 钉住这一半，`mode_matrix_test.rs::the_plan_tools_are_exempt_where_a_self_declared_effect_would_not_be` 钉住另一半。
+
+### 7.3.1 `plan` 不提供 "always allow"
+
+`ApprovalPrompt.allow_always` 决定对话框里有没有这一项。plan 模式下它恒为 `false`：
+
+```rust
+allow_always: self.mode() != Mode::Plan && AllowRule::for_call(...).is_some(),
+```
+
+理由是 §3 的第 1 条：plan 永不查规则。一个能记住、却在当前模式下永远不生效的按钮，比没有这个按钮更糟。切到 `ask` / `acceptEdits` 之后，"always allow" 照常出现，规则也照常被查询。
+
+`plan_mode_test.rs::plan_mode_does_not_offer_always_allow` 与 `ask_mode_still_offers_always_allow` 成对钉住这一行为。
+
+### 7.5 只读命令的判据
+
+`read_only.rs` 的答案是"悲观"的：一条命令行必须**一条命令 + 只读动词 + 无凭据操作数**才免问。为了让日常巡检不弹窗，白名单覆盖了 shell 探测（`uname` / `whoami` / `id` / `hostname` / `nproc` / `sw_vers` / `arch` / `groups` / `tty` / `printenv`）、文本工具（`wc` / `sort` / `tr` / `cut` / `seq` / `test` / `[`）、`tree`（`-o` 除外），以及 `git config` 的显式读取形态（`--get` / `--get-all` / `--get-regexp` / `--list` / `-l`）。
+
+命令行开头的 `NAME=value` 赋值会被剥掉再判（`LC_ALL=C sort f` 就是 `sort f`）；赋值里不可能有命令替换，因为 `$` 与反引号在分词阶段就被拒绝。
+
+`awk` / `jq` / `sed` / `python -c` / `node -e` 都不在名单里：它们各自能执行命令或写文件，而判据只能读命令行，不能读程序语义。
 
 ### 7.4 拒绝文案就是出口
 
