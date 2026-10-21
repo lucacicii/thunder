@@ -1,0 +1,25 @@
+[package]
+name = "thunder-ask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Human-in-the-loop interactive question tool (ask_user_question) for Thunder Agent"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thunder-protocol.workspace = true
+thunder-core.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+thunder-registry.workspace = true

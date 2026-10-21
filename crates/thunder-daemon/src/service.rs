@@ -55,11 +55,70 @@ impl EventSink for TaskEventBridge {
     }
 }
 
+struct DaemonQuestionHandler {
+    output_tx: mpsc::Sender<String>,
+    pending:
+        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<thunder_ask::QuestionOutcome>>>>,
+}
+
+#[async_trait::async_trait]
+impl thunder_ask::UserQuestionHandler for DaemonQuestionHandler {
+    async fn ask(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        question_id: &str,
+        questions: &[thunder_ask::QuestionItem],
+        ctx: &thunder_protocol::ExecutionContext,
+    ) -> Result<thunder_ask::QuestionOutcome, String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .await
+            .insert(question_id.to_string(), tx);
+
+        let protocol_questions: Vec<crate::protocol::QuestionItem> = questions
+            .iter()
+            .map(|q| crate::protocol::QuestionItem {
+                question: q.question.clone(),
+                header: q.header.clone(),
+                multi_select: q.multi_select,
+                options: q
+                    .options
+                    .iter()
+                    .map(|o| crate::protocol::QuestionOption {
+                        label: o.label.clone(),
+                        description: o.description.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let frame = DaemonResponse::UserQuestion {
+            task_id: task_id.to_string(),
+            session_id: Some(session_id.to_string()),
+            question_id: question_id.to_string(),
+            questions: protocol_questions,
+        };
+
+        if let Ok(line) = serde_json::to_string(&frame) {
+            let _ = self.output_tx.send(line).await;
+        }
+
+        tokio::time::timeout(ctx.timeout, rx)
+            .await
+            .map_err(|_| "Timed out waiting for user answer".to_string())?
+            .map_err(|_| "User question channel was closed without response".to_string())
+    }
+}
+
 pub struct DaemonService {
     provider_registry: Arc<RwLock<ProviderRegistry>>,
     store: Arc<FsConversationStore>,
     active_tasks: Arc<Mutex<HashMap<String, LiveTaskState>>>,
     session_modes: Arc<RwLock<HashMap<String, String>>>,
+    pending_questions:
+        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<thunder_ask::QuestionOutcome>>>>,
     output_tx: mpsc::Sender<String>,
     default_workspace: PathBuf,
     driver_factory: Option<DriverFactory>,
@@ -90,6 +149,7 @@ impl DaemonService {
                 store,
                 active_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_modes: Arc::new(RwLock::new(HashMap::new())),
+                pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 output_tx,
                 default_workspace,
                 driver_factory: None,
@@ -485,7 +545,26 @@ impl DaemonService {
                 )
                 .await;
             }
-            DaemonRequest::AnswerQuestion { id, .. } | DaemonRequest::AnswerUi { id, .. } => {
+            DaemonRequest::AnswerQuestion {
+                id,
+                question_id,
+                answers,
+                cancelled,
+            } => {
+                let mut pending = self.pending_questions.lock().await;
+                let delivered = if let Some(tx) = pending.remove(&question_id) {
+                    let outcome = if cancelled {
+                        thunder_ask::QuestionOutcome::cancelled()
+                    } else {
+                        thunder_ask::QuestionOutcome::answer(answers)
+                    };
+                    tx.send(outcome).is_ok()
+                } else {
+                    false
+                };
+                self.reply_ok(id, json!({ "delivered": delivered })).await;
+            }
+            DaemonRequest::AnswerUi { id, .. } => {
                 self.reply_ok(id, json!({ "delivered": true })).await;
             }
             DaemonRequest::RunTask {
@@ -722,6 +801,15 @@ impl DaemonService {
             let _ = registry.register_provider(plan_provider).await;
             mw = mw.with_middleware(Arc::new(thunder_plan::PlanModeMiddleware));
         }
+
+        // Register human-in-the-loop interactive question tool (thunder-ask)
+        let ask_handler = Arc::new(DaemonQuestionHandler {
+            output_tx: self.output_tx.clone(),
+            pending: Arc::clone(&self.pending_questions),
+        });
+        let _ = registry
+            .register_provider(thunder_ask::AskUserToolProvider::shared(ask_handler))
+            .await;
 
         let bridge = Arc::new(TaskEventBridge {
             task_id: task_id.clone(),

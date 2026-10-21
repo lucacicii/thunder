@@ -31,8 +31,11 @@ impl ToolMiddleware for PlanModeMiddleware {
             .or_else(|| tool_name.strip_prefix("script__"))
             .unwrap_or(tool_name);
 
-        // 1. Plan mode tools are explicitly exempted
-        if matches!(logical, "write_plan" | "exit_plan_mode") {
+        // 1. Plan mode tools and human questions are explicitly exempted
+        if matches!(
+            logical,
+            "write_plan" | "exit_plan_mode" | "ask_user_question"
+        ) {
             return MiddlewareVerdict::Allow;
         }
 
