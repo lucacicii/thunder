@@ -13,11 +13,41 @@ use thunder_agent_types::message::ToolCall;
 pub struct RegistryTools {
     registry: ToolRegistry,
     executor: ToolExecutor,
+    /// The trace slot this run installed, if any.
+    trace_generation: Option<u64>,
 }
 
 impl RegistryTools {
+    /// Build tools that do not own a run's trace slot (tests, one-shot tools).
     pub fn new(registry: ToolRegistry, executor: ToolExecutor) -> Self {
-        Self { registry, executor }
+        Self {
+            registry,
+            executor,
+            trace_generation: None,
+        }
+    }
+
+    /// Build the tools for one run, owning the trace slot `generation`.
+    pub fn for_run(registry: ToolRegistry, executor: ToolExecutor, trace_generation: u64) -> Self {
+        Self {
+            registry,
+            executor,
+            trace_generation: Some(trace_generation),
+        }
+    }
+}
+
+impl Drop for RegistryTools {
+    /// The per-run `Tools` object owns the executor's trace slot: dropping it
+    /// releases the run's trace sink, and with it the run's event sender.
+    ///
+    /// This matters beyond memory. A host's event proxy waits for the run's
+    /// event channel to close before it reports the run drained; a sink left in
+    /// the shared slot kept a sender alive forever, so every run's tail hung.
+    fn drop(&mut self) {
+        if let Some(generation) = self.trace_generation {
+            self.executor.clear_run_trace(generation);
+        }
     }
 }
 
@@ -80,10 +110,11 @@ impl StaticToolsFactory {
 
 impl ToolsFactory for StaticToolsFactory {
     fn for_run(&self, run: &RunContext) -> Arc<dyn Tools> {
-        self.executor.install_run_trace(Arc::clone(&run.trace));
-        Arc::new(RegistryTools::new(
+        let generation = self.executor.install_run_trace(Arc::clone(&run.trace));
+        Arc::new(RegistryTools::for_run(
             self.registry.clone(),
             self.executor.clone(),
+            generation,
         ))
     }
 }
