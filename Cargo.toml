@@ -7,6 +7,7 @@ members = [
     "crates/thunder-providers",
     "crates/thunder-std",
     "crates/thunder-core",
+    "crates/thunder-plan",
     "crates/thunder-daemon",
     "crates/thunder-tui",
 ]
@@ -27,6 +28,7 @@ thunder-executor = { path = "crates/thunder-executor" }
 thunder-registry = { path = "crates/thunder-registry" }
 thunder-providers = { path = "crates/thunder-providers" }
 thunder-core = { path = "crates/thunder-core" }
+thunder-plan = { path = "crates/thunder-plan" }
 thunder-std = { path = "crates/thunder-std" }
 thunder-daemon = { path = "crates/thunder-daemon" }
 thunder-tui = { path = "crates/thunder-tui" }

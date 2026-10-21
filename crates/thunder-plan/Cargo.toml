@@ -1,0 +1,25 @@
+[package]
+name = "thunder-plan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Plan Mode Governance Crate: read-only shell verification, write_plan, and exit_plan_mode"
+license.workspace = true
+
+[dependencies]
+thunder-protocol.workspace = true
+thunder-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tracing.workspace = true
+
+[dev-dependencies]
+thunder-executor.workspace = true
+thunder-registry.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

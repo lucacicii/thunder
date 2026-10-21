@@ -17,6 +17,7 @@ thunder-executor.workspace = true
 thunder-registry.workspace = true
 thunder-providers.workspace = true
 thunder-core.workspace = true
+thunder-plan.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

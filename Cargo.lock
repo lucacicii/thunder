@@ -2199,6 +2199,7 @@ dependencies = [
  "tempfile",
  "thunder-core",
  "thunder-executor",
+ "thunder-plan",
  "thunder-protocol",
  "thunder-providers",
  "thunder-registry",
@@ -2220,6 +2221,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thunder-protocol",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "thunder-plan"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thunder-core",
+ "thunder-executor",
+ "thunder-protocol",
+ "thunder-registry",
  "tokio",
  "tracing",
 ]
@@ -2309,6 +2326,7 @@ dependencies = [
  "tempfile",
  "thunder-core",
  "thunder-executor",
+ "thunder-plan",
  "thunder-protocol",
  "thunder-providers",
  "thunder-registry",

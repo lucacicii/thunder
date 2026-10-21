@@ -9,8 +9,7 @@ use std::time::Duration;
 use thunder_core::{
     now_ms, provisional_title, AgentLoopConfig, ContextPruningConfig, Conversation,
     ConversationFilter, ConversationStore, FsConversationStore, LlmDriver, MiddlewarePipeline,
-    MiddlewareVerdict, PauseGate, ProviderClientDriver, QueueBehavior, ReActAgentLoop, SteerQueues,
-    ThunderConfig, ToolMiddleware,
+    PauseGate, ProviderClientDriver, QueueBehavior, ReActAgentLoop, SteerQueues, ThunderConfig,
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ObservedEvent, ThunderEvent};
@@ -52,37 +51,6 @@ impl EventSink for TaskEventBridge {
         };
         if let Ok(line) = serde_json::to_string(&frame) {
             let _ = self.output_tx.try_send(line);
-        }
-    }
-}
-
-struct DaemonPlanModeMiddleware;
-
-#[async_trait::async_trait]
-impl ToolMiddleware for DaemonPlanModeMiddleware {
-    fn id(&self) -> &str {
-        "daemon-plan-mode"
-    }
-
-    async fn before_call(
-        &self,
-        tool_name: &str,
-        _arguments: &Value,
-        _ctx: &thunder_protocol::ExecutionContext,
-    ) -> MiddlewareVerdict {
-        let logical = tool_name
-            .strip_prefix("core__")
-            .or_else(|| tool_name.strip_prefix("script__"))
-            .unwrap_or(tool_name);
-        if matches!(
-            logical,
-            "read_file" | "grep" | "find" | "ls" | "thunder__discover_tools"
-        ) {
-            MiddlewareVerdict::Allow
-        } else {
-            MiddlewareVerdict::Reject {
-                reason: format!("Plan mode refuses non-read-only tool call '{tool_name}'"),
-            }
         }
     }
 }
@@ -726,7 +694,33 @@ impl DaemonService {
 
         let mut mw = MiddlewarePipeline::new();
         if mode == "plan" {
-            mw = mw.with_middleware(Arc::new(DaemonPlanModeMiddleware));
+            let (session_modes_clone, output_tx_clone, task_id_clone) = (
+                Arc::clone(&self.session_modes),
+                self.output_tx.clone(),
+                task_id.clone(),
+            );
+            let plan_provider =
+                thunder_plan::PlanToolProvider::shared(Some(Arc::new(move |sid, _exp| {
+                    let sm = Arc::clone(&session_modes_clone);
+                    let tx = output_tx_clone.clone();
+                    let tid = task_id_clone.clone();
+                    let s = sid.to_string();
+                    tokio::spawn(async move {
+                        let prev = sm.write().await.insert(s.clone(), "yolo".to_string());
+                        let frame = DaemonResponse::ModeChanged {
+                            session_id: s,
+                            task_id: Some(tid),
+                            mode: "yolo".to_string(),
+                            previous: prev,
+                            source: ModeChangeSource::PlanApproved,
+                        };
+                        if let Ok(line) = serde_json::to_string(&frame) {
+                            let _ = tx.send(line).await;
+                        }
+                    });
+                })));
+            let _ = registry.register_provider(plan_provider).await;
+            mw = mw.with_middleware(Arc::new(thunder_plan::PlanModeMiddleware));
         }
 
         let bridge = Arc::new(TaskEventBridge {
