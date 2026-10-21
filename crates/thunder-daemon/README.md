@@ -1,0 +1,42 @@
+# 🔌 thunder-daemon
+
+`thunder-daemon` 是 Thunder 的 STDIO Sidecar 守护进程（bin: `thunder-daemon`），为 Electron 桌面应用（如 `agent-resume-panel`）与无头宿主提供标准化接口。
+
+它在标准输入输出上运行 **NDJSON 协议（Protocol v3）**，负责任务调度、流式事件转发与多工作区隔离。
+
+---
+
+## 协议与功能特性
+
+1. **基础指令**：
+   * `ping`：心跳检测，返回 `status: "pong"`, `protocol_version: 3`。
+   * `list_models`：读取 `thunder-providers` 目录并上报可用模型。
+   * `list_conversations` / `get_conversation`：读取持久化的会话。
+   * `set_conversation_title` / `generate_title`：手动设置或 AI 生成会话标题。
+   * `reload_integrations`：重载本地配置。
+
+2. **任务与运行控制**：
+   * `run_task`：启动 Agent 任务，实时向客户端推送 `observed_event` 帧，并在结束时发出 `task_completed` 或 `task_failed`。
+   * `pause_task` / `resume_task`：在工具边界协作式暂停 / 恢复任务（推送 `task_paused`）。
+   * `steer_task` / `clear_queue`：在任务执行过程中实时插入纠偏指令（`steer`）或后续指令（`follow_up`），推送 `task_queue_update`。
+   * `cancel_task`：优雅取消任务。
+
+3. **权限与模式管理**：
+   * `get_permission_state` / `set_mode`：管理会话模式（`yolo` / `plan` / `ask` / `acceptEdits`），状态变动时推送 `mode_changed` 帧。
+   * 集成 `thunder-plan`，在 `plan` 模式下拦截文件修改，并在 `exit_plan_mode` 成功后自动将模式翻转回 `yolo`。
+
+4. **人机互动（问答气泡）**：
+   * 集成 `thunder-ask`：当模型调用 `core__ask_user_question` 时，向桌面端推送 `user_question` 气泡；
+   * 客户端发送 `answer_question` 指令后，精确唤醒被挂起的目标任务。
+
+---
+
+## 启动方式
+
+```bash
+# 通过配套脚本启动
+./daemon.sh
+
+# 或直接运行二进制
+cargo run -p thunder-daemon --bin thunder-daemon
+```
