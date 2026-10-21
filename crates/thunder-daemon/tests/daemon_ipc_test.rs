@@ -139,3 +139,89 @@ async fn daemon_handles_ping_mode_run_task_and_conversation_persistence() {
     assert_eq!(title_resp["data"]["ok"], true);
     assert_eq!(title_resp["data"]["title"], "Custom Daemon Title");
 }
+
+#[tokio::test]
+async fn daemon_handles_user_question_and_answer_cycle() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let mock_driver = Arc::new(ScriptedMockDriver::new(vec![
+        LlmTurnResponse::simple(
+            "Asking user for selection",
+            vec![ToolCallRequest {
+                id: "call-ask-1".into(),
+                name: "core__ask_user_question".into(),
+                arguments: json!({
+                    "questions": [{
+                        "question": "Choose architecture",
+                        "options": [{ "label": "Microkernel" }, { "label": "Monolith" }]
+                    }]
+                }),
+            }],
+        ),
+        LlmTurnResponse::simple("Configured with Microkernel as chosen.", vec![]),
+    ]));
+
+    let drv = Arc::clone(&mock_driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-ask",
+        "task_id": "task-ask-1",
+        "session_id": "sess-ask-1",
+        "prompt": "Setup architecture",
+        "workspace_dir": ws.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    // Read until UserQuestion frame arrives
+    let mut captured_qid = None;
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        if let DaemonResponse::UserQuestion {
+            question_id,
+            questions,
+            ..
+        } = frame
+        {
+            assert_eq!(questions[0].question, "Choose architecture");
+            captured_qid = Some(question_id);
+            break;
+        }
+    }
+
+    let qid = captured_qid.expect("must receive UserQuestion frame");
+
+    // Answer the question via answer_question
+    let answer_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "answer_question",
+        "id": "ans-1",
+        "question_id": qid,
+        "answers": { "Choose architecture": "Microkernel" }
+    }))
+    .unwrap();
+    service.handle_request(answer_req).await;
+
+    // Read until TaskCompleted
+    let mut completed = false;
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        if let DaemonResponse::TaskCompleted { final_content, .. } = frame {
+            assert_eq!(
+                final_content.as_deref(),
+                Some("Configured with Microkernel as chosen.")
+            );
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "task must complete after question is answered");
+}

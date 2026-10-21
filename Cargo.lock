@@ -2165,6 +2165,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "thunder-ask"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thunder-core",
+ "thunder-protocol",
+ "thunder-registry",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "thunder-core"
 version = "0.1.0"
 dependencies = [
@@ -2197,6 +2213,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thunder-ask",
  "thunder-core",
  "thunder-executor",
  "thunder-plan",
