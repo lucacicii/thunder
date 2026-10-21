@@ -22,6 +22,13 @@ pub struct McpServerConfig {
     /// under which a call may wait indefinitely.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Largest response frame this server may send, in bytes.
+    ///
+    /// Enforced while reading, not after: a server that answers a tool call with
+    /// a 100 MB payload must be cut off before the heap sees it. Omitted means
+    /// [`crate::transport::stdio::DEFAULT_MAX_FRAME_BYTES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_frame_bytes: Option<usize>,
 }
 
 impl McpServerConfig {
@@ -33,6 +40,7 @@ impl McpServerConfig {
             disabled: false,
             cwd: None,
             timeout_ms: None,
+            max_frame_bytes: None,
         }
     }
 
@@ -59,6 +67,11 @@ impl McpServerConfig {
     /// Bound one request round trip, in milliseconds (`0` = unbounded).
     pub fn with_timeout_ms(mut self, ms: u64) -> Self {
         self.timeout_ms = Some(ms);
+        self
+    }
+
+    pub fn with_max_frame_bytes(mut self, bytes: usize) -> Self {
+        self.max_frame_bytes = Some(bytes);
         self
     }
 }
