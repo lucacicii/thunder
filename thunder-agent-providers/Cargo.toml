@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Multi-provider LLM catalog, config resolution and thinking-level probing for Thunder Agent"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "llm", "openai", "anthropic", "gemini"]

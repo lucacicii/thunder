@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Model Context Protocol (MCP) Client, Configuration Parser and Dynamic Tool Bridge for Thunder Agent"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "mcp", "protocol", "tools", "orchestration"]

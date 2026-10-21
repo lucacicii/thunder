@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Conversation and session management for Thunder Agent ecosystem"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "conversation", "session", "llm", "orchestration"]

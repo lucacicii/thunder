@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "STDIO Sidecar Daemon for Electron, Desktop UIs and Headless Agent Host"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "daemon", "sidecar", "electron", "llm"]
