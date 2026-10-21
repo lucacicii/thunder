@@ -371,10 +371,16 @@ pub struct Summarizer {
     client: Arc<dyn LLMClientTrait>,
     model: String,
     max_tokens: usize,
+    /// Caps summarization requests in flight across every agent sharing it.
+    limit: Arc<tokio::sync::Semaphore>,
 }
 
 impl Summarizer {
-    pub fn new(client: Arc<dyn LLMClientTrait>, config: &AgentConfig) -> Self {
+    pub fn new(
+        client: Arc<dyn LLMClientTrait>,
+        config: &AgentConfig,
+        limit: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
         Self {
             client,
             model: config
@@ -383,6 +389,7 @@ impl Summarizer {
                 .clone()
                 .unwrap_or_else(|| config.model.clone()),
             max_tokens: config.pruning.summarizer_max_tokens,
+            limit,
         }
     }
 
@@ -402,6 +409,17 @@ impl Summarizer {
                 "<previous-summary>\n{prev}\n</previous-summary>\n\n{serialized_region}\n\n{UPDATE_SUMMARIZATION_PROMPT}"
             ),
             None => format!("{serialized_region}\n\n{INITIAL_SUMMARIZATION_PROMPT}"),
+        };
+
+        // One permit per request, held across the retry pair: a failed first
+        // attempt is retried inside the same slot, so a provider that is slow
+        // to fail cannot double the pressure it puts on the limiter.
+        let _permit = tokio::select! {
+            _ = cancel.cancelled() => return Err("summarization cancelled".to_string()),
+            permit = self.limit.acquire() => match permit {
+                Ok(permit) => permit,
+                Err(_) => return Err("summarization limiter closed".to_string()),
+            },
         };
 
         let mut last_err = String::new();

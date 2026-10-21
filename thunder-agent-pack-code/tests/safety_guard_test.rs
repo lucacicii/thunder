@@ -109,6 +109,7 @@ fn test_atomic_turn_group_pruning_no_orphans() {
         summarizer_max_tokens: 4096,
         max_context_tokens: 220, // Force the emergency trim to run
         pin_system_prompt: true,
+        ..Default::default()
     });
 
     let removed = pruner.emergency_trim(&mut ctx);
