@@ -23,6 +23,7 @@ pub async fn start_hot_reload_watcher(
     event_sink: Option<Arc<dyn EventSink>>,
 ) -> Result<RegistryWatcherHandle, std::io::Error> {
     tokio::fs::create_dir_all(&tools_dir).await?;
+    let tools_dir = tools_dir.canonicalize().unwrap_or(tools_dir);
     let _ = registry.reload_scripts_dir(&tools_dir).await;
 
     let (notify_tx, mut notify_rx) = mpsc::unbounded_channel();

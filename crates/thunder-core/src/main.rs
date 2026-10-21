@@ -112,7 +112,6 @@ async fn main() {
         pruning,
         tool_timeout: Duration::from_millis(config.sandbox.timeout_ms),
         cache_warm_settings: spec.prompt_cache_warm_settings(None),
-        load_project_instructions: true,
     };
 
     let scratchpad = thunder_executor::ScratchpadManager::new(

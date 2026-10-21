@@ -2,7 +2,6 @@ use crate::cache_warmer::{self, WarmSnapshot};
 use crate::context::{ContextBuffer, ContextPruningConfig};
 use crate::conversation::now_ms;
 use crate::gateway::{KvCacheShield, META_CALL_TOOL, META_DISCOVER_TOOLS};
-use crate::instructions::{discover_context_files, format_instructions_section};
 use crate::llm::{LlmDriver, ToolCallRequest};
 use crate::loop_guard::LoopGuard;
 use crate::middleware::MiddlewarePipeline;
@@ -18,16 +17,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thunder_executor::ScratchpadManager;
 use thunder_protocol::{
-    real_home_dir, thunder_config_dir, AgentEvent, AgentStats, ChatMessage, EventSink,
-    ExecutionContext, FinishReason, LLMClientTrait, PromptCacheWarmSettings, ThunderEvent,
-    ToolCall, ToolDefinition, ToolExecResultPayload, ToolExecutionError, ToolExecutionResult,
-    TurnStats,
+    AgentEvent, AgentStats, ChatMessage, EventSink, ExecutionContext, FinishReason, LLMClientTrait,
+    PromptCacheWarmSettings, ThunderEvent, ToolCall, ToolDefinition, ToolExecResultPayload,
+    ToolExecutionError, ToolExecutionResult, TurnStats,
 };
 use thunder_registry::{CatalogSnapshot, ToolRegistry};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-/// Configuration for a ReAct Agent Loop session.
+/// Configuration for a ReAct Agent Loop session (§2.2).
 #[derive(Clone, Debug)]
 pub struct AgentLoopConfig {
     pub session_id: String,
@@ -38,7 +36,6 @@ pub struct AgentLoopConfig {
     pub pruning: ContextPruningConfig,
     pub tool_timeout: Duration,
     pub cache_warm_settings: Option<PromptCacheWarmSettings>,
-    pub load_project_instructions: bool,
 }
 
 impl Default for AgentLoopConfig {
@@ -52,7 +49,6 @@ impl Default for AgentLoopConfig {
             pruning: ContextPruningConfig::default(),
             tool_timeout: Duration::from_secs(30),
             cache_warm_settings: None,
-            load_project_instructions: true,
         }
     }
 }
@@ -68,6 +64,11 @@ pub struct AgentLoopOutcome {
 }
 
 /// Microkernel ReAct Agent Loop state machine (§1, §4.1, §4.3, §5.3).
+///
+/// Pure microkernel design:
+/// - Only drives the ReAct inference loop, token window budget, and tool gateway dispatch.
+/// - Does not hardcode any concrete business tools, filesystem instruction parsers, or shell AST analyzers.
+/// - Provides extensible extension points via `ToolMiddleware`, `EventSink`, `PauseGate`, and `SteerQueues`.
 pub struct ReActAgentLoop {
     config: AgentLoopConfig,
     registry: ToolRegistry,
@@ -84,7 +85,6 @@ pub struct ReActAgentLoop {
     context: ContextBuffer,
     kv_shield: KvCacheShield,
     event_sink: Option<Arc<dyn EventSink>>,
-    instructions_loaded: bool,
 }
 
 impl ReActAgentLoop {
@@ -111,7 +111,6 @@ impl ReActAgentLoop {
             context,
             kv_shield,
             event_sink: None,
-            instructions_loaded: false,
         }
     }
 
@@ -162,6 +161,10 @@ impl ReActAgentLoop {
         self
     }
 
+    pub fn set_llm(&mut self, llm: Arc<dyn LlmDriver>) {
+        self.llm = llm;
+    }
+
     pub fn context(&self) -> &ContextBuffer {
         &self.context
     }
@@ -170,7 +173,6 @@ impl ReActAgentLoop {
         &mut self.context
     }
 
-    /// Manually trigger a checkpoint/emergency compaction pass (e.g. `/compact` in TUI).
     pub async fn compact_now(&mut self) -> PruneResult {
         let summarizer = self.build_summarizer();
         let cancel = self.cancellation_token.clone();
@@ -179,7 +181,7 @@ impl ReActAgentLoop {
             .await
     }
 
-    /// Run the ReAct state machine for a user prompt.
+    /// Run the ReAct state machine for a user prompt (§1, §2.2).
     pub async fn run(
         &mut self,
         user_prompt: impl Into<String>,
@@ -187,22 +189,6 @@ impl ReActAgentLoop {
         let run_start = Instant::now();
         cache_warmer::invalidate(&self.config.session_id);
         self.loop_guard.reset();
-
-        if self.config.load_project_instructions && !self.instructions_loaded {
-            self.instructions_loaded = true;
-            let home = real_home_dir();
-            let thunder_root = thunder_config_dir();
-            let files = discover_context_files(
-                Some(&self.config.workspace_cwd),
-                home.as_deref(),
-                Some(&thunder_root),
-            )
-            .await;
-            if let Some(section) = format_instructions_section(&files) {
-                let merged = format!("{}\n\n{}", self.config.system_prompt.trim_end(), section);
-                self.context.set_system_prompt(merged);
-            }
-        }
 
         self.context.push(ChatMessage::user(user_prompt));
         let mut system_faults = Vec::new();
@@ -220,13 +206,16 @@ impl ReActAgentLoop {
                 return Err("Task cancelled".to_string());
             }
 
+            tokio::task::yield_now().await;
+
             if let Some(ref gate) = self.pause_gate {
                 gate.wait_if_paused().await;
             }
 
             let turn_start = Instant::now();
 
-            // 1. Lock-free snapshot acquisition at Turn Start (§4.1)
+            // 1. Lock-free snapshot acquisition at Turn Start (§4.1):
+            // Freezes the tool view for the entire turn so mid-turn hot-reloads cannot cause structural drift.
             let turn_snapshot = self.registry.current();
             self.emit(ThunderEvent::TurnStarted {
                 turn,
@@ -238,12 +227,15 @@ impl ReActAgentLoop {
                 estimated_prompt_tokens: self.context.estimated_tokens(),
             });
 
-            // 2. Progressive disclosure check (§4.3)
+            // 2. Progressive disclosure check (§4.3):
+            // If new scripts or MCP servers were mounted since last turn, inject a lightweight
+            // `<system_notification>` while keeping top-level `tools` 100% static.
             if let Some(notification) = self.kv_shield.poll_registry_update(&turn_snapshot) {
                 self.context.inject_system_notification(notification);
             }
 
-            // 3. Pi-style Checkpoint Compaction check before calling the LLM
+            // 3. Pi-style Checkpoint Compaction check before calling the LLM:
+            // Keeps message prefix 100% byte-identical until `estimated > window - reserve`.
             if self.pruner.should_compact(self.context.estimated_tokens()) {
                 let summarizer = self.build_summarizer();
                 let prune_res = self
@@ -260,7 +252,8 @@ impl ReActAgentLoop {
                 }
             }
 
-            // 4. Invoke LLM with frozen top-level tools (`KvCacheShield::top_level_tools`)
+            // 4. Invoke LLM with frozen top-level tools (`KvCacheShield::top_level_tools`),
+            // with automatic context-overflow detection and self-healing retry.
             let turn_resp = match self
                 .llm
                 .complete_streaming(
@@ -430,7 +423,7 @@ impl ReActAgentLoop {
                 });
             }
 
-            // 5. Execute requested tool calls against the frozen `turn_snapshot`.
+            // 5. Execute requested tool calls against the frozen `turn_snapshot` (§1).
             for call in &turn_resp.tool_calls {
                 if cancel.is_cancelled() {
                     return Err("Task cancelled".to_string());
@@ -560,11 +553,6 @@ impl ReActAgentLoop {
                     self.context.push(msg);
                 }
             }
-
-            let tools_dir = self.config.workspace_cwd.join(".thunder").join("tools");
-            if tools_dir.exists() {
-                let _ = self.registry.reload_scripts_dir(&tools_dir).await;
-            }
         }
 
         cache_warmer::mark_idle(&self.config.session_id);
@@ -595,6 +583,7 @@ impl ReActAgentLoop {
             self.config.tool_timeout,
         );
 
+        // Meta-tool 1: `thunder__discover_tools` (§4.3)
         if call.name == META_DISCOVER_TOOLS {
             self.emit(ThunderEvent::ToolCallDispatched {
                 call_id: call.id.clone(),
@@ -605,6 +594,7 @@ impl ReActAgentLoop {
             return ToolExecutionResult::Success { output };
         }
 
+        // Meta-tool 2: `thunder__call_tool` (§4.3)
         if call.name == META_CALL_TOOL {
             let Some(target_name) = call.arguments.get("name").and_then(|v| v.as_str()) else {
                 return ToolExecutionResult::normalize(Err(
@@ -625,6 +615,7 @@ impl ReActAgentLoop {
                 via_gateway: true,
             });
 
+            // Pass through the generic host-configured MiddlewarePipeline
             if let Err(mw_err) = self
                 .middleware
                 .check(target_name, &target_args, &exec_ctx)
@@ -639,6 +630,7 @@ impl ReActAgentLoop {
             return ToolExecutionResult::normalize(raw_res);
         }
 
+        // Direct top-level tool call
         self.emit(ThunderEvent::ToolCallDispatched {
             call_id: call.id.clone(),
             tool_name: call.name.clone(),
