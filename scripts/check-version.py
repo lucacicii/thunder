@@ -21,8 +21,9 @@ What it checks:
   3. `Cargo.lock` records every member at that version (a stale lock would
      also break the release's `--locked` build, one step later and less
      clearly);
-  4. `docs/architecture.md` names the current version — the doc is what a
-     human reads before touching the tree;
+  4. if `docs/architecture.md` exists, it names the current version — the doc
+     is what a human reads before touching the tree (the repo may ship without
+     docs, so its absence is not a failure);
   5. with `--tag`, the releasing tag matches it. This is the release gate.
 
 Deliberately NOT checked, because they are different versions on purpose:

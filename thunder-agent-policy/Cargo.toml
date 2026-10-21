@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Thunder's enforcement layer: tool registry, guarded execution, approval gates, traces."
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 

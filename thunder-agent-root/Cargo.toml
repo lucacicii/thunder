@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Extensible microkernel host and dynamic plugin orchestration engine for Thunder Agent"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "microkernel", "plugin", "llm"]

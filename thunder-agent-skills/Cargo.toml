@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 description = "High-performance Agent Skill Parser, Directory Discovery Engine and Execution Registry for Thunder Agent"
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "skills", "parser", "llm", "orchestration"]

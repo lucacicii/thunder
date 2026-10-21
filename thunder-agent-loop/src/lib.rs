@@ -3,7 +3,7 @@
 //! A complete single-agent unit: create, register tools, `run`/`start`, observe, cancel.
 //! Another Rust app (scheduler B) may compose many units. This crate never depends on B.
 //!
-//! See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the A/B contract.
+//! A/B contract: this crate never depends on the host that drives it.
 
 pub mod cache;
 pub mod core;
