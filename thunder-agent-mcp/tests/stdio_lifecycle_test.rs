@@ -265,3 +265,55 @@ async fn an_explicit_zero_timeout_opts_out_of_the_bound() {
         "close() must release every parked entry"
     );
 }
+
+/// A server that answers every request with ten megabytes.
+const HUGE_SERVER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"huge","version":"1.0.0"}}}\n' "$id" ;;
+    *'"method":"ping"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"' "$id"
+      head -c 10485760 /dev/zero | tr '\0' x
+      printf '"}]}}\n' ;;
+  esac
+done
+"#;
+
+/// A reply larger than the frame limit is discarded while being read, and the
+/// call fails immediately instead of waiting out the request timeout.
+#[tokio::test]
+async fn an_oversized_reply_is_discarded_and_fails_the_call() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_server(dir.path(), "huge-mcp-server.sh", HUGE_SERVER);
+    let marker = unique_marker();
+    let cfg = config_for(&script, &marker)
+        .with_timeout_ms(30_000)
+        .with_max_frame_bytes(64 * 1024);
+
+    let transport = StdioTransport::spawn("huge", &cfg).await.expect("spawn");
+
+    let started = std::time::Instant::now();
+    let err = transport
+        .send_request(JsonRpcRequest::new(json!(1), "ping", None))
+        .await
+        .expect_err("a 10 MB reply must not be accepted");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the call must fail on the frame, not on the timeout: took {elapsed:?}"
+    );
+    assert!(
+        !err.to_string().is_empty(),
+        "the failure must be reported to the caller"
+    );
+    assert_eq!(
+        transport.oversized_frames(),
+        1,
+        "the transport must count the refused frame"
+    );
+
+    transport.close().await.expect("close");
+}
