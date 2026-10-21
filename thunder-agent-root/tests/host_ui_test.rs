@@ -11,6 +11,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
 use thunder_agent_root::prelude::*;
 use tokio_util::sync::CancellationToken;
 
@@ -51,7 +52,6 @@ impl ThunderPlugin for AskingPlugin {
         // is constructed once per test.
         Box::leak(Box::new(
             PluginManifest::new("asker", "Asker", "Asks the user", "0.0.0")
-                .with_triggers(TriggerSpec::always()),
         ))
     }
 
@@ -247,7 +247,6 @@ async fn run_services_arrive_in_two_phases() {
         fn manifest(&self) -> &PluginManifest {
             Box::leak(Box::new(
                 PluginManifest::new("phases", "Phases", "records lifecycle", "0.0.0")
-                    .with_triggers(TriggerSpec::always()),
             ))
         }
 
@@ -330,7 +329,6 @@ async fn two_runs_get_distinct_routes() {
         fn manifest(&self) -> &PluginManifest {
             Box::leak(Box::new(
                 PluginManifest::new("rec", "Rec", "records routes", "0.0.0")
-                    .with_triggers(TriggerSpec::always()),
             ))
         }
         async fn on_init(

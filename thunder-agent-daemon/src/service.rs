@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use thunder_agent_loop::prelude::*;
+use thunder_agent_policy::ui::UiResponse;
 use thunder_agent_providers::catalog::resolve_thinking_levels;
 use thunder_agent_providers::prelude::*;
 use thunder_agent_root::plugins::mode::{Mode, ModePlugin};
@@ -2248,6 +2249,7 @@ mod ui_protocol_tests {
 
     use super::*;
     use crate::protocol::DaemonRequest;
+    use thunder_agent_policy::ui::HostUi;
 
     async fn service() -> Arc<DaemonService> {
         Arc::new(

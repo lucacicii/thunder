@@ -3,6 +3,7 @@
 //! pi's grep tool spawns, but embedded in-process: no subprocess overhead and
 //! no external binary to distribute.
 
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{
@@ -14,8 +15,8 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::plugin::{CallToolResult, Plugin, ToolPlugin};
+use thunder_agent_types::tool::ToolDefinition;
 
 pub type GrepPlugin = GrepTool;
 

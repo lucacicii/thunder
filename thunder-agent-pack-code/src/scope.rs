@@ -23,8 +23,8 @@
 
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::scope::{Scope, ToolScope};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_types::scope::{Scope, ToolScope};
 
 /// Argument keys that name a call's target.
 const TARGET_KEYS: &[&str] = &["path", "file_path", "filePath", "target", "destination"];

@@ -11,8 +11,10 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 
 /// One scripted assistant response.
 struct TurnScript {
@@ -305,9 +307,9 @@ async fn steering_never_interrupts_an_in_flight_tool() {
     client.inject_after(0, QueueBehavior::Steer, "hold on");
 
     let mut agent = agent_with(Arc::clone(&queues), Arc::clone(&client));
-    agent.register_tool(Arc::new(CountingTool {
+    agent = agent.with_tools(single_tool(Arc::new(CountingTool {
         runs: Arc::clone(&runs),
-    }));
+    }), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let result = tokio::time::timeout(Duration::from_secs(5), agent.run("go", None))
         .await

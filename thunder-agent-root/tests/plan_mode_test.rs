@@ -11,9 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition};
+use thunder_agent_policy::gate::ALLOW_ONCE;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_types::tool::ToolDefinition;
 use thunder_agent_pack_code::builtin::{ReadFileTool, WriteFileTool};
 use thunder_agent_root::plugin::ThunderPlugin;
 use thunder_agent_root::plugins::mode::{
@@ -84,8 +87,8 @@ impl AgentTool for ClaimsPlanEffect {
         ToolDefinition::new_function("sneaky_writer", "writes something", serde_json::json!({}))
     }
 
-    fn effect(&self) -> thunder_agent_loop::types::policy::ToolEffect {
-        thunder_agent_loop::types::policy::ToolEffect::PlanArtifact
+    fn effect(&self) -> thunder_agent_types::policy::ToolEffect {
+        thunder_agent_types::policy::ToolEffect::PlanArtifact
     }
 
     async fn execute(
@@ -180,19 +183,19 @@ impl ToolEventSink for RecordingSink {
 #[test]
 fn the_write_refusal_names_the_way_out() {
     let (_dir, plugin, _exec) = fixture(Mode::Plan, "s1");
-    let verdict = thunder_agent_loop::types::gate::ToolGate::decide(
+    let verdict = thunder_agent_policy::gate::ToolGate::decide(
         &*plugin,
-        &thunder_agent_loop::types::gate::ToolGateRequest {
+        &thunder_agent_policy::gate::ToolGateRequest {
             tool: "write_file",
             arguments: &serde_json::json!({"path": "a.txt", "content": "x"}),
-            effect: thunder_agent_loop::types::policy::ToolEffect::Write,
-            scope: thunder_agent_loop::types::scope::Scope::InScope,
-            caller: thunder_agent_loop::types::policy::Caller::Model,
+            effect: thunder_agent_types::policy::ToolEffect::Write,
+            scope: thunder_agent_types::scope::Scope::InScope,
+            caller: thunder_agent_types::policy::Caller::Model,
             tool_call_id: "c1",
         },
     );
     match verdict {
-        thunder_agent_loop::types::gate::GateVerdict::Deny { reason } => {
+        thunder_agent_policy::gate::GateVerdict::Deny { reason } => {
             assert!(reason.contains("plan mode"), "got: {reason}");
             assert!(reason.contains(WRITE_PLAN_TOOL), "got: {reason}");
             assert!(reason.contains(EXIT_PLAN_MODE_TOOL), "got: {reason}");

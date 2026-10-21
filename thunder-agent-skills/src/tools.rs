@@ -2,7 +2,8 @@ use crate::registry::SkillRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 
 /// Tool enabling the LLM to inspect and load the complete instruction set of a skill on demand.
 pub struct LoadSkillTool {

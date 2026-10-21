@@ -13,14 +13,16 @@
 //! built from the descriptor" and "the descriptor lost a field" are observed,
 //! not assumed.
 
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use thunder_agent_policy::registry_tools::single_tool;
+use thunder_agent_types::tool::{FunctionDefinition, ToolDefinition};
 use thunder_agent_loop::prelude::{
-    AgentConfig, AgentLoop, AgentTool, FunctionDefinition, LLMClientTrait, ToolDefinition,
-    ToolExecutionContext,
+    AgentConfig, AgentLoop, LLMClientTrait,
 };
 use thunder_agent_providers::catalog::{ModelSpec, ProviderRegistry};
 use thunder_agent_providers::client_for;
@@ -146,7 +148,7 @@ async fn run_turn(client: Arc<dyn LLMClientTrait>, spec: &ModelSpec) {
     let config = AgentConfig::new(&spec.id)
         .with_system_prompt("Use the provided tool when it is called for. Be terse.");
     let mut agent = AgentLoop::new(config).with_custom_client(client);
-    agent.register_tool(Arc::new(WeatherTool));
+    agent = agent.with_tools(single_tool(Arc::new(WeatherTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let started = std::time::Instant::now();
     match agent

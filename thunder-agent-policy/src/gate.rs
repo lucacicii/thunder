@@ -21,8 +21,8 @@
 //! So a gate may only *tighten*: it chooses between allow, ask and deny for a
 //! call the guard has already permitted. It cannot loosen anything.
 
-use crate::types::policy::{Caller, ToolEffect};
-use crate::types::scope::Scope;
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
 use serde::{Deserialize, Serialize};
 
 /// One call, as presented to a gate.
@@ -39,7 +39,7 @@ pub struct ToolGateRequest<'a> {
     /// declaration.
     pub effect: ToolEffect,
     /// Where it lands, from the host's
-    /// [`ToolScope`](crate::types::scope::ToolScope); [`Scope::Unknown`] when no
+    /// [`ToolScope`](thunder_agent_types::scope::ToolScope); [`Scope::Unknown`] when no
     /// scope is installed.
     pub scope: Scope,
     /// Who asked for it.

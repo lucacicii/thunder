@@ -2,7 +2,8 @@ use crate::client::McpClient;
 use crate::protocol::McpTool;
 use async_trait::async_trait;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use tracing::{debug, info};
 
 /// Dynamic bridge wrapping a remote MCP Tool into a local `AgentTool` recognized by `thunder-agent-loop`.
@@ -43,7 +44,7 @@ impl McpToolBridge {
     }
 }
 
-impl thunder_agent_loop::types::plugin::Plugin for McpToolBridge {
+impl thunder_agent_policy::plugin::Plugin for McpToolBridge {
     fn id(&self) -> &str {
         &self.exposed_name
     }
@@ -54,7 +55,7 @@ impl thunder_agent_loop::types::plugin::Plugin for McpToolBridge {
 }
 
 #[async_trait]
-impl thunder_agent_loop::types::plugin::ToolPlugin for McpToolBridge {
+impl thunder_agent_policy::plugin::ToolPlugin for McpToolBridge {
     fn definition(&self) -> ToolDefinition {
         let desc = self.tool_info.description.clone().unwrap_or_else(|| {
             format!(
@@ -74,7 +75,7 @@ impl thunder_agent_loop::types::plugin::ToolPlugin for McpToolBridge {
         &self,
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
-    ) -> Result<thunder_agent_loop::types::plugin::CallToolResult, String> {
+    ) -> Result<thunder_agent_policy::plugin::CallToolResult, String> {
         info!(
             tool = %self.exposed_name,
             original = %self.tool_info.name,
@@ -98,23 +99,23 @@ impl thunder_agent_loop::types::plugin::ToolPlugin for McpToolBridge {
                 )
             })?;
 
-        let content: Vec<thunder_agent_loop::types::plugin::ToolContent> = res
+        let content: Vec<thunder_agent_policy::plugin::ToolContent> = res
             .content
             .into_iter()
             .map(|item| match item {
                 crate::protocol::ToolContent::Text { text } => {
-                    thunder_agent_loop::types::plugin::ToolContent::Text { text }
+                    thunder_agent_policy::plugin::ToolContent::Text { text }
                 }
                 crate::protocol::ToolContent::Image { data, mime_type } => {
-                    thunder_agent_loop::types::plugin::ToolContent::Image { data, mime_type }
+                    thunder_agent_policy::plugin::ToolContent::Image { data, mime_type }
                 }
                 crate::protocol::ToolContent::Resource { uri, text } => {
-                    thunder_agent_loop::types::plugin::ToolContent::Resource { uri, text }
+                    thunder_agent_policy::plugin::ToolContent::Resource { uri, text }
                 }
             })
             .collect();
 
-        Ok(thunder_agent_loop::types::plugin::CallToolResult {
+        Ok(thunder_agent_policy::plugin::CallToolResult {
             content,
             is_error: res.is_error,
         })
@@ -124,7 +125,7 @@ impl thunder_agent_loop::types::plugin::ToolPlugin for McpToolBridge {
 #[async_trait]
 impl AgentTool for McpToolBridge {
     fn definition(&self) -> ToolDefinition {
-        thunder_agent_loop::types::plugin::ToolPlugin::definition(self)
+        thunder_agent_policy::plugin::ToolPlugin::definition(self)
     }
 
     async fn execute(
@@ -132,7 +133,7 @@ impl AgentTool for McpToolBridge {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> Result<String, String> {
-        let res = thunder_agent_loop::types::plugin::ToolPlugin::execute(self, args, ctx).await?;
+        let res = thunder_agent_policy::plugin::ToolPlugin::execute(self, args, ctx).await?;
         let output_text = res.plain_text();
         debug!(tool = %self.exposed_name, output_len = output_text.len(), is_error = ?res.is_error, "MCP tool execution finished");
 

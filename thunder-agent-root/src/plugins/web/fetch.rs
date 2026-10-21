@@ -34,8 +34,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use thunder_agent_providers::prelude::ProviderRegistry;
 use tokio_util::sync::CancellationToken;
 

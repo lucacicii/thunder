@@ -1,0 +1,19 @@
+[package]
+name = "thunder-agent-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Wire vocabulary shared by the Thunder agent loop and its hosts: messages, events, tool definitions and results."
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true

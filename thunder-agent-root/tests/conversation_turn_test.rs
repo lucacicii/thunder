@@ -11,7 +11,7 @@
 
 use thunder_agent_loop::types::event::{AgentEvent, FinishReason, ObservedEvent, TurnStats};
 use thunder_agent_loop::types::message::{ChatMessage, ToolCall};
-use thunder_agent_loop::types::tool::ToolExecutionResult;
+use thunder_agent_types::tool::ToolExecutionResult;
 use thunder_agent_root::plugins::conversation::ConversationPlugin;
 use thunder_agent_root::prelude::*;
 

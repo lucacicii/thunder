@@ -14,8 +14,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
-use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin, TriggerSpec};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
+use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{info, warn};
 
@@ -264,8 +265,7 @@ impl AskUserPlugin {
             "Blocks the agent on a clarifying question rendered as a panel bubble.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,
@@ -289,7 +289,6 @@ impl ThunderPlugin for AskUserPlugin {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use thunder_agent_loop::types::tool::AgentTool;
     use tokio::sync::Mutex;
 
     fn tool_with(pending: PendingQuestions, timeout: Duration) -> AskUserQuestionTool {

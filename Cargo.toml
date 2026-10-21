@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "thunder-agent-types",
+    "thunder-agent-policy",
     "thunder-agent-loop",
     "thunder-agent-pack-code",
     "thunder-agent-runtime",
@@ -29,6 +31,8 @@ homepage = "https://github.com/lucacicii/thunder"
 # ────────────────────────────────────────────────────────────
 [workspace.dependencies]
 # Internal crates (path dependencies)
+thunder-agent-types = { path = "thunder-agent-types" }
+thunder-agent-policy = { path = "thunder-agent-policy" }
 thunder-agent-loop = { path = "thunder-agent-loop" }
 thunder-agent-pack-code = { path = "thunder-agent-pack-code" }
 thunder-agent-providers = { path = "thunder-agent-providers" }

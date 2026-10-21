@@ -26,7 +26,7 @@
 //! resetting to `thinking`, because that is still where the run is.
 
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -394,8 +394,7 @@ impl StatusPlugin {
             "Publishes what the agent is doing right now — phase, current tool, turn — as one authoritative snapshot per session.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::Custom("status".to_string()))
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::Custom("status".to_string()));
         let (changes, change_rx) = watch::channel(0);
 
         Self {
@@ -497,7 +496,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use thunder_agent_loop::types::event::{AgentStats, TurnStats};
-    use thunder_agent_loop::types::tool::ToolExecutionResult;
+    use thunder_agent_types::tool::ToolExecutionResult;
 
     fn turn_start(turn: usize) -> AgentEvent {
         AgentEvent::TurnStart {
@@ -805,6 +804,5 @@ mod tests {
         let plugin = StatusPlugin::new();
         let manifest = plugin.manifest();
         assert_eq!(manifest.id, "agent_status");
-        assert!(manifest.triggers.auto_always);
     }
 }

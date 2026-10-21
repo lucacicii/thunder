@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::types::policy::ToolEffect;
-use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_types::tool::ToolDefinition;
+use crate::tool_policy::{AgentTool, ToolExecutionContext};
 
 /// Standard MCP Content item (aligned with Anthropic MCP 2024-11-05).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

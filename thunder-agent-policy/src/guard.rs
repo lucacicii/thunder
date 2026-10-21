@@ -26,9 +26,9 @@
 //! that a shell command's target is never statically known, so it never earns an
 //! automatic allowance either.
 
-use crate::tools::trace::{GuardHit, GuardKind};
-use crate::types::policy::ToolEffect;
-use crate::types::scope::Scope;
+use crate::trace::{GuardHit, GuardKind};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_types::scope::Scope;
 use serde_json::Value;
 
 /// Verbs that run the *next* verb rather than doing work themselves.
@@ -57,7 +57,7 @@ const TARGET_KEYS: &[&str] = &[
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Guard;
 
-impl crate::types::plugin::Plugin for Guard {
+impl crate::plugin::Plugin for Guard {
     fn id(&self) -> &str {
         "kernel_guard"
     }
@@ -68,27 +68,27 @@ impl crate::types::plugin::Plugin for Guard {
 }
 
 #[async_trait::async_trait]
-impl crate::types::plugin::InterceptorPlugin for Guard {
+impl crate::plugin::InterceptorPlugin for Guard {
     fn priority(&self) -> i32 {
-        crate::types::plugin::priority::CRITICAL_GUARD
+        crate::plugin::priority::CRITICAL_GUARD
     }
 
     async fn pre_execute(
         &self,
         tool: &str,
         args: &serde_json::Value,
-        ctx: &crate::types::tool::ToolExecutionContext,
-    ) -> Result<crate::types::plugin::PreExecutionVerdict, String> {
+        ctx: &crate::tool_policy::ToolExecutionContext,
+    ) -> Result<crate::plugin::PreExecutionVerdict, String> {
         let effect = ctx.effect.unwrap_or_else(|| ToolEffect::of(tool));
         if let Some(hit) = Guard::check(tool, args, effect, Scope::Unknown) {
-            return Ok(crate::types::plugin::PreExecutionVerdict::Deny {
+            return Ok(crate::plugin::PreExecutionVerdict::Deny {
                 reason: format!(
                     "Refused by kernel security guard: {:?} on pattern '{}'",
                     hit.kind, hit.pattern
                 ),
             });
         }
-        Ok(crate::types::plugin::PreExecutionVerdict::Allow)
+        Ok(crate::plugin::PreExecutionVerdict::Allow)
     }
 }
 

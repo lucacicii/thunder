@@ -1,22 +1,23 @@
-use crate::tools::guard::Guard;
-use crate::tools::notice::SystemNotice;
-use crate::tools::registry::ToolRegistry;
-use crate::tools::trace::{
+use crate::guard::Guard;
+use thunder_agent_types::notice::SystemNotice;
+use crate::registry::ToolRegistry;
+use crate::trace::{
     redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
     ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
 };
-use crate::types::gate::{
+use crate::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest, ALLOW_ALWAYS,
     ALLOW_ONCE, DENY, DENY_WITH_REASON,
 };
-use crate::types::message::ToolCall;
-use crate::types::plugin::{
+use thunder_agent_types::message::ToolCall;
+use crate::plugin::{
     CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker,
 };
-use crate::types::policy::{Caller, ToolEffect};
-use crate::types::scope::{Scope, ToolScope};
-use crate::types::tool::{ToolEventSink, ToolExecutionContext, ToolExecutionResult};
-use crate::types::ui::{HostUi, NullHostUi, UiRequest, UiSource};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::{Scope, ToolScope};
+use thunder_agent_types::tool::{ToolEventSink, ToolExecutionResult};
+use crate::tool_policy::ToolExecutionContext;
+use crate::ui::{HostUi, NullHostUi, UiRequest, UiSource};
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use parking_lot::Mutex;
@@ -224,11 +225,11 @@ impl ToolExecutor {
 
     /// What this call can do to the world: the tool's own declaration when the
     /// tool is registered, otherwise the conservative name-based fallback.
-    fn resolve_effect(&self, tool_name: &str) -> crate::types::policy::ToolEffect {
+    fn resolve_effect(&self, tool_name: &str) -> thunder_agent_types::policy::ToolEffect {
         self.registry
             .get(tool_name)
             .map(|t| t.effect())
-            .unwrap_or_else(|| crate::types::policy::ToolEffect::of(tool_name))
+            .unwrap_or_else(|| thunder_agent_types::policy::ToolEffect::of(tool_name))
     }
 
     pub fn registry(&self) -> &ToolRegistry {
@@ -281,7 +282,7 @@ impl ToolExecutor {
             ctx.event_sink = self.event_sink.lock().clone();
         }
         if ctx.ui.is_none() {
-            ctx.ui = Some(crate::types::ui::UiHandle(self.ui()));
+            ctx.ui = Some(crate::ui::UiHandle(self.ui()));
         }
         if ctx.sub_invoker.is_none() {
             ctx.sub_invoker = Some(Arc::new(ExecutorSubToolInvoker::new(self.clone())));
@@ -386,7 +387,7 @@ impl ToolExecutor {
                 denied_by_gate(
                     draft.mode.as_deref().unwrap_or("gate"),
                     &call.function.name,
-                    &crate::types::policy::describe_call(&arguments),
+                    &thunder_agent_types::policy::describe_call(&arguments),
                     &reason,
                     caller.plugin_id(),
                     started,
@@ -402,7 +403,7 @@ impl ToolExecutor {
                     AskOutcome::Refuse { reason, .. } => denied_by_gate(
                         gate.label(),
                         &call.function.name,
-                        &crate::types::policy::describe_call(&arguments),
+                        &thunder_agent_types::policy::describe_call(&arguments),
                         &reason,
                         caller.plugin_id(),
                         started,
@@ -866,7 +867,7 @@ impl TraceDraft {
             secrets: Vec::new(),
             timing: TraceTiming::default(),
             started,
-            started_at_ms: crate::tools::trace::now_ms(),
+            started_at_ms: crate::trace::now_ms(),
         }
     }
 
@@ -879,7 +880,7 @@ impl TraceDraft {
     ) -> ToolTrace {
         let output = &result.output;
         let (preview, output_rules) =
-            crate::tools::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
+            crate::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
         // A credential the arguments declared secret is withheld from the
         // output too: a tool that echoes what it was given would otherwise put
         // the value back with the key that named it stripped away, which is
@@ -924,12 +925,12 @@ impl TraceDraft {
                 original_bytes: result.original_bytes,
                 result_bytes: output.len(),
                 output_preview,
-                output_digest: crate::tools::trace::stable_digest(output.as_bytes()),
+                output_digest: crate::trace::stable_digest(output.as_bytes()),
             },
             redactions: self.redactions,
             timing: self.timing,
             started_at_ms: self.started_at_ms,
-            finished_at_ms: crate::tools::trace::now_ms(),
+            finished_at_ms: crate::trace::now_ms(),
         };
         trace
     }
@@ -942,7 +943,7 @@ fn trace_id(call_id: &str, started: Instant) -> String {
         "{}-{:x}",
         if call_id.is_empty() { "call" } else { call_id },
         started.elapsed().as_nanos()
-            ^ crate::tools::trace::now_ms() as u128
+            ^ crate::trace::now_ms() as u128
             ^ u128::from(std::process::id())
     )
 }

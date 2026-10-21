@@ -7,7 +7,7 @@
 //! consumes one authoritative [`MetricsSnapshot`].
 
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -562,8 +562,7 @@ impl MetricsPlugin {
             "Tracks live streaming token rates, context window occupancy, prompt cache hit rates, and turn/run durations.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::Custom("telemetry".to_string()))
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::Custom("telemetry".to_string()));
 
         Self {
             manifest,
@@ -756,7 +755,7 @@ mod tests {
             turn: 1,
             tool_call_id: "c1".to_string(),
             name: "bash".to_string(),
-            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+            result: thunder_agent_types::tool::ToolExecutionResult::success(
                 "x".repeat(400),
                 std::time::Duration::from_millis(5),
             ),
@@ -788,7 +787,7 @@ mod tests {
             turn: 1,
             tool_call_id: "c2".to_string(),
             name: "bash".to_string(),
-            result: thunder_agent_loop::types::tool::ToolExecutionResult::success(
+            result: thunder_agent_types::tool::ToolExecutionResult::success(
                 "y".repeat(400),
                 std::time::Duration::from_millis(5),
             ),

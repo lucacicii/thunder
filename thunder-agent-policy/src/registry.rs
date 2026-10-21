@@ -1,9 +1,10 @@
-use crate::core::utf8::{safe_slice_from, safe_slice_to};
-use crate::tools::sanitizer::sanitize_tool_output;
-use crate::tools::scratchpad::ScratchpadManager;
-use crate::types::message::ToolCall;
-use crate::types::plugin::{ToolPlugin, ToolPluginAdapter};
-use crate::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext, ToolExecutionResult};
+use thunder_agent_loop::core::utf8::{safe_slice_from, safe_slice_to};
+use crate::sanitizer::sanitize_tool_output;
+use thunder_agent_loop::tools::scratchpad::ScratchpadManager;
+use thunder_agent_types::message::ToolCall;
+use crate::plugin::{ToolPlugin, ToolPluginAdapter};
+use thunder_agent_types::tool::{ToolDefinition, ToolExecutionResult};
+use crate::tool_policy::{AgentTool, ToolExecutionContext};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

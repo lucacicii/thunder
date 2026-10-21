@@ -1,13 +1,13 @@
 #[cfg(feature = "mcp")]
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::ThunderConfig;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_loop::types::tool::AgentTool;
+use thunder_agent_policy::AgentTool;
 use thunder_agent_loop::AgentRunResult;
 pub use thunder_agent_mcp::prelude::*;
 use tracing::info;
@@ -32,17 +32,7 @@ impl McpPlugin {
         )
         .with_capability(PluginCapability::McpProvider)
         .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::new(
-            vec![
-                "mcp",
-                "model context protocol",
-                "server tool",
-                "external tool",
-                "mcp server",
-                "stdio tool",
-            ],
-            "Connects to external MCP servers to discover and invoke external tool endpoints.",
-        ));
+;
 
         Self {
             manifest,

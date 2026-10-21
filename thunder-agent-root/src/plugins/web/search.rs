@@ -36,8 +36,9 @@ use html5ever::{parse_document, ParseOpts};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use serde_json::json;
 use std::time::Duration;
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 
 /// The tool name exposed to the model.
 pub const WEB_SEARCH_TOOL: &str = "web_search";

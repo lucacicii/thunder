@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
-use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin, TriggerSpec};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
+use thunder_agent_root::prelude::{PluginCapability, PluginManifest, ThunderPlugin};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -349,8 +350,7 @@ impl AskUserPlugin {
             "Blocks the agent on a clarifying question rendered as a terminal modal.",
             "0.1.0",
         )
-        .with_capability(PluginCapability::ToolProvider)
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,
@@ -376,13 +376,13 @@ impl TuiHostUi {
 }
 
 #[async_trait]
-impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
+impl thunder_agent_policy::ui::HostUi for TuiHostUi {
     async fn request(
         &self,
-        source: thunder_agent_loop::types::ui::UiSource,
-        request: thunder_agent_loop::types::ui::UiRequest,
-    ) -> thunder_agent_loop::types::ui::UiResponse {
-        use thunder_agent_loop::types::ui::{UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT};
+        source: thunder_agent_policy::ui::UiSource,
+        request: thunder_agent_policy::ui::UiRequest,
+    ) -> thunder_agent_policy::ui::UiResponse {
+        use thunder_agent_policy::ui::{UiRequest, UiResponse, UiSource, DEFAULT_UI_TIMEOUT};
 
         let seq = self.counter.fetch_add(1, Ordering::SeqCst);
         let question_id = format!("tui:ui:{seq}");
@@ -541,9 +541,9 @@ impl thunder_agent_loop::types::ui::HostUi for TuiHostUi {
 
     fn notify(
         &self,
-        _source: thunder_agent_loop::types::ui::UiSource,
+        _source: thunder_agent_policy::ui::UiSource,
         _message: &str,
-        _level: thunder_agent_loop::types::ui::NotifyLevel,
+        _level: thunder_agent_policy::ui::NotifyLevel,
     ) {
     }
 
@@ -564,7 +564,6 @@ impl ThunderPlugin for AskUserPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thunder_agent_loop::types::tool::AgentTool;
 
     fn ctx() -> ToolExecutionContext {
         ToolExecutionContext {
@@ -745,7 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_host_ui_select_bridges_to_user_question_and_returns_choice() {
-        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+        use thunder_agent_policy::ui::{HostUi, UiRequest, UiResponse, UiSource};
 
         let (event_tx, mut rx) = mpsc::unbounded_channel();
         let ui = TuiHostUi::new(event_tx);
@@ -790,7 +789,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_approval_dialog_shows_what_is_being_approved() {
-        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+        use thunder_agent_policy::ui::{HostUi, UiRequest, UiResponse, UiSource};
 
         let (event_tx, mut rx) = mpsc::unbounded_channel();
         let ui = TuiHostUi::new(event_tx);
@@ -833,7 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_confirm_dialog_is_english_end_to_end() {
-        use thunder_agent_loop::types::ui::{HostUi, UiRequest, UiResponse, UiSource};
+        use thunder_agent_policy::ui::{HostUi, UiRequest, UiResponse, UiSource};
 
         let (event_tx, mut rx) = mpsc::unbounded_channel();
         let ui = TuiHostUi::new(event_tx);

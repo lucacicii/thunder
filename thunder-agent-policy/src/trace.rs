@@ -1,226 +1,17 @@
-//! One record per tool call, however the call ends.
-//!
-//! The trace is the kernel's answer to "what actually happened, and who decided
-//! it". It is produced by the single tool-execution wrapper
-//! ([`crate::tools::executor::ToolExecutor`]) rather than by any layer inside it,
-//! so a call that is refused by the guard, refused by the gate, cancelled,
-//! timed out, or run to completion all leave exactly one record. There is no way
-//! for a tool to run untraced.
-//!
-//! The record carries the *decision*, not just the outcome: which scope the call
-//! landed in, whether the guard intervened, what the user answered, and how long
-//! the user took to answer. That is what makes a refused call explainable after
-//! the fact — the question the onion's telemetry could not answer.
-//!
-//! Redaction belongs here too. A trace is a durable artifact that outlives the
-//! conversation and travels to disk, so credentials are stripped on the way in;
-//! the model's own context is left alone, because a model that cannot see the
-//! truth cannot work. See [`ToolTrace::arguments`] and
-//! [`TraceResult::output_preview`].
+//! Producing the trace record: redaction, preview, digest, the interceptor and
+//! the sink. The record itself ([`ToolTrace`] and friends) lives in
+//! `thunder-agent-types`.
 
-use crate::types::plugin::{CallToolResult, InterceptorPlugin, Plugin};
-use crate::types::policy::{Caller, ToolEffect};
-use crate::types::scope::Scope;
-use crate::types::tool::ToolExecutionContext;
-use serde::{Deserialize, Serialize};
+pub use thunder_agent_types::trace::{
+    AskAnswer, Decision, DenyBy, GuardHit, GuardKind, TraceResult, TraceTiming, ToolTrace,
+    ToolTraceSink, TRACE_SCHEMA,
+};
+
+use crate::plugin::{CallToolResult, InterceptorPlugin, Plugin};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
+use crate::tool_policy::ToolExecutionContext;
 use std::sync::{Arc, LazyLock};
-
-/// Version of the trace layout. Bumped when a field changes meaning, so a reader
-/// can tell an old record from a new one.
-pub const TRACE_SCHEMA: u8 = 1;
-
-/// Everything that happened to one tool call.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolTrace {
-    /// [`TRACE_SCHEMA`] at the time the record was written.
-    pub schema: u8,
-    /// Unique per call, so a trace can be joined against a host's own log.
-    pub trace_id: String,
-    /// The host's session, when there is one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    /// The host's name for this run — the daemon's task id, the TUI's run id.
-    ///
-    /// The kernel only knows this as the `route` it was configured with, and
-    /// never interprets it; it is recorded so a trace can be joined against the
-    /// host's own record of the same run. Both first-party hosts pass the same
-    /// string they file the trace under, so the id inside the file is the id of
-    /// the file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    /// Which turn of the loop issued the call.
-    pub turn: usize,
-    /// The provider's tool call id, matching `ToolExecStart`/`ToolExecResult`.
-    pub tool_call_id: String,
-    /// The registered tool name.
-    pub tool: String,
-    /// Who asked: the model, or a plugin on its own initiative.
-    pub caller: Caller,
-    /// What the call could change.
-    pub effect: ToolEffect,
-    /// The gate's own label for the state it was in — a mode name, in the usual
-    /// case. The kernel stores it verbatim and never interprets it; absent when
-    /// no gate was installed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    /// Where the call landed, from the host's scope (or
-    /// [`Scope::Unknown`](crate::types::scope::Scope::Unknown) without one).
-    pub scope: Scope,
-    /// The arguments the tool received, **after redaction**.
-    pub arguments: serde_json::Value,
-    /// What was decided, and by whom.
-    pub decision: Decision,
-    /// The guard's intervention, when there was one. Present only on a guard
-    /// refusal — a call the guard passed shows `None`, not a "no hit" object.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guard: Option<GuardHit>,
-    /// The user's answer, when the call was asked about.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answer: Option<AskAnswer>,
-    /// What came back — for a refusal, the refusal text the model saw.
-    pub result: TraceResult,
-    /// Redaction rules that actually fired, by name, so a reader can tell
-    /// "there was no secret" from "a secret was removed".
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub redactions: Vec<String>,
-    /// Where the wall-clock time went.
-    pub timing: TraceTiming,
-    /// When the call entered the wrapper.
-    pub started_at_ms: u64,
-    /// When the wrapper finished with it.
-    pub finished_at_ms: u64,
-}
-
-/// What the wrapper concluded.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "decision", rename_all = "snake_case")]
-pub enum Decision {
-    /// Allowed, with no standing rule involved.
-    Allow,
-    /// Allowed because a rule the user had already agreed to matched.
-    AllowByRule {
-        /// The rule's label, as the gate described it.
-        rule: String,
-    },
-    /// Asked the user. What they said is in [`ToolTrace::answer`] — including
-    /// the case where they never said anything and the call was refused.
-    Asked,
-    /// Refused without asking.
-    Deny {
-        /// What the model was told.
-        reason: String,
-        /// Which side refused.
-        by: DenyBy,
-    },
-    /// The call's cancellation token fired before it could run.
-    Cancelled,
-}
-
-/// Which side of the kernel refused a call.
-///
-/// Worth distinguishing: a guard refusal is the kernel's unconditional floor and
-/// holds in every mode, while a gate refusal is a policy the host chose and can
-/// change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DenyBy {
-    /// The kernel's guard: a dangerous command or a critical path.
-    Guard,
-    /// The installed gate: the host's policy.
-    Gate,
-}
-
-/// A guard's refusal, in enough detail to audit it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuardHit {
-    /// Which list the call matched.
-    pub kind: GuardKind,
-    /// The rule that matched, e.g. `rm -rf /` or `.git`.
-    pub pattern: String,
-    /// The part of the call that matched, for a reader deciding whether the rule
-    /// is too broad.
-    pub detail: String,
-}
-
-/// The kinds of unconditional refusal the kernel keeps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuardKind {
-    /// A shell command matched the destructive-command list.
-    DangerousCommand,
-    /// A target resolved into a directory or file the kernel protects.
-    CriticalPath,
-}
-
-/// What the user said, when they were asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AskAnswer {
-    /// Allowed this call.
-    AllowOnce,
-    /// Allowed it and agreed to a standing rule.
-    AllowAlways,
-    /// Refused.
-    Denied,
-    /// The dialog went unanswered; the call was refused.
-    Timeout,
-    /// No host UI was attached; the call was refused.
-    NoUi,
-    /// The host answered with something the kernel does not recognise; the call
-    /// was refused.
-    Unrecognised,
-}
-
-/// What came back from the call.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TraceResult {
-    /// Whether the tool reported a failure.
-    pub is_error: bool,
-    /// Whether the output was cut down before reaching the model.
-    pub truncated: bool,
-    /// Size of the tool's full output, before any truncation.
-    pub original_bytes: usize,
-    /// Size of what the model actually received.
-    pub result_bytes: usize,
-    /// The head of the output, redacted. Not the whole output: the full text is
-    /// already kept losslessly by the scratchpad spill, and a trace that embeds
-    /// every megabyte is a trace nobody reads.
-    pub output_preview: String,
-    /// [`stable_digest`] of the full, *unredacted* output — enough to tell
-    /// whether two calls produced the same thing without keeping the bytes.
-    pub output_digest: String,
-}
-
-/// Where the time went, in milliseconds.
-///
-/// `total_ms` is not necessarily the sum: a call may wait behind the dialog
-/// serialisation, and a refusal never reaches the tool at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct TraceTiming {
-    /// Waiting for the kernel's turn to run.
-    #[serde(default)]
-    pub queued_ms: u64,
-    /// The guard, scope and gate, together.
-    #[serde(default)]
-    pub decision_ms: u64,
-    /// Time spent waiting on the user.
-    #[serde(default)]
-    pub ask_ms: u64,
-    /// The tool itself.
-    #[serde(default)]
-    pub exec_ms: u64,
-    /// Wrapper entry to exit.
-    #[serde(default)]
-    pub total_ms: u64,
-}
-
-// ─────────────────────────────── redaction ───────────────────────────────
-//
-// A trace is a durable artifact: it outlives the conversation and lands on
-// disk, where it may be read by someone who never saw the session. The model's
-// own context is deliberately *not* filtered this way — a model that cannot see
-// the truth cannot work — so this is the one place secrets are removed, and it
-// runs on the way into the record.
 
 /// What a value under a secret-looking key is replaced with.
 pub const REDACTED_KEY: &str = "[redacted:key]";
@@ -442,13 +233,6 @@ fn redact_value(value: &mut serde_json::Value, key: Option<&str>, fired: &mut Re
 /// arrives serialised and redacted, so a sink that writes it to disk never has to
 /// know which fields were sensitive — one redaction implementation, not one per
 /// host.
-pub trait ToolTraceSink: Send + Sync {
-    /// Take one finished trace.
-    ///
-    /// Must not block the tool path for long, and must not fail the call: a sink
-    /// that cannot keep up loses records, it does not stop work.
-    fn record(&self, trace: &ToolTrace);
-}
 
 /// An [`InterceptorPlugin`] adapter that observes tool completions and records
 /// a [`ToolTrace`] into an underlying [`ToolTraceSink`].
@@ -484,7 +268,7 @@ impl Plugin for TraceInterceptor {
 #[async_trait::async_trait]
 impl InterceptorPlugin for TraceInterceptor {
     fn priority(&self) -> i32 {
-        crate::types::plugin::priority::OBSERVABILITY
+        crate::plugin::priority::OBSERVABILITY
     }
 
     async fn post_execute(

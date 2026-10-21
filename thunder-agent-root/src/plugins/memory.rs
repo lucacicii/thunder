@@ -21,7 +21,7 @@
 //! The plugin also contributes a `memory_write` tool, so the agent can record a
 //! durable note mid-task. The write targets `<ws>/.thunder/` only and is gated
 //! by the run's permission tier like any other mutation (it classifies as
-//! [`ToolEffect::Other`](thunder_agent_loop::types::policy::ToolEffect)).
+//! [`ToolEffect::Other`](thunder_agent_types::policy::ToolEffect)).
 //!
 //! ## Prompt-cache stability
 //!
@@ -33,14 +33,15 @@
 //! next time the host rebuilds the run.
 
 use crate::error::PluginError;
-use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin, TriggerSpec};
+use crate::plugin::{PluginCapability, PluginContext, PluginManifest, ThunderPlugin};
 use crate::thunder_config::{MemorySection, ThunderConfig, THUNDER_DIR};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::RwLock;
 
 /// Conventional memory file name, at the user and project scope.
@@ -93,10 +94,7 @@ impl MemoryPlugin {
             "0.1.0",
         )
         .with_capability(PluginCapability::MemoryPersistence)
-        .with_capability(PluginCapability::ToolProvider)
-        // Baseline plugin: stays active so the prompt block is stable across
-        // turns, whether or not any memory file currently exists.
-        .with_triggers(TriggerSpec::always());
+        .with_capability(PluginCapability::ToolProvider);
 
         Self {
             manifest,

@@ -3,7 +3,7 @@
 //! A notice is the *model-facing* half of telemetry: it explains what the system
 //! did on the model's behalf when the outcome differs from a plain success or
 //! error — a refusal, an atomic write, a self-healing recovery. It rides on
-//! [`crate::types::tool::ToolExecutionResult::with_telemetry`] and is rendered
+//! [`crate::tool::ToolExecutionResult::with_telemetry`] and is rendered
 //! into the tool output the model reads.
 //!
 //! The *human-facing* half is the kernel trace (`crate::tools::trace`), which

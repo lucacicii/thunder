@@ -7,7 +7,7 @@
 #![cfg(feature = "conversation")]
 
 use std::sync::Arc;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_root::plugins::memory::{MemoryPlugin, MEMORY_WRITE_TOOL};
 use thunder_agent_root::plugins::mode::Mode;
 use thunder_agent_root::prelude::*;

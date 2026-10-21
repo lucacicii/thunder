@@ -4471,19 +4471,9 @@ impl App {
             // the scope that tells the kernel which paths are in the project,
             // and the mode plugin that judges every call. The gate is shared
             // with the App so /mode flips take effect mid-session.
-            let ui = Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()));
-            let mut agent = agent
-                .with_tool_scope(Arc::new(
-                    thunder_agent_pack_code::CodeScope::from_agent_config(
-                        &config,
-                        Some(ws.as_path()),
-                    ),
-                ))
-                .with_tool_gate(
-                    Some(Arc::clone(&mode_plugin)
-                        as Arc<dyn thunder_agent_loop::types::gate::ToolGate>),
-                    Some(ui),
-                );
+            let ui: Arc<dyn thunder_agent_policy::ui::HostUi> =
+                Arc::new(crate::ask_user::TuiHostUi::new(event_tx.clone()));
+            let mut agent = agent;
 
             // Resolve the transport: injected factory (tests/embedders) first,
             // then the provider registry. Never proceed without a client — a
@@ -4516,26 +4506,47 @@ impl App {
             if let Some(client) = client {
                 agent = agent.with_custom_client(client);
             }
-            // Every tool, every run: the mode plugin decides what a call may
-            // do, and a tool missing from the list is a tool the model cannot
-            // even ask to use.
-            agent.register_tool(Arc::new(
+            // The registry and the judge are the host's; the kernel only
+            // sees specs and calls.
+            let mut registry = thunder_agent_policy::registry::ToolRegistry::new(
+                config.max_tool_output_bytes,
+                std::time::Duration::from_millis(config.request_timeout_ms),
+            )
+            .with_scratchpad(agent.scratchpad().clone());
+            registry.register(Arc::new(
                 ReadFileTool::default().with_default_cwd(ws.clone()),
             ));
-            agent.register_tool(Arc::new(GrepTool::default().with_default_cwd(ws.clone())));
-            agent.register_tool(Arc::new(FindTool::default().with_default_cwd(ws.clone())));
-            agent.register_tool(Arc::new(
+            registry.register(Arc::new(GrepTool::default().with_default_cwd(ws.clone())));
+            registry.register(Arc::new(FindTool::default().with_default_cwd(ws.clone())));
+            registry.register(Arc::new(
                 ListDirTool::default().with_default_cwd(ws.clone()),
             ));
-            agent.register_tool(Arc::new(
+            registry.register(Arc::new(
                 WriteFileTool::default().with_default_cwd(ws.clone()),
             ));
-            agent.register_tool(Arc::new(BashTool::default().with_default_cwd(ws)));
+            registry.register(Arc::new(BashTool::default().with_default_cwd(ws.clone())));
             // The mode plugin judges every call *and* carries the plan tools:
             // without them, plan mode would be a mode with no way out.
             for tool in thunder_agent_root::plugin::ThunderPlugin::tools(&*mode_plugin) {
-                agent.register_tool(tool);
+                registry.register(tool);
             }
+
+            let executor = thunder_agent_policy::executor::ToolExecutor::new(registry.clone())
+                .with_tool_scope(Arc::new(
+                    thunder_agent_pack_code::CodeScope::from_agent_config(
+                        &config,
+                        Some(ws.as_path()),
+                    ),
+                ) as Arc<dyn thunder_agent_types::scope::ToolScope>)
+                .with_tool_gate(Some(Arc::clone(&mode_plugin)
+                    as Arc<dyn thunder_agent_policy::gate::ToolGate>))
+                .with_host_ui(ui)
+                .with_trace_ids(config.session_id.clone(), config.route.clone());
+            agent = agent.with_tools_factory(Arc::new(
+                thunder_agent_policy::registry_tools::StaticToolsFactory::new(
+                    registry, executor,
+                ),
+            ));
             agent = agent.with_pause_gate(pause_gate);
             agent = agent.with_steer_queues(steer_queues);
 

@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::types::policy::ToolEffect;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_agent_root::plugins::web::fetch::WebFetchTool;
 use thunder_agent_root::plugins::web::{FetchCache, WEB_FETCH_TOOL};

@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_loop::types::tool::{AgentTool, ToolExecutionContext};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_providers::auth::AuthFile;
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_agent_root::plugins::web::deepseek::{self, DeepSeekClient};

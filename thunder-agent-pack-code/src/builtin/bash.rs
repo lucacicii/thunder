@@ -1,9 +1,10 @@
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Stdio;
-use thunder_agent_loop::types::plugin::{CallToolResult, Plugin, ToolPlugin};
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_policy::plugin::{CallToolResult, Plugin, ToolPlugin};
+use thunder_agent_types::tool::ToolDefinition;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 

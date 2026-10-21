@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::gate::GateVerdict;
 use thunder_agent_loop::types::config::AgentConfig;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::registry_tools::RegistryTools;
 use thunder_agent_loop::{AgentLoop, ContextInput};
 use thunder_agent_providers::RpiAiClient;
 use tokio::io::AsyncWriteExt;
@@ -248,8 +251,14 @@ impl Runtime {
             .with_id(run_id.clone())
             .with_custom_client(Arc::new(client));
 
+        // The runtime installs no policy: a registry with no gate and no scope
+        // is exactly "everything the guard allows runs".
+        let mut registry = ToolRegistry::new(
+            agent.config().max_tool_output_bytes,
+            std::time::Duration::from_millis(agent.config().request_timeout_ms),
+        );
         for spec in tools {
-            agent.register_tool(Arc::new(RemoteTool::new(
+            registry.register(Arc::new(RemoteTool::new(
                 run_id.clone(),
                 spec.name,
                 spec.description,
@@ -259,6 +268,8 @@ impl Runtime {
                 self.pending_tools.clone(),
             )));
         }
+        let executor = ToolExecutor::new(registry.clone());
+        agent = agent.with_tools(Arc::new(RegistryTools::new(registry, executor)));
 
         if let Some(gate) = gate {
             agent = agent.with_completion_gate(

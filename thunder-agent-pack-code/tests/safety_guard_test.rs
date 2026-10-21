@@ -1,17 +1,19 @@
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::pruning::strategy::ContextPruner;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
-use thunder_agent_loop::tools::sanitizer::{
+use thunder_agent_policy::sanitizer::{
     is_binary_data, sanitize_tool_output, strip_ansi_escapes,
 };
 use thunder_agent_loop::types::config::{AgentConfig, ContextPruningConfig};
 use thunder_agent_loop::types::event::FinishReason;
 use thunder_agent_loop::types::message::{ChatMessage, Role, ToolCall};
-use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
+use thunder_agent_types::tool::ToolDefinition;
 use thunder_agent_loop::AgentLoop;
 use thunder_agent_pack_code::builtin::bash::BashTool;
 use tokio_util::sync::CancellationToken;
@@ -230,7 +232,7 @@ async fn test_repetition_warning_injected() {
     });
 
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent.register_tool(Arc::new(DummyReadFileTool));
+    agent = agent.with_tools(single_tool(Arc::new(DummyReadFileTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let result = agent.run("Check same file repeatedly", None).await.unwrap();
 

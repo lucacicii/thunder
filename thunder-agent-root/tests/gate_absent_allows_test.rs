@@ -10,9 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_loop::tools::executor::ToolExecutor;
-use thunder_agent_loop::tools::registry::ToolRegistry;
-use thunder_agent_loop::types::ui::NullHostUi;
+use thunder_agent_policy::ToolExecutionContext;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::ui::NullHostUi;
 use thunder_agent_pack_code::builtin::*;
 
 fn registry() -> ToolRegistry {
@@ -107,7 +108,7 @@ async fn removing_the_gate_returns_to_the_gate_absent_state() {
     );
 }
 
-use thunder_agent_loop::types::gate::{GateVerdict, ToolGate, ToolGateRequest};
+use thunder_agent_policy::gate::{GateVerdict, ToolGate, ToolGateRequest};
 
 struct DenyEverything;
 

@@ -147,71 +147,18 @@ impl PluginSelector {
         self.heuristic_select(prompt, &manifests)
     }
 
-    pub fn heuristic_select(&self, prompt: &str, manifests: &[PluginManifest]) -> PluginSelection {
-        let p_lower = prompt.to_lowercase();
-        let mut selected = Vec::new();
-        let mut reasons = Vec::new();
-
-        for m in manifests {
-            if m.triggers.auto_always {
-                selected.push(m.id.clone());
-                continue;
-            }
-
-            let matched = m
-                .triggers
-                .keywords
-                .iter()
-                .any(|kw| keyword_matches(&p_lower, kw));
-            if matched {
-                selected.push(m.id.clone());
-                reasons.push(format!("Matched trigger for plugin '{}'", m.name));
-            }
-        }
-
-        if selected.is_empty() && manifests.iter().any(|m| m.id == "conversation") {
-            selected.push("conversation".to_string());
-            reasons.push("Defaulting to conversation plugin".to_string());
-        }
-
-        let reason = if reasons.is_empty() {
-            "Autonomous heuristic selection based on prompt triggers".to_string()
-        } else {
-            reasons.join("; ")
-        };
-
+    /// Every registered plugin is active.
+    ///
+    /// This used to match keywords in the prompt. That heuristic was fragile
+    /// (one word changed the toolset), invisible (nothing told the model the set
+    /// had changed) and cache-hostile (the prompt prefix moved with it). The
+    /// session-locked cache keeps the set stable across turns; the set itself is
+    /// now "everything the host registered".
+    pub fn heuristic_select(&self, _prompt: &str, manifests: &[PluginManifest]) -> PluginSelection {
         PluginSelection {
-            active_plugin_ids: selected,
-            reason,
-            confidence: 0.90,
+            active_plugin_ids: manifests.iter().map(|m| m.id.clone()).collect(),
+            reason: "All registered plugins are active".to_string(),
+            confidence: 1.0,
         }
     }
-}
-
-/// Keyword match with ASCII word boundaries: `"spec"` must not match inside
-/// `"specifically"`, `"mcp"` must not match inside `"checksumcp"`. Keywords
-/// containing non-ASCII (CJK) fall back to plain substring matching, where
-/// word boundaries are not meaningful.
-pub(crate) fn keyword_matches(p_lower: &str, kw: &str) -> bool {
-    if kw.is_empty() {
-        return false;
-    }
-    if !kw.is_ascii() {
-        return p_lower.contains(kw);
-    }
-
-    let hay = p_lower.as_bytes();
-    let needle = kw.as_bytes();
-    let mut from = 0usize;
-    while let Some(rel) = p_lower[from..].find(kw) {
-        let start = from + rel;
-        let end = start + needle.len();
-        let boundary_before = start == 0 || !hay[start - 1].is_ascii_alphanumeric();
-        let boundary_after = end >= hay.len() || !hay[end].is_ascii_alphanumeric();
-        if boundary_before && boundary_after {
-            return true;
-        }
-        from = start + 1;
-    }
-    false
 }

@@ -4,9 +4,9 @@
 
 use serde_json::json;
 use std::path::PathBuf;
-use thunder_agent_loop::types::gate::{ApprovalAnswer, GateVerdict, ToolGate, ToolGateRequest};
-use thunder_agent_loop::types::policy::{Caller, ToolEffect};
-use thunder_agent_loop::types::scope::Scope;
+use thunder_agent_policy::gate::{ApprovalAnswer, GateVerdict, ToolGate, ToolGateRequest};
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::Scope;
 use thunder_agent_root::plugins::mode::{
     AllowRule, Mode, ModePlugin, EXIT_PLAN_MODE_TOOL, WRITE_PLAN_TOOL,
 };
@@ -26,7 +26,7 @@ fn decide(
         caller: Caller::Model,
         tool_call_id: "c1",
     };
-    thunder_agent_loop::types::gate::ToolGate::decide(plugin, &request)
+    thunder_agent_policy::gate::ToolGate::decide(plugin, &request)
 }
 
 fn asks(verdict: &GateVerdict) -> bool {

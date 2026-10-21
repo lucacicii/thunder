@@ -1,23 +1,10 @@
 pub mod config;
-pub mod error;
-pub mod event;
-pub mod gate;
-pub mod invoke;
-pub mod message;
-pub mod plugin;
-pub mod policy;
-pub mod scope;
-pub mod tool;
-pub mod ui;
 
+pub use thunder_agent_types::{error, event, message, policy, scope, tool};
 pub use config::*;
 pub use error::*;
 pub use event::*;
-pub use gate::*;
-pub use invoke::*;
 pub use message::*;
-pub use plugin::*;
 pub use policy::*;
 pub use scope::*;
 pub use tool::*;
-pub use ui::*;

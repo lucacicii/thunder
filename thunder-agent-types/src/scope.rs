@@ -1,7 +1,7 @@
 //! Where a tool call lands, as classified by the host.
 //!
 //! The kernel cannot know what "inside the project" means — that is the host's
-//! fact, not the kernel's ([`crate::types::scope::ToolScope`]). What the kernel
+//! fact, not the kernel's ([`crate::scope::ToolScope`]). What the kernel
 //! owns is what to do with the answer, and the answer is deliberately narrow: a
 //! scope is a *location*, never a verdict.
 //!
@@ -67,7 +67,7 @@ pub trait ToolScope: Send + Sync {
     fn scope_of(
         &self,
         tool: &str,
-        effect: crate::types::policy::ToolEffect,
+        effect: crate::policy::ToolEffect,
         arguments: &serde_json::Value,
     ) -> Scope;
 }
@@ -81,7 +81,7 @@ impl ToolScope for UnknownScope {
     fn scope_of(
         &self,
         _tool: &str,
-        _effect: crate::types::policy::ToolEffect,
+        _effect: crate::policy::ToolEffect,
         _arguments: &serde_json::Value,
     ) -> Scope {
         Scope::Unknown
@@ -99,7 +99,7 @@ mod tests {
         assert_eq!(
             UnknownScope.scope_of(
                 "write_file",
-                crate::types::policy::ToolEffect::Write,
+                crate::policy::ToolEffect::Write,
                 &json!({ "path": "/etc/hosts" })
             ),
             Scope::Unknown

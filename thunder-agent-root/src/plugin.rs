@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_loop::types::event::ObservedEvent;
-use thunder_agent_loop::types::gate::ToolGate;
-use thunder_agent_loop::types::invoke::ToolInvokerSlot;
-use thunder_agent_loop::types::plugin::{InterceptorPlugin, ToolPlugin};
-use thunder_agent_loop::types::tool::AgentTool;
-use thunder_agent_loop::types::ui::HostUi;
+use thunder_agent_policy::gate::ToolGate;
+use thunder_agent_policy::invoke::ToolInvokerSlot;
+use thunder_agent_policy::plugin::{InterceptorPlugin, ToolPlugin};
+use thunder_agent_policy::AgentTool;
+use thunder_agent_policy::ui::HostUi;
 use thunder_agent_loop::AgentRunResult;
 use tokio_util::sync::CancellationToken;
 
@@ -24,31 +24,6 @@ pub enum PluginCapability {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TriggerSpec {
-    pub keywords: Vec<String>,
-    pub auto_always: bool,
-    pub description_for_llm: String,
-}
-
-impl TriggerSpec {
-    pub fn new(keywords: Vec<&str>, description_for_llm: &str) -> Self {
-        Self {
-            keywords: keywords.into_iter().map(|s| s.to_lowercase()).collect(),
-            auto_always: false,
-            description_for_llm: description_for_llm.to_string(),
-        }
-    }
-
-    pub fn always() -> Self {
-        Self {
-            keywords: Vec::new(),
-            auto_always: true,
-            description_for_llm: "Always active plugin".to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
@@ -56,7 +31,6 @@ pub struct PluginManifest {
     pub description: String,
     pub version: String,
     pub capabilities: Vec<PluginCapability>,
-    pub triggers: TriggerSpec,
 }
 
 impl PluginManifest {
@@ -72,7 +46,6 @@ impl PluginManifest {
             description: description.into(),
             version: version.into(),
             capabilities: Vec::new(),
-            triggers: TriggerSpec::default(),
         }
     }
 
@@ -80,16 +53,11 @@ impl PluginManifest {
         self.capabilities.push(cap);
         self
     }
-
-    pub fn with_triggers(mut self, triggers: TriggerSpec) -> Self {
-        self.triggers = triggers;
-        self
-    }
 }
 
 /// The host's user-interaction surface for this run.
 ///
-/// Defaults to [`thunder_agent_loop::types::ui::NullHostUi`], so an embedded
+/// Defaults to [`thunder_agent_policy::ui::NullHostUi`], so an embedded
 /// host without a panel still behaves correctly: every dialog resolves as
 /// cancelled, which callers must read as "denied".
 ///
@@ -122,7 +90,7 @@ pub struct PluginContext {
     pub mode: Mode,
     /// The host's user-interaction surface for this run.
     ///
-    /// Defaults to [`thunder_agent_loop::types::ui::NullHostUi`], so an embedded
+    /// Defaults to [`thunder_agent_policy::ui::NullHostUi`], so an embedded
     /// host without a panel still behaves correctly: every dialog resolves as
     /// cancelled, which callers must read as "denied".
     pub ui: HostUiHandle,
@@ -184,11 +152,11 @@ impl PluginContext {
             scratch_dir: None,
             cancellation_token: CancellationToken::new(),
             mode: Mode::default(),
-            ui: HostUiHandle(Arc::new(thunder_agent_loop::types::ui::NullHostUi)),
+            ui: HostUiHandle(Arc::new(thunder_agent_policy::ui::NullHostUi)),
             route: None,
             mode_plugin: None,
             prompt: None,
-            tools: ToolInvokerHandle(thunder_agent_loop::types::invoke::empty_tool_invoker_slot()),
+            tools: ToolInvokerHandle(thunder_agent_policy::invoke::empty_tool_invoker_slot()),
             metrics_plugin: None,
             status_plugin: None,
         }
