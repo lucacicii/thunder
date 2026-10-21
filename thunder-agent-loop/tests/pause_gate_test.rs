@@ -6,6 +6,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use thunder_agent_loop::tools::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
 use thunder_agent_loop::types::tool::{AgentTool, ToolDefinition, ToolExecutionContext};
 use tokio::sync::Notify;
@@ -80,10 +81,10 @@ async fn pause_holds_at_tool_boundary_and_resume_continues() {
     let entered = Arc::new(Notify::new());
 
     let mut agent = AgentLoop::new(AgentConfig::new("mock").with_max_turns(4));
-    agent.register_tool(Arc::new(ProbeTool {
+    agent = agent.with_tools(single_tool(Arc::new(ProbeTool {
         runs: Arc::clone(&runs),
         entered: Arc::clone(&entered),
-    }));
+    }), 64 * 1024, std::time::Duration::from_millis(60_000)));
     agent = agent.with_custom_client(Arc::new(TwoTurnClient {
         calls: Arc::new(AtomicUsize::new(0)),
     }));
@@ -123,10 +124,10 @@ async fn cancel_wins_over_a_pause() {
     let entered = Arc::new(Notify::new());
 
     let mut agent = AgentLoop::new(AgentConfig::new("mock").with_max_turns(4));
-    agent.register_tool(Arc::new(ProbeTool {
+    agent = agent.with_tools(single_tool(Arc::new(ProbeTool {
         runs: Arc::clone(&runs),
         entered,
-    }));
+    }), 64 * 1024, std::time::Duration::from_millis(60_000)));
     agent = agent.with_custom_client(Arc::new(TwoTurnClient {
         calls: Arc::new(AtomicUsize::new(0)),
     }));

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::tools::registry_tools::single_tool;
 use thunder_agent_loop::core::context::ContextBuffer;
 use thunder_agent_loop::pruning::strategy::ContextPruner;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
@@ -230,7 +231,7 @@ async fn test_repetition_warning_injected() {
     });
 
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent.register_tool(Arc::new(DummyReadFileTool));
+    agent = agent.with_tools(single_tool(Arc::new(DummyReadFileTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let result = agent.run("Check same file repeatedly", None).await.unwrap();
 

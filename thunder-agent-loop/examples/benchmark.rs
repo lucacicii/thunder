@@ -3,6 +3,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use thunder_agent_loop::tools::registry_tools::single_tool;
 use thunder_agent_loop::core::token_estimator::estimate_token_count;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
@@ -101,7 +102,7 @@ async fn main() {
 
     for i in 0..concurrent_tasks {
         let mut agent = AgentLoop::new(config.clone()).with_custom_client(mock_client.clone());
-        agent.register_tool(Arc::new(FastBenchTool));
+        agent = agent.with_tools(single_tool(Arc::new(FastBenchTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
         let count_clone = completed_count.clone();
 
         handles.push(tokio::spawn(async move {

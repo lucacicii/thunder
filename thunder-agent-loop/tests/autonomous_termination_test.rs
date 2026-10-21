@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use thunder_agent_loop::tools::registry_tools::single_tool;
 use thunder_agent_loop::prelude::*;
 use tokio_util::sync::CancellationToken;
 
@@ -126,7 +127,7 @@ async fn test_llm_decides_immediate_stop_without_tools() {
     let mock_client = Arc::new(DirectAnswerLLMClient);
 
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent.register_tool(Arc::new(MockInfoTool));
+    agent = agent.with_tools(single_tool(Arc::new(MockInfoTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let result = agent.run("What is 6 * 7?", None).await.unwrap();
 
@@ -146,7 +147,7 @@ async fn test_llm_autonomously_decides_when_info_is_sufficient() {
     });
 
     let mut agent = AgentLoop::new(config).with_custom_client(mock_client);
-    agent.register_tool(Arc::new(MockInfoTool));
+    agent = agent.with_tools(single_tool(Arc::new(MockInfoTool), 64 * 1024, std::time::Duration::from_millis(60_000)));
 
     let result = agent
         .run("Solve multi-step research problem", None)

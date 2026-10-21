@@ -1,10 +1,10 @@
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::tempdir;
-use thunder_agent_loop::loop_engine::engine::AgentLoop;
+use thunder_agent_loop::tools::executor::ToolExecutor;
+use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_loop::types::tool::ToolExecutionContext;
-use thunder_agent_loop::AgentConfig;
 use thunder_agent_pack_code::builtin::{
     BashPlugin, FindPlugin, GrepPlugin, ListDirPlugin, ReadFilePlugin, WriteFilePlugin,
 };
@@ -14,29 +14,27 @@ async fn test_mcp_plugins_direct_registration_and_execution() {
     let temp = tempdir().unwrap();
     let temp_path = temp.path().to_path_buf();
 
-    let mut agent = AgentLoop::new(AgentConfig::default());
-
-    // Register all pack-code plugins via register_plugin (as ToolPlugin)
-    agent.register_plugin(Arc::new(
+    let mut registry =
+        ToolRegistry::new(64 * 1024, std::time::Duration::from_millis(60_000));
+    registry.register_plugin(Arc::new(
         WriteFilePlugin::default().with_default_cwd(temp_path.clone()),
     ));
-    agent.register_plugin(Arc::new(
+    registry.register_plugin(Arc::new(
         ReadFilePlugin::default().with_default_cwd(temp_path.clone()),
     ));
-    agent.register_plugin(Arc::new(
+    registry.register_plugin(Arc::new(
         GrepPlugin::default().with_default_cwd(temp_path.clone()),
     ));
-    agent.register_plugin(Arc::new(
+    registry.register_plugin(Arc::new(
         FindPlugin::default().with_default_cwd(temp_path.clone()),
     ));
-    agent.register_plugin(Arc::new(
+    registry.register_plugin(Arc::new(
         ListDirPlugin::default().with_default_cwd(temp_path.clone()),
     ));
-    agent.register_plugin(Arc::new(
+    registry.register_plugin(Arc::new(
         BashPlugin::default().with_default_cwd(temp_path.clone()),
     ));
-
-    let executor = agent.tool_executor().clone();
+    let executor = ToolExecutor::new(registry);
 
     // 1. write_file
     let write_call = ToolCall::new_function(

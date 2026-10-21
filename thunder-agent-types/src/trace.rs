@@ -204,3 +204,7 @@ pub struct TraceTiming {
 // the truth cannot work — so this is the one place secrets are removed, and it
 // runs on the way into the record.
 
+
+pub trait ToolTraceSink: Send + Sync {
+    fn record(&self, trace: &ToolTrace);
+}

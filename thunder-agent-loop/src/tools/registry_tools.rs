@@ -1,26 +1,13 @@
 //! The reference [`Tools`] implementation.
-//!
-//! This is the *adapter*, not the loop: it wraps today's `ToolRegistry` +
-//! `ToolExecutor` (approval, guard, scope, traces, scratchpad) and presents them
-//! through the seam. It deliberately lives outside `seam.rs` so the seam itself
-//! depends on nothing but the wire types — that is what makes the seam movable
-//! into a policy-free kernel crate.
-//!
-//! A host that wants its own policy supplies its own `Tools` through
-//! [`AgentLoop::with_tools`](crate::loop_engine::engine::AgentLoop::with_tools).
 
-use crate::seam::{ToolCallContext, ToolOutcome, ToolSpec, Tools};
+use crate::seam::{RunContext, ToolCallContext, ToolOutcome, ToolSpec, Tools, ToolsFactory};
 use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 use crate::types::message::ToolCall;
-use crate::types::tool::ToolExecutionContext;
+use crate::types::tool::{AgentTool, ToolExecutionContext};
 use futures_util::future::BoxFuture;
+use std::sync::Arc;
 
-/// The reference implementation: today's registry + executor behind the seam.
-///
-/// Kept in the kernel crate deliberately — it is the *adapter*, not the loop.
-/// Moving it to the host is a mechanical relocation; the loop compiles and runs
-/// identically with it or with a host-supplied `Tools`.
 pub struct RegistryTools {
     registry: ToolRegistry,
     executor: ToolExecutor,
@@ -34,35 +21,17 @@ impl RegistryTools {
 
 impl Tools for RegistryTools {
     fn specs(&self) -> Vec<ToolSpec> {
-        // `ToolRegistry` stores tools in a `BTreeMap`, so this order is stable
-        // across runs — the property the prompt cache depends on.
-        self.registry
-            .get_definitions()
-            .into_iter()
-            .map(|definition| {
-                let concurrency = self
-                    .registry
-                    .get(&definition.function.name)
-                    .map(|tool| tool.concurrency())
-                    .unwrap_or_default();
-                ToolSpec::new(definition, concurrency)
-            })
-            .collect()
+        self.registry.get_definitions().into_iter().map(|definition| {
+            let concurrency = self.registry.get(&definition.function.name)
+                .map(|t| t.concurrency()).unwrap_or_default();
+            ToolSpec::new(definition, concurrency)
+        }).collect()
     }
 
-    fn call<'a>(
-        &'a self,
-        call: &'a ToolCall,
-        ctx: ToolCallContext<'a>,
-    ) -> BoxFuture<'a, ToolOutcome> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolCallContext<'a>) -> BoxFuture<'a, ToolOutcome> {
         Box::pin(async move {
-            let result = self
-                .executor
-                .run_tool(call, execution_context(&ctx), ctx.timeout)
-                .await;
-            let mut outcome: ToolOutcome = result.into();
-            // The executor already measured inside the funnel; the seam only
-            // needs a sane byte count when the adapter had none to report.
+            let r = self.executor.run_tool(call, execution_context(&ctx), ctx.timeout).await;
+            let mut outcome: ToolOutcome = r.into();
             if outcome.original_bytes == 0 && !outcome.is_error {
                 outcome.original_bytes = outcome.output.len();
             }
@@ -71,11 +40,6 @@ impl Tools for RegistryTools {
     }
 }
 
-
-/// Translate the seam's borrowed context into the executor's owned one.
-///
-/// The executor fills the rest in itself (effect declaration, sub-invoker,
-/// call chain); this only forwards what the loop measured.
 fn execution_context(ctx: &ToolCallContext<'_>) -> ToolExecutionContext {
     ToolExecutionContext {
         tool_call_id: ctx.tool_call_id.to_string(),
@@ -85,4 +49,41 @@ fn execution_context(ctx: &ToolCallContext<'_>) -> ToolExecutionContext {
         event_sink: ctx.events.clone(),
         ..Default::default()
     }
+}
+
+pub struct StaticToolsFactory {
+    registry: ToolRegistry,
+    executor: ToolExecutor,
+}
+
+impl StaticToolsFactory {
+    pub fn new(registry: ToolRegistry, executor: ToolExecutor) -> Self {
+        Self { registry, executor }
+    }
+}
+
+impl ToolsFactory for StaticToolsFactory {
+    fn for_run(&self, run: &RunContext) -> Arc<dyn Tools> {
+        self.executor.install_run_trace(Arc::clone(&run.trace));
+        Arc::new(RegistryTools::new(self.registry.clone(), self.executor.clone()))
+    }
+}
+
+pub fn plain_tools(
+    tools: Vec<Arc<dyn AgentTool>>,
+    max_output_bytes: usize,
+    timeout: std::time::Duration,
+) -> Arc<dyn Tools> {
+    let mut registry = ToolRegistry::new(max_output_bytes, timeout);
+    for tool in tools { registry.register(tool); }
+    let executor = ToolExecutor::new(registry.clone());
+    Arc::new(RegistryTools::new(registry, executor))
+}
+
+pub fn single_tool(
+    tool: Arc<dyn AgentTool>,
+    max_output_bytes: usize,
+    timeout: std::time::Duration,
+) -> Arc<dyn Tools> {
+    plain_tools(vec![tool], max_output_bytes, timeout)
 }

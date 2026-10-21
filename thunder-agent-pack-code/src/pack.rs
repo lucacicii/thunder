@@ -3,6 +3,11 @@
 use crate::builtin::{BashTool, FindTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
+use thunder_agent_loop::seam::{RunContext, Tools, ToolsFactory};
+use thunder_agent_loop::tools::executor::ToolExecutor;
+use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_loop::tools::registry_tools::RegistryTools;
+use thunder_agent_loop::types::tool::AgentTool;
 
 /// What to install. Defaults match the historical "coding agent" behaviour.
 #[derive(Debug, Clone)]
@@ -34,12 +39,12 @@ impl Default for CodePackConfig {
 /// a call means "relative to the workspace" — the meaning it had when the
 /// transaction layer joined the workspace root, and the meaning a bare tool
 /// would lose by resolving against the process working directory instead.
-pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
-    let scope = crate::scope::CodeScope::from_agent_config(agent.config(), None);
-    agent = agent.with_tool_scope(Arc::new(scope));
+pub fn install_code_pack(agent: AgentLoop, config: &CodePackConfig) -> AgentLoop {
+    let scope = Arc::new(crate::scope::CodeScope::from_agent_config(agent.config(), None));
+    let ws = agent.config().workspace_dir.clone();
 
+    let mut tools: Vec<Arc<dyn AgentTool>> = Vec::new();
     if config.register_builtins {
-        let ws = agent.config().workspace_dir.clone();
         let mut bash = BashTool::default();
         let mut read = ReadFileTool::default();
         let mut write = WriteFileTool::default();
@@ -54,15 +59,45 @@ pub fn install_code_pack(mut agent: AgentLoop, config: &CodePackConfig) -> Agent
             find = find.with_default_cwd(dir.clone());
             ls = ls.with_default_cwd(dir.clone());
         }
-        agent.register_tool(Arc::new(bash));
-        agent.register_tool(Arc::new(read));
-        agent.register_tool(Arc::new(write));
-        agent.register_tool(Arc::new(grep));
-        agent.register_tool(Arc::new(find));
-        agent.register_tool(Arc::new(ls));
+        tools.extend([
+            Arc::new(bash) as Arc<dyn AgentTool>,
+            Arc::new(read),
+            Arc::new(write),
+            Arc::new(grep),
+            Arc::new(find),
+            Arc::new(ls),
+        ]);
     }
 
-    agent
+    let cfg = agent.config().clone();
+    agent.with_tools_factory(Arc::new(CodePackFactory {
+        tools,
+        scope,
+        max_output_bytes: cfg.max_tool_output_bytes,
+        timeout: std::time::Duration::from_millis(cfg.request_timeout_ms),
+    }))
+}
+
+struct CodePackFactory {
+    tools: Vec<Arc<dyn AgentTool>>,
+    scope: Arc<crate::scope::CodeScope>,
+    max_output_bytes: usize,
+    timeout: std::time::Duration,
+}
+
+impl ToolsFactory for CodePackFactory {
+    fn for_run(&self, run: &RunContext) -> Arc<dyn Tools> {
+        let mut registry = ToolRegistry::new(self.max_output_bytes, self.timeout);
+        for tool in &self.tools {
+            registry.register(Arc::clone(tool));
+        }
+        let executor = ToolExecutor::new(registry.clone())
+            .with_tool_scope(Arc::clone(&self.scope)
+                as Arc<dyn thunder_agent_loop::types::scope::ToolScope>)
+            .with_trace_ids(run.session_id.clone(), run.route.clone());
+        executor.install_run_trace(Arc::clone(&run.trace));
+        Arc::new(RegistryTools::new(registry, executor))
+    }
 }
 
 /// Returns the 6 coding capability tools as MCP-aligned `ToolPlugin` trait objects.

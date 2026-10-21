@@ -8,14 +8,12 @@ use crate::pruning::strategy::ContextPruner;
 use crate::stream::client::{
     ChatRequestOptions, LLMClientTrait, LLMStreamChunk, UnconfiguredLLMClient,
 };
-use crate::tools::executor::ToolExecutor;
-use crate::tools::registry::ToolRegistry;
 use crate::tools::scratchpad::ScratchpadManager;
 use crate::types::config::AgentConfig;
 use crate::types::error::AgentError;
 use crate::types::event::{AgentEvent, AgentStats, FinishReason, ObservedEvent, TurnStats};
 use crate::types::message::ChatMessage;
-use crate::types::tool::{AgentTool, ToolExecutionResult};
+use crate::types::tool::ToolExecutionResult;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -48,12 +46,13 @@ pub struct AgentLoop {
     id: String,
     config: AgentConfig,
     llm_client: Arc<dyn LLMClientTrait>,
-    tool_registry: ToolRegistry,
-    tool_executor: ToolExecutor,
-    /// Host-supplied tools. `None` means "use the reference adapter over the
-    /// registry + executor". Installing one severs the loop's dependency on
-    /// the policy layer entirely.
-    tools_override: Option<Arc<dyn crate::seam::Tools>>,
+    /// Host-supplied tools for this unit, used when no factory is installed.
+    ///
+    /// `None` with no factory means the unit has no tools: the model is asked
+    /// without function declarations.
+    tools: Option<Arc<dyn crate::seam::Tools>>,
+    /// Host-supplied factory, invoked once per run with that run's sinks.
+    tools_factory: Option<Arc<dyn crate::seam::ToolsFactory>>,
     event_dispatcher: AgentEventDispatcher,
     scratchpad: ScratchpadManager,
     running: Arc<AtomicBool>,
@@ -63,15 +62,6 @@ pub struct AgentLoop {
     /// Steering and follow-up queues; shared with any handle that wants to
     /// inject user input into a run already in flight.
     steer_queues: Arc<crate::core::steer::SteerQueues>,
-    /// The host's judge, threaded into every executor rebuild.
-    ///
-    /// `None` means "no gate installed": everything the guard allows runs. That
-    /// is not a weakened default — it is the contract of headless embedders,
-    /// stated rather than approximated. Hosts that want asking install a gate.
-    tool_gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
-    /// The panel approval dialogs render through. `None` means every `Ask`
-    /// refuses, which is what fail-closed means for a host with no panel.
-    host_ui: Option<Arc<dyn crate::types::ui::HostUi>>,
     /// Host-supplied check on whether a finished run may actually finish.
     ///
     /// `None` keeps the plain behaviour: the model's last answer ends the run.
@@ -79,24 +69,6 @@ pub struct AgentLoop {
     /// How many times the gate may send the run back before the loop gives up.
     /// Ignored when `completion_gate` is `None`.
     max_gate_rounds: usize,
-    /// Where finished tool traces go, beyond the run's own event stream.
-    ///
-    /// The loop always emits `AgentEvent::ToolTrace`, so a host that drains
-    /// events needs nothing here. A host that would rather receive bytes than
-    /// parse events installs a sink, and both see the same record — the kernel
-    /// serialises and redacts once, so there is no second implementation to
-    /// drift.
-    trace_sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
-    /// The host's answer to "where does this call land" — the knowledge half of
-    /// the permission system, kept apart from the policy half.
-    ///
-    /// The kernel cannot tell whether a path is inside the project without being
-    /// told what the project is, and must not try: guessing is what produced an
-    /// over-broad jail. So the host classifies, and the kernel decides what a
-    /// classification means.
-    tool_scope: Option<Arc<dyn crate::types::scope::ToolScope>>,
-    /// Interceptors installed in this agent's pipeline.
-    interceptors: Vec<Arc<dyn crate::types::plugin::InterceptorPlugin>>,
     /// Delivery losses accepted rather than stall the loop. Shared with every
     /// emitter and sink of each run, and readable by the host at any time:
     /// `structural() > 0` means the run's record may be incomplete.
@@ -108,34 +80,21 @@ impl AgentLoop {
         let id = generate_agent_id();
         let scratchpad = ScratchpadManager::new(&id, config.scratchpad.clone());
         let llm_client = Arc::new(UnconfiguredLLMClient);
-        let tool_registry = ToolRegistry::new(
-            config.max_tool_output_bytes,
-            std::time::Duration::from_millis(config.request_timeout_ms),
-        )
-        .with_scratchpad(scratchpad.clone());
-
-        let tool_executor = ToolExecutor::new(tool_registry.clone());
 
         Self {
             id,
             config,
             llm_client,
-            tool_registry,
-            tool_executor,
-            tools_override: None,
+            tools: None,
+            tools_factory: None,
             event_dispatcher: AgentEventDispatcher::default(),
             scratchpad,
             running: Arc::new(AtomicBool::new(false)),
             status: Arc::new(AtomicU8::new(LoopStatus::Idle.as_u8())),
             pause_gate: crate::core::pause::PauseGate::new_shared(),
             steer_queues: crate::core::steer::SteerQueues::new_shared(),
-            tool_gate: None,
-            host_ui: None,
             completion_gate: None,
             max_gate_rounds: 3,
-            tool_scope: None,
-            trace_sink: None,
-            interceptors: Vec::new(),
             drop_counters: crate::types::event::EventDropCounters::shared(),
         }
     }
@@ -163,92 +122,12 @@ impl AgentLoop {
     /// mode is asked on every call, so flipping the mode mid-session takes
     /// effect on the next call without rebuilding anything. Passing `None`
     /// removes the gate — which is what "uninstall the mode plugin" is.
-    /// Install a sink for finished tool traces.
-    ///
-    /// Additive, not an alternative: the run's event stream carries
-    /// `AgentEvent::ToolTrace` whether or not a sink is installed, so a host
-    /// that installs one is saying "also hand me the bytes", not "instead".
-    pub fn with_trace_sink(
-        mut self,
-        sink: Option<Arc<dyn crate::tools::trace::ToolTraceSink>>,
-    ) -> Self {
-        self.trace_sink = sink;
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Install the reference adapter's approval gate and dialog surface.
-    ///
-    /// **Only the reference adapter consults this.** When the host supplies its
-    /// own [`Tools`](crate::seam::Tools) through [`Self::with_tools`], tool
-    /// execution goes straight to that implementation and the gate, scope,
-    /// interceptors and executor configured here are never consulted — the host
-    /// owns those decisions itself.
-    pub fn with_tool_gate(
-        mut self,
-        gate: Option<Arc<dyn crate::types::gate::ToolGate>>,
-        ui: Option<Arc<dyn crate::types::ui::HostUi>>,
-    ) -> Self {
-        self.tool_gate = gate;
-        if ui.is_some() {
-            self.host_ui = ui;
-        }
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Install the host's classification of where a call lands.
-    ///
-    /// Advisory in one direction only: a scope can earn a call an automatic
-    /// allowance, and can mark a target off limits, but it can never make the
-    /// kernel refuse something the guard would have allowed it to ask about.
-    /// Held by the unit and replayed on every executor rebuild, like the
-    /// pipeline, so a tool registered later is classified the same way.
-    pub fn with_tool_scope(mut self, scope: Arc<dyn crate::types::scope::ToolScope>) -> Self {
-        self.tool_scope = Some(scope);
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Rebuild the executor around the current registrations.
-    ///
-    /// Called after anything that changes what the executor must see — a new
-    /// gate, a new scope, a tool registered later — because the executor holds a
-    /// snapshot of the registry, and a snapshot taken before a registration
-    /// does not contain it.
-    fn refresh_executor(&self) -> ToolExecutor {
-        let registry = self.tool_registry.clone();
-        let mut executor = ToolExecutor::new(registry);
-        if let Some(scope) = &self.tool_scope {
-            executor = executor.with_tool_scope(Arc::clone(scope));
-        }
-        if let Some(gate) = &self.tool_gate {
-            executor = executor.with_tool_gate(Some(Arc::clone(gate)));
-        }
-        if let Some(ui) = &self.host_ui {
-            executor = executor.with_host_ui(Arc::clone(ui));
-        }
-        // Identity, so a record can be joined against a host's own log. The
-        // route is the run's id, which for the daemon is the task id and for
-        // the TUI is `tui_<session>`.
-        executor =
-            executor.with_trace_ids(self.config.session_id.clone(), self.config.route.clone());
-        if let Some(sink) = &self.trace_sink {
-            executor = executor.with_trace_sink(Some(Arc::clone(sink)));
-        }
-        for interceptor in &self.interceptors {
-            executor = executor.with_interceptor(Arc::clone(interceptor));
-        }
-        executor
-    }
 
     /// Assign a stable unit id (used in events, scratchpad isolation, errors).
     /// Recreates the scratchpad so files land under `base_dir/<id>/`.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self.scratchpad = ScratchpadManager::new(&self.id, self.config.scratchpad.clone());
-        self.tool_registry.set_scratchpad(self.scratchpad.clone());
-        self.tool_executor = self.refresh_executor();
         self
     }
 
@@ -256,22 +135,19 @@ impl AgentLoop {
         &self.id
     }
 
-    pub fn config(&self) -> &AgentConfig {
-        &self.config
-    }
 
-    /// Read-only access to the tool executor (pipeline + registry).
-    pub fn tool_executor(&self) -> &ToolExecutor {
-        &self.tool_executor
-    }
 
     pub fn status(&self) -> LoopStatus {
         LoopStatus::from_u8(self.status.load(Ordering::Acquire))
     }
 
+
+
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
+
+
 
     /// Adopt an externally owned pause gate, so a host can hold and release this
     /// unit without reaching into its internals.
@@ -279,6 +155,8 @@ impl AgentLoop {
         self.pause_gate = gate;
         self
     }
+
+
 
     /// Adopt externally owned steering / follow-up queues.
     ///
@@ -291,62 +169,46 @@ impl AgentLoop {
         self
     }
 
+
+
     /// This unit's steering / follow-up queues.
     pub fn steer_queues(&self) -> &Arc<crate::core::steer::SteerQueues> {
         &self.steer_queues
     }
+
+
 
     pub fn with_custom_client(mut self, client: Arc<dyn LLMClientTrait>) -> Self {
         self.llm_client = client;
         self
     }
 
-    pub fn register_tool(&mut self, tool: Arc<dyn AgentTool>) -> &mut Self {
-        self.tool_registry.register(tool);
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Register a modern MCP-aligned `ToolPlugin`.
-    pub fn register_plugin(
-        &mut self,
-        plugin: Arc<dyn crate::types::plugin::ToolPlugin>,
-    ) -> &mut Self {
-        self.tool_registry.register_plugin(plugin);
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Install an interceptor plugin into the agent's execution pipeline.
-    pub fn with_interceptor(
-        mut self,
-        interceptor: Arc<dyn crate::types::plugin::InterceptorPlugin>,
-    ) -> Self {
-        self.interceptors.push(interceptor);
-        self.tool_executor = self.refresh_executor();
-        self
-    }
-
-    /// Injects a completely custom `ToolExecutor` into this AgentLoop.
-    pub fn with_tool_executor(mut self, executor: ToolExecutor) -> Self {
-        self.tool_executor = executor;
-        self
-    }
-
-    /// Install the host's tools, replacing the reference adapter.
+    /// Install the host's tools for this unit.
     ///
-    /// The loop then knows nothing but `specs()` and `call()`: no approval, no
-    /// guard, no trace. Whatever a call is allowed to do is decided inside the
-    /// implementation.
-    /// Install the host's tools, replacing the reference adapter.
+    /// The loop then knows nothing but `specs()` and `call()`. Everything the
+    /// reference adapter would have provided — approval, policy, tracing,
+    /// sandboxing — belongs to that implementation.
     ///
-    /// The loop then knows nothing but `specs()` and `call()`. Everything
-    /// configured for the reference adapter — gate, scope, interceptors, the
-    /// executor, the trace sink — is bypassed: a host that supplies tools owns
-    /// approval, policy, tracing and sandboxing.
+    /// Tools installed this way do not receive the run's event or trace sinks;
+    /// use [`Self::with_tools_factory`] when they need them.
     pub fn with_tools(mut self, tools: Arc<dyn crate::seam::Tools>) -> Self {
-        self.tools_override = Some(tools);
+        self.tools = Some(tools);
         self
+    }
+
+    /// Install a factory that builds this unit's tools once per run.
+    ///
+    /// The loop owns every run's event stream and trace channel, so it hands
+    /// them to the factory instead of letting the host reach into the loop.
+    /// Prefer this over [`Self::with_tools`] whenever tool traces matter.
+    pub fn with_tools_factory(mut self, factory: Arc<dyn crate::seam::ToolsFactory>) -> Self {
+        self.tools_factory = Some(factory);
+        self
+    }
+
+    /// This unit's configuration, as it was handed to [`Self::new`].
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
     }
 
     pub fn scratchpad(&self) -> &ScratchpadManager {
@@ -450,47 +312,36 @@ impl AgentLoop {
 
         let config = self.config.clone();
         let llm_client = self.llm_client.clone();
-        let tool_registry = self.tool_registry.clone();
-        // The run's tools get a sink bound to *this* run's event stream, so a
-        // business event a tool emits (a file change, a validation failure)
-        // arrives on the same handle the host is already draining.
-        // Every tool call leaves a trace, and the run's stream carries it.
-        // Installed on the slot the unit and every clone of it share, not just
-        // on the run's own clone: the plugin invoker holds a clone taken before
-        // this run existed, and its calls must be recorded too. Cleared when the
-        // run settles (below), so a finished run's event sender does not linger.
-        self.tool_executor
-            .install_run_trace(Arc::new(ChannelTraceSink {
-                agent_id: self.id.clone(),
-                dispatcher: self.event_dispatcher.clone(),
-                event_sender: event_sender.clone(),
-                host: self.trace_sink.clone(),
-                drops: Arc::clone(&self.drop_counters),
-            }));
-        // One sink for this run, shared by the executors and by the tool seam:
-        // a host-supplied `Tools` must be able to report the same business
-        // events a built-in tool does.
+        // The run's sinks. The loop owns the run's stream, so it is the only
+        // party that can hand them to whichever tools this run will use.
         let run_events: Arc<dyn crate::types::tool::ToolEventSink> = Arc::new(ChannelEventSink {
             agent_id: self.id.clone(),
             dispatcher: self.event_dispatcher.clone(),
             event_sender: event_sender.clone(),
             drops: Arc::clone(&self.drop_counters),
         });
-        let tool_executor = self
-            .tool_executor
-            .clone()
-            .with_event_sink(Arc::clone(&run_events));
-        // The seam the loop actually uses. A host-supplied implementation wins;
-        // otherwise the reference adapter wraps the registry and the per-run
-        // executor (with this run's event sink already installed).
-        let tools: Arc<dyn crate::seam::Tools> = match self.tools_override.clone() {
-            Some(tools) => tools,
-            None => Arc::new(crate::tools::registry_tools::RegistryTools::new(
-                tool_registry.clone(),
-                tool_executor.clone(),
-            )),
+        let run_trace: Arc<dyn thunder_agent_types::trace::ToolTraceSink> =
+            Arc::new(ChannelTraceSink {
+                agent_id: self.id.clone(),
+                dispatcher: self.event_dispatcher.clone(),
+                event_sender: event_sender.clone(),
+                host: None,
+                drops: Arc::clone(&self.drop_counters),
+            });
+
+        // A factory wins: it is how a host receives this run's sinks.
+        let tools: Arc<dyn crate::seam::Tools> = match (&self.tools_factory, &self.tools) {
+            (Some(factory), _) => factory.for_run(&crate::seam::RunContext {
+                session_id: config.session_id.clone(),
+                route: config.route.clone(),
+                events: Arc::clone(&run_events),
+                trace: Arc::clone(&run_trace),
+            }),
+            (None, Some(tools)) => Arc::clone(tools),
+            (None, None) => Arc::new(crate::seam::NoTools),
         };
         let dispatcher = self.event_dispatcher.clone();
+
         let drop_counters = Arc::clone(&self.drop_counters);
         let completion_gate = self.completion_gate.clone();
         let max_gate_rounds = self.max_gate_rounds;
@@ -1479,11 +1330,6 @@ impl AgentLoop {
             };
             tracker.set_status(terminal);
             status.store(terminal.as_u8(), Ordering::Release);
-            // The run has settled: nothing else will be published through this
-            // sink, and holding it would keep the run's event sender alive in a
-            // slot every later clone of this executor shares.
-            tool_executor.clear_run_trace();
-
             // The run settled: switch any warmer it scheduled to idle economics
             // (15% continuation estimate, 30-minute age cap).
             if let Some(session_id) = config.session_id.as_deref() {

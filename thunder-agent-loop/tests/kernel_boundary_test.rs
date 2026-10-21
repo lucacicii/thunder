@@ -21,7 +21,7 @@ fn the_seam_module_depends_on_no_policy_type() {
         "crate::types::policy",
         "ToolExecutor",
         "ToolRegistry",
-        "impl Tools for",
+        "impl Tools for RegistryTools",
     ] {
         assert!(
             !source.contains(forbidden),

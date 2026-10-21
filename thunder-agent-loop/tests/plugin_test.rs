@@ -2,13 +2,29 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_loop::types::plugin::{
     CallToolResult, InterceptorPlugin, Plugin, PreExecutionVerdict, ToolPlugin,
 };
+use thunder_agent_loop::tools::executor::ToolExecutor;
+use thunder_agent_loop::tools::registry::ToolRegistry;
 use thunder_agent_loop::types::tool::{ToolDefinition, ToolExecutionContext};
-use thunder_agent_loop::AgentConfig;
+
+
+fn executor_with(
+    plugins: Vec<Arc<dyn ToolPlugin>>,
+    interceptors: Vec<Arc<dyn InterceptorPlugin>>,
+) -> ToolExecutor {
+    let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_millis(60_000));
+    for plugin in plugins {
+        registry.register_plugin(plugin);
+    }
+    let mut executor = ToolExecutor::new(registry);
+    for interceptor in interceptors {
+        executor = executor.with_interceptor(interceptor);
+    }
+    executor
+}
 
 // Test Plugin A (Leaf Tool)
 struct EchoPlugin;
@@ -150,10 +166,7 @@ impl InterceptorPlugin for TestAuditInterceptor {
 
 #[tokio::test]
 async fn test_tool_plugin_registration_and_execution() {
-    let mut agent = AgentLoop::new(AgentConfig::default());
-    agent.register_plugin(Arc::new(EchoPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![]);
     let call = ToolCall::new_function("call_1", "echo", json!({ "msg": "hello mcp" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -165,11 +178,7 @@ async fn test_tool_plugin_registration_and_execution() {
 
 #[tokio::test]
 async fn test_sub_tool_invocation_via_context() {
-    let mut agent = AgentLoop::new(AgentConfig::default());
-    agent.register_plugin(Arc::new(EchoPlugin));
-    agent.register_plugin(Arc::new(ForwardPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>, Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>], vec![]);
     let call = ToolCall::new_function(
         "call_2",
         "forward",
@@ -185,10 +194,7 @@ async fn test_sub_tool_invocation_via_context() {
 
 #[tokio::test]
 async fn test_cycle_detection_prevents_deadlock() {
-    let mut agent = AgentLoop::new(AgentConfig::default());
-    agent.register_plugin(Arc::new(CyclePlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(CyclePlugin) as Arc<dyn ToolPlugin>], vec![]);
     let call = ToolCall::new_function("call_3", "cycle", json!({}).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -204,11 +210,7 @@ async fn test_cycle_detection_prevents_deadlock() {
 
 #[tokio::test]
 async fn test_max_depth_prevents_deep_recursion() {
-    let mut agent = AgentLoop::new(AgentConfig::default());
-    agent.register_plugin(Arc::new(EchoPlugin));
-    agent.register_plugin(Arc::new(ForwardPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>, Arc::new(ForwardPlugin) as Arc<dyn ToolPlugin>], vec![]);
     let call = ToolCall::new_function("call_4", "forward", json!({ "text": "hi" }).to_string());
 
     // Set max_depth to 0, which should forbid any sub-invocation
@@ -234,10 +236,7 @@ async fn test_interceptor_pipeline_pre_and_post_execution() {
         deny_tool: None,
     });
 
-    let mut agent = AgentLoop::new(AgentConfig::default()).with_interceptor(interceptor);
-    agent.register_plugin(Arc::new(EchoPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
     let call = ToolCall::new_function("call_5", "echo", json!({ "msg": "audit test" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -256,10 +255,7 @@ async fn test_interceptor_pipeline_denial() {
         deny_tool: Some("echo".to_string()),
     });
 
-    let mut agent = AgentLoop::new(AgentConfig::default()).with_interceptor(interceptor);
-    agent.register_plugin(Arc::new(EchoPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
     let call = ToolCall::new_function(
         "call_6",
         "echo",
@@ -294,10 +290,7 @@ async fn test_trace_interceptor_records_telemetry() {
     });
     let interceptor = Arc::new(TraceInterceptor::new(sink.clone()));
 
-    let mut agent = AgentLoop::new(AgentConfig::default()).with_interceptor(interceptor);
-    agent.register_plugin(Arc::new(EchoPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![interceptor as Arc<dyn InterceptorPlugin>]);
     let call = ToolCall::new_function("call_7", "echo", json!({ "msg": "trace test" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)
@@ -367,12 +360,7 @@ async fn test_interceptor_priority_ordering() {
         log: log.clone(),
     });
 
-    let mut agent = AgentLoop::new(AgentConfig::default())
-        .with_interceptor(low)
-        .with_interceptor(high);
-    agent.register_plugin(Arc::new(EchoPlugin));
-
-    let executor = agent.tool_executor().clone();
+    let executor = executor_with(vec![Arc::new(EchoPlugin) as Arc<dyn ToolPlugin>], vec![low as Arc<dyn InterceptorPlugin>, high as Arc<dyn InterceptorPlugin>]);
     let call = ToolCall::new_function("call_prio", "echo", json!({ "msg": "prio" }).to_string());
     let res = executor
         .run_tool(&call, ToolExecutionContext::default(), None)

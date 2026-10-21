@@ -26,6 +26,7 @@ use crate::types::tool::{ToolDefinition, ToolEventSink, ToolExecutionResult};
 use futures_util::future::BoxFuture;
 use futures_util::future::join_all;
 use std::sync::Arc;
+use thunder_agent_types::trace::ToolTraceSink;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -175,6 +176,59 @@ pub trait Tools: Send + Sync {
 pub struct ExecutedCall {
     pub tool_call: ToolCall,
     pub result: ToolExecutionResult,
+}
+
+
+/// What the loop hands a factory for one run.
+///
+/// The run's sinks are created by the loop (it owns the run's stream), so a host
+/// that wants per-run observability receives them here rather than reaching into
+/// the loop.
+pub struct RunContext {
+    pub session_id: Option<String>,
+    pub route: Option<String>,
+    pub events: Arc<dyn ToolEventSink>,
+    pub trace: Arc<dyn ToolTraceSink>,
+}
+
+impl std::fmt::Debug for RunContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunContext")
+            .field("session_id", &self.session_id)
+            .field("route", &self.route)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Builds the tools for one run.
+///
+/// Use this when tool execution needs the run's event channel or trace sink —
+/// i.e. whenever the host wants tool traces. A host that needs neither can use
+/// [`Tools`] directly through `AgentLoop::with_tools`.
+pub trait ToolsFactory: Send + Sync {
+    fn for_run(&self, run: &RunContext) -> Arc<dyn Tools>;
+}
+
+/// A unit with no tools at all: the model is asked without declarations, and a
+/// call that nevertheless names one is answered with an error instead of
+/// failing the run.
+#[derive(Debug, Default)]
+pub struct NoTools;
+
+impl Tools for NoTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+
+    fn call<'a>(
+        &'a self,
+        call: &'a ToolCall,
+        _ctx: ToolCallContext<'a>,
+    ) -> BoxFuture<'a, ToolOutcome> {
+        Box::pin(async move {
+            ToolOutcome::error(format!("no tool named '{}'", call.function.name))
+        })
+    }
 }
 
 /// Run one batch of tool calls through the seam.

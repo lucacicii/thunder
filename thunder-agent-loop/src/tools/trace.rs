@@ -4,7 +4,7 @@
 
 pub use thunder_agent_types::trace::{
     AskAnswer, Decision, DenyBy, GuardHit, GuardKind, TraceResult, TraceTiming, ToolTrace,
-    TRACE_SCHEMA,
+    ToolTraceSink, TRACE_SCHEMA,
 };
 
 use crate::types::plugin::{CallToolResult, InterceptorPlugin, Plugin};
@@ -233,13 +233,6 @@ fn redact_value(value: &mut serde_json::Value, key: Option<&str>, fired: &mut Re
 /// arrives serialised and redacted, so a sink that writes it to disk never has to
 /// know which fields were sensitive — one redaction implementation, not one per
 /// host.
-pub trait ToolTraceSink: Send + Sync {
-    /// Take one finished trace.
-    ///
-    /// Must not block the tool path for long, and must not fail the call: a sink
-    /// that cannot keep up loses records, it does not stop work.
-    fn record(&self, trace: &ToolTrace);
-}
 
 /// An [`InterceptorPlugin`] adapter that observes tool completions and records
 /// a [`ToolTrace`] into an underlying [`ToolTraceSink`].

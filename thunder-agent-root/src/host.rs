@@ -9,6 +9,11 @@ use crate::selector::{PluginSelection, PluginSelector};
 use crate::thunder_config::ThunderConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
+use thunder_agent_loop::tools::executor::ToolExecutor;
+use thunder_agent_loop::tools::registry::ToolRegistry;
+use thunder_agent_loop::tools::registry_tools::StaticToolsFactory;
+use thunder_agent_loop::types::gate::ToolGate;
+use thunder_agent_loop::types::scope::ToolScope;
 use thunder_agent_loop::loop_engine::handle::AgentHandle;
 use thunder_agent_loop::stream::client::LLMClientTrait;
 use thunder_agent_loop::types::invoke::{
@@ -853,14 +858,8 @@ impl ThunderRoot {
             &agent_cfg,
             self.workspace_root.as_deref(),
         );
-        let mut agent = AgentLoop::new(agent_cfg)
-            .with_id(format!("root_{}", session_id))
-            .with_tool_scope(Arc::new(code_scope));
-
-        // The judge. Always installed, including in `yolo`: the mode is what
-        // decides whether a call asks, and one code path for every mode means
-        // there is no configuration in which the floor is the only check.
-        agent = agent.with_tool_gate(Some(Arc::clone(&mode_plugin) as _), Some(ui.clone()));
+        let run_cfg = agent_cfg.clone();
+        let mut agent = AgentLoop::new(agent_cfg).with_id(format!("root_{}", session_id));
 
         if let Some(client) = resolved_client {
             agent = agent.with_custom_client(client);
@@ -883,53 +882,66 @@ impl ThunderRoot {
         )
         .await;
 
-        for plugin in loaded.tool_plugins {
-            agent.register_plugin(plugin);
-        }
-        for interceptor in loaded.interceptors {
-            agent = agent.with_interceptor(interceptor);
-        }
-
         let disabled_set: std::collections::HashSet<String> = thunder_cfg
             .plugins()
             .and_then(|p| p.disabled.as_ref())
             .map(|list| list.iter().cloned().collect())
             .unwrap_or_default();
 
-        // Register tools, capability plugins, and interceptors contributed by active plugins
+        // ── The host owns the tools and the judge ────────────────────────
+        let mut registry = ToolRegistry::new(
+            run_cfg.max_tool_output_bytes,
+            std::time::Duration::from_millis(run_cfg.request_timeout_ms),
+        )
+        .with_scratchpad(agent.scratchpad().clone());
+
         for tool in active_set.collect_tools() {
             if !crate::loader::matches_plugin_id(&disabled_set, &tool.name()) {
-                agent.register_tool(tool);
+                registry.register(tool);
             }
         }
         for plugin in active_set.collect_tool_plugins() {
             if !crate::loader::matches_plugin_id(&disabled_set, plugin.id()) {
-                agent.register_plugin(plugin);
+                registry.register_plugin(plugin);
             }
         }
+        for plugin in loaded.tool_plugins {
+            registry.register_plugin(plugin);
+        }
+
+        // The judge. Always installed, including in `yolo`: the mode is what
+        // decides whether a call asks, and one code path for every mode means
+        // there is no configuration in which the floor is the only check.
+        let mut executor = ToolExecutor::new(registry.clone())
+            .with_tool_scope(Arc::new(code_scope) as Arc<dyn ToolScope>)
+            .with_tool_gate(Some(Arc::clone(&mode_plugin) as Arc<dyn ToolGate>))
+            .with_host_ui(Arc::clone(&ui))
+            .with_trace_ids(run_cfg.session_id.clone(), run_cfg.route.clone());
+
+        for interceptor in loaded.interceptors {
+            executor = executor.with_interceptor(interceptor);
+        }
         for interceptor in active_set.collect_interceptors() {
-            // Avoid double-registering the mode judge if it is already installed as the primary ToolGate.
             if interceptor.id() == "mode_interceptor"
                 || crate::loader::matches_plugin_id(&disabled_set, interceptor.id())
             {
                 continue;
             }
-            agent = agent.with_interceptor(interceptor);
+            executor = executor.with_interceptor(interceptor);
         }
 
-        // Now that every tool is registered, hand the plugin host an invoker
-        // that dispatches through *this* pipeline.
-        //
-        // Ordering matters twice over:
-        //   * the snapshot is taken here because `register_tool` rebuilds the
-        //     pipeline, so an earlier snapshot would miss later registrations;
-        //   * dispatching through the pipeline — not the bare registry — is what
-        //     makes a plugin-initiated call subject to the same approval,
-        //     transaction and approval gate as a model-initiated one.
+        agent = agent.with_tools_factory(Arc::new(StaticToolsFactory::new(
+            registry,
+            executor.clone(),
+        )));
+
+        // Hand the plugin host an invoker that dispatches through *this*
+        // pipeline — not the bare registry, so a plugin-initiated call is
+        // judged exactly like a model-initiated one.
         {
             let mut slot = tool_slot.write().await;
             *slot = Some(Arc::new(
-                ExecutorToolInvoker::new(agent.tool_executor().clone())
+                ExecutorToolInvoker::new(executor.clone())
                     .with_turn(1)
                     .with_cancellation(cancel.clone())
                     .with_ui(Arc::clone(&ui)),
