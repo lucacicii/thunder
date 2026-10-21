@@ -87,6 +87,12 @@ pub struct AgentConfig {
     pub max_turns: Option<usize>,
     pub max_tokens_budget: Option<usize>,
     pub max_tool_output_bytes: usize,
+    /// Ceiling on bytes queued in this run's event stream.
+    ///
+    /// The channel is bounded by frame count; this bounds the memory those
+    /// frames can pin when one of them carries a large tool result. A producer
+    /// that cannot get space in five seconds drops the event and counts it.
+    pub max_event_bytes: usize,
     pub request_timeout_ms: u64,
     pub max_stream_retries: usize,
     pub thinking_level: Option<String>,
@@ -131,6 +137,7 @@ impl Default for AgentConfig {
             max_turns: Some(50), // Default: 50 turns safety ceiling. Use `with_unlimited_turns()` to run indefinitely.
             max_tokens_budget: None,
             max_tool_output_bytes: 64 * 1024,
+            max_event_bytes: crate::loop_engine::event_stream::DEFAULT_MAX_EVENT_BYTES,
             request_timeout_ms: 60_000,
             max_stream_retries: 2,
             thinking_level: None,

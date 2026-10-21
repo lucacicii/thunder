@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod event_stream;
 pub mod gate;
 pub mod guard;
 pub mod handle;

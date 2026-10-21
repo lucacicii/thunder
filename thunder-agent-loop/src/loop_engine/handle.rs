@@ -2,11 +2,11 @@ use crate::core::pause::PauseGate;
 use crate::core::state::LoopStatus;
 use crate::core::steer::SteerQueues;
 use crate::loop_engine::engine::AgentRunResult;
+use crate::loop_engine::event_stream::EventStream;
 use crate::types::error::AgentError;
-use crate::types::event::ObservedEvent;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// Live handle for one in-flight unit execution.
@@ -22,7 +22,7 @@ pub struct AgentHandle {
     pause_gate: Arc<PauseGate>,
     steer_queues: Arc<SteerQueues>,
     result_rx: oneshot::Receiver<AgentRunResult>,
-    event_rx: Option<mpsc::Receiver<ObservedEvent>>,
+    event_rx: Option<EventStream>,
 }
 
 impl AgentHandle {
@@ -34,7 +34,7 @@ impl AgentHandle {
         pause_gate: Arc<PauseGate>,
         steer_queues: Arc<SteerQueues>,
         result_rx: oneshot::Receiver<AgentRunResult>,
-        event_rx: mpsc::Receiver<ObservedEvent>,
+        event_rx: EventStream,
     ) -> Self {
         Self {
             agent_id,
@@ -108,12 +108,12 @@ impl AgentHandle {
     /// channel fills — events are not silently dropped.
     ///
     /// Returns `None` after the receiver has been taken (e.g. by [`Self::take_events`]).
-    pub fn events(&mut self) -> Option<&mut mpsc::Receiver<ObservedEvent>> {
+    pub fn events(&mut self) -> Option<&mut EventStream> {
         self.event_rx.as_mut()
     }
 
     /// Take the event receiver so the caller can move it into another task.
-    pub fn take_events(&mut self) -> Option<mpsc::Receiver<ObservedEvent>> {
+    pub fn take_events(&mut self) -> Option<EventStream> {
         self.event_rx.take()
     }
 
