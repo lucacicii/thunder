@@ -15,6 +15,9 @@ pub type BashPlugin = BashTool;
 pub struct BashTool {
     max_buffer_bytes: usize,
     default_cwd: Option<PathBuf>,
+    /// The program that runs the command line; `bash` by name, a host's choice
+    /// by default (see [`ShellConfig::detect`]).
+    shell: crate::builtin::shell::ShellConfig,
 }
 
 impl Default for BashTool {
@@ -28,11 +31,22 @@ impl BashTool {
         Self {
             max_buffer_bytes,
             default_cwd: None,
+            shell: crate::builtin::shell::ShellConfig::detect(),
         }
     }
 
     pub fn with_default_cwd(mut self, cwd: PathBuf) -> Self {
         self.default_cwd = Some(cwd);
+        self
+    }
+
+    /// Run command lines through `shell` instead of the detected one.
+    ///
+    /// The tool keeps its `bash` name — that is the name the model calls and
+    /// the one permission rules are written against — while the program behind
+    /// it stays a host decision.
+    pub fn with_shell(mut self, shell: crate::builtin::shell::ShellConfig) -> Self {
+        self.shell = shell;
         self
     }
 }
@@ -122,8 +136,8 @@ impl AgentTool for BashTool {
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::from_secs(120));
 
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c")
+        let mut cmd = Command::new(self.shell.program());
+        cmd.arg(self.shell.flag())
             .arg(command)
             .stdin(Stdio::null()) // Prevent interactive hanging on user stdin prompts
             .stdout(Stdio::piped())
@@ -149,7 +163,7 @@ impl AgentTool for BashTool {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn bash process: {}", e))?;
+            .map_err(|e| format!("Failed to spawn {}: {}", self.shell.program().display(), e))?;
 
         let mut stdout_pipe = child.stdout.take().ok_or("Failed to capture stdout")?;
         let mut stderr_pipe = child.stderr.take().ok_or("Failed to capture stderr")?;
