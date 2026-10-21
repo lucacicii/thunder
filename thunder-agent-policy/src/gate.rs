@@ -21,9 +21,9 @@
 //! So a gate may only *tighten*: it chooses between allow, ask and deny for a
 //! call the guard has already permitted. It cannot loosen anything.
 
+use serde::{Deserialize, Serialize};
 use thunder_agent_types::policy::{Caller, ToolEffect};
 use thunder_agent_types::scope::Scope;
-use serde::{Deserialize, Serialize};
 
 /// One call, as presented to a gate.
 ///

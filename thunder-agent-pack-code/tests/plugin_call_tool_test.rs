@@ -10,13 +10,15 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_agent_loop::prelude::*;
-use thunder_agent_policy::invoke::{ExecutorToolInvoker, NullToolInvoker, ToolInvocationContext, ToolInvoker};
-use thunder_agent_policy::ui::{NotifyLevel, NullHostUi};
-use thunder_agent_policy::gate::{ALLOW_ONCE, DENY};
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_policy::gate::ToolGate;
 use thunder_agent_pack_code::builtin::*;
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::gate::ToolGate;
+use thunder_agent_policy::gate::{ALLOW_ONCE, DENY};
+use thunder_agent_policy::invoke::{
+    ExecutorToolInvoker, NullToolInvoker, ToolInvocationContext, ToolInvoker,
+};
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::ui::{NotifyLevel, NullHostUi};
 
 /// The executor a host hands the invoker: real tools, an optional judge, an
 /// optional panel.

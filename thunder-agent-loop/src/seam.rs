@@ -23,11 +23,11 @@
 use crate::tools::notice::SystemNotice;
 use crate::types::message::ToolCall;
 use crate::types::tool::{ToolDefinition, ToolEventSink, ToolExecutionResult};
-use futures_util::future::BoxFuture;
 use futures_util::future::join_all;
+use futures_util::future::BoxFuture;
 use std::sync::Arc;
-use thunder_agent_types::trace::ToolTraceSink;
 use std::time::{Duration, Instant};
+use thunder_agent_types::trace::ToolTraceSink;
 use tokio_util::sync::CancellationToken;
 
 /// How a tool may be scheduled relative to its batch peers.
@@ -178,7 +178,6 @@ pub struct ExecutedCall {
     pub result: ToolExecutionResult,
 }
 
-
 /// What the loop hands a factory for one run.
 ///
 /// The run's sinks are created by the loop (it owns the run's stream), so a host
@@ -225,9 +224,9 @@ impl Tools for NoTools {
         call: &'a ToolCall,
         _ctx: ToolCallContext<'a>,
     ) -> BoxFuture<'a, ToolOutcome> {
-        Box::pin(async move {
-            ToolOutcome::error(format!("no tool named '{}'", call.function.name))
-        })
+        Box::pin(
+            async move { ToolOutcome::error(format!("no tool named '{}'", call.function.name)) },
+        )
     }
 }
 
@@ -263,9 +262,9 @@ pub async fn execute_batch(
         return out;
     }
 
-    let futures = calls.iter().map(|call| {
-        run_one(tools, call, turn, route, cancel, timeout, events.clone())
-    });
+    let futures = calls
+        .iter()
+        .map(|call| run_one(tools, call, turn, route, cancel, timeout, events.clone()));
     join_all(futures).await
 }
 
@@ -283,7 +282,10 @@ async fn run_one(
     if cancel.is_cancelled() {
         return ExecutedCall {
             tool_call: call.clone(),
-            result: ToolExecutionResult::error("Tool execution cancelled".to_string(), Duration::ZERO),
+            result: ToolExecutionResult::error(
+                "Tool execution cancelled".to_string(),
+                Duration::ZERO,
+            ),
         };
     }
 
@@ -318,10 +320,7 @@ pub fn batch_is_sequential(specs: &[ToolSpec], calls: &[ToolCall]) -> bool {
 
 /// Map a spec list to the wire definitions a provider request carries.
 pub fn definitions(specs: &[ToolSpec]) -> Vec<ToolDefinition> {
-    specs
-        .iter()
-        .map(|spec| spec.definition.clone())
-        .collect()
+    specs.iter().map(|spec| spec.definition.clone()).collect()
 }
 
 #[cfg(test)]
@@ -344,7 +343,12 @@ mod tests {
             Arc::new(Self {
                 specs: names
                     .iter()
-                    .map(|(n, c)| ToolSpec::new(ToolDefinition::new_function(*n, "stub", serde_json::json!({})), *c))
+                    .map(|(n, c)| {
+                        ToolSpec::new(
+                            ToolDefinition::new_function(*n, "stub", serde_json::json!({})),
+                            *c,
+                        )
+                    })
                     .collect(),
                 calls: Mutex::new(Vec::new()),
                 order: Mutex::new(Vec::new()),
@@ -384,8 +388,16 @@ mod tests {
     #[tokio::test]
     async fn specs_are_stable_and_ordered() {
         let tools = StubTools::new(&[("a", Concurrency::Parallel), ("b", Concurrency::Parallel)]);
-        let first: Vec<String> = tools.specs().into_iter().map(|s| s.definition.function.name).collect();
-        let second: Vec<String> = tools.specs().into_iter().map(|s| s.definition.function.name).collect();
+        let first: Vec<String> = tools
+            .specs()
+            .into_iter()
+            .map(|s| s.definition.function.name)
+            .collect();
+        let second: Vec<String> = tools
+            .specs()
+            .into_iter()
+            .map(|s| s.definition.function.name)
+            .collect();
         assert_eq!(first, second);
         assert_eq!(first, vec!["a".to_string(), "b".to_string()]);
     }
@@ -430,7 +442,10 @@ mod tests {
         )
         .await;
         assert_eq!(out.len(), 2);
-        assert_eq!(*tools.order.lock().unwrap(), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            *tools.order.lock().unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[tokio::test]

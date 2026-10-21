@@ -27,9 +27,9 @@
 //! automatic allowance either.
 
 use crate::trace::{GuardHit, GuardKind};
+use serde_json::Value;
 use thunder_agent_types::policy::ToolEffect;
 use thunder_agent_types::scope::Scope;
-use serde_json::Value;
 
 /// Verbs that run the *next* verb rather than doing work themselves.
 const WRAPPERS: &[&str] = &[

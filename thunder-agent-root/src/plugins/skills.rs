@@ -95,7 +95,6 @@ async fn get_cached_default_skills() -> Vec<Skill> {
 }
 
 #[cfg(feature = "skills")]
-
 impl PromptSection for SkillsPlugin {
     fn id(&self) -> &str {
         Self::ID

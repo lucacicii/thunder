@@ -11,18 +11,18 @@
 //! If any of this ever requires a coding concept to work, the kernel has stopped
 //! being generic and this test is where that should surface.
 
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use thunder_agent_policy::registry_tools::single_tool;
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
 use thunder_agent_loop::loop_engine::gate::{CompletionGate, GateRequest, GateVerdict};
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::event::{AgentEvent, FinishReason};
 use thunder_agent_loop::types::message::ToolCall;
+use thunder_agent_policy::registry_tools::single_tool;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_types::policy::ToolEffect;
 use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::Mutex;
@@ -157,9 +157,13 @@ async fn runs_a_non_code_workflow_end_to_end() {
         turn: AtomicUsize::new(0),
     }))
     .with_completion_gate(Arc::new(MinimumAmountGate), 3);
-    agent = agent.with_tools(single_tool(Arc::new(SubmitFormTool {
-        calls: calls.clone(),
-    }), 64 * 1024, std::time::Duration::from_millis(60_000)));
+    agent = agent.with_tools(single_tool(
+        Arc::new(SubmitFormTool {
+            calls: calls.clone(),
+        }),
+        64 * 1024,
+        std::time::Duration::from_millis(60_000),
+    ));
 
     let mut handle = agent.start("collect the form", None).unwrap();
     let mut saw_custom_event = false;

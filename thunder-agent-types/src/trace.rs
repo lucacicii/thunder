@@ -204,7 +204,12 @@ pub struct TraceTiming {
 // the truth cannot work — so this is the one place secrets are removed, and it
 // runs on the way into the record.
 
-
+/// A host's sink for finished traces.
+///
+/// One direction only: the kernel hands over a record and forgets it. The record
+/// arrives serialised and redacted, so a sink that writes it to disk never has to
+/// know which fields were sensitive — one redaction implementation, not one per
+/// host.
 pub trait ToolTraceSink: Send + Sync {
     fn record(&self, trace: &ToolTrace);
 }

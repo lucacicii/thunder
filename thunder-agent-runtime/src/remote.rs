@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thunder_agent_loop::loop_engine::gate::{CompletionGate, GateRequest, GateVerdict};
-use thunder_agent_types::policy::ToolEffect;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::policy::ToolEffect;
 use thunder_agent_types::tool::ToolDefinition;
 use tokio::sync::{mpsc, oneshot, Mutex};
 

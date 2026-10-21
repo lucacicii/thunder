@@ -6,17 +6,17 @@
 //! blind. This file pins the whole path: gate detail → `UiRequest::Select.detail`
 //! → the exact string the panel renders.
 
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
-use thunder_agent_policy::gate::{ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest};
 use thunder_agent_loop::types::message::ToolCall;
-use thunder_agent_types::tool::{ToolDefinition, ToolExecutionResult};
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::gate::{ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest};
+use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_policy::ui::{HostUi, NotifyLevel, UiRequest, UiResponse, UiSource};
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
+use thunder_agent_types::tool::{ToolDefinition, ToolExecutionResult};
 
 struct BashLike;
 

@@ -11,9 +11,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use thunder_agent_loop::loop_engine::engine::AgentLoop;
-use thunder_agent_loop::seam::{
-    Concurrency, ToolCallContext, ToolOutcome, ToolSpec, Tools,
-};
+use thunder_agent_loop::seam::{Concurrency, ToolCallContext, ToolOutcome, ToolSpec, Tools};
 use thunder_agent_loop::stream::client::{ChatRequestOptions, LLMClientTrait, LLMStreamChunk};
 use thunder_agent_loop::types::config::AgentConfig;
 use thunder_agent_loop::types::event::FinishReason;
@@ -162,7 +160,11 @@ async fn a_host_supplied_tools_impl_replaces_the_registry_entirely() {
     assert_eq!(tools.calls.lock().unwrap().len(), 2, "called once per turn");
     // Three turns: two with tool calls, one final stop. `specs()` is asked once
     // per turn, not once per tool call — the prefix is built per request.
-    assert_eq!(tools.specs_calls.load(Ordering::Relaxed), 3, "specs once per turn");
+    assert_eq!(
+        tools.specs_calls.load(Ordering::Relaxed),
+        3,
+        "specs once per turn"
+    );
 
     // The loop's own registry is empty: every request carried the host's spec.
     let sent = client.sent_tools.lock().unwrap();
@@ -208,7 +210,10 @@ async fn specs_are_the_only_thing_the_loop_asks_for() {
     assert!(tools.calls.lock().unwrap().is_empty());
 
     let sent = client.sent_tools.lock().unwrap();
-    assert_eq!(sent.first().map(|v| v.as_slice()), Some(&["phantom".to_string()][..]));
+    assert_eq!(
+        sent.first().map(|v| v.as_slice()),
+        Some(&["phantom".to_string()][..])
+    );
 }
 
 #[tokio::test]
@@ -234,6 +239,9 @@ async fn a_host_tool_can_emit_on_the_runs_event_stream() {
 
     let result = handle.join().await.expect("join");
     assert_eq!(result.finish_reason, FinishReason::Done);
-    assert!(saw_probe, "the run's sink must be handed to a host-supplied Tools");
+    assert!(
+        saw_probe,
+        "the run's sink must be handed to a host-supplied Tools"
+    );
     assert_eq!(tools.calls.lock().unwrap().len(), 1);
 }

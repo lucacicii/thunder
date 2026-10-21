@@ -1,21 +1,20 @@
-use thunder_agent_policy::{ToolExecutionContext};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::tempdir;
-use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_loop::types::message::ToolCall;
 use thunder_agent_pack_code::builtin::{
     BashPlugin, FindPlugin, GrepPlugin, ListDirPlugin, ReadFilePlugin, WriteFilePlugin,
 };
+use thunder_agent_policy::executor::ToolExecutor;
+use thunder_agent_policy::registry::ToolRegistry;
+use thunder_agent_policy::ToolExecutionContext;
 
 #[tokio::test]
 async fn test_mcp_plugins_direct_registration_and_execution() {
     let temp = tempdir().unwrap();
     let temp_path = temp.path().to_path_buf();
 
-    let mut registry =
-        ToolRegistry::new(64 * 1024, std::time::Duration::from_millis(60_000));
+    let mut registry = ToolRegistry::new(64 * 1024, std::time::Duration::from_millis(60_000));
     registry.register_plugin(Arc::new(
         WriteFilePlugin::default().with_default_cwd(temp_path.clone()),
     ));

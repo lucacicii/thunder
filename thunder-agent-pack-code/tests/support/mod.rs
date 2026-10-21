@@ -10,10 +10,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use thunder_agent_policy::executor::ToolExecutor;
-use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_policy::gate::{GateVerdict, ToolGate, ToolGateRequest};
-use thunder_agent_types::policy::ToolEffect;
+use thunder_agent_policy::registry::ToolRegistry;
 use thunder_agent_policy::ui::HostUi;
+use thunder_agent_types::policy::ToolEffect;
 
 /// The executor as a host assembles it: registry, pipeline, optional gate,
 /// optional panel.

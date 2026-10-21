@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::sync::Arc;
-use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_mcp::prelude::*;
+use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use tokio_util::sync::CancellationToken;
 
 #[test]

@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use thunder_agent_types::policy::ToolEffect;
 use thunder_agent_policy::{AgentTool, ToolExecutionContext};
 use thunder_agent_providers::prelude::ProviderRegistry;
 use thunder_agent_root::plugins::web::fetch::WebFetchTool;
 use thunder_agent_root::plugins::web::{FetchCache, WEB_FETCH_TOOL};
+use thunder_agent_types::policy::ToolEffect;
 
 /// A tool with an empty registry (no utility model) and an isolated cache.
 fn offline_tool() -> WebFetchTool {

@@ -1,28 +1,26 @@
-use crate::guard::Guard;
-use thunder_agent_types::notice::SystemNotice;
-use crate::registry::ToolRegistry;
-use crate::trace::{
-    redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
-    ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
-};
 use crate::gate::{
     ApprovalAnswer, ApprovalPrompt, GateVerdict, ToolGate, ToolGateRequest, ALLOW_ALWAYS,
     ALLOW_ONCE, DENY, DENY_WITH_REASON,
 };
-use thunder_agent_types::message::ToolCall;
-use crate::plugin::{
-    CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker,
-};
-use thunder_agent_types::policy::{Caller, ToolEffect};
-use thunder_agent_types::scope::{Scope, ToolScope};
-use thunder_agent_types::tool::{ToolEventSink, ToolExecutionResult};
+use crate::guard::Guard;
+use crate::plugin::{CallToolResult, InterceptorPlugin, PreExecutionVerdict, SubToolInvoker};
+use crate::registry::ToolRegistry;
 use crate::tool_policy::ToolExecutionContext;
+use crate::trace::{
+    redact_arguments, withhold, AskAnswer, Decision, DenyBy, GuardHit, GuardKind, ToolTrace,
+    ToolTraceSink, TraceResult, TraceTiming, TRACE_SCHEMA,
+};
 use crate::ui::{HostUi, NullHostUi, UiRequest, UiSource};
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thunder_agent_types::message::ToolCall;
+use thunder_agent_types::notice::SystemNotice;
+use thunder_agent_types::policy::{Caller, ToolEffect};
+use thunder_agent_types::scope::{Scope, ToolScope};
+use thunder_agent_types::tool::{ToolEventSink, ToolExecutionResult};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -879,8 +877,7 @@ impl TraceDraft {
         ids: (Option<String>, Option<String>),
     ) -> ToolTrace {
         let output = &result.output;
-        let (preview, output_rules) =
-            crate::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
+        let (preview, output_rules) = crate::trace::redact_preview(output, OUTPUT_PREVIEW_CHARS);
         // A credential the arguments declared secret is withheld from the
         // output too: a tool that echoes what it was given would otherwise put
         // the value back with the key that named it stripped away, which is
