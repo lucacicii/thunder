@@ -10,22 +10,21 @@
 
 ## 🚀 Architectural Design
 
-1. **Microkernel Architecture (Everything is a Plugin)**:
-   - The host maintains only minimal execution scheduling; all capabilities are implemented through the `ThunderPlugin` contract:
+1. **Microkernel Architecture (Explicit Assembly)**:
+   - The host contributes three lists — `PromptSection`, `ToolPack`, `Observer` — plus a per-run `Prepared` hook. There is no plugin registry and no keyword selection: registered is active.
      - **`ConversationPlugin`**: Multi-turn session tracking, Turn grouping, and atomic filesystem persistence.
      - **`MemoryPlugin`**: Layers `.thunder` long-term memory (`THUNDER.md` / `memory/*.md`) into the system prompt.
      - **`SkillsPlugin`**: Playbook directory discovery, prompt injection, and dynamic skill inspection tools.
      - **`McpPlugin`**: Model Context Protocol connections and remote tool bridging.
      - **`MetricsPlugin`**: Model telemetry — live/average tok/s, token breakdown, prompt-cache hit rate, context occupancy, and durations; streamed as `metrics_update` custom events without touching the kernel.
      - **`StatusPlugin`**: Execution status — whether the agent is thinking, streaming, which tool it is running, what it is waiting on, whether it is paused, and when it finished; streamed as `agent_status` custom events **only on a transition**. The single authority for "what is it doing right now".
-2. **Deterministic Zero-LLM Latency Activation**:
-   - Replaces sluggish secondary LLM intent classification (which added 1~2s latency per turn).
-   - `PluginSelector` enforces a **deterministic baseline**: conversation, skills, memory, web, telemetry and execution-status plugins are permanently active for all runs;
-   - Complex plugins (MCP, etc.) are activated selectively via keyword intent triggers, ensuring **zero added latency, minimal token consumption, and maximal extensibility**.
+2. **Registered is Active (No Hidden Routing)**:
+   - No selector, no secondary LLM intent classification: whatever the host assembled is what this run has.
+   - `plugins.disabled` in `.thunder/config.json` is the only subtraction, so the tool table and the prompt prefix cannot drift between turns — the condition for a stable provider-side prompt cache.
 3. **Global Skills Scan Cache (120s TTL)**:
    - Features `DEFAULT_SKILLS_CACHE` with a 120-second TTL over skill directories, eliminating redundant disk walks and filesystem bottlenecks during multi-turn interactions.
 4. **One-line Standard Assembly (`StandardHostBuilder`)**:
-   - The canonical assembly entry point: mounts conversation, telemetry, execution status, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_plugin`.
+   - The canonical assembly entry point: mounts conversation, telemetry, execution status, memory, web, skills and MCP by default; host-specific capabilities (e.g. the daemon's `ask_user`) are appended after `build` via `ThunderRoot::with_pack(ToolPack::new("ask_user").with_tool(...))`.
 5. **Declarative Plugin Configuration & Discovery (`PluginLoader`)**:
    - Declare the `plugins` section in `.thunder/config.json` and its layered overrides:
      - `builtin`: Whitelist enabled built-in tools (e.g. `["read_file", "write_file", "grep"]`);
@@ -54,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = RootRunOptions::default();
     let result = root.run("Check git status and summarize recent commits", options).await?;
 
-    println!("Active Plugins: {:?}", result.selection.active_plugin_ids);
+    // What is installed is readable before the run (there is no "selection")
+    println!("Components: {:?}", root.component_ids());
     println!("Final Content: {:?}", result.final_content);
     println!("Total Turns: {}", result.run_result.stats.total_turns);
     println!("Live tok/s: {:?}", result.metrics.map(|m| m.live_tps));
