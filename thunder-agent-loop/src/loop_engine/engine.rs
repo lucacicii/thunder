@@ -223,10 +223,19 @@ impl AgentLoop {
         let token = cancel_token.unwrap_or_default();
         let (event_tx, event_rx) = mpsc::channel::<ObservedEvent>(512);
         let (result_tx, result_rx) = oneshot::channel();
+        let budget = Arc::new(crate::loop_engine::event_stream::EventBudget::new(
+            self.config.max_event_bytes,
+        ));
 
         let pause_gate = Arc::clone(&self.pause_gate);
         let steer_queues = Arc::clone(&self.steer_queues);
-        self.spawn_loop(input.into(), event_tx, result_tx, token.clone());
+        self.spawn_loop(
+            input.into(),
+            event_tx,
+            Arc::clone(&budget),
+            result_tx,
+            token.clone(),
+        );
 
         Ok(AgentHandle::new(
             self.id.clone(),
@@ -236,7 +245,7 @@ impl AgentLoop {
             pause_gate,
             steer_queues,
             result_rx,
-            event_rx,
+            crate::loop_engine::event_stream::EventStream::new(event_rx, budget),
         ))
     }
 
@@ -258,6 +267,7 @@ impl AgentLoop {
         &self,
         input: ContextInput,
         event_sender: mpsc::Sender<ObservedEvent>,
+        budget: Arc<crate::loop_engine::event_stream::EventBudget>,
         result_tx: oneshot::Sender<AgentRunResult>,
         cancel_token: CancellationToken,
     ) {
@@ -298,6 +308,7 @@ impl AgentLoop {
             agent_id: self.id.clone(),
             dispatcher: self.event_dispatcher.clone(),
             event_sender: event_sender.clone(),
+            budget: Arc::clone(&budget),
             drops: Arc::clone(&self.drop_counters),
         });
         let run_trace: Arc<dyn thunder_agent_types::trace::ToolTraceSink> =
@@ -305,6 +316,7 @@ impl AgentLoop {
                 agent_id: self.id.clone(),
                 dispatcher: self.event_dispatcher.clone(),
                 event_sender: event_sender.clone(),
+                budget: Arc::clone(&budget),
                 host: None,
                 drops: Arc::clone(&self.drop_counters),
             });
@@ -340,6 +352,7 @@ impl AgentLoop {
                 agent_id: agent_id.clone(),
                 dispatcher,
                 event_sender,
+                budget: Arc::clone(&budget),
                 drops: drop_counters,
             };
 
@@ -1371,6 +1384,7 @@ struct Emitter {
     agent_id: String,
     dispatcher: AgentEventDispatcher,
     event_sender: mpsc::Sender<ObservedEvent>,
+    budget: Arc<crate::loop_engine::event_stream::EventBudget>,
     drops: Arc<crate::types::event::EventDropCounters>,
 }
 
@@ -1416,33 +1430,24 @@ impl Emitter {
         };
         self.dispatcher.emit(observed.clone());
 
-        if is_micro_delta {
-            // For streaming micro-deltas, never block the core engine loop
-            // indefinitely if the consumer's channel is saturated. Losses are
-            // counted, not silent.
-            if self.event_sender.try_send(observed).is_err() {
-                self.drops.record_micro();
-            }
-        } else {
-            // For structural lifecycle events, ensure delivery with a safe fallback deadline.
-            // A miss is counted and warned: the host's record may be incomplete.
-            let kind = event_kind(&observed.event);
-            let delivered = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.event_sender.send(observed),
-            )
-            .await
-            .is_ok();
-            if !delivered {
-                self.drops.record_structural();
-                warn!(
-                    agent_id = %self.agent_id,
-                    event = kind,
-                    dropped_structural = self.drops.structural(),
-                    "Structural event dropped after the delivery deadline; \
-                     the consumer is saturated and the run record may be incomplete"
-                );
-            }
+        let kind = event_kind(&observed.event);
+        let before = self.drops.total();
+        crate::loop_engine::event_stream::deliver(
+            &self.event_sender,
+            &self.budget,
+            &self.drops,
+            observed,
+            is_micro_delta,
+        )
+        .await;
+        if self.drops.total() != before && !is_micro_delta {
+            warn!(
+                agent_id = %self.agent_id,
+                event = kind,
+                dropped_structural = self.drops.structural(),
+                "Structural event dropped; the consumer is saturated and the \
+                 run record may be incomplete"
+            );
         }
     }
 }
@@ -1458,6 +1463,7 @@ struct ChannelEventSink {
     agent_id: String,
     dispatcher: AgentEventDispatcher,
     event_sender: mpsc::Sender<ObservedEvent>,
+    budget: Arc<crate::loop_engine::event_stream::EventBudget>,
     drops: Arc<crate::types::event::EventDropCounters>,
 }
 
@@ -1475,43 +1481,52 @@ impl ChannelEventSink {
                 .as_millis() as u64,
         };
         self.dispatcher.emit(observed.clone());
-        // Try synchronous non-blocking delivery first so custom events stay in
-        // strict causal order before the tool's subsequent ToolExecResult / LoopComplete.
-        // Fall back to a timed async send only when the bounded channel is full.
-        match self.event_sender.try_send(observed) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(observed)) => {
-                let sender = self.event_sender.clone();
-                let drops = Arc::clone(&self.drops);
-                let agent_id = self.agent_id.clone();
-                tokio::spawn(async move {
-                    let delivered = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        sender.send(observed),
-                    )
-                    .await
-                    .is_ok();
-                    if !delivered {
-                        drops.record_structural();
-                        warn!(
-                            agent_id = %agent_id,
-                            event = "custom",
-                            dropped_structural = drops.structural(),
-                            "Business event dropped after the delivery deadline; \
-                             the run record may be incomplete"
-                        );
-                    }
-                });
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+
+        // Synchronous by contract: a tool must not be able to stall its own
+        // call on a busy consumer. Try for a slot now; otherwise hand the event
+        // to a task that gets the same deadline every other structural event has.
+        let kind = event_kind(&observed.event);
+        let bytes = observed.approx_bytes();
+        match self.budget.try_reserve(bytes) {
+            None if bytes > self.budget.max() => {
                 self.drops.record_structural();
                 warn!(
                     agent_id = %self.agent_id,
                     event = "custom",
-                    dropped_structural = self.drops.structural(),
-                    "Business event dropped because event channel is closed"
+                    bytes,
+                    budget = self.budget.max(),
+                    "Business event larger than the whole event budget; dropped"
                 );
             }
+            None => {
+                let sender = self.event_sender.clone();
+                let drops = Arc::clone(&self.drops);
+                let budget = Arc::clone(&self.budget);
+                let agent_id = self.agent_id.clone();
+                tokio::spawn(async move {
+                    let Some(permit) = budget.reserve(bytes).await else {
+                        drops.record_structural();
+                        warn!(
+                            agent_id = %agent_id,
+                            event = "custom",
+                            "Business event dropped: no queue space before the deadline"
+                        );
+                        return;
+                    };
+                    if sender.send(observed).await.is_ok() {
+                        permit.forget();
+                    } else {
+                        drops.record_structural();
+                    }
+                });
+            }
+            Some(permit) => match self.event_sender.try_send(observed) {
+                Ok(()) => permit.forget(),
+                Err(_) => {
+                    self.drops.record_structural();
+                    warn!(agent_id = %self.agent_id, event = %kind, "Business event dropped");
+                }
+            },
         }
     }
 }
@@ -1533,6 +1548,7 @@ struct ChannelTraceSink {
     agent_id: String,
     dispatcher: AgentEventDispatcher,
     event_sender: mpsc::Sender<ObservedEvent>,
+    budget: Arc<crate::loop_engine::event_stream::EventBudget>,
     host: Option<Arc<dyn thunder_agent_types::trace::ToolTraceSink>>,
     drops: Arc<crate::types::event::EventDropCounters>,
 }
@@ -1561,20 +1577,18 @@ impl thunder_agent_types::trace::ToolTraceSink for ChannelTraceSink {
         // and warned, never silent.
         let sender = self.event_sender.clone();
         let drops = Arc::clone(&self.drops);
+        let budget = Arc::clone(&self.budget);
         let agent_id = self.agent_id.clone();
         tokio::spawn(async move {
-            let delivered =
-                tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(observed))
-                    .await
-                    .is_ok();
-            if !delivered {
-                drops.record_structural();
+            let before = drops.total();
+            crate::loop_engine::event_stream::deliver(&sender, &budget, &drops, observed, false)
+                .await;
+            if drops.total() != before {
                 warn!(
                     agent_id = %agent_id,
                     event = "tool_trace",
                     dropped_structural = drops.structural(),
-                    "Tool trace dropped after the delivery deadline; \
-                     the run record may be incomplete"
+                    "Tool trace dropped; the run record may be incomplete"
                 );
             }
         });
@@ -1768,6 +1782,9 @@ mod drop_counter_tests {
             agent_id: "drop-test".to_string(),
             dispatcher: AgentEventDispatcher::default(),
             event_sender: tx,
+            budget: Arc::new(crate::loop_engine::event_stream::EventBudget::new(
+                crate::loop_engine::event_stream::DEFAULT_MAX_EVENT_BYTES,
+            )),
             drops,
         }
     }

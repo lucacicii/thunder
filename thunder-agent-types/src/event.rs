@@ -105,6 +105,67 @@ pub struct ObservedEvent {
     pub timestamp_ms: u64,
 }
 
+impl ObservedEvent {
+    /// Roughly how many bytes this event occupies on a queue.
+    ///
+    /// An estimate, not a serialisation: the budget only has to be close enough
+    /// to keep a saturated consumer from pinning memory, and running
+    /// `serde_json` on every token delta would cost more than the bound saves.
+    /// The fixed frame covers the agent id, discriminator and timestamp; the
+    /// payload figures are the fields that can actually grow.
+    pub fn approx_bytes(&self) -> usize {
+        const FRAME: usize = 96;
+        let payload = match &self.event {
+            AgentEvent::TokenDelta { delta, .. } | AgentEvent::ReasoningDelta { delta, .. } => {
+                delta.len()
+            }
+            AgentEvent::ToolCallChunk {
+                id,
+                name,
+                arguments_delta,
+                ..
+            } => {
+                id.as_deref().map_or(0, str::len)
+                    + name.as_deref().map_or(0, str::len)
+                    + arguments_delta.as_deref().map_or(0, str::len)
+            }
+            AgentEvent::ToolCallReady { tool_call, .. } => {
+                tool_call.id.len()
+                    + tool_call.function.name.len()
+                    + tool_call.function.arguments.len()
+            }
+            AgentEvent::ToolExecStart {
+                name, arguments, ..
+            } => name.len() + arguments.to_string().len(),
+            AgentEvent::ToolExecResult { result, .. } => result.output.len(),
+            AgentEvent::ToolTrace { trace } => serde_json::to_string(trace).map_or(0, |s| s.len()),
+            AgentEvent::TelemetryNotice {
+                layer,
+                action,
+                ground_truth,
+                self_healed,
+                guidance,
+                ..
+            } => {
+                layer.len()
+                    + action.len()
+                    + ground_truth.len()
+                    + self_healed.as_deref().map_or(0, str::len)
+                    + guidance.as_deref().map_or(0, str::len)
+            }
+            AgentEvent::LoopComplete { final_content, .. } => {
+                final_content.as_deref().map_or(0, str::len)
+            }
+            AgentEvent::SteerAccepted { message, .. } => message.len(),
+            AgentEvent::Error { message, .. } => message.len(),
+            AgentEvent::Custom { kind, payload } => kind.len() + payload.to_string().len(),
+            AgentEvent::GateResult { verdict, .. } => verdict.len(),
+            _ => 0,
+        };
+        FRAME + self.agent_id.len() + payload
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
