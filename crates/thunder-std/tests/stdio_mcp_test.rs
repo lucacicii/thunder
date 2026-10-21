@@ -115,4 +115,15 @@ async fn thunder_std_mcp_process_executes_all_core_tools_with_context_envelope()
         .await
         .expect("ls in ws_a");
     assert!(ls_out.contains("src/"));
+
+    // Verify pagination with offset & limit
+    let paged_out = provider
+        .call_tool(
+            "core__read_file",
+            json!({ "path": "src/hello.txt", "offset": 2, "limit": 1 }),
+            &ctx_a,
+        )
+        .await
+        .expect("read_file paged");
+    assert_eq!(paged_out.trim(), "BETA_EDITED");
 }
