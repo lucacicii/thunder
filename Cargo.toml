@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/thunder-protocol",
+    "crates/thunder-executor",
+    "crates/thunder-registry",
+    "crates/thunder-providers",
+    "crates/thunder-std",
+    "crates/thunder-core",
+    "crates/thunder-daemon",
+    "crates/thunder-tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["thunder-luc"]
+license = "Apache-2.0"
+repository = "https://github.com/lucacicii/thunder"
+homepage = "https://github.com/lucacicii/thunder"
+
+[workspace.dependencies]
+# Internal crates
+thunder-protocol = { path = "crates/thunder-protocol" }
+thunder-executor = { path = "crates/thunder-executor" }
+thunder-registry = { path = "crates/thunder-registry" }
+thunder-providers = { path = "crates/thunder-providers" }
+thunder-core = { path = "crates/thunder-core" }
+thunder-std = { path = "crates/thunder-std" }
+thunder-daemon = { path = "crates/thunder-daemon" }
+thunder-tui = { path = "crates/thunder-tui" }
+
+# Third-party crates
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+schemars = "0.8"
+arc-swap = "1.7"
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+tempfile = "3.10"
+parking_lot = "0.12"
+regex = "1.10"
+globset = "0.4"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+bytes = "1.9"
+rpi-ai = { version = "0.3.18", features = ["providers"] }
+ratatui = "0.29"
+unicode-width = "0.2"
+crossterm = { version = "0.28", features = ["event-stream"] }
+libc = "0.2"
+thiserror = "2.0"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+too_many_arguments = "allow"
+type_complexity = "allow"
+result_large_err = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.tui-dev]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = 1
+strip = "none"
