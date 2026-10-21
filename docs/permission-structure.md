@@ -1,6 +1,6 @@
 # 权限与审批
 
-> 0.6.0 · 快照 `main@e66338b`
+> 版本：0.6.0 · 快照 `main@e66338b`
 >
 > 本文描述**一次工具调用如何被裁决**：谁先说话、谁能否决、记住的规则匹配什么、plan 模式为什么那样设计。
 > 调用漏斗本身的代码在 `thunder-agent-policy/src/executor.rs`，模式在 `thunder-agent-root/src/plugins/mode.rs`。

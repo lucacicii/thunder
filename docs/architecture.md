@@ -1,6 +1,6 @@
 # Thunder 架构
 
-> 版本 0.6.0 · 快照 `main@e66338b` · 12 个 crate
+> 版本：0.6.0 · 快照 `main@e66338b` · 12 个 crate
 >
 > 本文只描述**当前**代码。权限与审批的细节在 [`permission-structure.md`](permission-structure.md)；
 > 0.5 → 0.6 的破坏性变更在 [`migration-0.6.md`](migration-0.6.md)。
