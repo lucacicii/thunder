@@ -1,38 +1,62 @@
-# ⚡ Thunder Agent Core
-
-> **会话持久化与上层终端应用组件库**
-
 [English](README_en.md) | [简体中文](README.md)
 
-`thunder-agent-core` 目录收拢了 Thunder 体系中关于会话与轮次状态管理、以及终端交互应用的核心功能包。所有子包均已纳入根目录统一 Cargo Workspace 治理。
+# thunder-agent-core
 
-```text
-thunder-agent-core/
-├── conversation/               # 【子包】会话与 Session 管理 (thunder-conversation)
-└── tui/                        # 【子包】Claude Code 风格终端界面 (thunder-tui)
+工作区分组目录，**不是**一个 Cargo 包：它没有自己的 `Cargo.toml`，只容纳两个 workspace 成员——会话层与终端宿主。
+
+## 定位
+
+仓库按层划分：线格式（`thunder-agent-types`）→ 内核（`thunder-agent-loop`）→ 工具与治理（`thunder-agent-policy`）→ 能力包（`pack-code` / `skills` / `mcp` / `providers`）→ 宿主装配（`thunder-agent-root`）→ 宿主（`thunder-agent-daemon`、本目录下的 `tui`）。本目录放的是与宿主形态无关的两块：
+
+| 成员 | 包名 | 层 | 二进制 |
+|---|---|---|---|
+| `conversation/` | `thunder-conversation` | 会话状态，直接建在内核之上 | 无（库） |
+| `tui/` | `thunder-tui` | 交互式终端宿主 | `thunder-tui` |
+
+两者互不依赖：TUI 通过 `thunder-conversation` 持久化会话，而 conversation 不知道终端的存在。
+
+## crate 边界
+
+```mermaid
+flowchart LR
+  Loop[thunder-agent-loop] --> Conv[thunder-conversation]
+  Loop --> Tui[thunder-tui]
+  Conv --> Tui
+  Conv --> Root[thunder-agent-root]
+  Conv --> Daemon[thunder-agent-daemon]
+  Root --> Tui
+  Policy[thunder-agent-policy] --> Tui
+  Pack[thunder-agent-pack-code] --> Tui
+  Skills[thunder-agent-skills] --> Tui
+  Providers[thunder-agent-providers] --> Tui
 ```
 
----
+- `thunder-conversation` 只依赖 `thunder-agent-loop`；被 `thunder-agent-root`（feature `conversation`，默认开启）、`thunder-agent-daemon`、`thunder-tui` 使用。
+- `thunder-tui` 依赖 `types` / `policy` / `loop` / `pack-code` / `conversation` / `skills` / `mcp` / `root` / `providers`，是仓库里依赖面最宽的成员——这是宿主装配的固有成本。
+- 两个成员都在根 `Cargo.toml` 的 `members` 中，使用 `version.workspace = true` 等继承字段。
 
-## 📦 子包概览
+## 各自职责
 
-- **[`conversation`](./conversation)**：会话管理子包（`thunder-conversation`）。负责会话生命周期、Turn 轮次抽象、Memory/Fs 双模持久化存储（带 `index.json` 极速缓存与原子写入），并保留多拓扑阶段追踪元数据（Sequential 阶段、Parallel 分支、Delegate 委托）。一轮落成一条 assistant 消息（`add_assistant_turn`：正文 + 本轮 `tool_calls` + 思维链 + 轮次 `stats`），本轮工具结果紧随其后。
-- **[`tui`](./tui)**：交互式终端客户端（`thunder-tui`）。基于 Ratatui 0.29 与 Crossterm 构建，深度集成 `thunder-agent-root`，支持实时流式打字机（`TokenDelta`）、思考链折叠（`ReasoningDelta`）及全键盘快捷键驱动。
+| 能力 | 归属 |
+|---|---|
+| 会话实体、存储、标题占位、轮次切分、压缩、导出 | `conversation` |
+| 事件循环、按键处理、渲染、斜杠命令、OSC 7501 状态上报 | `tui` |
+| 模型调用、工具实现、宿主装配 | 其他成员，本目录不重复实现 |
 
----
-
-## 🛠️ 自动化测试
+## 构建与运行
 
 ```bash
-# 测试 thunder-conversation
-cargo test -p thunder-conversation
-
-# 测试 thunder-tui
-cargo test -p thunder-tui
+cargo build -p thunder-conversation -p thunder-tui
+cargo test  -p thunder-conversation -p thunder-tui
+cargo run   -p thunder-tui -- --workspace <dir> [--session <id>]
 ```
 
----
+CI 口径：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings`、`cargo test --workspace`。
 
-## 📄 开源协议
+TUI 没有 mock 模式：`--mock` 会以退出码 2 拒绝执行，缺少可用模型时以退出码 1 退出。
 
-本项目采用 [Apache License 2.0](../LICENSE) 开源许可证。
+## 文档
+
+- [conversation](conversation/README.md)：会话模型与 `FsConversationStore` 的原子写入、持久化闸门、并发合并。
+- [tui](tui/README.md)：事件/渲染循环、两种执行模式、31 条斜杠命令、状态上报。
+- [tui/KEYBOARD.md](tui/KEYBOARD.md)：按键与动作对照表。

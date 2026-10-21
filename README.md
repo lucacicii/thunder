@@ -1,88 +1,125 @@
 # Thunder
 
-> **极轻量、高性能、模块化的 Rust AI Agent 工作区与运行时架构**
+> **极轻量的 Rust AI Agent 内核 + 显式装配的宿主**
 
 [English](README_en.md) | [简体中文](README.md)
 
-Thunder 是基于 Rust 构建的现代化 AI Agent 体系。整个生态采用单 Git Monorepo 与统一 Cargo Workspace 治理，提供从极速单 Agent 闭环底座、统一模型传输、到微内核动态插件编排（会话、技能、MCP）的完整解决方案。
+Thunder 是一个用 Rust 写的编码 Agent 体系：一个只认两件事的内核（`Tools` 执行工具、`LLMClientTrait` 拿流），外加把产品意见全部拿在手里的宿主。整个生态是单一 Cargo workspace（12 个 crate）。
 
-仓库托管在 [lucacicii/thunder](https://github.com/lucacicii/thunder)。关于工作区布局、架构依赖及开发约定，请参阅 **[WORKSPACE.md](WORKSPACE.md)**。
-
----
-
-## ⚡ 核心架构支柱
-
-1. **单 Agent 闭环内核（`thunder-agent-loop`）**：
-   - 单一任务的原子闭环执行体，负责驱动完整的多轮推理、流式 Token 接收、并发工具调度与上下文裁剪。绝不耦合任何多智能体图或黑板逻辑。
-   - 工具调用本身即并发派发（`ToolExecutor::execute_all`），单 Agent 内即可获得并行工具执行收益，同时保持会话前缀稳定以最大化供应商侧 Prompt Cache 命中。
-2. **进程内流式传输（`rpi-ai`）**：
-   - 模型调用在 `thunder-agent-providers` 内直接发 HTTP 流式请求，**不起子进程、不随包携带 `bridge.mjs`、不要求宿主机装 Node**。
-   - 覆盖 `openai-responses` / `openai-completions` / `anthropic-messages` 三种方言，含思考档位与 Prompt Cache 保留策略映射；这三种以外的方言（Gemini、Bedrock、Vertex、Mistral）以明确报错拒绝，而不是静默失败。
-3. **上下文检查点压缩（Checkpoint Compaction）**：
-   - 默认策略下，两次压缩之间请求前缀**字节级稳定**，最大化供应商侧 Prompt Cache 命中率。
-   - 仅当逼近模型真实窗口极限（`max_context_tokens - reserve_tokens`）时，一次性将较旧历史交给 LLM 生成结构化检查点摘要（Goal/Progress/Decisions/Next Steps + 读/写文件清单），尾部 `keep_recent_tokens` 原文保留。
-   - 摘要不可用时退化为紧急裁剪（原子丢弃最老完整轮次）；原始压缩前轨迹通过 `AgentRunResult.raw_messages` 保留，不会静默销毁。
-4. **跨 Agent 文件写入互斥排队锁（`FILE_MUTATION_LOCKS`）**：
-   - 进程内全局物理路径排队锁，确保多个并发 Agent 或工具在并发写入同一文件时排队串行化执行，杜绝竞态覆盖。
-5. **确定性极速插件路由**：
-   - `thunder-agent-root` 采用确定性基线（会话与技能常驻）结合关键词意图触发，杜绝死板或昂贵的二次 LLM 路由，消除额外时延。
-6. **项目级配置与长期记忆（`.thunder/`）**：
-   - Thunder 读取自身 `.thunder/` 下的项目配置，与 `.arp`（面板所有）完全隔离：`config.json` 分层合并（用户级 / 项目级 / 本机），可追加系统提示文件、限制轮数；`THUNDER.md` 与 `memory/*.md` 作为长期记忆注入系统提示；`mcp.json` 自动接入 MCP servers。
-   - 记忆块位于请求前缀，按 host 初始化只读取一次，保证供应商侧 Prompt Cache 前缀稳定。
-   - **用户数据根可被宿主整体重定向**：`THUNDER_CONFIG_DIR`（或二进制参数 `--config-dir <path>`）统管 thunder 的全部用户级状态 —— `models.json`、`auth.json`、`models_metadata.json`、`scratchpad/`、`logs/`、`conversations/`、`config.json`、`mcp.json`、`THUNDER.md`、`skills/`、`permissions.json`（宿主同意过的「always allow」规则），默认 `~/.thunder`；宿主应用（Electron 等）指向自己的私有目录，即可得到一个与用户环境完全隔离的实例。该变量的语义已由「配置文件目录」提升为「全量数据根」：**设过它的用户，会话与草稿等状态也会一并迁到该目录**。跨工具路径（`~/.agents`、`~/.pi`、shell rc 取 API key）不受影响，仍取真实 HOME。
-7. **单一工具执行入口 + 优先级洋葱拦截流水线 + 全量调用 trace**：
-   - 内核拥有统一的工具执行漏斗 `ToolExecutor::run_tool`：取消 → 守卫 (1000) → 作用域 (800) → 模式准入 (500) → 弹窗审批 → 执行 → 逆序解套与结果同步 (Trace 100) → 落 trace。内建工具、Rust 插件工具、MCP 工具、runtime 远程工具全部经过它，**没有工具能绕开 trace**。
-   - 工具支持安全递归调用子工具（`ctx.invoke`），内置调用栈深度控制与即时环路死锁检测；原生支持 Anthropic MCP 标准的 `ProgressReporter` 流式进度通知（`notifications/progress`）。
-   - 审批策略（`plan` / `ask` / `acceptEdits` / `yolo`）作为宿主拦截器与 `ToolGate`，内核遵循 Fail-closed 原则保证无头运行安全。
-8. **企业级 STDIO Sidecar 守护进程（`thunder-agent-daemon`）**：
-   - 零端口冲突、生命周期天然随父进程绑定，支持并发任务信号量调度、背压 STDOUT 有序推送、协作式暂停（Pause）与反问气泡（Ask User）。
+- 架构与模块地图：[`docs/architecture.md`](docs/architecture.md)
+- 权限、审批、四档模式：[`docs/permission-structure.md`](docs/permission-structure.md)
+- 0.5 → 0.6 迁移：[`docs/migration-0.6.md`](docs/migration-0.6.md)
+- 工作区与开发约定：[`WORKSPACE.md`](WORKSPACE.md)
 
 ---
 
-## 📦 工作区包概览 (10 Workspace Crates)
+## 核心设计
 
-| Crate | 路径 | 说明 |
-| :--- | :--- | :--- |
-| **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent 内核**：单 Agent 闭环执行引擎，极致轻量与低延迟，支持洋葱拦截流水线、递归防死锁与 MCP 流式进度协议 |
-| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **编码能力包**：`bash`/`read_file`/`write_file`/`grep`/`find`/`ls` 六个标准 `ToolPlugin`、原子写入与路径作用域判定（`CodeScope`） |
-| **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **无头运行时**：以 JSONL 协议驱动 `AgentLoop`，供无 UI 的嵌入式宿主使用 |
-| **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **模型目录 + 流式传输**：加载与解析 `models.json` / `auth.json`，并以 `RpiAiClient` 进程内直连模型 |
-| **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **技能引擎**：扫描并解析 Playbook / SKILL.md，支持意图触发匹配与 120s TTL 全局文件缓存 |
-| **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP 客户端与服务端**：Model Context Protocol 双向实现，支持 stdio 传输、动态发现、双向桥接与流式进度推送 |
-| **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **微内核宿主**：基于基线与触发词动态装配插件，支持声明式 PluginLoader 配置（`.thunder/config.json`），驱动任务执行 |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**：面向 Electron 及外部前端的高性能常驻守护进程，支持审批模式与模式切换事件、协作式暂停与反问 |
-| **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **会话管理**：支持 Fs 原子存储与内存双模、`index.json` 极速索引与多拓扑阶段追踪 |
-| **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **交互式终端**：基于 Ratatui 的 Claude Code 风格全宽终端，支持打字机流式输出 |
+1. **内核只认接缝**（`thunder-agent-loop`）
+   - 工具通过 `Tools::specs()` / `Tools::call()` 提供；模型通过 `LLMClientTrait` 提供。内核不认识 HTTP 方言、不认识 MCP、不认识审批。
+   - 取消、超时、配对不变量（每条已宣告的调用都有结果）由内核保证。
+
+2. **宿主显式装配**（`thunder-agent-root`）
+   - 一个宿主对一次运行的贡献是四个列表：`PromptSection`（提示词）、`ToolPack`（工具）、`Observer`（事件）、`Prepared`（按运行准备），全部拿到同一个 `RunEnv`。
+   - **注册即激活**：没有选择器、没有关键词路由。`.thunder/config.json` 的 `plugins.disabled` 是唯一的减法，所以工具表与提示词前缀不会在轮次之间无声漂移。
+
+3. **单一工具漏斗 + 全量 trace**（`thunder-agent-policy`）
+   - 每条调用只走一条路：取消 → 作用域 → 守卫 → 模式裁决 → 弹窗 → 拦截器 → 注册表 → trace。
+   - 守卫是地板，任何模式都不能放宽；没有 UI 时弹窗视为拒绝（fail-closed）。细节见 `docs/permission-structure.md`。
+
+4. **字节有界的事件流**（`max_event_bytes`，默认 8 MiB）
+   - 队列按字节而不是条数设上限；超限即丢并计数，宿主从 `EventDropCounters` 得知"本次记录可能不完整"。
+
+5. **检查点压缩 + 并发上限**
+   - 只在逼近真实窗口时压缩一次；摘要不可用时退化为紧急裁剪；`max_concurrent_summaries`（默认 2）限制共享限流器下的在途摘要数。
+   - 两次压缩之间请求前缀字节级稳定，最大化 provider 侧 prompt cache 命中。
+
+6. **进程内模型传输**
+   - `thunder-agent-providers` 直接发流式 HTTP：不起子进程、不要求 Node。覆盖 OpenAI chat / OpenAI Responses / Anthropic Messages 等方言，未知方言明确报错。
+
+7. **可选能力包**
+   - `thunder-agent-pack-code` 提供 `read_file` / `write_file` / `ls` / `find` / `grep` / `bash`；内核不依赖它。
+   - `bash` 的程序由 `ShellConfig` 决定（`$SHELL` 探测或宿主钉死），Unix 下自成进程组、超时杀整组。
+
+8. **多宿主**
+   - 终端（`thunder-tui`）、NDJSON sidecar（`thunder-agent-daemon`）、无头 JSONL（`thunder-agent-runtime`）共用同一套装配。
 
 ---
 
-## 🚀 快速开始
+## 工作区（12 个 crate）
 
-### 运行环境要求
-- **Rust**: 1.80+
-- 不需要 Node.js：模型调用在进程内完成（曾用于此的 `bridge.mjs` 侧车已移除）
+| Crate | 角色 |
+|---|---|
+| [`thunder-agent-types`](thunder-agent-types) | 纯 wire：消息 / 事件 / 工具定义与结果 / policy 声明 / scope / trace 记录 |
+| [`thunder-agent-loop`](thunder-agent-loop) | 内核：循环、上下文、压缩、流、缓存、`seam` |
+| [`thunder-agent-policy`](thunder-agent-policy) | 策略层：工具抽象、执行漏斗、gate、UI、拦截器、只读判据 |
+| [`thunder-agent-pack-code`](thunder-agent-pack-code) | 参考能力包：fs / shell / search + `CodeScope` |
+| [`thunder-agent-providers`](thunder-agent-providers) | 模型目录与进程内流式传输 |
+| [`thunder-agent-skills`](thunder-agent-skills) | Skill 解析、注册与目录注入 |
+| [`thunder-agent-mcp`](thunder-agent-mcp) | MCP 客户端 / 传输 / 工具桥接（含帧上限） |
+| [`thunder-agent-root`](thunder-agent-root) | 宿主装配（`Assembly` / `StandardHostBuilder`） |
+| [`thunder-agent-daemon`](thunder-agent-daemon) | NDJSON sidecar |
+| [`thunder-agent-runtime`](thunder-agent-runtime) | JSONL 无头运行时（宿主执行工具） |
+| [`thunder-conversation`](thunder-agent-core/conversation) | 会话存储（内存 / 文件系统） |
+| [`thunder-tui`](thunder-agent-core/tui) | Ratatui 终端界面 |
 
-### 常用命令
+---
+
+## 快速开始
+
+要求 Rust 1.80+，不需要 Node.js。
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/lucacicii/thunder.git
 cd thunder
 
-# 2. 启动交互式 TUI 终端
-./run.sh
-#    默认 release 构建（渲染路径快一个数量级）；
-#    需要快速迭代时用 THUNDER_TUI_PROFILE=tui-dev ./run.sh
+./run.sh      # 交互式 TUI
+./daemon.sh   # NDJSON sidecar
+./test.sh     # 全工作区测试
+```
 
-# 3. 启动 STDIO Sidecar 守护进程（供 Electron / 桌面面板调用）
-./daemon.sh
+嵌入自己的宿主：
 
-# 4. 运行全工作区完整测试套件（10 个包全部测试）
-./test.sh
+```rust
+use std::sync::Arc;
+use thunder_agent_loop::AgentConfig;
+use thunder_agent_root::prelude::*;
+use thunder_conversation::prelude::MemoryConversationStore;
+
+let root = StandardHostBuilder::new(Arc::new(MemoryConversationStore::new()))
+    .build(ThunderRoot::new(AgentConfig::new("deepseek/deepseek-chat"))
+        .with_workspace(std::env::current_dir()?));
+
+let mut handle = root
+    .execute("跑一下测试并修好失败的那条", RootRunOptions::default())
+    .await?;
+if let Some(mut events) = handle.take_events() {
+    while let Some(event) = events.recv().await { /* 转发给 UI */ }
+}
+let result = handle.join().await?;
+println!("{:?}", result.final_content);
+```
+
+宿主专属能力在 `build` 之后追加：
+
+```rust
+root = root.with_pack(ToolPack::new("my_tool").with_tool(Arc::new(MyTool)));
 ```
 
 ---
 
-## 📄 开源协议
+## 验证
 
-本项目采用 [Apache License 2.0](LICENSE) 开源许可证。
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
+cargo test --workspace
+```
+
+CI 跑同一组命令；测试分布见 `docs/architecture.md` §14.4。
+
+---
+
+## 开源协议
+
+[Apache License 2.0](LICENSE)

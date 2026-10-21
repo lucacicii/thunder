@@ -1,88 +1,125 @@
 # Thunder
 
-> **Ultra-lightweight, High-Performance, Modular Rust AI Agent Workspace & Runtime**
+> **A very small Rust agent kernel with explicitly assembled hosts**
 
 [English](README_en.md) | [简体中文](README.md)
 
-Thunder is a modern AI Agent ecosystem built in Rust. Managed under a single Git monorepo and a unified Cargo workspace, it provides an end-to-end architecture spanning ultra-fast single-agent execution units, unified LLM transport, and dynamic microkernel plugin composition (conversation, skills, MCP).
+Thunder is a coding agent written in Rust: a kernel that knows exactly two things (a `Tools` seam for running tools, an `LLMClientTrait` for getting a stream), and hosts that keep every product opinion to themselves. The workspace is a single Cargo workspace of 12 crates.
 
-Hosted at [lucacicii/thunder](https://github.com/lucacicii/thunder). For monorepo layout, architecture dependencies, and development conventions, see **[WORKSPACE.md](WORKSPACE.md)** (or **[WORKSPACE_en.md](WORKSPACE_en.md)**).
-
----
-
-## ⚡ Core Architectural Pillars
-
-1. **Single-Agent Closed-Loop Kernel (`thunder-agent-loop`)**:
-   - Atomic closed execution unit for a single task. Responsible for driving multi-turn reasoning, streaming token parsing, concurrent tool execution, and context pruning. Never couples multi-agent graph or shared blackboard logic.
-   - Tool calls are dispatched concurrently (`ToolExecutor::execute_all`), so a single agent already gains parallel tool-execution benefits while keeping a stable conversation prefix to maximize provider-side prompt cache hits.
-2. **In-Process Streaming Transport (`rpi-ai`)**:
-   - Model calls are HTTP streams issued from inside `thunder-agent-providers` — **no child process, no bundled `bridge.mjs`, no Node required on the host**.
-   - Covers `openai-responses`, `openai-completions` and `anthropic-messages`, including token accounting, thinking-level and prompt-cache retention mapping. Dialects outside those three (Gemini, Bedrock, Vertex, Mistral) are rejected with a clear error rather than failing silently.
-3. **Checkpoint Context Compaction**:
-   - Between two compactions the request prefix stays **byte-identical**, maximizing provider-side prompt cache hits.
-   - Only when approaching the model's real window limit (`max_context_tokens - reserve_tokens`) does it swap older history for a single LLM-generated structured checkpoint (Goal / Progress / Decisions / Next Steps + read/modified file lists), keeping the last `keep_recent_tokens` verbatim.
-   - Falls back to an emergency trim (atomically dropping the oldest complete turns) when summarization is unavailable; the raw pre-compaction transcript is preserved via `AgentRunResult.raw_messages`.
-4. **Cross-Agent File Mutation Queue Lock (`FILE_MUTATION_LOCKS`)**:
-   - Process-wide path-based queue mutex in `thunder-agent-loop`. Serializes concurrent write operations to the same physical file across parallel agents or simultaneous tool calls, preventing race conditions and silent overwrites.
-5. **Deterministic Zero-Latency Plugin Activation**:
-   - `thunder-agent-root` uses a deterministic baseline (session conversation and skills permanently active) paired with keyword intent triggers, eliminating secondary LLM classification latency and token costs.
-6. **Project Config & Long-Term Memory (`.thunder/`)**:
-   - Thunder reads its own `.thunder/` project config, fully isolated from `.arp` (owned by the panel): `config.json` is merged by layer (user / project / local) and can append a system-prompt file and cap turns; `THUNDER.md` and `memory/*.md` are injected as long-term memory; `mcp.json` auto-registers MCP servers.
-   - The memory block sits in the request prefix and is read once per host init, keeping the provider-side prompt cache prefix stable.
-   - **The user data root is host-relocatable**: `THUNDER_CONFIG_DIR` (or the `--config-dir <path>` binary flag) owns all of thunder's user-level state — `models.json`, `auth.json`, `models_metadata.json`, `scratchpad/`, `logs/`, `conversations/`, `config.json`, `mcp.json`, `THUNDER.md`, `skills/`, `permissions.json` (the "always allow" rules the host agreed to) — defaulting to `~/.thunder`. Point it at a private directory and an embedding host (Electron, a scheduler) gets a fully isolated instance. The variable's meaning was promoted from "config file directory" to "full data root": **anyone already setting it will see conversations, scratchpad and the rest move there too**. Cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
-7. **One Tool-Execution Funnel, Priority Onion Interceptor Pipeline & Trace of Every Call**:
-   - The kernel has a unified tool execution funnel in `ToolExecutor::run_tool`: cancellation → guard (1000) → scope (800) → mode admission (500) → approval dialog → execution → onion unwinding & output sync (trace 100) → trace record. Built-in tools, Rust plugin tools, MCP tools and runtime remote tools all pass through it, so **no tool can run untraced**.
-   - Tools support safe recursive sub-tool invocations (`ctx.invoke`) with call depth bounds and cycle/deadlock prevention; native streaming progress notifications (`notifications/progress`) aligned with Anthropic's MCP specification.
-   - The approval policy (`plan` / `ask` / `acceptEdits` / `yolo`) operates as host interceptors and `ToolGate`, guaranteeing fail-closed safety for headless hosts.
-8. **Production-Grade STDIO Sidecar Daemon (`thunder-agent-daemon`)**:
-   - Zero port conflicts and lifecycle naturally bound to the parent process (Electron/desktop UI). Features concurrency semaphore scheduling, backpressured ordered STDOUT streaming, cooperative pausing, and human-in-the-loop question bubbles (`ask_user_question`).
+- Architecture and module map: [`docs/architecture.md`](docs/architecture.md)
+- Permissions, approvals, the four modes: [`docs/permission-structure.md`](docs/permission-structure.md)
+- Migrating 0.5 → 0.6: [`docs/migration-0.6.md`](docs/migration-0.6.md)
+- Workspace and development conventions: [`WORKSPACE.md`](WORKSPACE.md)
 
 ---
 
-## 📦 Workspace Package Matrix (10 Workspace Crates)
+## Design
 
-| Crate | Path | Description |
-| :--- | :--- | :--- |
-| **`thunder-agent-loop`** | [`thunder-agent-loop`](thunder-agent-loop) | **Agent A**: Single-agent atomic loop engine with onion interceptor pipeline, recursive invocation safety, and MCP progress streaming |
-| **`thunder-agent-pack-code`** | [`thunder-agent-pack-code`](thunder-agent-pack-code) | **Code Pack**: Six standard `ToolPlugin` implementations (`bash`/`read_file`/`write_file`/`grep`/`find`/`ls`), atomic writes, and path scope (`CodeScope`) |
-| **`thunder-agent-runtime`** | [`thunder-agent-runtime`](thunder-agent-runtime) | **Headless Runtime**: Drives `AgentLoop` over a JSONL protocol for embedding hosts with no UI |
-| **`thunder-agent-providers`** | [`thunder-agent-providers`](thunder-agent-providers) | **Model Catalog**: Loads `models.json` / `auth.json`, manages model specifications and thinking level mappings |
-| **`thunder-agent-skills`** | [`thunder-agent-skills`](thunder-agent-skills) | **Skills Engine**: Discovers and parses Playbooks / SKILL.md with intent trigger matching and 120s TTL global cache |
-| **`thunder-agent-mcp`** | [`thunder-agent-mcp`](thunder-agent-mcp) | **MCP Client & Server**: Bidirectional Model Context Protocol engine with stdio transport, dynamic discovery, bridges, and progress streaming |
-| **`thunder-agent-root`** | [`thunder-agent-root`](thunder-agent-root) | **Microkernel Host**: Dynamic plugin assembler with declarative `PluginLoader` configuration (`.thunder/config.json`) and structured run results |
-| **`thunder-agent-daemon`** | [`thunder-agent-daemon`](thunder-agent-daemon) | **STDIO Sidecar**: Daemon for Electron and desktop UIs with approval modes, mode-change events, concurrency semaphores, pause, and ask-user |
-| **`thunder-conversation`** | [`thunder-agent-core/conversation`](thunder-agent-core/conversation) | **Conversation Store**: Atomic filesystem and in-memory session persistence, `index.json` fast index, and multi-topology tracking |
-| **`thunder-tui`** | [`thunder-agent-core/tui`](thunder-agent-core/tui) | **Interactive TUI**: Claude Code style full-width terminal interface with live streaming and reasoning fold |
+1. **The kernel knows seams only** (`thunder-agent-loop`)
+   - Tools arrive through `Tools::specs()` / `Tools::call()`; the model through `LLMClientTrait`. The kernel knows no HTTP dialect, no MCP, no approval.
+   - Cancellation, timeouts and the pairing invariant (every announced call gets a result) are the kernel's guarantees.
+
+2. **Hosts assemble explicitly** (`thunder-agent-root`)
+   - A host contributes four lists to one run: `PromptSection` (prompt text), `ToolPack` (tools), `Observer` (events), `Prepared` (per-run setup) — all receiving the same `RunEnv`.
+   - **Registered is active**: no selector, no keyword routing. `plugins.disabled` in `.thunder/config.json` is the only subtraction, so the tool table and prompt prefix cannot drift between turns.
+
+3. **One tool funnel, one trace per call** (`thunder-agent-policy`)
+   - Every call takes one path: cancel → scope → guard → mode gate → dialog → interceptors → registry → trace.
+   - The guard is a floor no mode can loosen; with no UI attached a dialog counts as a refusal (fail-closed). See `docs/permission-structure.md`.
+
+4. **Byte-bounded event stream** (`max_event_bytes`, 8 MiB by default)
+   - The queue is bounded by bytes, not frame count; overflow is dropped and counted, so a host can read `EventDropCounters` and know its record may be incomplete.
+
+5. **Checkpoint compaction with a concurrency cap**
+   - Compaction runs only near the real window; a failed summary falls back to emergency trim; `max_concurrent_summaries` (default 2) caps in-flight summaries across agents sharing a limiter.
+   - Between compactions the request prefix is byte-stable, which is what keeps the provider-side prompt cache warm.
+
+6. **In-process model transport**
+   - `thunder-agent-providers` streams HTTP directly: no child process, no Node. OpenAI chat / OpenAI Responses / Anthropic Messages and friends; unknown dialects fail loudly.
+
+7. **Optional capability pack**
+   - `thunder-agent-pack-code` provides `read_file` / `write_file` / `ls` / `find` / `grep` / `bash`; the kernel does not depend on it.
+   - The program behind `bash` is a host decision (`ShellConfig`: `$SHELL` detection or pinned), and on Unix it runs in its own process group so a timeout kills the whole tree.
+
+8. **Multiple hosts**
+   - Terminal (`thunder-tui`), NDJSON sidecar (`thunder-agent-daemon`) and headless JSONL (`thunder-agent-runtime`) share the same assembly.
 
 ---
 
-## 🚀 Quickstart
+## Workspace (12 crates)
 
-### Prerequisites
-- **Rust**: 1.80+
-- **No Node.js needed**: model calls happen in-process (the `bridge.mjs` sidecar that used to require it is gone)
+| Crate | Role |
+|---|---|
+| [`thunder-agent-types`](thunder-agent-types) | Pure wire: messages / events / tool definitions and results / policy declarations / scope / trace records |
+| [`thunder-agent-loop`](thunder-agent-loop) | Kernel: loop, context, pruning, stream, cache, `seam` |
+| [`thunder-agent-policy`](thunder-agent-policy) | Policy layer: tool abstractions, execution funnel, gate, UI, interceptors, read-only proof |
+| [`thunder-agent-pack-code`](thunder-agent-pack-code) | Reference pack: fs / shell / search + `CodeScope` |
+| [`thunder-agent-providers`](thunder-agent-providers) | Model catalog and in-process streaming transport |
+| [`thunder-agent-skills`](thunder-agent-skills) | Skill parsing, registry and catalog injection |
+| [`thunder-agent-mcp`](thunder-agent-mcp) | MCP client / transports / tool bridge (with a frame bound) |
+| [`thunder-agent-root`](thunder-agent-root) | Host assembly (`Assembly` / `StandardHostBuilder`) |
+| [`thunder-agent-daemon`](thunder-agent-daemon) | NDJSON sidecar |
+| [`thunder-agent-runtime`](thunder-agent-runtime) | JSONL headless runtime (the host executes tools) |
+| [`thunder-conversation`](thunder-agent-core/conversation) | Conversation stores (memory / filesystem) |
+| [`thunder-tui`](thunder-agent-core/tui) | Ratatui terminal UI |
 
-### Common Commands
+---
+
+## Quick start
+
+Rust 1.80+, no Node.js required.
 
 ```bash
-# 1. Clone workspace
 git clone https://github.com/lucacicii/thunder.git
 cd thunder
 
-# 2. Launch interactive TUI
-./run.sh
-#    Release build by default (the render path is an order of magnitude faster);
-#    for a fast edit-build loop use THUNDER_TUI_PROFILE=tui-dev ./run.sh
+./run.sh      # interactive TUI
+./daemon.sh   # NDJSON sidecar
+./test.sh     # workspace test suite
+```
 
-# 3. Launch STDIO Sidecar daemon (for desktop / Electron integration)
-./daemon.sh
+Embedding your own host:
 
-# 4. Run workspace test suite across all 10 packages
-./test.sh
+```rust
+use std::sync::Arc;
+use thunder_agent_loop::AgentConfig;
+use thunder_agent_root::prelude::*;
+use thunder_conversation::prelude::MemoryConversationStore;
+
+let root = StandardHostBuilder::new(Arc::new(MemoryConversationStore::new()))
+    .build(ThunderRoot::new(AgentConfig::new("deepseek/deepseek-chat"))
+        .with_workspace(std::env::current_dir()?));
+
+let mut handle = root
+    .execute("run the tests and fix the failing one", RootRunOptions::default())
+    .await?;
+if let Some(mut events) = handle.take_events() {
+    while let Some(event) = events.recv().await { /* forward to your UI */ }
+}
+let result = handle.join().await?;
+println!("{:?}", result.final_content);
+```
+
+Host-specific capabilities are appended after `build`:
+
+```rust
+root = root.with_pack(ToolPack::new("my_tool").with_tool(Arc::new(MyTool)));
 ```
 
 ---
 
-## 📄 License
+## Verification
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
+cargo test --workspace
+```
+
+CI runs the same set; the test map is in `docs/architecture.md` §14.4.
+
+---
+
+## License
+
+[Apache License 2.0](LICENSE)

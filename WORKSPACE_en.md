@@ -1,25 +1,17 @@
-# Thunder Workspace Architecture Guide
+# Thunder Workspace
 
 [English](WORKSPACE_en.md) | [简体中文](WORKSPACE.md)
 
-This document describes the codebase topology, crate dependency relationships, and development and testing standards for the Thunder workspace.
+How the code is organised, which way dependencies point, and how to verify a change. Architecture details live in [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## 1. Unified Repository
+## 1. One repository
 
-GitHub Repository:
-
-https://github.com/lucacicii/thunder
-
-The entire ecosystem is governed as a **single Git monorepo** with a **unified Cargo workspace** (a single root `Cargo.toml` managing 10 crates and sharing a single `Cargo.lock`), eliminating nested repositories or git submodules.
-
-- Git root is this workspace root.
-- Remote points to `origin → lucacicii/thunder`.
-- All commits, branches, tags, and pushes happen in the monorepo root. Never run `git init` in subdirectories.
-- Sub-crate directories keep **no** copies of `LICENSE`, `run.sh`, or `.gitignore`. Those are root-level assets, governed centrally via `[workspace.package]` inheritance and root ignore rules.
-
-Clone:
+- GitHub: <https://github.com/lucacicii/thunder>
+- A single Git monorepo and a single Cargo workspace: the root `Cargo.toml` governs 12 members with one shared `Cargo.lock`.
+- The git root is the workspace root; do not `git init` inside a crate.
+- Crates no longer carry their own `LICENSE` / `.gitignore`: those are root-level assets, inherited through `[workspace.package]`.
 
 ```bash
 git clone https://github.com/lucacicii/thunder.git
@@ -28,117 +20,101 @@ cd thunder
 
 ---
 
-## 2. Directory Layout
+## 2. Layout
 
 ```text
-thunder/                          # Git monorepo root & Cargo workspace root
-├── README.md                     # Chinese entry document
-├── README_en.md                  # English entry document
-├── WORKSPACE.md                  # Chinese workspace guide
-├── WORKSPACE_en.md               # English workspace guide (this file)
-├── LICENSE
-├── Cargo.toml                    # Unified workspace config (10 crates)
-├── Cargo.lock                    # Unified lockfile
-├── rust-toolchain.toml           # Pinned toolchain (1.98.0, in step with CI)
-├── run.sh                        # Launch TUI terminal
-├── daemon.sh                     # Launch STDIO Sidecar daemon
-├── test.sh                       # Workspace-wide test suite script
-├── .github/workflows/            # CI (fmt / clippy / check-version / test) and release
-├── .thunder/                     # Thunder's own config (user-level ~/.thunder/ mirrors it)
-├── .arp/                         # Owned by agent-resume-panel; Thunder never reads it
-├── docs/                         # architecture.md, permission-structure.md, migration-0.4.md
-├── examples/electron/            # Electron sidecar integration example
-├── scripts/check-version.py      # Version-consistency gate (CI / release / test.sh)
-├── thunder-agent-loop/           # Agent kernel: single-agent loop + tool funnel + tracing
-├── thunder-agent-pack-code/      # Code pack: six built-in tools + path scope classification
-├── thunder-agent-runtime/        # Headless runtime driving the kernel over JSONL
-├── thunder-agent-providers/      # LLM catalog, config parsing & in-process streaming
-├── thunder-agent-skills/         # Skill parsing, discovery & global cache
-├── thunder-agent-mcp/            # MCP client & server ecosystem & dynamic tool/plugin bridge
-├── thunder-agent-root/           # Microkernel host for dynamic plugin composition
-├── thunder-agent-daemon/         # STDIO Sidecar daemon (Electron / desktop integration)
-└── thunder-agent-core/           # Core modules collection
-    ├── conversation/             # Session & Turn storage (thunder-conversation)
-    └── tui/                      # Interactive terminal UI (thunder-tui)
+thunder/
+├── README.md / README_en.md            # front page
+├── WORKSPACE.md / WORKSPACE_en.md      # this file
+├── Cargo.toml                          # workspace (12 members) + shared deps
+├── rust-toolchain.toml                 # pinned 1.98.0 (same as CI)
+├── run.sh / daemon.sh / test.sh        # TUI / sidecar / tests
+├── scripts/check-version.py            # version consistency gate
+├── docs/
+│   ├── architecture.md                 # architecture and module map
+│   ├── permission-structure.md         # permissions, approvals, the four modes
+│   └── migration-0.6.md                # migrating 0.5 → 0.6
+├── .github/workflows/                  # CI (fmt / clippy / version / test) and release
+├── .thunder/                           # project config (mirrors the user-level ~/.thunder)
+├── .arp/                               # owned by agent-resume-panel; thunder never reads it
+├── examples/electron/                  # Electron sidecar example
+├── thunder-agent-types/                # pure wire types
+├── thunder-agent-loop/                 # kernel
+├── thunder-agent-policy/               # policy layer (tool funnel / gate / UI / read-only)
+├── thunder-agent-pack-code/            # reference capability pack
+├── thunder-agent-providers/            # model catalog + in-process streaming
+├── thunder-agent-skills/               # skill parsing and injection
+├── thunder-agent-mcp/                  # MCP client / transports / bridge
+├── thunder-agent-root/                 # host assembly
+├── thunder-agent-daemon/               # NDJSON sidecar
+├── thunder-agent-runtime/              # JSONL headless runtime
+└── thunder-agent-core/
+    ├── conversation/                   # conversation stores (thunder-conversation)
+    └── tui/                            # terminal UI (thunder-tui)
 ```
 
 ---
 
-## 3. Dependencies & Architectural Layering
+## 3. Dependency direction
 
-All workspace crates utilize **Path dependencies**. Git URLs or external repository links between internal crates are strictly prohibited.
+Internal dependencies are path dependencies; git URLs across crates are not allowed.
 
-The **internal** crates each crate depends on directly (copied one by one from its `Cargo.toml`; an empty `loop` row is a hard constraint, not an omission):
-
-| Crate | Internal crates it depends on |
+| Crate | Internal crates |
 |---|---|
-| `thunder-agent-loop` | — (the kernel depends on no host) |
-| `thunder-agent-pack-code` | `loop` |
-| `thunder-agent-providers` | `loop` |
-| `thunder-agent-skills` | `loop` |
-| `thunder-agent-mcp` | `loop` |
+| `thunder-agent-types` | — |
+| `thunder-agent-loop` | `types` (`policy` is `[dev-dependencies]` only) |
+| `thunder-agent-policy` | `types`, `loop` |
+| `thunder-agent-pack-code` | `types`, `policy`, `loop` |
+| `thunder-agent-providers` | `types`, `policy`, `loop` |
+| `thunder-agent-skills` | `types`, `policy`, `loop` |
+| `thunder-agent-mcp` | `types`, `policy`, `loop` |
 | `thunder-conversation` | `loop` |
-| `thunder-agent-runtime` | `loop`, `providers` |
-| `thunder-agent-root` | `loop`, `pack-code`, `providers`, `skills`, `mcp`, `conversation` |
-| `thunder-agent-daemon` | `loop`, `providers`, `skills`, `mcp`, `conversation`, `root` |
-| `thunder-tui` | `loop`, `pack-code`, `providers`, `skills`, `mcp`, `conversation`, `root` |
+| `thunder-agent-runtime` | `types`, `policy`, `loop`, `providers` |
+| `thunder-agent-root` | `types`, `policy`, `loop`, `pack-code`, `providers` |
+| `thunder-agent-daemon` | `types`, `policy`, `loop`, `providers`, `skills`, `mcp`, `conversation`, `root` |
+| `thunder-tui` | `types`, `policy`, `loop`, `pack-code`, `providers`, `skills`, `mcp`, `conversation`, `root` |
 
-> This table replaces an earlier hand-drawn arrow diagram, which drew `root` / `daemon` / `tui` as depending only on `loop` (and `root`) and missed the real `pack-code`, `providers`, `skills`, `mcp` and `conversation` edges. The layering conclusion is unchanged: `loop` is the leaf, `root` is the microkernel host, and `tui` / `daemon` are the two top-level binaries side by side.
+> In `root`, `conversation` / `skills` / `mcp` are **optional features** (all on by default), so the table lists only the mandatory edges; turning a feature off removes that component from `StandardHostBuilder`.
 
-### Core Design Principles
+**Layering**: `types` is the leaf; `loop` knows only `types` and its own seams; `policy` implements the kernel's `Tools` seam (the edge points policy → loop, never the reverse); `root` is assembly; `tui` / `daemon` / `runtime` are the top-level binaries.
 
-1. **Single-Agent Kernel Boundary**:
-   - **Kernel = `thunder-agent-loop`**: Owns atomic execution for a single AgentLoop (multi-turn reasoning, streaming events, tool execution, context pruning). Has no awareness of multi-agent topologies, outer schedulers, or session stores.
-   - Hosts (root / daemon / tui) drive the kernel only through `start` / `join` / `cancel`, and never drive the kernel's internal turns.
-2. **Pure Transport Abstraction, In-Process Transport**:
-   - `thunder-agent-loop` defines `LLMClientTrait` as a pure transport contract without internal HTTP or dialect dependencies.
-   - In production, `thunder-agent-providers`' `RpiAiClient` issues the HTTP stream directly (`rpi-ai`) — no child process, no Node on the host. Dialects it cannot stream are rejected with a clear error.
-3. **Concurrent Mutation Safety**:
-   - Whether under host-level concurrent tasks or concurrent tool calls within a single unit, file write mutations are serialized via `FILE_MUTATION_LOCKS` (`thunder-agent-pack-code/src/builtin/fs.rs`) using process-wide physical path mutexes, preventing silent overwrites. The kernel itself holds no such lock.
-4. **Deterministic Lightweight Host**:
-   - `thunder-agent-root` maintains standard baseline plugins (conversation, skills and long-term memory) and dynamically activates higher-order plugins via keyword intent triggers, avoiding expensive secondary LLM classification latency.
-5. **Policy lives in the host, not the kernel**:
-   - The kernel (`thunder-agent-loop`) carries no approval opinion: it offers **one** unified tool execution funnel (`ToolExecutor`), an onion interceptor pipeline, a `ToolGate` hook, a `ToolScope` hook, and a guard that cannot be bypassed. With no `ToolGate` installed, everything but the guard runs — which is how a headless host works without an approval policy at all.
-   - The approval modes (`plan` / `ask` / `acceptEdits` / `yolo`) live in `ModePlugin` (`thunder-agent-root/src/plugins/mode.rs`) and can be unloaded by the host.
-6. **Config lives in .thunder/, never .arp**:
-   - `.arp/` belongs to `agent-resume-panel` (panel config + shared artifacts); Thunder reads none of it.
-   - Thunder's own project state lives under `.thunder/`: `config.json` (agent config), `mcp.json` (MCP servers), `THUNDER.md` + `memory/*.md` (long-term memory), `plans/` (plan-mode artifacts). The user-level `~/.thunder/` supplies same-named defaults, overridden by user -> project -> `*.local.*`.
-   - The user-level data root can be relocated wholesale with `THUNDER_CONFIG_DIR` (or `--config-dir <path>`), defaulting to `~/.thunder`. It owns *all* of thunder's own state — the files above plus `conversations/`, `scratchpad/`, `logs/`, `models.json`/`auth.json`/`models_metadata.json`, `permissions.json` (the agreed "always allow" rules) — so a host can contain one instance inside its own directory. Resolution lives in `thunder-agent-loop/src/core/paths.rs`; cross-tool paths (`~/.agents`, `~/.pi`, the shell rc that holds API keys) are unaffected and stay on the real home.
+### 3.1 Five design rules
+
+1. **The kernel holds no policy**: no gate, no UI, no approval, no MCP inside `thunder-agent-loop`. It calls `Tools` and `LLMClientTrait`, and guarantees cancellation, timeouts and the pairing invariant.
+2. **Hosts assemble explicitly**: one run's contribution is four lists — `PromptSection` / `ToolPack` / `Observer` / `Prepared`. Registered is active; `plugins.disabled` is the only subtraction.
+3. **One tool funnel**: `ToolExecutor::run_tool` is the only entry (guard → mode → dialog → interceptors → registry → trace). Model calls and plugin reverse-RPC both go through it.
+4. **Concurrent writes are safe**: file writes take a per-physical-path lock (`FILE_MUTATION_LOCKS` in `pack-code/src/builtin/fs.rs`); the kernel holds no lock.
+5. **Config lives in `.thunder/`, never `.arp/`**: `.arp/` belongs to agent-resume-panel. The user-level data root can be relocated wholesale with `THUNDER_CONFIG_DIR` (or `--config-dir`); resolution lives in `thunder-agent-loop/src/core/paths.rs`.
 
 ---
 
-## 4. Running & Testing
+## 4. Running and testing
 
-### Prerequisites
-- **Rust**: 1.80 minimum (`rust-version` in `Cargo.toml`); the repo pins **1.98.0** via `rust-toolchain.toml`, in step with CI and the lint gate
-- No Node.js required: model calls happen in-process
-
-### Scripts
+Rust 1.80+ (`rust-version`); the repository pins 1.98.0. No Node.js required.
 
 ```bash
-./run.sh          # Launch thunder-tui interactive terminal
-./daemon.sh       # Launch thunder-agent-daemon sidecar
-./test.sh         # Execute all tests across all 10 workspace crates
-```
+./run.sh          # thunder-tui
+./daemon.sh       # thunder-agent-daemon
+./test.sh         # workspace tests
 
-### Individual Package Commands
-
-```bash
-# Test specific crates
 cargo test -p thunder-agent-loop
 cargo test -p thunder-conversation
-cargo test -p thunder-agent-daemon
-
-# Workspace-wide checks and builds
 cargo check --workspace
-cargo test --workspace
 cargo build --workspace --release
 ```
 
+The three gates (same as CI):
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features thunder-agent-daemon/testing-mock -- -D warnings
+python3 scripts/check-version.py
+```
+
 ---
 
-## 5. Development Conventions
+## 5. Commit conventions
 
-- **Single Repository**: All development is committed to the workspace root. Never create nested `.git` repositories in subpackages.
-- **Commit Format**: Conventional Commits in English (e.g. `feat(root): ...`, `refactor(loop): ...`).
-- **Continuous Integration**: Run `./test.sh` (full suite) locally before pushing; CI adds three lint gates — fmt → clippy → `scripts/check-version.py`.
+- Commit at the workspace root; no nested repositories.
+- Conventional Commits with English verbs: `feat(root): …`, `fix(policy): …`, `refactor(loop): …`, `docs: …`, `test(loop): …`.
+- Before committing, run the gates in §4 and `cargo test --workspace`.
