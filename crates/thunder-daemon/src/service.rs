@@ -9,8 +9,8 @@ use std::time::Duration;
 use thunder_core::{
     now_ms, provisional_title, AgentLoopConfig, ContextPruningConfig, Conversation,
     ConversationFilter, ConversationStore, FsConversationStore, LlmDriver, MiddlewarePipeline,
-    PauseGate, PlanModeMiddleware, ProviderClientDriver, QueueBehavior, ReActAgentLoop,
-    SteerQueues, ThunderConfig,
+    MiddlewareVerdict, PauseGate, ProviderClientDriver, QueueBehavior, ReActAgentLoop, SteerQueues,
+    ThunderConfig, ToolMiddleware,
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ObservedEvent, ThunderEvent};
@@ -52,6 +52,37 @@ impl EventSink for TaskEventBridge {
         };
         if let Ok(line) = serde_json::to_string(&frame) {
             let _ = self.output_tx.try_send(line);
+        }
+    }
+}
+
+struct DaemonPlanModeMiddleware;
+
+#[async_trait::async_trait]
+impl ToolMiddleware for DaemonPlanModeMiddleware {
+    fn id(&self) -> &str {
+        "daemon-plan-mode"
+    }
+
+    async fn before_call(
+        &self,
+        tool_name: &str,
+        _arguments: &Value,
+        _ctx: &thunder_protocol::ExecutionContext,
+    ) -> MiddlewareVerdict {
+        let logical = tool_name
+            .strip_prefix("core__")
+            .or_else(|| tool_name.strip_prefix("script__"))
+            .unwrap_or(tool_name);
+        if matches!(
+            logical,
+            "read_file" | "grep" | "find" | "ls" | "thunder__discover_tools"
+        ) {
+            MiddlewareVerdict::Allow
+        } else {
+            MiddlewareVerdict::Reject {
+                reason: format!("Plan mode refuses non-read-only tool call '{tool_name}'"),
+            }
         }
     }
 }
@@ -691,12 +722,11 @@ impl DaemonService {
             },
             tool_timeout: Duration::from_millis(cfg.sandbox.timeout_ms),
             cache_warm_settings: None,
-            load_project_instructions: true,
         };
 
         let mut mw = MiddlewarePipeline::new();
         if mode == "plan" {
-            mw = mw.with_middleware(Arc::new(PlanModeMiddleware));
+            mw = mw.with_middleware(Arc::new(DaemonPlanModeMiddleware));
         }
 
         let bridge = Arc::new(TaskEventBridge {

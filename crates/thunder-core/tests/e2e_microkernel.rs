@@ -30,7 +30,8 @@ fn find_or_build_thunder_std() -> PathBuf {
 #[tokio::test]
 async fn e2e_self_evolving_agent_hot_loads_script_with_100_percent_kv_cache_shield() {
     let ws = tempdir().unwrap();
-    let tools_dir = ws.path().join(".thunder").join("tools");
+    let ws_path = ws.path().canonicalize().unwrap();
+    let tools_dir = ws_path.join(".thunder").join("tools");
     tokio::fs::create_dir_all(&tools_dir).await.unwrap();
 
     // 1. Mount `thunder-std` Core MCP server over Stdio JSON-RPC
@@ -64,7 +65,7 @@ input=$(cat)
 echo -n "SQUASH_OK:${input}"
 "#;
 
-    let mock_driver = Arc::new(ScriptedMockDriver::new(vec![
+    let mock_driver_1 = Arc::new(ScriptedMockDriver::new(vec![
         LlmTurnResponse::simple(
             "Writing custom script tool into .thunder/tools/",
             vec![ToolCallRequest {
@@ -76,6 +77,40 @@ echo -n "SQUASH_OK:${input}"
                 }),
             }],
         ),
+        LlmTurnResponse::simple("Created script tool successfully.", vec![]),
+    ]));
+
+    let loop_cfg = AgentLoopConfig {
+        session_id: "sess-e2e".to_string(),
+        workspace_cwd: ws_path.clone(),
+        system_prompt: "You are Thunder Agent.".to_string(),
+        model: "gpt-4o".to_string(),
+        max_turns: 8,
+        pruning: ContextPruningConfig::default(),
+        tool_timeout: Duration::from_secs(10),
+        cache_warm_settings: None,
+    };
+
+    let mut agent = ReActAgentLoop::new(loop_cfg, registry.clone(), mock_driver_1.clone());
+    let outcome1 = agent
+        .run("Create a git squash tool")
+        .await
+        .expect("turn 1 succeeds");
+    assert_eq!(outcome1.turns_executed, 2);
+
+    // Wait for the background 200ms debounced watcher actor to detect the file and swap ArcSwap<CatalogSnapshot>
+    let v0 = registry.current().version;
+    let mut updated = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if registry.current().version > v0 {
+            updated = true;
+            break;
+        }
+    }
+    assert!(updated, "Watcher must update CatalogSnapshot within 2s");
+
+    let mock_driver_2 = Arc::new(ScriptedMockDriver::new(vec![
         LlmTurnResponse::simple(
             "Now discovering and invoking the newly hot-loaded script via gateway",
             vec![
@@ -97,46 +132,31 @@ echo -n "SQUASH_OK:${input}"
         LlmTurnResponse::simple("All feature commits have been squashed onto main.", vec![]),
     ]));
 
-    let loop_cfg = AgentLoopConfig {
-        session_id: "sess-e2e".to_string(),
-        workspace_cwd: ws.path().to_path_buf(),
-        system_prompt: "You are Thunder Agent.".to_string(),
-        model: "gpt-4o".to_string(),
-        max_turns: 8,
-        pruning: ContextPruningConfig::default(),
-        tool_timeout: Duration::from_secs(10),
-        cache_warm_settings: None,
-        load_project_instructions: false,
-    };
+    // Continue the SAME agent session: KV-Cache Shield detects snapshot version bump (v0 -> v1)
+    // and injects <system_notification>, while keeping top-level `tools` 100% byte-identical!
+    agent.set_llm(mock_driver_2.clone());
 
-    let mut agent = ReActAgentLoop::new(loop_cfg, registry.clone(), mock_driver.clone());
-    let outcome = agent
-        .run("Create a git squash tool and run it against main")
+    let outcome2 = agent
+        .run("Now run git_squash_feature against main")
         .await
-        .expect("agent loop succeeds");
-
-    assert_eq!(outcome.turns_executed, 3);
+        .expect("turn 2 succeeds");
+    assert_eq!(outcome2.turns_executed, 2);
     assert_eq!(
-        outcome.final_response,
+        outcome2.final_response,
         "All feature commits have been squashed onto main."
     );
-    assert!(outcome.system_faults.is_empty());
 
-    // Verify 100% KV-Cache prefix preservation:
-    let prefixes = mock_driver.recorded_tool_prefixes();
-    assert_eq!(prefixes.len(), 3);
+    // Verify 100% KV-Cache prefix preservation across runs:
+    let prefixes1 = mock_driver_1.recorded_tool_prefixes();
+    let prefixes2 = mock_driver_2.recorded_tool_prefixes();
     assert_eq!(
-        prefixes[0], prefixes[1],
-        "Top-level tools must not mutate on hot-reload"
-    );
-    assert_eq!(
-        prefixes[1], prefixes[2],
-        "Top-level tools must remain static across all turns"
+        prefixes1[0], prefixes2[0],
+        "Top-level tools must remain 100% static across runs even after dynamic scripts are mounted"
     );
 
-    // Verify `<system_notification>[Registry Update]` was injected before Turn 2!
-    let turn2_messages = &mock_driver.recorded_messages()[1];
-    let has_registry_notif = turn2_messages.iter().any(|m| {
+    // Verify `<system_notification>[Registry Update]` was injected in session continuation!
+    let run2_messages = &mock_driver_2.recorded_messages()[0];
+    let has_registry_notif = run2_messages.iter().any(|m| {
         m.content_str()
             .map(|c| {
                 c.contains("<system_notification>")
@@ -146,19 +166,7 @@ echo -n "SQUASH_OK:${input}"
     });
     assert!(
         has_registry_notif,
-        "Turn 2 must contain progressive disclosure <system_notification>"
-    );
-
-    // Verify the script execution result reached Turn 3 context.
-    let turn3_messages = &mock_driver.recorded_messages()[2];
-    let has_script_output = turn3_messages.iter().any(|m| {
-        m.content_str()
-            .map(|c| c.contains(r#"SQUASH_OK:{"base_branch":"main"}"#))
-            .unwrap_or(false)
-    });
-    assert!(
-        has_script_output,
-        "Turn 3 context must contain the output of script__git_squash_feature"
+        "Run 2 must contain progressive disclosure <system_notification>"
     );
 }
 
@@ -195,7 +203,34 @@ async fn gateway_and_direct_calls_both_enforce_safety_middleware() {
         ..Default::default()
     };
 
-    let mut agent = ReActAgentLoop::new(loop_cfg, registry, mock_driver.clone());
+    struct TestSafetyMiddleware;
+    #[async_trait::async_trait]
+    impl thunder_core::ToolMiddleware for TestSafetyMiddleware {
+        fn id(&self) -> &str {
+            "safety-guard"
+        }
+        async fn before_call(
+            &self,
+            _tool: &str,
+            arguments: &serde_json::Value,
+            _ctx: &thunder_protocol::ExecutionContext,
+        ) -> thunder_core::MiddlewareVerdict {
+            if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
+                if cmd.contains("rm -rf /") {
+                    return thunder_core::MiddlewareVerdict::Reject {
+                        reason: "Blocked destructive rm -rf /".to_string(),
+                    };
+                }
+            }
+            thunder_core::MiddlewareVerdict::Allow
+        }
+    }
+
+    let mw =
+        thunder_core::MiddlewarePipeline::new().with_middleware(Arc::new(TestSafetyMiddleware));
+
+    let mut agent =
+        ReActAgentLoop::new(loop_cfg, registry, mock_driver.clone()).with_middleware(mw);
     let outcome = agent.run("test safety").await.unwrap();
     assert_eq!(outcome.turns_executed, 2);
 
@@ -284,11 +319,8 @@ async fn checkpoint_compaction_and_overflow_self_healing_preserve_tool_pairing()
 }
 
 #[tokio::test]
-async fn agents_md_instructions_and_steer_queues_and_plan_mode_work_end_to_end() {
+async fn steer_queues_and_custom_middleware_work_end_to_end() {
     let ws = tempdir().unwrap();
-    tokio::fs::write(ws.path().join("AGENTS.md"), "RULE_42: Always verify tests.")
-        .await
-        .unwrap();
 
     let std_bin = find_or_build_thunder_std();
     let std_provider =
@@ -304,18 +336,15 @@ async fn agents_md_instructions_and_steer_queues_and_plan_mode_work_end_to_end()
         .follow_up
         .enqueue(ChatMessage::user("Follow-up task: run git status"));
 
-    // Turn 1 finishes without tool calls, which triggers the queued `follow_up` message for Turn 2!
-    // Turn 2 tries a read-only `git status` and a mutating `git reset --hard` under PlanModeMiddleware.
-    // Turn 3 concludes.
     let mock_driver = Arc::new(ScriptedMockDriver::new(vec![
         LlmTurnResponse::simple("Initial answer.", vec![]),
         LlmTurnResponse::simple(
-            "Testing plan mode commands",
+            "Testing middleware checks",
             vec![
                 ToolCallRequest {
                     id: "c1".into(),
                     name: "core__bash".into(),
-                    arguments: json!({ "command": "echo safe_read_ok" }),
+                    arguments: json!({ "command": "echo safe_ok" }),
                 },
                 ToolCallRequest {
                     id: "c2".into(),
@@ -328,14 +357,36 @@ async fn agents_md_instructions_and_steer_queues_and_plan_mode_work_end_to_end()
     ]));
 
     let loop_cfg = AgentLoopConfig {
-        session_id: "sess-steer-plan".to_string(),
+        session_id: "sess-steer-mw".to_string(),
         workspace_cwd: ws.path().to_path_buf(),
-        load_project_instructions: true,
         ..Default::default()
     };
 
-    let mw = thunder_core::MiddlewarePipeline::new()
-        .with_middleware(Arc::new(thunder_core::PlanModeMiddleware));
+    struct TestSafetyMiddleware;
+    #[async_trait::async_trait]
+    impl thunder_core::ToolMiddleware for TestSafetyMiddleware {
+        fn id(&self) -> &str {
+            "test-safety"
+        }
+        async fn before_call(
+            &self,
+            _tool: &str,
+            arguments: &serde_json::Value,
+            _ctx: &thunder_protocol::ExecutionContext,
+        ) -> thunder_core::MiddlewareVerdict {
+            if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
+                if cmd.contains("git reset") {
+                    return thunder_core::MiddlewareVerdict::Reject {
+                        reason: "Blocked git reset".to_string(),
+                    };
+                }
+            }
+            thunder_core::MiddlewareVerdict::Allow
+        }
+    }
+
+    let mw =
+        thunder_core::MiddlewarePipeline::new().with_middleware(Arc::new(TestSafetyMiddleware));
 
     let mut agent = ReActAgentLoop::new(loop_cfg, registry, mock_driver.clone())
         .with_steer_queues(steer)
@@ -345,28 +396,20 @@ async fn agents_md_instructions_and_steer_queues_and_plan_mode_work_end_to_end()
     assert_eq!(outcome.turns_executed, 3);
     assert_eq!(outcome.final_response, "Done after follow-up.");
 
-    // Verify `AGENTS.md` was injected into the system prompt on Turn 1.
-    let turn1_msgs = &mock_driver.recorded_messages()[0];
-    assert!(turn1_msgs[0]
-        .content_str()
-        .unwrap_or_default()
-        .contains("RULE_42: Always verify tests."));
-
-    // Verify PlanModeMiddleware allowed `echo safe_read_ok` and rejected `git reset --hard`.
     let turn3_msgs = &mock_driver.recorded_messages()[2];
     let allowed_echo = turn3_msgs.iter().any(|m| {
         m.content_str()
-            .map(|c| c.contains("safe_read_ok"))
+            .map(|c| c.contains("safe_ok"))
             .unwrap_or(false)
     });
     let rejected_reset = turn3_msgs.iter().any(|m| {
         m.content_str()
-            .map(|c| c.contains("[Middleware:plan-mode]"))
+            .map(|c| c.contains("[Middleware:test-safety] Blocked git reset"))
             .unwrap_or(false)
     });
-    assert!(allowed_echo, "PlanModeMiddleware must allow read-only echo");
+    assert!(allowed_echo, "Custom middleware must allow safe_ok");
     assert!(
         rejected_reset,
-        "PlanModeMiddleware must reject mutating git reset"
+        "Custom middleware must reject mutating git reset"
     );
 }

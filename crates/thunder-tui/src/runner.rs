@@ -1,5 +1,6 @@
 use crate::app::{App, TimelineItem};
 use crate::ui;
+use async_trait::async_trait;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyModifiers},
     execute,
@@ -11,8 +12,8 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use thunder_core::{
-    AgentLoopConfig, ContextPruningConfig, MiddlewarePipeline, PauseGate, PlanModeMiddleware,
-    ProviderClientDriver, ReActAgentLoop, SteerQueues, ThunderConfig,
+    AgentLoopConfig, ContextPruningConfig, MiddlewarePipeline, MiddlewareVerdict, PauseGate,
+    ProviderClientDriver, ReActAgentLoop, SteerQueues, ThunderConfig, ToolMiddleware,
 };
 use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ThunderEvent};
 use tokio::sync::mpsc;
@@ -35,6 +36,37 @@ impl EventSink for TuiEventBridge {
 
     fn on_agent_event(&self, event: AgentEvent) {
         let _ = self.tx.send(RunnerMsg::AgentEvent(event));
+    }
+}
+
+struct TuiPlanModeMiddleware;
+
+#[async_trait]
+impl ToolMiddleware for TuiPlanModeMiddleware {
+    fn id(&self) -> &str {
+        "tui-plan-mode"
+    }
+
+    async fn before_call(
+        &self,
+        tool_name: &str,
+        _arguments: &serde_json::Value,
+        _ctx: &thunder_protocol::ExecutionContext,
+    ) -> MiddlewareVerdict {
+        let logical = tool_name
+            .strip_prefix("core__")
+            .or_else(|| tool_name.strip_prefix("script__"))
+            .unwrap_or(tool_name);
+        if matches!(
+            logical,
+            "read_file" | "grep" | "find" | "ls" | "thunder__discover_tools"
+        ) {
+            MiddlewareVerdict::Allow
+        } else {
+            MiddlewareVerdict::Reject {
+                reason: format!("Plan mode refuses non-read-only tool call '{tool_name}'"),
+            }
+        }
     }
 }
 
@@ -212,12 +244,11 @@ async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSend
             },
             tool_timeout: Duration::from_millis(cfg.sandbox.timeout_ms),
             cache_warm_settings: warm_settings,
-            load_project_instructions: true,
         };
 
         let mut mw = MiddlewarePipeline::new();
         if mode == "plan" {
-            mw = mw.with_middleware(Arc::new(PlanModeMiddleware));
+            mw = mw.with_middleware(Arc::new(TuiPlanModeMiddleware));
         }
 
         let bridge = Arc::new(TuiEventBridge { tx: tx.clone() });

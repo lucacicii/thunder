@@ -247,15 +247,15 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
     out
 }
 
-fn is_read_only_tool_name(name: &str) -> bool {
-    let logical = name
-        .strip_prefix("core__")
-        .or_else(|| name.strip_prefix("script__"))
-        .unwrap_or(name);
-    matches!(
-        logical,
-        "read_file" | "ls" | "find" | "grep" | "thunder__discover_tools"
-    )
+fn is_mutating_tool_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("write")
+        || lower.contains("edit")
+        || lower.contains("delete")
+        || lower.contains("remove")
+        || lower.contains("patch")
+        || lower.contains("update")
+        || lower.contains("create")
 }
 
 pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>) {
@@ -277,10 +277,10 @@ pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>
             let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if is_read_only_tool_name(&tc.function.name) {
-                read.insert(path.to_string());
-            } else {
+            if is_mutating_tool_name(&tc.function.name) {
                 modified.insert(path.to_string());
+            } else {
+                read.insert(path.to_string());
             }
         }
     }
