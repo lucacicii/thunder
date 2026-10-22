@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thunder_core::{
     now_ms, Conversation, ConversationFilter, ConversationStore, FsConversationStore, PauseGate,
@@ -77,6 +77,7 @@ pub enum PickerKind {
     ResumeSession,
     PromptTemplate,
     Tools,
+    ThinkingLevel,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +173,7 @@ pub struct SlashCommandDef {
     pub aliases: &'static [&'static str],
     pub args_hint: &'static str,
     pub description: &'static str,
+    pub arg_options: &'static [&'static str],
 }
 
 pub static ALL_SLASH_COMMANDS: &[SlashCommandDef] = &[
@@ -180,120 +182,140 @@ pub static ALL_SLASH_COMMANDS: &[SlashCommandDef] = &[
         aliases: &["m"],
         args_hint: "[id]",
         description: "Open interactive model picker modal or switch model",
-    },
-    SlashCommandDef {
-        name: "resume",
-        aliases: &["switch", "load", "sessions"],
-        args_hint: "[id | #]",
-        description: "Open interactive session picker modal or resume by ID/index",
-    },
-    SlashCommandDef {
-        name: "prompt",
-        aliases: &["template", "prompts"],
-        args_hint: "[name]",
-        description: "Open prompt templates picker or load template into input",
-    },
-    SlashCommandDef {
-        name: "tools",
-        aliases: &["mcp"],
-        args_hint: "",
-        description: "Open tool catalog modal showing core, MCP, and script tools",
-    },
-    SlashCommandDef {
-        name: "mode",
-        aliases: &[],
-        args_hint: "[yolo | plan]",
-        description: "Toggle or set permission mode (Shift+Tab to toggle)",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "think",
         aliases: &["thinking"],
         args_hint: "[off | low | medium | high | max]",
         description: "View or set reasoning effort bound to this session",
+        arg_options: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    SlashCommandDef {
+        name: "mode",
+        aliases: &[],
+        args_hint: "[yolo | plan]",
+        description: "Toggle or set permission mode (Shift+Tab to toggle)",
+        arg_options: &["yolo", "plan", "ask", "acceptEdits"],
+    },
+    SlashCommandDef {
+        name: "resume",
+        aliases: &["switch", "load", "sessions"],
+        args_hint: "[id | #]",
+        description: "Open interactive session picker modal or resume by ID/index",
+        arg_options: &[],
+    },
+    SlashCommandDef {
+        name: "prompt",
+        aliases: &["template", "prompts"],
+        args_hint: "[name]",
+        description: "Open prompt templates picker or load template into input",
+        arg_options: &[],
+    },
+    SlashCommandDef {
+        name: "tools",
+        aliases: &["mcp"],
+        args_hint: "",
+        description: "Open tool catalog modal showing core, MCP, and script tools",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "compact",
         aliases: &["prune", "compress"],
         args_hint: "",
         description: "Compact conversation history and prune tokens via checkpoint",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "stats",
         aliases: &["tokens", "usage", "cost"],
         args_hint: "",
         description: "Display dialogue turns, token estimations, and tool stats",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "new",
         aliases: &[],
         args_hint: "",
         description: "Start a fresh conversation session",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "rename",
         aliases: &[],
         args_hint: "[title | --auto]",
         description: "Rename current session or regenerate title with --auto",
+        arg_options: &["--auto"],
     },
     SlashCommandDef {
         name: "workspace",
         aliases: &["cwd", "dir"],
         args_hint: "[path]",
         description: "View or change current workspace directory",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "export",
         aliases: &["dump", "save"],
         args_hint: "[path]",
         description: "Export conversation messages to Markdown file",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "pause",
         aliases: &["hold"],
         args_hint: "",
         description: "Pause running agent at next tool boundary (Ctrl+P)",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "unpause",
         aliases: &["go", "continue"],
         args_hint: "",
         description: "Resume paused agent task execution",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "queue",
         aliases: &["pending", "queued"],
         args_hint: "[clear]",
         description: "Inspect or clear queued steering messages",
+        arg_options: &["clear"],
     },
     SlashCommandDef {
         name: "health",
         aliases: &["doctor"],
         args_hint: "",
         description: "Run system health and environment diagnostics",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "image",
         aliases: &["attach", "img"],
         args_hint: "<path>",
         description: "Inspect and attach local image to next prompt",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "clear",
         aliases: &[],
         args_hint: "",
         description: "Clear timeline display",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "help",
         aliases: &["?"],
         args_hint: "",
         description: "Show interactive commands and keyboard shortcuts",
+        arg_options: &[],
     },
     SlashCommandDef {
         name: "quit",
         aliases: &["exit", "q"],
         args_hint: "",
         description: "Cleanly exit Thunder TUI",
+        arg_options: &[],
     },
 ];
 
@@ -315,6 +337,120 @@ pub fn filter_slash_commands(input: &str) -> Vec<&'static SlashCommandDef> {
             cmd.aliases.iter().any(|a| a.starts_with(query_token))
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputCompletionContext<'a> {
+    Command {
+        matches: Vec<&'static SlashCommandDef>,
+    },
+    Argument {
+        command: &'static SlashCommandDef,
+        prefix: &'a str,
+        candidates: Vec<String>,
+    },
+}
+
+pub fn resolve_completion_context<'a>(
+    input: &'a str,
+    app: &App,
+) -> Option<InputCompletionContext<'a>> {
+    if !input.starts_with('/') {
+        return None;
+    }
+    let after_slash = &input[1..];
+    if let Some((cmd_part, arg_part)) = after_slash.split_once(char::is_whitespace) {
+        let cmd_token = cmd_part.to_lowercase();
+        let cmd = ALL_SLASH_COMMANDS
+            .iter()
+            .find(|c| c.name == cmd_token || c.aliases.contains(&cmd_token.as_str()))?;
+        let arg_prefix = arg_part.trim();
+
+        // 1. Fixed command options (e.g. /think, /mode, /queue)
+        if !cmd.arg_options.is_empty() {
+            let candidates: Vec<String> = cmd
+                .arg_options
+                .iter()
+                .filter(|opt| arg_prefix.is_empty() || opt.starts_with(arg_prefix))
+                .map(|s| s.to_string())
+                .collect();
+            if !candidates.is_empty() {
+                return Some(InputCompletionContext::Argument {
+                    command: cmd,
+                    prefix: arg_prefix,
+                    candidates,
+                });
+            }
+        }
+
+        // 2. Dynamic model options
+        if cmd.name == "model" {
+            let models = app.provider_registry.list_available();
+            let needle = arg_prefix.to_lowercase();
+            let candidates: Vec<String> = models
+                .iter()
+                .map(|m| m.selection_id())
+                .filter(|id| needle.is_empty() || id.to_lowercase().contains(&needle))
+                .collect();
+            if !candidates.is_empty() {
+                return Some(InputCompletionContext::Argument {
+                    command: cmd,
+                    prefix: arg_prefix,
+                    candidates,
+                });
+            }
+        }
+
+        // 3. Dynamic prompt template options
+        if cmd.name == "prompt" {
+            let candidates = list_prompt_names(&app.workspace_dir);
+            let needle = arg_prefix.to_lowercase();
+            let filtered: Vec<String> = candidates
+                .into_iter()
+                .filter(|p| needle.is_empty() || p.to_lowercase().contains(&needle))
+                .collect();
+            if !filtered.is_empty() {
+                return Some(InputCompletionContext::Argument {
+                    command: cmd,
+                    prefix: arg_prefix,
+                    candidates: filtered,
+                });
+            }
+        }
+
+        None
+    } else {
+        let matches = filter_slash_commands(input);
+        if matches.is_empty() {
+            None
+        } else {
+            Some(InputCompletionContext::Command { matches })
+        }
+    }
+}
+
+pub fn list_prompt_names(workspace_dir: &Path) -> Vec<String> {
+    let candidates = vec![
+        workspace_dir.join(".thunder").join("prompts"),
+        thunder_protocol::thunder_subdir("prompts"),
+    ];
+    let mut names = Vec::new();
+    for dir in candidates {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().is_some_and(|ext| ext == "md") {
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        if !names.contains(&stem.to_string()) {
+                            names.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 pub struct App {
@@ -514,6 +650,30 @@ impl App {
             .open(PickerKind::Model, "Select LLM Model", final_items);
     }
 
+    pub fn open_thinking_picker(&mut self) {
+        let levels = [
+            ("off", "Disable reasoning tokens (fast response)"),
+            ("minimal", "Minimal reasoning effort"),
+            ("low", "Low reasoning effort for lightweight tasks"),
+            ("medium", "Balanced reasoning effort"),
+            ("high", "High reasoning effort for complex design/debugging"),
+            ("xhigh", "Extra-high reasoning effort"),
+            ("max", "Maximum reasoning effort permitted by model"),
+        ];
+
+        let current = self.thinking_level.as_deref().unwrap_or("off");
+        let items: Vec<PickerItem> = levels
+            .iter()
+            .map(|(lvl, desc)| {
+                let badge = if *lvl == current { "Active" } else { "Level" };
+                PickerItem::new(*lvl, format!("/think {lvl}"), *desc).with_badge(badge)
+            })
+            .collect();
+
+        self.picker
+            .open(PickerKind::ThinkingLevel, "Set Reasoning Effort", items);
+    }
+
     pub async fn open_session_picker(&mut self) {
         if let Some(ref store) = self.store {
             let filter = ConversationFilter::new().with_min_turns(1);
@@ -617,6 +777,12 @@ impl App {
                 self.model = selected.id.clone();
                 self.conversation.model = Some(self.model.clone());
                 self.set_status_message(format!("Switched model to '{}'", self.model));
+                Some(selected.id)
+            }
+            PickerKind::ThinkingLevel => {
+                self.thinking_level = Some(selected.id.clone());
+                self.conversation.thinking_level = Some(selected.id.clone());
+                self.set_status_message(format!("Thinking effort set to '{}'", selected.id));
                 Some(selected.id)
             }
             PickerKind::ResumeSession => {
@@ -801,7 +967,7 @@ impl App {
     /export [path]    - Export session messages to Markdown file (alias: /save)
   Configuration & Mode:
     /model [id]       - Open interactive model picker or switch model
-    /think [level]    - Set thinking effort (off, low, medium, high, max)
+    /think [level]    - Open thinking picker or set effort (off, low, medium, high, max)
     /mode [yolo|plan] - Toggle or set permission mode (Shift+Tab to toggle)
     /workspace [dir]  - View or change workspace directory (alias: /cwd)
     /tools            - Open interactive tools catalog modal
@@ -856,10 +1022,7 @@ impl App {
             }
             "/think" | "/thinking" => {
                 if arg.is_empty() {
-                    let current = self.thinking_level.as_deref().unwrap_or("default");
-                    self.timeline.push(TimelineItem::SystemNotice {
-                        text: format!("Current thinking effort: {current} (options: off, minimal, low, medium, high, max)"),
-                    });
+                    self.open_thinking_picker();
                 } else if matches!(
                     arg.to_lowercase().as_str(),
                     "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
