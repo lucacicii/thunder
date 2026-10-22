@@ -462,7 +462,10 @@ pub struct App {
     pub tool_registry: ToolRegistry,
     pub timeline: Vec<TimelineItem>,
     pub input: String,
-    pub scroll_offset: u16,
+    /// Rows scrolled **up from the tail**. `0` pins the view to the newest line,
+    /// so streaming content is followed automatically; any positive value means
+    /// the user is reading history and the view must not move under them.
+    pub scroll_back: u16,
     pub status_message: String,
     pub estimated_tokens: usize,
     pub thinking_level: Option<String>,
@@ -500,7 +503,7 @@ impl App {
                     .to_string(),
             }],
             input: String::new(),
-            scroll_offset: 0,
+            scroll_back: 0,
             status_message: "Ready".to_string(),
             estimated_tokens: 0,
             thinking_level: None,

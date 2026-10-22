@@ -73,6 +73,12 @@ impl Default for MarkdownTheme {
 }
 
 impl StyleSheet for MarkdownTheme {
+    /// Headings are identified by colour and weight, not by literal `#` marks:
+    /// a transcript full of hashes reads like raw source, not like a document.
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
+    }
+
     fn heading(&self, level: u8) -> Style {
         match level {
             1 => self.h1,

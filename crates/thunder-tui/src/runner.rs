@@ -106,6 +106,12 @@ impl TuiRunner {
                             app.autocomplete_index = 0;
                             needs_redraw = true;
                         }
+                        // A resize invalidates every laid-out line: the whole frame must be
+                        // rebuilt at the new width. Without this the terminal keeps a stale
+                        // frame stretched over the new geometry and the layout looks shredded.
+                        Event::Resize(_, _) => {
+                            needs_redraw = true;
+                        }
                         _ => {}
                     }
                 }
@@ -124,6 +130,9 @@ impl TuiRunner {
 }
 
 async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSender<RunnerMsg>) {
+    // Sending a message means "show me what happens next": snap the viewport
+    // back to the tail even if the user was reading history.
+    app.scroll_back = 0;
     app.timeline.push(TimelineItem::User {
         text: prompt.clone(),
     });
@@ -359,16 +368,22 @@ async fn handle_key_event(
         // Arrow keys scroll the transcript ONLY while the input has text;
         // with an empty input the suggestion cycler above already consumed them.
         (KeyCode::Up, _) if !app.input.is_empty() => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(2);
+            app.scroll_back = app.scroll_back.saturating_add(2);
         }
         (KeyCode::Down, _) if !app.input.is_empty() => {
-            app.scroll_offset = app.scroll_offset.saturating_add(2);
+            app.scroll_back = app.scroll_back.saturating_sub(2);
         }
         (KeyCode::PageUp, _) => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(10);
+            app.scroll_back = app.scroll_back.saturating_add(10);
         }
         (KeyCode::PageDown, _) => {
-            app.scroll_offset = app.scroll_offset.saturating_add(10);
+            app.scroll_back = app.scroll_back.saturating_sub(10);
+        }
+        (KeyCode::Home, m) if m.contains(KeyModifiers::CONTROL) => {
+            app.scroll_back = u16::MAX;
+        }
+        (KeyCode::End, m) if m.contains(KeyModifiers::CONTROL) => {
+            app.scroll_back = 0;
         }
         (KeyCode::BackTab, _) => {
             app.toggle_mode();
@@ -410,11 +425,11 @@ async fn handle_key_event(
 fn handle_mouse_event(app: &mut App, mouse: &MouseEvent) -> bool {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.scroll_offset = app.scroll_offset.saturating_add(3);
+            app.scroll_back = app.scroll_back.saturating_add(3);
             true
         }
         MouseEventKind::ScrollDown => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+            app.scroll_back = app.scroll_back.saturating_sub(3);
             true
         }
         _ => false,
