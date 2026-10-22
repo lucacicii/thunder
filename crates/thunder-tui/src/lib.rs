@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod runner;
+pub mod transcript_cache;
 pub mod ui;
 
 pub use app::{

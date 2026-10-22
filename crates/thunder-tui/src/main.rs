@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let runner = TuiRunner::new(50);
+    let runner = TuiRunner::new(250);
     runner.run(app).await?;
     Ok(())
 }
