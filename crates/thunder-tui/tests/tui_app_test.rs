@@ -159,3 +159,93 @@ async fn tui_app_handles_slash_commands_events_and_renders_cleanly() {
     assert!(app.handle_slash_command("/queue").await);
     assert!(app.handle_slash_command("/queue clear").await);
 }
+
+#[tokio::test]
+async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
+    use thunder_tui::{filter_slash_commands, PickerItem, PickerKind};
+
+    // 1. Test slash commands autocomplete filter
+    let m_cmds = filter_slash_commands("/m");
+    let names: Vec<&str> = m_cmds.iter().map(|c| c.name).collect();
+    assert!(names.contains(&"model"));
+    assert!(names.contains(&"mode"));
+
+    let r_cmds = filter_slash_commands("/res");
+    assert_eq!(r_cmds[0].name, "resume");
+
+    let store_dir = tempdir().unwrap();
+    let store = FsConversationStore::new(store_dir.path()).await.unwrap();
+    let mut app = App::new("gpt-4o").with_store(store);
+
+    // Populate a test item into model picker
+    app.picker.open(
+        PickerKind::Model,
+        "Select LLM Model",
+        vec![
+            PickerItem::new("lucastech/zai/glm-5.3", "lucastech/zai/glm-5.3", "Zai GLM")
+                .with_badge("1M ctx"),
+            PickerItem::new(
+                "lucastech/group/deepseek",
+                "lucastech/group/deepseek",
+                "DeepSeek Chat",
+            )
+            .with_badge("1M ctx"),
+            PickerItem::new("openai/gpt-4o", "openai/gpt-4o", "GPT-4o").with_badge("128K ctx"),
+        ],
+    );
+    assert!(app.picker.is_open);
+    assert_eq!(app.picker.filtered_items().len(), 3);
+
+    // Test typing filter in modal
+    app.picker.handle_char('d');
+    app.picker.handle_char('e');
+    app.picker.handle_char('e');
+    app.picker.handle_char('p');
+    assert_eq!(app.picker.filtered_items().len(), 1);
+    assert_eq!(
+        app.picker.filtered_items()[0].id,
+        "lucastech/group/deepseek"
+    );
+
+    // Test backspace in modal filter
+    app.picker.handle_backspace();
+    app.picker.handle_backspace();
+    app.picker.handle_backspace();
+    app.picker.handle_backspace();
+    assert_eq!(app.picker.filtered_items().len(), 3);
+
+    // Test navigation in modal
+    app.picker.move_selection_down();
+    assert_eq!(app.picker.selected_index, 1);
+    assert_eq!(
+        app.picker.selected_item().unwrap().id,
+        "lucastech/group/deepseek"
+    );
+
+    // Test rendering frame with modal open
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &app)).unwrap();
+
+    // Commit selection in modal
+    let selected = app.commit_picker_selection().await;
+    assert_eq!(selected.as_deref(), Some("lucastech/group/deepseek"));
+    assert!(!app.picker.is_open);
+    assert_eq!(app.model, "lucastech/group/deepseek");
+
+    // Test Popover rendering when input starts with '/'
+    app.input = "/mod".to_string();
+    terminal.draw(|f| ui::render(f, &app)).unwrap();
+
+    // Test /tools opens tools picker modal
+    assert!(app.handle_slash_command("/tools").await);
+    assert!(app.picker.is_open);
+    assert_eq!(app.picker.kind, Some(PickerKind::Tools));
+    app.picker.close();
+
+    // Test /model opens model picker modal
+    assert!(app.handle_slash_command("/model").await);
+    assert!(app.picker.is_open);
+    assert_eq!(app.picker.kind, Some(PickerKind::Model));
+    app.picker.close();
+}
