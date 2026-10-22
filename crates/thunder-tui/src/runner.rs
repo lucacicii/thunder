@@ -191,14 +191,17 @@ async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSend
     let registry = app.tool_registry.clone();
     let model_id = spec.id.clone();
     let warm_settings = spec.prompt_cache_warm_settings(None);
+    let thinking_level = app.thinking_level.clone();
 
     tokio::spawn(async move {
         let cfg = ThunderConfig::load_from_workspace(&ws_dir).await;
-        let driver = Arc::new(
-            ProviderClientDriver::new(Arc::clone(&client))
-                .with_model(model_id.clone())
-                .with_session_id(session_id.clone()),
-        );
+        let mut driver_builder = ProviderClientDriver::new(Arc::clone(&client))
+            .with_model(model_id.clone())
+            .with_session_id(session_id.clone());
+        if let Some(ref lvl) = thinking_level {
+            driver_builder = driver_builder.with_thinking_level(lvl);
+        }
+        let driver = Arc::new(driver_builder);
 
         let loop_cfg = AgentLoopConfig {
             session_id: session_id.clone(),
