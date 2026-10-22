@@ -250,6 +250,82 @@ impl Conversation {
         ContextBuffer::with_messages(self.messages.clone())
     }
 
+    pub fn compact_history(&mut self, keep_recent_messages: usize) -> (usize, usize) {
+        let count_before = self.messages.len();
+        if count_before <= keep_recent_messages + 1 {
+            return (count_before, count_before);
+        }
+        let sys_prompt = self.system_prompt.clone().unwrap_or_default();
+        let prefix = if self
+            .messages
+            .get(1)
+            .is_some_and(|m| matches!(m, ChatMessage::System { .. }))
+        {
+            2
+        } else {
+            1
+        };
+        let mut start = self
+            .messages
+            .len()
+            .saturating_sub(keep_recent_messages)
+            .max(prefix);
+        while start > prefix && matches!(self.messages.get(start), Some(ChatMessage::Tool { .. })) {
+            start -= 1;
+        }
+        let recent_slice: Vec<_> = self.messages[start..].to_vec();
+        let removed = start.saturating_sub(prefix);
+        let mut new_msgs = vec![
+            ChatMessage::system(sys_prompt),
+            ChatMessage::user(format!(
+                "[Earlier context trimmed: {removed} message(s) removed to fit the context window. The files on disk are the source of truth — re-read anything you need.]"
+            )),
+        ];
+        if prefix == 2 && self.messages.len() > 1 {
+            new_msgs.insert(1, self.messages[1].clone());
+        }
+        for m in recent_slice {
+            new_msgs.push(m);
+        }
+        self.messages = new_msgs;
+        self.touch();
+        (count_before, self.messages.len())
+    }
+
+    pub fn format_stats_markdown(&self) -> String {
+        let user_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::User)
+            .count();
+        let asst_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::Assistant)
+            .count();
+        let tool_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role() == Role::Tool)
+            .count();
+        let mut out = format!("### 📊 Session Statistics (Session: `{}`)\n\n", self.id);
+        out.push_str(&format!("- **Total Messages**: {}\n", self.messages.len()));
+        out.push_str(&format!("- **User Prompts**: {}\n", user_count));
+        out.push_str(&format!("- **Assistant Responses**: {}\n", asst_count));
+        out.push_str(&format!("- **Tool Call Invocations**: {}\n", tool_count));
+        out.push_str(&format!(
+            "- **Estimated Context Tokens**: ~{} tokens\n",
+            self.stats.total_tokens
+        ));
+        if self.stats.duration_ms > 0 {
+            out.push_str(&format!(
+                "- **Execution Time**: {}ms\n",
+                self.stats.duration_ms
+            ));
+        }
+        out
+    }
+
     pub fn recalculate_stats(&mut self) {
         let mut total_tokens = 0;
         let mut tool_calls = 0;

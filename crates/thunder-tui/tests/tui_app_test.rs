@@ -100,4 +100,62 @@ async fn tui_app_handles_slash_commands_events_and_renders_cleanly() {
         .timeline
         .iter()
         .any(|i| matches!(i, TimelineItem::User { text } if text == "Hello from saved session")));
+
+    // 6. Test /stats command
+    assert!(app.handle_slash_command("/stats").await);
+    assert!(app.timeline.iter().any(
+        |i| matches!(i, TimelineItem::SystemNotice { text } if text.contains("Session Statistics"))
+    ));
+
+    // 7. Test /think command
+    assert!(app.handle_slash_command("/think high").await);
+    assert_eq!(app.thinking_level.as_deref(), Some("high"));
+
+    // 8. Test /rename command
+    assert!(app.handle_slash_command("/rename My Great Task").await);
+    assert_eq!(app.conversation.title.as_deref(), Some("My Great Task"));
+
+    // 9. Test /compact command
+    assert!(app.handle_slash_command("/compact").await);
+    assert!(app
+        .timeline
+        .iter()
+        .any(|i| matches!(i, TimelineItem::SystemNotice { text } if text.contains("compacted"))));
+
+    // 10. Test /workspace command
+    assert!(app.handle_slash_command("/workspace").await);
+
+    // 11. Test /resume 1 (numeric index resume)
+    assert!(app.handle_slash_command("/resume 1").await);
+    assert_eq!(app.conversation.id, "sess-saved-42");
+
+    // 12. Test /export command
+    let export_target = store_dir.path().join("exported_session.md");
+    assert!(
+        app.handle_slash_command(&format!("/export {}", export_target.display()))
+            .await
+    );
+    assert!(export_target.exists());
+
+    // 13. Test /prompt command with template
+    let prompts_dir = app.workspace_dir.join(".thunder").join("prompts");
+    tokio::fs::create_dir_all(&prompts_dir).await.unwrap();
+    tokio::fs::write(prompts_dir.join("review.md"), "Please review code.")
+        .await
+        .unwrap();
+
+    assert!(app.handle_slash_command("/prompt").await);
+    assert!(app.handle_slash_command("/prompt review").await);
+    assert_eq!(app.input, "Please review code.");
+
+    // 14. Test /health command
+    assert!(app.handle_slash_command("/health").await);
+    assert!(app
+        .timeline
+        .iter()
+        .any(|i| matches!(i, TimelineItem::SystemNotice { text } if text.contains("Thunder System Health"))));
+
+    // 15. Test /queue command
+    assert!(app.handle_slash_command("/queue").await);
+    assert!(app.handle_slash_command("/queue clear").await);
 }

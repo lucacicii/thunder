@@ -56,6 +56,7 @@ pub struct App {
     pub scroll_offset: u16,
     pub status_message: String,
     pub estimated_tokens: usize,
+    pub thinking_level: Option<String>,
     pub is_running: bool,
     pub is_paused: bool,
     pub active_cancel: Option<CancellationToken>,
@@ -89,6 +90,7 @@ impl App {
             scroll_offset: 0,
             status_message: "Ready".to_string(),
             estimated_tokens: 0,
+            thinking_level: None,
             is_running: false,
             is_paused: false,
             active_cancel: None,
@@ -338,9 +340,35 @@ impl App {
         let arg = parts.next().map(str::trim).unwrap_or("");
 
         match cmd {
-            "/help" => {
+            "/help" | "/?" => {
                 self.timeline.push(TimelineItem::SystemNotice {
-                    text: "Commands: /model [id] · /tools · /mode [yolo|plan] · /new · /sessions · /load <id> · /clear · /quit".to_string(),
+                    text: "\
+⚡ Thunder Commands Reference:
+  Session:
+    /resume [id | #]  - List recent sessions or resume by ID / index (aliases: /switch, /load)
+    /new              - Start a brand new conversation session
+    /sessions         - Display saved sessions overview
+    /rename <title>   - Rename current session (or /rename --auto)
+    /compact          - Compact conversation history and prune tokens (alias: /prune)
+    /stats            - Display tokens, turns, and execution stats dashboard
+    /export [path]    - Export session messages to Markdown file (alias: /save)
+  Configuration & Mode:
+    /model [id]       - View current LLM model or switch model
+    /think [level]    - Set thinking effort (off, low, medium, high, max)
+    /mode [yolo|plan] - Toggle or set permission mode (Shift+Tab to toggle)
+    /workspace [dir]  - View or change workspace directory (alias: /cwd)
+    /tools            - Inspect all registered tools (core, mcp, scripts)
+  Control:
+    /pause, /unpause  - Pause / resume task at tool boundary (Ctrl+P)
+    /queue [clear]    - View or clear pending steering messages
+  Plugins & Templates:
+    /prompt [name]    - Browse or load prompt templates from .thunder/prompts/
+    /health           - Run system and environment health diagnostics (alias: /doctor)
+    /image <path>     - Inspect and attach a local image file
+  General:
+    /clear            - Clear timeline view
+    /quit             - Exit Thunder TUI (Ctrl+C / /exit)"
+                        .to_string(),
                 });
             }
             "/clear" => {
@@ -396,6 +424,26 @@ impl App {
                     self.set_status_message(format!("Switched model to '{}'", self.model));
                 }
             }
+            "/think" | "/thinking" => {
+                if arg.is_empty() {
+                    let current = self.thinking_level.as_deref().unwrap_or("default");
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Current thinking effort: {current} (options: off, minimal, low, medium, high, max)"),
+                    });
+                } else if matches!(
+                    arg.to_lowercase().as_str(),
+                    "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                ) {
+                    let lvl = arg.to_lowercase();
+                    self.thinking_level = Some(lvl.clone());
+                    self.conversation.thinking_level = Some(lvl.clone());
+                    self.set_status_message(format!("Thinking effort set to '{lvl}'"));
+                } else {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Invalid thinking level '{arg}'. Options: off, minimal, low, medium, high, max"),
+                    });
+                }
+            }
             "/tools" => {
                 let snap = self.tool_registry.current();
                 let mut names: Vec<String> = snap
@@ -420,29 +468,390 @@ impl App {
                 if let Some(ref store) = self.store {
                     let filter = ConversationFilter::new().with_min_turns(1);
                     if let Ok(list) = store.list(&filter).await {
-                        let summary = if list.is_empty() {
-                            "No saved sessions.".to_string()
+                        let text = if list.is_empty() {
+                            "No saved sessions found in storage.".to_string()
                         } else {
-                            list.iter()
-                                .take(10)
-                                .map(|s| {
-                                    format!(
-                                        "{} ({})",
-                                        s.id,
-                                        s.title.as_deref().unwrap_or("Untitled")
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" | ")
+                            let mut lines = Vec::new();
+                            lines.push("Recent Saved Sessions:".to_string());
+                            for (idx, s) in list.iter().take(15).enumerate() {
+                                let title = s.title.as_deref().unwrap_or("Untitled");
+                                lines.push(format!(
+                                    "  [{}] `{}` — {} ({} turns, {} tokens)",
+                                    idx + 1,
+                                    s.id,
+                                    title,
+                                    s.turn_count,
+                                    s.total_tokens
+                                ));
+                            }
+                            lines.push(
+                                "Tip: Use `/resume 1` or `/resume <id>` to switch.".to_string(),
+                            );
+                            lines.join("\n")
                         };
-                        self.timeline
-                            .push(TimelineItem::SystemNotice { text: summary });
+                        self.timeline.push(TimelineItem::SystemNotice { text });
                     }
                 }
             }
-            "/load" => {
-                if !arg.is_empty() {
-                    self.load_conversation(arg).await;
+            "/resume" | "/load_session" | "/switch" | "/load" => {
+                if arg.is_empty() {
+                    // List recent sessions with numeric indices
+                    if let Some(ref store) = self.store {
+                        let filter = ConversationFilter::new().with_min_turns(1);
+                        if let Ok(list) = store.list(&filter).await {
+                            let mut lines = Vec::new();
+                            lines.push("Select a session to resume:".to_string());
+                            for (idx, s) in list.iter().take(10).enumerate() {
+                                let title = s.title.as_deref().unwrap_or("Untitled");
+                                lines.push(format!("  [{}] `{}` — {}", idx + 1, s.id, title));
+                            }
+                            lines.push(
+                                "Type `/resume <#>` (e.g. `/resume 1`) or `/resume <session_id>`."
+                                    .to_string(),
+                            );
+                            self.timeline.push(TimelineItem::SystemNotice {
+                                text: lines.join("\n"),
+                            });
+                        }
+                    }
+                } else {
+                    // Check if numeric index (#1, 1, etc.)
+                    let clean_num = arg.trim_start_matches('#');
+                    let mut resolved_id = arg.to_string();
+                    if let Ok(idx) = clean_num.parse::<usize>() {
+                        if let Some(ref store) = self.store {
+                            let filter = ConversationFilter::new().with_min_turns(1);
+                            if let Ok(list) = store.list(&filter).await {
+                                if idx >= 1 && idx <= list.len() {
+                                    resolved_id = list[idx - 1].id.clone();
+                                }
+                            }
+                        }
+                    }
+                    self.load_conversation(&resolved_id).await;
+                }
+            }
+            "/compact" | "/prune" | "/compress" => {
+                let (count_before, count_after) = self.conversation.compact_history(20);
+                self.estimated_tokens = self.conversation.stats.total_tokens;
+                self.save_current_conversation().await;
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!(
+                        "Conversation history compacted: {count_before} -> {count_after} messages (current: ~{} tokens).",
+                        self.estimated_tokens
+                    ),
+                });
+                self.set_status_message("Compacted context history");
+            }
+            "/stats" | "/usage" | "/tokens" | "/cost" => {
+                self.conversation.recalculate_stats();
+                let md = self.conversation.format_stats_markdown();
+                self.timeline.push(TimelineItem::SystemNotice { text: md });
+            }
+            "/rename" => {
+                if arg.is_empty() {
+                    let title = self.conversation.title.as_deref().unwrap_or("Untitled");
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!(
+                            "Current session title: '{title}'. Use `/rename <new_name>` to change."
+                        ),
+                    });
+                } else if arg == "--auto" {
+                    let first_user = self
+                        .conversation
+                        .messages
+                        .iter()
+                        .find_map(|m| {
+                            if m.role() == Role::User {
+                                m.content_str().map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "New Conversation".to_string());
+                    let new_title = thunder_core::provisional_title(&first_user);
+                    self.conversation.title = Some(new_title.clone());
+                    self.conversation.title_source = Some("auto".to_string());
+                    self.save_current_conversation().await;
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Auto-regenerated title: '{new_title}'"),
+                    });
+                } else {
+                    self.conversation.title = Some(arg.to_string());
+                    self.conversation.title_source = Some("manual".to_string());
+                    self.save_current_conversation().await;
+                    self.set_status_message(format!("Renamed session to '{arg}'"));
+                }
+            }
+            "/pause" | "/hold" => {
+                if self.is_running {
+                    if let Some(ref gate) = self.active_pause {
+                        gate.pause();
+                        self.is_paused = true;
+                        self.set_status_message(
+                            "Paused at tool boundary (Type /unpause or Ctrl+P to resume)",
+                        );
+                    }
+                } else {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: "No active task to pause.".to_string(),
+                    });
+                }
+            }
+            "/unpause" | "/go" | "/continue" => {
+                if let Some(ref gate) = self.active_pause {
+                    gate.resume();
+                    self.is_paused = false;
+                    self.set_status_message("Resumed task execution");
+                } else {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: "No paused task to resume.".to_string(),
+                    });
+                }
+            }
+            "/workspace" | "/cwd" | "/dir" => {
+                if arg.is_empty() {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!(
+                            "Current workspace directory: {}",
+                            self.workspace_dir.display()
+                        ),
+                    });
+                } else {
+                    let p = PathBuf::from(arg);
+                    if p.is_dir() {
+                        let canonical = p.canonicalize().unwrap_or(p);
+                        self.workspace_dir = canonical.clone();
+                        self.conversation.workspace =
+                            Some(canonical.to_string_lossy().into_owned());
+                        self.set_status_message(format!(
+                            "Workspace changed to {}",
+                            canonical.display()
+                        ));
+                    } else {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!("Directory not found: {}", p.display()),
+                        });
+                    }
+                }
+            }
+            "/export" | "/dump" | "/save" => {
+                let default_name = format!("thunder_session_{}.md", self.conversation.id);
+                let target_path = if arg.is_empty() {
+                    self.workspace_dir.join(&default_name)
+                } else {
+                    self.workspace_dir.join(arg)
+                };
+
+                let mut md = format!(
+                    "# {}\n\n- Session ID: `{}`\n- Model: `{}`\n- Date: {}\n\n---\n\n",
+                    self.conversation
+                        .title
+                        .as_deref()
+                        .unwrap_or("Thunder Conversation"),
+                    self.conversation.id,
+                    self.model,
+                    self.conversation.created_at_ms
+                );
+                for msg in &self.conversation.messages {
+                    let role_str = match msg.role() {
+                        Role::User => "## ❯ User",
+                        Role::Assistant => "## ⚡ Thunder",
+                        Role::System => "## ℹ System",
+                        Role::Tool => "## ⚙ Tool",
+                    };
+                    md.push_str(&format!(
+                        "{role_str}\n\n{}\n\n",
+                        msg.content_str().unwrap_or_default()
+                    ));
+                }
+
+                match tokio::fs::write(&target_path, md.as_bytes()).await {
+                    Ok(_) => {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!(
+                                "Exported conversation to '{}' ({} bytes)",
+                                target_path.display(),
+                                md.len()
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!("Failed to export conversation: {e}"),
+                        });
+                    }
+                }
+            }
+            "/queue" | "/pending" | "/queued" => {
+                if let Some(ref queues) = self.active_steer {
+                    if arg == "clear" {
+                        let (s, f) = queues.clear_all();
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!(
+                                "Cleared {} steering and {} follow-up message(s) from queue.",
+                                s.len(),
+                                f.len()
+                            ),
+                        });
+                    } else {
+                        let snap = queues.snapshot();
+                        let text = format!(
+                            "Queued Messages (Total: {}):\n  Steer: {:?}\n  Follow-up: {:?}",
+                            snap.total(),
+                            snap.steering,
+                            snap.follow_up
+                        );
+                        self.timeline.push(TimelineItem::SystemNotice { text });
+                    }
+                } else {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: "No active task or steer queue.".to_string(),
+                    });
+                }
+            }
+            "/prompt" | "/prompts" | "/template" => {
+                let candidates = vec![
+                    self.workspace_dir.join(".thunder").join("prompts"),
+                    thunder_protocol::thunder_subdir("prompts"),
+                ];
+
+                if arg.is_empty() {
+                    let mut found = Vec::new();
+                    for dir in candidates {
+                        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+                            while let Ok(Some(e)) = entries.next_entry().await {
+                                let p = e.path();
+                                if p.extension().is_some_and(|ext| ext == "md") {
+                                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                                        found.push(format!("  /prompt {stem} ({})", p.display()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if found.is_empty() {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: "No prompt templates found in .thunder/prompts/ or ~/.thunder/prompts/.\nCreate templates as `.md` files in `.thunder/prompts/<name>.md`.".to_string(),
+                        });
+                    } else {
+                        found.sort();
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!("Available Prompt Templates:\n{}", found.join("\n")),
+                        });
+                    }
+                } else {
+                    let file_name = if arg.ends_with(".md") {
+                        arg.to_string()
+                    } else {
+                        format!("{arg}.md")
+                    };
+                    let mut content_opt = None;
+                    for dir in candidates {
+                        let p = dir.join(&file_name);
+                        if p.is_file() {
+                            if let Ok(text) = tokio::fs::read_to_string(&p).await {
+                                content_opt = Some((p, text));
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some((p, text)) = content_opt {
+                        self.input = text.trim().to_string();
+                        self.set_status_message(format!(
+                            "Loaded prompt template from {}",
+                            p.display()
+                        ));
+                    } else {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!(
+                                "Prompt template '{arg}' not found in .thunder/prompts/."
+                            ),
+                        });
+                    }
+                }
+            }
+            "/health" | "/doctor" => {
+                let mut report = Vec::new();
+                report.push("=== Thunder System Health & Environment ===".to_string());
+                report.push(format!("✓ Workspace: {}", self.workspace_dir.display()));
+                report.push(format!("✓ Model Selection: {}", self.model));
+                report.push(format!("✓ Mode: {}", self.mode));
+
+                let snap = self.tool_registry.current();
+                report.push(format!(
+                    "✓ Registered Tools: {} (Catalog v{})",
+                    snap.descriptors.len(),
+                    snap.version
+                ));
+
+                let data_root = thunder_protocol::thunder_config_dir();
+                report.push(format!("✓ Data Root: {}", data_root.display()));
+                report.push(format!(
+                    "  - models.json: {}",
+                    if data_root.join("models.json").exists() {
+                        "found"
+                    } else {
+                        "missing"
+                    }
+                ));
+                report.push(format!(
+                    "  - auth.json: {}",
+                    if data_root.join("auth.json").exists() {
+                        "found"
+                    } else {
+                        "missing"
+                    }
+                ));
+
+                let prompts_dir = self.workspace_dir.join(".thunder").join("prompts");
+                report.push(format!(
+                    "✓ Workspace Prompts: {}",
+                    if prompts_dir.is_dir() {
+                        "active"
+                    } else {
+                        "none"
+                    }
+                ));
+                report.push("==========================================".to_string());
+
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: report.join("\n"),
+                });
+            }
+            "/image" | "/attach" | "/img" => {
+                if arg.is_empty() {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: "Usage: /image <path_to_image> [optional prompt text]".to_string(),
+                    });
+                } else {
+                    let mut parts = arg.splitn(2, char::is_whitespace);
+                    let img_path_raw = parts.next().unwrap_or("");
+                    let prompt_text = parts.next().unwrap_or("").trim();
+
+                    let img_path = self.workspace_dir.join(img_path_raw);
+                    if img_path.is_file() {
+                        let size = tokio::fs::metadata(&img_path)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!(
+                                "Attached image: {} ({} bytes). Prompt: '{}'",
+                                img_path.display(),
+                                size,
+                                prompt_text
+                            ),
+                        });
+                        if !prompt_text.is_empty() {
+                            self.input = format!("Image: {} | {prompt_text}", img_path.display());
+                        }
+                    } else {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!("Image file not found: {}", img_path.display()),
+                        });
+                    }
                 }
             }
             "/quit" | "/exit" => {
