@@ -833,12 +833,16 @@ impl DaemonService {
 
         match run_res {
             Ok(outcome) => {
+                let suggest_engine = thunder_suggest::SuggestionEngine::new();
+                let suggestions = suggest_engine.generate_suggestions(&conv.messages).await;
+
                 self.send_response(DaemonResponse::TaskCompleted {
                     task_id,
                     session_id,
                     final_content: Some(outcome.final_response),
                     finish_reason: "done".to_string(),
                     active_plugins: vec!["thunder-std".to_string(), "kv-cache-shield".to_string()],
+                    suggested_questions: suggestions,
                 })
                 .await;
             }

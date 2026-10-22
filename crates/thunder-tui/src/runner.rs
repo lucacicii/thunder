@@ -81,6 +81,7 @@ impl TuiRunner {
                             app.active_pause = None;
                             app.active_steer = None;
                             app.conversation.set_messages(messages);
+                            app.update_suggestions();
                             app.save_current_conversation().await;
                             if let Err(err) = outcome {
                                 app.timeline.push(TimelineItem::SystemNotice {
@@ -185,7 +186,23 @@ impl TuiRunner {
                         }
                     }
 
-                    // 3. Normal typing and shortcuts
+                    // 3. If input is empty, Tab accepts suggestion and Up/Down cycles suggestions
+                    if app.input.is_empty() && !app.is_running {
+                        match key.code {
+                            KeyCode::Tab => {
+                                if app.accept_suggestion() {
+                                    continue;
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Up => {
+                                app.cycle_suggestion();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // 4. Normal typing and shortcuts
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                             if app.is_running {
