@@ -1,4 +1,4 @@
-use crate::app::{filter_slash_commands, App, TimelineItem};
+use crate::app::{resolve_completion_context, App, InputCompletionContext, TimelineItem};
 use crate::ui;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyModifiers},
@@ -119,29 +119,69 @@ impl TuiRunner {
 
                     // 2. If autocomplete popover is active (input starts with '/')
                     if app.input.starts_with('/') {
-                        let matches = filter_slash_commands(&app.input);
-                        match key.code {
-                            KeyCode::Tab => {
-                                if !matches.is_empty() {
-                                    let cmd = matches[app.autocomplete_index % matches.len()];
-                                    app.input = format!("/{} ", cmd.name);
-                                    app.autocomplete_index = 0;
+                        if let Some(ctx) = resolve_completion_context(&app.input, &app) {
+                            match ctx {
+                                InputCompletionContext::Command { matches } => {
+                                    match key.code {
+                                        KeyCode::Tab => {
+                                            if !matches.is_empty() {
+                                                let cmd = matches[app.autocomplete_index % matches.len()];
+                                                app.input = format!("/{} ", cmd.name);
+                                                app.autocomplete_index = 0;
+                                            }
+                                            continue;
+                                        }
+                                        KeyCode::Up if !matches.is_empty() => {
+                                            if app.autocomplete_index == 0 {
+                                                app.autocomplete_index = matches.len() - 1;
+                                            } else {
+                                                app.autocomplete_index -= 1;
+                                            }
+                                            continue;
+                                        }
+                                        KeyCode::Down if !matches.is_empty() => {
+                                            app.autocomplete_index = (app.autocomplete_index + 1) % matches.len();
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                continue;
-                            }
-                            KeyCode::Up if !matches.is_empty() => {
-                                if app.autocomplete_index == 0 {
-                                    app.autocomplete_index = matches.len() - 1;
-                                } else {
-                                    app.autocomplete_index -= 1;
+                                InputCompletionContext::Argument { command, candidates, .. } => {
+                                    if !candidates.is_empty() {
+                                        match key.code {
+                                            KeyCode::Tab => {
+                                                let next = (app.autocomplete_index + 1) % candidates.len();
+                                                app.autocomplete_index = next;
+                                                app.input = format!("/{} {}", command.name, candidates[next]);
+                                                continue;
+                                            }
+                                            KeyCode::BackTab => {
+                                                let prev = if app.autocomplete_index == 0 {
+                                                    candidates.len().saturating_sub(1)
+                                                } else {
+                                                    app.autocomplete_index - 1
+                                                };
+                                                app.autocomplete_index = prev;
+                                                app.input = format!("/{} {}", command.name, candidates[prev]);
+                                                continue;
+                                            }
+                                            KeyCode::Up => {
+                                                if app.autocomplete_index == 0 {
+                                                    app.autocomplete_index = candidates.len() - 1;
+                                                } else {
+                                                    app.autocomplete_index -= 1;
+                                                }
+                                                continue;
+                                            }
+                                            KeyCode::Down => {
+                                                app.autocomplete_index = (app.autocomplete_index + 1) % candidates.len();
+                                                continue;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 }
-                                continue;
                             }
-                            KeyCode::Down if !matches.is_empty() => {
-                                app.autocomplete_index = (app.autocomplete_index + 1) % matches.len();
-                                continue;
-                            }
-                            _ => {}
                         }
                     }
 

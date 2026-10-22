@@ -1,4 +1,6 @@
-use crate::app::{filter_slash_commands, App, TimelineItem, ToolCardStatus};
+use crate::app::{
+    resolve_completion_context, App, InputCompletionContext, TimelineItem, ToolCardStatus,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -162,61 +164,116 @@ pub fn render(frame: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title(input_title));
     frame.render_widget(composer, chunks[2]);
 
-    // 4. Floating Command Autocomplete Popover (above bottom composer)
+    // 4. Floating Command / Argument Autocomplete Popover (above bottom composer)
     if !app.picker.is_open && app.input.starts_with('/') {
-        let matches = filter_slash_commands(&app.input);
-        if !matches.is_empty() {
-            let visible_count = matches.len().min(6);
-            let pop_height = (visible_count as u16) + 2;
-            let pop_width = (chunks[2].width * 85 / 100).max(45).min(chunks[2].width);
-            let pop_x = chunks[2].x + 1;
-            let pop_y = chunks[2].y.saturating_sub(pop_height);
+        if let Some(ctx) = resolve_completion_context(&app.input, app) {
+            match ctx {
+                InputCompletionContext::Command { matches } => {
+                    let visible_count = matches.len().min(6);
+                    let pop_height = (visible_count as u16) + 2;
+                    let pop_width = (chunks[2].width * 85 / 100).max(45).min(chunks[2].width);
+                    let pop_x = chunks[2].x + 1;
+                    let pop_y = chunks[2].y.saturating_sub(pop_height);
 
-            let pop_area = Rect {
-                x: pop_x,
-                y: pop_y,
-                width: pop_width,
-                height: pop_height,
-            };
+                    let pop_area = Rect {
+                        x: pop_x,
+                        y: pop_y,
+                        width: pop_width,
+                        height: pop_height,
+                    };
 
-            frame.render_widget(Clear, pop_area);
+                    frame.render_widget(Clear, pop_area);
 
-            let sel = app.autocomplete_index % matches.len();
-            let mut pop_lines = Vec::new();
-            for (idx, cmd) in matches.iter().take(visible_count).enumerate() {
-                let is_sel = idx == sel;
-                let (prefix, name_style, desc_style) = if is_sel {
-                    (
-                        "> ",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                        Style::default().fg(Color::White),
-                    )
-                } else {
-                    (
-                        "  ",
-                        Style::default().fg(Color::Cyan),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                };
-                pop_lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{prefix}/{:<8} {:<16} ", cmd.name, cmd.args_hint),
-                        name_style,
-                    ),
-                    Span::styled(format!("— {}", cmd.description), desc_style),
-                ]));
+                    let sel = app.autocomplete_index % matches.len();
+                    let mut pop_lines = Vec::new();
+                    for (idx, cmd) in matches.iter().take(visible_count).enumerate() {
+                        let is_sel = idx == sel;
+                        let (prefix, name_style, desc_style) = if is_sel {
+                            (
+                                "> ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                                Style::default().fg(Color::White),
+                            )
+                        } else {
+                            (
+                                "  ",
+                                Style::default().fg(Color::Cyan),
+                                Style::default().fg(Color::DarkGray),
+                            )
+                        };
+                        pop_lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{prefix}/{:<8} {:<16} ", cmd.name, cmd.args_hint),
+                                name_style,
+                            ),
+                            Span::styled(format!("— {}", cmd.description), desc_style),
+                        ]));
+                    }
+
+                    let pop_block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Slash Commands (Tab: Complete · ↑/↓: Move) ")
+                        .border_style(Style::default().fg(Color::Cyan))
+                        .style(Style::default().bg(Color::Rgb(15, 20, 28)));
+
+                    let pop_widget = Paragraph::new(pop_lines).block(pop_block);
+                    frame.render_widget(pop_widget, pop_area);
+                }
+                InputCompletionContext::Argument {
+                    command,
+                    candidates,
+                    ..
+                } => {
+                    let visible_count = candidates.len().min(6);
+                    let pop_height = (visible_count as u16) + 2;
+                    let pop_width = (chunks[2].width * 85 / 100).max(45).min(chunks[2].width);
+                    let pop_x = chunks[2].x + 1;
+                    let pop_y = chunks[2].y.saturating_sub(pop_height);
+
+                    let pop_area = Rect {
+                        x: pop_x,
+                        y: pop_y,
+                        width: pop_width,
+                        height: pop_height,
+                    };
+
+                    frame.render_widget(Clear, pop_area);
+
+                    let sel = app.autocomplete_index % candidates.len();
+                    let mut pop_lines = Vec::new();
+                    for (idx, cand) in candidates.iter().take(visible_count).enumerate() {
+                        let is_sel = idx == sel;
+                        let (prefix, style) = if is_sel {
+                            (
+                                "> ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                        } else {
+                            ("  ", Style::default().fg(Color::Cyan))
+                        };
+                        pop_lines.push(Line::from(vec![Span::styled(
+                            format!("{prefix}/{} {cand}", command.name),
+                            style,
+                        )]));
+                    }
+
+                    let pop_block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(
+                            " /{} Options (Tab: Cycle · ↑/↓: Move) ",
+                            command.name
+                        ))
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .style(Style::default().bg(Color::Rgb(15, 20, 28)));
+
+                    let pop_widget = Paragraph::new(pop_lines).block(pop_block);
+                    frame.render_widget(pop_widget, pop_area);
+                }
             }
-
-            let pop_block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Slash Commands (Tab: Complete · ↑/↓: Move) ")
-                .border_style(Style::default().fg(Color::Cyan))
-                .style(Style::default().bg(Color::Rgb(15, 20, 28)));
-
-            let pop_widget = Paragraph::new(pop_lines).block(pop_block);
-            frame.render_widget(pop_widget, pop_area);
         }
     }
 

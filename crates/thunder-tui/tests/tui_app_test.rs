@@ -248,4 +248,41 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
     assert!(app.picker.is_open);
     assert_eq!(app.picker.kind, Some(PickerKind::Model));
     app.picker.close();
+
+    // 16. Test argument completion context for /think and /mode
+    use thunder_tui::{resolve_completion_context, InputCompletionContext};
+
+    let think_ctx = resolve_completion_context("/think ", &app).expect("arg context for think");
+    match think_ctx {
+        InputCompletionContext::Argument {
+            command,
+            candidates,
+            ..
+        } => {
+            assert_eq!(command.name, "think");
+            assert!(candidates.contains(&"off".to_string()));
+            assert!(candidates.contains(&"high".to_string()));
+            assert!(candidates.contains(&"max".to_string()));
+        }
+        _ => panic!("expected Argument context"),
+    }
+
+    let think_filtered =
+        resolve_completion_context("/think h", &app).expect("filtered arg context");
+    match think_filtered {
+        InputCompletionContext::Argument { candidates, .. } => {
+            assert_eq!(candidates, vec!["high".to_string()]);
+        }
+        _ => panic!("expected Argument context"),
+    }
+
+    // Test /think with no args opens ThinkingLevel picker modal
+    assert!(app.handle_slash_command("/think").await);
+    assert!(app.picker.is_open);
+    assert_eq!(app.picker.kind, Some(PickerKind::ThinkingLevel));
+
+    // Render frame with Popover showing /think options
+    app.picker.close();
+    app.input = "/think ".to_string();
+    terminal.draw(|f| ui::render(f, &app)).unwrap();
 }
