@@ -77,7 +77,6 @@ pub enum PickerKind {
     ResumeSession,
     PromptTemplate,
     Tools,
-    ThinkingLevel,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -650,30 +649,6 @@ impl App {
             .open(PickerKind::Model, "Select LLM Model", final_items);
     }
 
-    pub fn open_thinking_picker(&mut self) {
-        let levels = [
-            ("off", "Disable reasoning tokens (fast response)"),
-            ("minimal", "Minimal reasoning effort"),
-            ("low", "Low reasoning effort for lightweight tasks"),
-            ("medium", "Balanced reasoning effort"),
-            ("high", "High reasoning effort for complex design/debugging"),
-            ("xhigh", "Extra-high reasoning effort"),
-            ("max", "Maximum reasoning effort permitted by model"),
-        ];
-
-        let current = self.thinking_level.as_deref().unwrap_or("off");
-        let items: Vec<PickerItem> = levels
-            .iter()
-            .map(|(lvl, desc)| {
-                let badge = if *lvl == current { "Active" } else { "Level" };
-                PickerItem::new(*lvl, format!("/think {lvl}"), *desc).with_badge(badge)
-            })
-            .collect();
-
-        self.picker
-            .open(PickerKind::ThinkingLevel, "Set Reasoning Effort", items);
-    }
-
     pub async fn open_session_picker(&mut self) {
         if let Some(ref store) = self.store {
             let filter = ConversationFilter::new().with_min_turns(1);
@@ -777,12 +752,6 @@ impl App {
                 self.model = selected.id.clone();
                 self.conversation.model = Some(self.model.clone());
                 self.set_status_message(format!("Switched model to '{}'", self.model));
-                Some(selected.id)
-            }
-            PickerKind::ThinkingLevel => {
-                self.thinking_level = Some(selected.id.clone());
-                self.conversation.thinking_level = Some(selected.id.clone());
-                self.set_status_message(format!("Thinking effort set to '{}'", selected.id));
                 Some(selected.id)
             }
             PickerKind::ResumeSession => {
@@ -1022,7 +991,19 @@ impl App {
             }
             "/think" | "/thinking" => {
                 if arg.is_empty() {
-                    self.open_thinking_picker();
+                    let levels = ["off", "low", "medium", "high", "max"];
+                    let current = self.thinking_level.as_deref().unwrap_or("off");
+                    let next_idx = match levels.iter().position(|l| *l == current) {
+                        Some(pos) => (pos + 1) % levels.len(),
+                        None => 1,
+                    };
+                    let next_lvl = levels[next_idx];
+                    self.thinking_level = Some(next_lvl.to_string());
+                    self.conversation.thinking_level = Some(next_lvl.to_string());
+                    self.set_status_message(format!("Thinking effort set to '{next_lvl}'"));
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Thinking effort cycled to '{next_lvl}' (options: off, low, medium, high, max)"),
+                    });
                 } else if matches!(
                     arg.to_lowercase().as_str(),
                     "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
@@ -1031,6 +1012,9 @@ impl App {
                     self.thinking_level = Some(lvl.clone());
                     self.conversation.thinking_level = Some(lvl.clone());
                     self.set_status_message(format!("Thinking effort set to '{lvl}'"));
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Thinking effort set to '{lvl}'"),
+                    });
                 } else {
                     self.timeline.push(TimelineItem::SystemNotice {
                         text: format!("Invalid thinking level '{arg}'. Options: off, minimal, low, medium, high, max"),

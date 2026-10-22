@@ -276,13 +276,16 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
         _ => panic!("expected Argument context"),
     }
 
-    // Test /think with no args opens ThinkingLevel picker modal
+    // Test /think with no args cycles thinking effort directly without opening a modal!
+    app.thinking_level = Some("off".to_string());
     assert!(app.handle_slash_command("/think").await);
-    assert!(app.picker.is_open);
-    assert_eq!(app.picker.kind, Some(PickerKind::ThinkingLevel));
+    assert!(
+        !app.picker.is_open,
+        "Type B command /think must NEVER open a modal"
+    );
+    assert_eq!(app.thinking_level.as_deref(), Some("low"));
 
     // Render frame with Popover showing /think options
-    app.picker.close();
     app.input = "/think ".to_string();
     terminal.draw(|f| ui::render(f, &app)).unwrap();
 }
