@@ -91,3 +91,25 @@ fn renders_tables_with_grid() {
     assert!(rendered.contains("│"));
     assert!(rendered.contains("┼"));
 }
+
+#[test]
+fn parses_hash_and_preprocessor_lines_without_hanging() {
+    let tricky_md = "\
+#include <stdio.h>
+#define MAX_VAL 100
+#!/bin/bash
+#tag_without_space
+- [x]invalid_task_no_space
+Regular paragraph text.";
+
+    // Must finish in < 50ms without hanging in an infinite loop!
+    let lines = render_markdown_default(tricky_md, 80);
+    assert!(!lines.is_empty());
+    let full: String = lines
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(full.contains("#include <stdio.h>"));
+    assert!(full.contains("#define MAX_VAL 100"));
+}
