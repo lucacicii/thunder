@@ -9,9 +9,8 @@ license.workspace = true
 
 [dependencies]
 ratatui.workspace = true
+thunder-mermaid.workspace = true
 tui-markdown = "0.3"
-
-[dev-dependencies]
 
 [lints]
 workspace = true

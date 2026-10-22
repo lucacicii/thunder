@@ -1,0 +1,21 @@
+thunder-mermaid
+===============
+
+The Rust sources in src/ are derived from `codex-rs/mermaid` in
+https://github.com/openai/codex (Apache License 2.0).
+
+Modifications:
+  * crate manifest added (upstream lives in a workspace);
+  * the upstream insta-based snapshot test modules were dropped, because they
+    need `insta`/`pretty_assertions` and their snapshots are not vendored;
+  * let-chains in `output.rs` and `relations.rs` were rewritten as equivalent
+    `match`/`if let`, so the crate builds on our edition and MSRV;
+  * `is_none_or` in `parse.rs` was rewritten as `matches!`, for the same reason;
+  * `Shape::Rounded` and `Shape::Cylinder` were added so `A(label)` and
+    `A[(label)]` parse. The upstream prototype only accepted `[]`, `{}` and
+    `([ ])`, which rejected most real diagrams. They reuse the existing
+    rounded-corner drawing arm; the layout algorithm is untouched.
+
+The rendering algorithm, its bounds, and its public API are otherwise unchanged.
+
+Licensed under the Apache License, Version 2.0. See the repository LICENSE.
