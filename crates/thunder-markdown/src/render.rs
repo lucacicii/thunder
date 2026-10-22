@@ -1,4 +1,5 @@
 use crate::theme::MarkdownTheme;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::{from_str_with_options, Options};
 
@@ -19,27 +20,43 @@ const MARKDOWN_FENCE_LANGS: [&str; 4] = ["markdown", "md", "mdx", "gfm"];
 /// * a fence whose language is Markdown is unwrapped and its contents rendered
 ///   as Markdown rather than as literal source.
 pub fn render_markdown(source: &str, width: usize, theme: &MarkdownTheme) -> Vec<Line<'static>> {
-    let _ = width; // tui-markdown sizes tables from content; wrapping is the caller's job.
     let normalized = close_unterminated_fences(source);
     let flattened = unwrap_markdown_fences(&normalized);
+    let (flattened, diagrams) = extract_diagrams(&flattened, width);
 
     let options = Options::new(theme.clone());
     let text = from_str_with_options(&flattened, &options);
 
     // Detach from the borrowed input so the result is `'static` (the caller
     // stashes rendered lines in the timeline cache between frames).
-    text.iter()
+    let mut out: Vec<Line<'static>> = text
+        .iter()
         .map(|line| {
             let spans: Vec<Span<'static>> = line
                 .spans
                 .iter()
                 .map(|span| Span::styled(span.content.to_string(), span.style))
                 .collect();
-            let mut out = Line::from(spans);
-            out.style = line.style;
-            out
+            Line::from(spans)
         })
-        .collect()
+        .collect();
+
+    // Diagrams were lifted out of the source as placeholder paragraphs; splice
+    // the drawn diagram back in place of its marker.
+    for (index, diagram) in diagrams {
+        if let Some(position) = out
+            .iter()
+            .position(|line| line.to_string().trim() == diagram_marker(index))
+        {
+            out.splice(position..position + 1, diagram);
+        }
+    }
+    out
+}
+
+/// Marker paragraph standing in for a diagram that was lifted out of the source.
+fn diagram_marker(index: usize) -> String {
+    format!("thunder-diagram-{index}")
 }
 
 /// Convenience function rendering with the default Thunder theme.
@@ -158,6 +175,97 @@ fn unwrap_markdown_fences(source: &str) -> String {
     }
 
     out
+}
+
+/// Lift ```` ```mermaid ```` blocks out of the source and draw them.
+///
+/// Returns the source with each diagram replaced by a marker paragraph, plus the
+/// drawn lines per marker index.
+///
+/// A diagram is only drawn when the renderer accepts it **at this width**. The
+/// vendored renderer is deliberately bounded: it refuses syntax it cannot draw
+/// faithfully and refuses to exceed the column budget, so the fallback here is
+/// the original code block — a truncated diagram is worse than its source.
+fn extract_diagrams(source: &str, width: usize) -> (String, Vec<(usize, Vec<Line<'static>>)>) {
+    let mut out = String::with_capacity(source.len());
+    let mut diagrams: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
+    // Leave room for the block's own indentation and the pane border.
+    let budget = width.saturating_sub(4).max(20);
+
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let Some(fence) = opening_fence(line) else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+
+        if !is_mermaid_lang(&fence.info) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        // Collect the body; a `mermaid` fence is never unwrapped as markdown.
+        let mut body = String::new();
+        let mut closed = false;
+        for inner in lines.by_ref() {
+            if closes_fence(inner, fence.marker, fence.len) {
+                closed = true;
+                break;
+            }
+            body.push_str(inner);
+            body.push('\n');
+        }
+
+        let drawn = if closed {
+            thunder_mermaid::render(&body, budget).ok().map(|diagram| {
+                let mut lines: Vec<Line<'static>> = diagram
+                    .lines()
+                    .map(|l| Line::from(Span::styled(l.to_string(), Style::default())))
+                    .collect();
+                // A caption makes it obvious this is a drawing, not text.
+                lines.insert(
+                    0,
+                    Line::from(Span::styled(
+                        "▸ mermaid diagram",
+                        Style::default()
+                            .fg(Color::Rgb(100, 116, 139))
+                            .add_modifier(Modifier::ITALIC),
+                    )),
+                );
+                lines
+            })
+        } else {
+            None
+        };
+
+        match drawn {
+            Some(rendered) => {
+                out.push_str(&diagram_marker(diagrams.len()));
+                out.push_str("\n\n");
+                diagrams.push((diagrams.len(), rendered));
+            }
+            None => {
+                // Unrenderable or too wide: keep the source verbatim.
+                out.push_str(line);
+                out.push('\n');
+                out.push_str(&body);
+                if closed {
+                    let fence_str: String =
+                        std::iter::repeat(fence.marker).take(fence.len).collect();
+                    out.push_str(&fence_str);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+
+    (out, diagrams)
+}
+
+fn is_mermaid_lang(info: &str) -> bool {
+    info == "mermaid" || info.starts_with("mermaid ")
 }
 
 #[cfg(test)]

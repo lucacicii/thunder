@@ -3066,7 +3066,15 @@ name = "thunder-markdown"
 version = "0.1.0"
 dependencies = [
  "ratatui",
+ "thunder-mermaid",
  "tui-markdown",
+]
+
+[[package]]
+name = "thunder-mermaid"
+version = "0.1.0"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]

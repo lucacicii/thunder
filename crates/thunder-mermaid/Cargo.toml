@@ -1,0 +1,14 @@
+[package]
+name = "thunder-mermaid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Bounded, terminal-native Mermaid diagram renderer (vendored from openai/codex)"
+license.workspace = true
+
+[dependencies]
+unicode-width.workspace = true
+
+[lints]
+workspace = true
