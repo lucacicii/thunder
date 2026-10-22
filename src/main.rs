@@ -89,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  📊 Total Screen Captures:      {}", stats.total_captures);
                 println!("  ⏳ Unprocessed Captures:       {}", stats.unprocessed_captures);
                 println!("  🌟 Long-Term Memories:         {}", stats.long_term_memories);
+                println!("  🤖 Agent Rules / Guidelines:   {}", stats.agent_interactions);
                 println!("  🎓 Composer Training Samples:  {}", stats.training_samples);
                 if let Some(ms) = stats.last_capture_ms {
                     let secs_ago = (std::time::SystemTime::now()
@@ -171,29 +172,160 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let db = Database::open(&config.db_path)?;
+            let agent_records = db.search_agent_interactions(query_text, 10)?;
             let search = MemorySearchEngine::new(db);
             let results = search.query(query_text, 10)?;
 
             println!("══════════════════════════════════════════════════════════════════");
-            println!("  🔍 Memory Search Results for: '{}' (Found {})", query_text, results.len());
+            println!("  🔍 Memory Search Results for: '{}'", query_text);
             println!("══════════════════════════════════════════════════════════════════");
 
-            for (idx, item) in results.iter().enumerate() {
-                let m = &item.memory;
-                println!(
-                    "[{}] Score: {:.2} (Rel: {:.2}, Imp: {:.2}, Rec: {:.2}) | [{}] {}",
-                    idx + 1,
-                    item.total_score,
-                    item.relevance_score,
-                    item.importance_score_norm,
-                    item.recency_score,
-                    m.category,
-                    m.title
-                );
-                println!("    Summary:  {}", m.summary);
-                println!("    Entities: {:?}", m.key_entities);
+            if !agent_records.is_empty() {
+                println!("  🤖 Agent Cognitive Records & Guidelines (Found {}):", agent_records.len());
+                for (idx, r) in agent_records.iter().enumerate() {
+                    let scope_badge = if r.scope == "global" {
+                        "[GLOBAL]".to_string()
+                    } else {
+                        format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                    };
+                    println!(
+                        "  [{}] {} [{}] {} ({})",
+                        idx + 1,
+                        scope_badge,
+                        r.category,
+                        r.title,
+                        r.status
+                    );
+                    println!("      {}", r.content);
+                    if !r.entities.is_empty() {
+                        println!("      Entities: {:?}", r.entities);
+                    }
+                }
                 println!("──────────────────────────────────────────────────────────────────");
             }
+
+            if !results.is_empty() {
+                println!("  🖥️ Desktop & Screen History Insights (Found {}):", results.len());
+                for (idx, item) in results.iter().enumerate() {
+                    let m = &item.memory;
+                    println!(
+                        "  [{}] Score: {:.2} (Rel: {:.2}, Imp: {:.2}, Rec: {:.2}) | [{}] {}",
+                        idx + 1,
+                        item.total_score,
+                        item.relevance_score,
+                        item.importance_score_norm,
+                        item.recency_score,
+                        m.category,
+                        m.title
+                    );
+                    println!("      Summary:  {}", m.summary);
+                    println!("      Entities: {:?}", m.key_entities);
+                }
+                println!("──────────────────────────────────────────────────────────────────");
+            }
+
+            if agent_records.is_empty() && results.is_empty() {
+                println!("  No matching memories or guidelines found.");
+            }
+        }
+
+        "preferences" => {
+            let project_path = args.get(2).map(|s| s.as_str());
+            let db = Database::open(&config.db_path)?;
+            let prefs = db.get_active_preferences(project_path)?;
+            println!("══════════════════════════════════════════════════════════════════");
+            println!("  🧠 Thunder Memory - Active Preferences & Constraints");
+            if let Some(p) = project_path {
+                println!("  Target Project: {}", p);
+            } else {
+                println!("  Target: Global only");
+            }
+            println!("══════════════════════════════════════════════════════════════════");
+
+            if prefs.is_empty() {
+                println!("  No active preferences or constraints recorded.");
+            } else {
+                for (idx, p) in prefs.iter().enumerate() {
+                    let scope_badge = if p.scope == "global" {
+                        "[GLOBAL]".to_string()
+                    } else {
+                        format!("[PROJECT: {}]", p.project_path.as_deref().unwrap_or("current"))
+                    };
+                    println!(
+                        "  [{}] {} [{}] {} (by {})",
+                        idx + 1,
+                        scope_badge,
+                        p.category,
+                        p.title,
+                        p.agent_name
+                    );
+                    println!("      {}", p.content);
+                    if !p.entities.is_empty() {
+                        println!("      Entities: {:?}", p.entities);
+                    }
+                    println!("──────────────────────────────────────────────────────────────────");
+                }
+            }
+        }
+
+        "record" => {
+            if args.len() < 5 {
+                println!("Usage: thunder-memory record <category> <title> <content> [--scope global|project] [--project <path>] [--agent <name>]");
+                println!("Categories: constraint, user_preference, architecture_decision, bug_solution, task_milestone");
+                return Ok(());
+            }
+
+            let category = args[2].clone();
+            let title = args[3].clone();
+            let content = args[4].clone();
+
+            let mut scope = "global".to_string();
+            let mut project_path = None;
+            let mut agent_name = "cli".to_string();
+
+            let mut idx = 5;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--scope" => {
+                        if let Some(val) = args.get(idx + 1) {
+                            scope = val.clone();
+                            idx += 1;
+                        }
+                    }
+                    "--project" => {
+                        if let Some(val) = args.get(idx + 1) {
+                            project_path = Some(val.clone());
+                            scope = "project".to_string();
+                            idx += 1;
+                        }
+                    }
+                    "--agent" => {
+                        if let Some(val) = args.get(idx + 1) {
+                            agent_name = val.clone();
+                            idx += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                idx += 1;
+            }
+
+            config.ensure_dirs()?;
+            let db = Database::open(&config.db_path)?;
+            let new_item = thunder_memory::db::NewAgentInteraction {
+                agent_name,
+                scope,
+                project_path,
+                category,
+                title: title.clone(),
+                content,
+                entities: vec![],
+                suggested_importance: 8.0,
+                metadata: None,
+            };
+
+            let id = db.insert_agent_interaction(&new_item)?;
+            println!("✅ Successfully recorded memory rule #{} ('{}')", id, title);
         }
 
         "list-memories" => {
@@ -264,6 +396,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  sync-composer           Sync workbench_composer_sends from desktop.db");
             println!("  export-training [fmt]   Export training dataset (openai | alpaca | sharegpt)");
             println!("  query <search terms>    Query memory with Generative Agents scoring");
+            println!("  preferences [project]   Show active user preferences & constraints");
+            println!("  record <cat> <title>    Record explicit memory/preference rule");
             println!("  list-memories [limit]   List recent long-term memories");
             println!("  mcp                     Run standard JSON-RPC 2.0 MCP server over stdio");
             println!("  install-launchagent     Install macOS LaunchAgent for autostart");

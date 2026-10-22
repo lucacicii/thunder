@@ -66,10 +66,40 @@ pub struct ComposerTrainingSample {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewAgentInteraction {
+    pub agent_name: String,
+    pub scope: String, // "global" | "project"
+    pub project_path: Option<String>,
+    pub category: String, // "constraint", "user_preference", "architecture_decision", "bug_solution", "task_milestone"
+    pub title: String,
+    pub content: String,
+    pub entities: Vec<String>,
+    pub suggested_importance: f32,
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInteractionRow {
+    pub id: i64,
+    pub recorded_at_ms: i64,
+    pub agent_name: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+    pub category: String,
+    pub title: String,
+    pub content: String,
+    pub entities: Vec<String>,
+    pub suggested_importance: f32,
+    pub status: String,
+    pub metadata: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStats {
     pub total_captures: i64,
     pub unprocessed_captures: i64,
     pub long_term_memories: i64,
+    pub agent_interactions: i64,
     pub training_samples: i64,
     pub last_capture_ms: Option<i64>,
     pub last_synthesis_ms: Option<i64>,
@@ -158,7 +188,30 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_long_term_memories_status
                 ON long_term_memories(status, updated_at_ms DESC);
 
-            -- Tier 3: Ingested workbench_composer_sends training data
+            -- Tier 3: Agent explicit cognitive memory interactions
+            CREATE TABLE IF NOT EXISTS agent_interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at_ms INTEGER NOT NULL,
+                agent_name TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'global',
+                project_path TEXT,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                entities TEXT NOT NULL DEFAULT '[]',
+                suggested_importance REAL NOT NULL DEFAULT 5.0,
+                status TEXT NOT NULL DEFAULT 'active',
+                metadata TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_interactions_scope_cat
+                ON agent_interactions(scope, category, status, recorded_at_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_agent_interactions_project
+                ON agent_interactions(project_path, status, recorded_at_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_agent_interactions_status
+                ON agent_interactions(status, recorded_at_ms DESC);
+
+            -- Tier 4: Ingested workbench_composer_sends training data
             CREATE TABLE IF NOT EXISTS composer_training_samples (
                 id TEXT PRIMARY KEY,
                 created_at_ms INTEGER NOT NULL,
@@ -610,6 +663,9 @@ impl Database {
         let long_term_memories: i64 = conn
             .query_row("SELECT COUNT(*) FROM long_term_memories", [], |r| r.get(0))
             .unwrap_or(0);
+        let agent_interactions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_interactions", [], |r| r.get(0))
+            .unwrap_or(0);
         let training_samples: i64 = conn
             .query_row("SELECT COUNT(*) FROM composer_training_samples", [], |r| r.get(0))
             .unwrap_or(0);
@@ -634,9 +690,204 @@ impl Database {
             total_captures,
             unprocessed_captures,
             long_term_memories,
+            agent_interactions,
             training_samples,
             last_capture_ms,
             last_synthesis_ms,
+        })
+    }
+
+    /// Insert a structured cognitive memory recorded by an agent.
+    /// If the same title exists in the same scope and project, supersedes the previous active record.
+    pub fn insert_agent_interaction(
+        &self,
+        item: &NewAgentInteraction,
+    ) -> Result<i64, MemoryError> {
+        let conn = self.conn.lock();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let entities_json = serde_json::to_string(&item.entities).unwrap_or_else(|_| "[]".to_string());
+        let meta = item.metadata.clone().unwrap_or_default();
+
+        // Check if there is an active record with same scope, project_path, and title
+        // If so, mark it as 'superseded' to maintain versioned evolution
+        if let Some(ref proj) = item.project_path {
+            conn.execute(
+                r#"
+                UPDATE agent_interactions
+                SET status = 'superseded'
+                WHERE scope = ?1 AND project_path = ?2 AND title = ?3 AND status = 'active'
+                "#,
+                params![item.scope, proj, item.title],
+            )?;
+        } else {
+            conn.execute(
+                r#"
+                UPDATE agent_interactions
+                SET status = 'superseded'
+                WHERE scope = ?1 AND project_path IS NULL AND title = ?2 AND status = 'active'
+                "#,
+                params![item.scope, item.title],
+            )?;
+        }
+
+        conn.execute(
+            r#"
+            INSERT INTO agent_interactions (
+                recorded_at_ms, agent_name, scope, project_path,
+                category, title, content, entities, suggested_importance,
+                status, metadata
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10)
+            "#,
+            params![
+                now_ms,
+                item.agent_name,
+                item.scope,
+                item.project_path,
+                item.category,
+                item.title,
+                item.content,
+                entities_json,
+                item.suggested_importance,
+                meta,
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+        Ok(id)
+    }
+
+    /// Retrieve active constraints, user preferences, and architectural rules.
+    /// Filters by scope: all 'global' records PLUS 'project' records matching project_path.
+    pub fn get_active_preferences(
+        &self,
+        target_project_path: Option<&str>,
+    ) -> Result<Vec<AgentInteractionRow>, MemoryError> {
+        let conn = self.conn.lock();
+        let mut results = Vec::new();
+
+        if let Some(proj) = target_project_path {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, recorded_at_ms, agent_name, scope, project_path,
+                       category, title, content, entities, suggested_importance,
+                       status, metadata
+                FROM agent_interactions
+                WHERE status = 'active'
+                  AND category IN ('constraint', 'user_preference', 'architecture_decision')
+                  AND (scope = 'global' OR (scope = 'project' AND project_path = ?1))
+                ORDER BY category ASC, recorded_at_ms DESC
+                "#,
+            )?;
+            let rows = stmt.query_map(params![proj], Self::map_agent_interaction_row)?;
+            for r in rows {
+                results.push(r?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, recorded_at_ms, agent_name, scope, project_path,
+                       category, title, content, entities, suggested_importance,
+                       status, metadata
+                FROM agent_interactions
+                WHERE status = 'active'
+                  AND category IN ('constraint', 'user_preference', 'architecture_decision')
+                  AND scope = 'global'
+                ORDER BY category ASC, recorded_at_ms DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], Self::map_agent_interaction_row)?;
+            for r in rows {
+                results.push(r?);
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Search agent interactions by query text
+    pub fn search_agent_interactions(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AgentInteractionRow>, MemoryError> {
+        let conn = self.conn.lock();
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, recorded_at_ms, agent_name, scope, project_path,
+                       category, title, content, entities, suggested_importance,
+                       status, metadata
+            FROM agent_interactions
+            WHERE title LIKE ?1 OR content LIKE ?1 OR entities LIKE ?1
+            ORDER BY recorded_at_ms DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![pattern, limit as i64], Self::map_agent_interaction_row)?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// List recent agent interactions
+    pub fn list_recent_agent_interactions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AgentInteractionRow>, MemoryError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, recorded_at_ms, agent_name, scope, project_path,
+                   category, title, content, entities, suggested_importance,
+                   status, metadata
+            FROM agent_interactions
+            ORDER BY recorded_at_ms DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], Self::map_agent_interaction_row)?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// Mark an agent interaction as superseded
+    pub fn supersede_agent_interaction(&self, id: i64) -> Result<(), MemoryError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE agent_interactions SET status = 'superseded' WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    fn map_agent_interaction_row(row: &rusqlite::Row) -> rusqlite::Result<AgentInteractionRow> {
+        let entities_str: String = row.get(8)?;
+        let entities: Vec<String> = serde_json::from_str(&entities_str).unwrap_or_default();
+
+        Ok(AgentInteractionRow {
+            id: row.get(0)?,
+            recorded_at_ms: row.get(1)?,
+            agent_name: row.get(2)?,
+            scope: row.get(3)?,
+            project_path: row.get(4)?,
+            category: row.get(5)?,
+            title: row.get(6)?,
+            content: row.get(7)?,
+            entities,
+            suggested_importance: row.get(9)?,
+            status: row.get(10)?,
+            metadata: row.get(11)?,
         })
     }
 
@@ -722,5 +973,82 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].summary.contains("Added indexes and WAL mode"));
         assert!(results[0].key_entities.contains(&"WAL".into()));
+    }
+
+    #[test]
+    fn test_agent_interactions_and_preferences() {
+        let db = Database::in_memory().unwrap();
+
+        // 1. Insert global constraint
+        let id1 = db.insert_agent_interaction(&NewAgentInteraction {
+            agent_name: "claude".into(),
+            scope: "global".into(),
+            project_path: None,
+            category: "constraint".into(),
+            title: "Never modify Java build files".into(),
+            content: "Intranet Maven repos already globally opted-in; never add allowInsecureProtocol".into(),
+            entities: vec!["build.gradle".into(), "Maven".into()],
+            suggested_importance: 9.0,
+            metadata: None,
+        }).unwrap();
+        assert_eq!(id1, 1);
+
+        // 2. Insert project-specific constraint for /repo/A
+        let id2 = db.insert_agent_interaction(&NewAgentInteraction {
+            agent_name: "pi".into(),
+            scope: "project".into(),
+            project_path: Some("/repo/A".into()),
+            category: "constraint".into(),
+            title: "Pinned to JDK 8".into(),
+            content: "Spring Boot 2.2.7 breaks on JDK 17+; stay on JDK 8".into(),
+            entities: vec!["JDK8".into()],
+            suggested_importance: 9.5,
+            metadata: None,
+        }).unwrap();
+        assert_eq!(id2, 2);
+
+        // 3. Insert project-specific constraint for /repo/B
+        db.insert_agent_interaction(&NewAgentInteraction {
+            agent_name: "codex".into(),
+            scope: "project".into(),
+            project_path: Some("/repo/B".into()),
+            category: "constraint".into(),
+            title: "Use pnpm only".into(),
+            content: "Do not use npm or yarn in repo B".into(),
+            entities: vec!["pnpm".into()],
+            suggested_importance: 8.0,
+            metadata: None,
+        }).unwrap();
+
+        // Query preferences for /repo/A: should get global + /repo/A, but NOT /repo/B
+        let prefs_a = db.get_active_preferences(Some("/repo/A")).unwrap();
+        assert_eq!(prefs_a.len(), 2);
+        assert!(prefs_a.iter().any(|p| p.title == "Never modify Java build files"));
+        assert!(prefs_a.iter().any(|p| p.title == "Pinned to JDK 8"));
+        assert!(!prefs_a.iter().any(|p| p.title == "Use pnpm only"));
+
+        // Query preferences with no project: only global
+        let prefs_global = db.get_active_preferences(None).unwrap();
+        assert_eq!(prefs_global.len(), 1);
+        assert_eq!(prefs_global[0].title, "Never modify Java build files");
+
+        // 4. Test superseding old rule: update "Never modify Java build files"
+        let id4 = db.insert_agent_interaction(&NewAgentInteraction {
+            agent_name: "thunder".into(),
+            scope: "global".into(),
+            project_path: None,
+            category: "constraint".into(),
+            title: "Never modify Java build files".into(),
+            content: "Updated: allow modification in test subprojects only".into(),
+            entities: vec!["build.gradle".into()],
+            suggested_importance: 9.0,
+            metadata: None,
+        }).unwrap();
+        assert_eq!(id4, 4);
+
+        let prefs_updated = db.get_active_preferences(None).unwrap();
+        assert_eq!(prefs_updated.len(), 1);
+        assert_eq!(prefs_updated[0].id, 4);
+        assert!(prefs_updated[0].content.contains("test subprojects only"));
     }
 }

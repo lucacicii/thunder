@@ -1,4 +1,4 @@
-use crate::db::Database;
+use crate::db::{AgentInteractionRow, Database, NewAgentInteraction};
 use crate::search::MemorySearchEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -120,8 +120,66 @@ impl MemoryMcpServer {
     pub fn tool_definitions() -> Vec<McpToolInfo> {
         vec![
             McpToolInfo {
+                name: "memory_record".into(),
+                description: Some("Record an explicit cognitive memory, persistent user preference, hard constraint / red-line, critical architecture decision, or complex bug root-cause solution into the system-wide long-term memory.".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": ["constraint", "user_preference", "architecture_decision", "bug_solution", "task_milestone"],
+                            "description": "Category: constraint (red lines / prohibited actions), user_preference (habits/preferences), architecture_decision (system design choices), bug_solution (root cause & fix), task_milestone (key project milestone)."
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["global", "project"],
+                            "description": "Scope: 'global' applies across all projects/directories; 'project' applies only to a specific workspace path."
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Concise summary title (under 30 characters)."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Detailed explanation, rules, root cause analysis, or guidelines."
+                        },
+                        "entities": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Associated file names, technologies, packages, or symbols."
+                        },
+                        "project_path": {
+                            "type": "string",
+                            "description": "Absolute project workspace path (required when scope is 'project')."
+                        },
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Name of the calling agent (e.g. pi, codex, claude, thunder)."
+                        },
+                        "importance": {
+                            "type": "number",
+                            "description": "Suggested importance score from 1.0 to 10.0 (default: 8.0)."
+                        }
+                    },
+                    "required": ["category", "scope", "title", "content"]
+                }),
+            },
+            McpToolInfo {
+                name: "memory_get_preferences".into(),
+                description: Some("Retrieve active user constraints, red lines, development preferences, and key architectural decisions across projects or for a specific project path. Call this before making significant changes or starting tasks.".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project_path": {
+                            "type": "string",
+                            "description": "Optional absolute path of the current project workspace. If omitted, returns global preferences only. If provided, returns global preferences plus project-specific rules."
+                        }
+                    }
+                }),
+            },
+            McpToolInfo {
                 name: "memory_query".into(),
-                description: Some("Search long-term memories and desktop activity history using cognitive relevance, importance, and recency scoring.".into()),
+                description: Some("Search long-term memories, agent-recorded rules/solutions, and desktop activity history using cognitive relevance, importance, and recency scoring.".into()),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -171,6 +229,91 @@ impl MemoryMcpServer {
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<String, String> {
         match name {
+            "memory_record" => {
+                let category = arguments
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter 'category'".to_string())?;
+                let scope = arguments
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("global");
+                let title = arguments
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter 'title'".to_string())?;
+                let content = arguments
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter 'content'".to_string())?;
+
+                let entities: Vec<String> = arguments
+                    .get("entities")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let project_path = arguments
+                    .get("project_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let agent_name = arguments
+                    .get("agent_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("agent")
+                    .to_string();
+
+                let suggested_importance = arguments
+                    .get("importance")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(8.0) as f32;
+
+                let new_item = NewAgentInteraction {
+                    agent_name,
+                    scope: scope.to_string(),
+                    project_path: project_path.clone(),
+                    category: category.to_string(),
+                    title: title.to_string(),
+                    content: content.to_string(),
+                    entities,
+                    suggested_importance,
+                    metadata: None,
+                };
+
+                let id = self
+                    .db
+                    .insert_agent_interaction(&new_item)
+                    .map_err(|e| format!("Failed to record memory: {e}"))?;
+
+                let scope_desc = match &project_path {
+                    Some(p) => format!("project ({})", p),
+                    None => "global".to_string(),
+                };
+
+                Ok(format!(
+                    "✅ Successfully recorded memory #{} (`{}`)\n- Category: {}\n- Scope: {}\n- Title: {}\n- Status: active (previous matching rule superseded if existing)",
+                    id, category, category, scope_desc, title
+                ))
+            }
+
+            "memory_get_preferences" => {
+                let project_path = arguments
+                    .get("project_path")
+                    .and_then(|v| v.as_str());
+
+                let items = self
+                    .db
+                    .get_active_preferences(project_path)
+                    .map_err(|e| format!("Failed to get preferences: {e}"))?;
+
+                Ok(format_preferences(&items, project_path))
+            }
+
             "memory_query" => {
                 let query = arguments
                     .get("query")
@@ -186,27 +329,61 @@ impl MemoryMcpServer {
                     .query(query, limit)
                     .map_err(|e| e.to_string())?;
 
-                if scored.is_empty() {
-                    return Ok(format!("No long-term memories found matching '{}'.", query));
+                let agent_records = self
+                    .db
+                    .search_agent_interactions(query, limit)
+                    .map_err(|e| e.to_string())?;
+
+                if scored.is_empty() && agent_records.is_empty() {
+                    return Ok(format!("No long-term memories or agent records found matching '{}'.", query));
                 }
 
-                let mut out = format!("### Long-Term Memory Search Results for `{}`:\n\n", query);
-                for (i, item) in scored.iter().enumerate() {
-                    let m = &item.memory;
-                    out.push_str(&format!(
-                        "**{}. [{}] {}** (Relevance: {:.2}, Importance: {:.1}/10)\n",
-                        i + 1,
-                        m.category,
-                        m.title,
-                        item.relevance_score,
-                        m.importance_score
-                    ));
-                    out.push_str(&format!("- **Summary**: {}\n", m.summary));
-                    if !m.key_entities.is_empty() {
-                        out.push_str(&format!("- **Entities**: {}\n", m.key_entities.join(", ")));
+                let mut out = format!("### Memory Search Results for `{}`:\n\n", query);
+
+                if !agent_records.is_empty() {
+                    out.push_str("#### 🤖 Agent Cognitive Records & Guidelines:\n");
+                    for (i, r) in agent_records.iter().enumerate() {
+                        let scope_badge = if r.scope == "global" {
+                            "[GLOBAL]".to_string()
+                        } else {
+                            format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                        };
+                        out.push_str(&format!(
+                            "{}. **{} [{}] {}** ({})\n   {}\n",
+                            i + 1,
+                            scope_badge,
+                            r.category,
+                            r.title,
+                            r.status,
+                            r.content
+                        ));
+                        if !r.entities.is_empty() {
+                            out.push_str(&format!("   *Entities: {}*\n", r.entities.join(", ")));
+                        }
                     }
                     out.push('\n');
                 }
+
+                if !scored.is_empty() {
+                    out.push_str("#### 🖥️ Desktop & Screen History Insights:\n");
+                    for (i, item) in scored.iter().enumerate() {
+                        let m = &item.memory;
+                        out.push_str(&format!(
+                            "{}. **[{}] {}** (Relevance: {:.2}, Importance: {:.1}/10)\n",
+                            i + 1,
+                            m.category,
+                            m.title,
+                            item.relevance_score,
+                            m.importance_score
+                        ));
+                        out.push_str(&format!("   - **Summary**: {}\n", m.summary));
+                        if !m.key_entities.is_empty() {
+                            out.push_str(&format!("   - **Entities**: {}\n", m.key_entities.join(", ")));
+                        }
+                    }
+                    out.push('\n');
+                }
+
                 Ok(out)
             }
 
@@ -221,25 +398,55 @@ impl MemoryMcpServer {
                     .list_recent_memories(limit)
                     .map_err(|e| e.to_string())?;
 
-                if memories.is_empty() {
-                    return Ok("No long-term memories recorded yet.".into());
+                let agent_records = self
+                    .db
+                    .list_recent_agent_interactions(limit)
+                    .map_err(|e| e.to_string())?;
+
+                if memories.is_empty() && agent_records.is_empty() {
+                    return Ok("No memories recorded yet.".into());
                 }
 
-                let mut out = String::from("### Recent Long-Term Memories:\n\n");
-                for (i, m) in memories.iter().enumerate() {
-                    out.push_str(&format!(
-                        "**{}. [{}] {}** (Score: {:.1}/10)\n",
-                        i + 1,
-                        m.category,
-                        m.title,
-                        m.importance_score
-                    ));
-                    out.push_str(&format!("- {}\n", m.summary));
-                    if !m.key_entities.is_empty() {
-                        out.push_str(&format!("- **Entities**: {}\n", m.key_entities.join(", ")));
+                let mut out = String::from("### Recent Memories & Guidelines:\n\n");
+
+                if !agent_records.is_empty() {
+                    out.push_str("#### 🤖 Agent Cognitive Records:\n");
+                    for (i, r) in agent_records.iter().enumerate() {
+                        let scope_badge = if r.scope == "global" {
+                            "[GLOBAL]".to_string()
+                        } else {
+                            format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                        };
+                        out.push_str(&format!(
+                            "{}. **{} [{}] {}**\n   {}\n",
+                            i + 1,
+                            scope_badge,
+                            r.category,
+                            r.title,
+                            r.content
+                        ));
                     }
                     out.push('\n');
                 }
+
+                if !memories.is_empty() {
+                    out.push_str("#### 🖥️ Desktop Screen Insights:\n");
+                    for (i, m) in memories.iter().enumerate() {
+                        out.push_str(&format!(
+                            "{}. **[{}] {}** (Score: {:.1}/10)\n",
+                            i + 1,
+                            m.category,
+                            m.title,
+                            m.importance_score
+                        ));
+                        out.push_str(&format!("   - {}\n", m.summary));
+                        if !m.key_entities.is_empty() {
+                            out.push_str(&format!("   - **Entities**: {}\n", m.key_entities.join(", ")));
+                        }
+                    }
+                    out.push('\n');
+                }
+
                 Ok(out)
             }
 
@@ -272,10 +479,11 @@ impl MemoryMcpServer {
             "memory_stats" => {
                 let stats = self.db.get_stats().map_err(|e| e.to_string())?;
                 let out = format!(
-                    "### Thunder Memory Statistics:\n- Total Screen Captures: {}\n- Unprocessed Captures: {}\n- Consolidated Long-Term Memories: {}\n- Composer Training Samples: {}\n",
+                    "### Thunder Memory Statistics:\n- Total Screen Captures: {}\n- Unprocessed Captures: {}\n- Consolidated Long-Term Memories: {}\n- Agent Interactions / Guidelines: {}\n- Composer Training Samples: {}\n",
                     stats.total_captures,
                     stats.unprocessed_captures,
                     stats.long_term_memories,
+                    stats.agent_interactions,
                     stats.training_samples
                 );
                 Ok(out)
@@ -284,6 +492,99 @@ impl MemoryMcpServer {
             unknown => Err(format!("Unknown memory tool '{}'", unknown)),
         }
     }
+}
+
+fn format_preferences(items: &[AgentInteractionRow], project_path: Option<&str>) -> String {
+    if items.is_empty() {
+        return match project_path {
+            Some(p) => format!(
+                "No active constraints or preferences recorded for workspace '{}' or globally.\nUse 'memory_record' to persist rules.",
+                p
+            ),
+            None => "No active global constraints or preferences recorded.\nUse 'memory_record' to persist rules.".to_string(),
+        };
+    }
+
+    let mut out = String::new();
+    let constraints: Vec<&AgentInteractionRow> = items
+        .iter()
+        .filter(|i| i.category == "constraint")
+        .collect();
+    let preferences: Vec<&AgentInteractionRow> = items
+        .iter()
+        .filter(|i| i.category == "user_preference")
+        .collect();
+    let architecture: Vec<&AgentInteractionRow> = items
+        .iter()
+        .filter(|i| i.category == "architecture_decision")
+        .collect();
+    let others: Vec<&AgentInteractionRow> = items
+        .iter()
+        .filter(|i| {
+            !matches!(
+                i.category.as_str(),
+                "constraint" | "user_preference" | "architecture_decision"
+            )
+        })
+        .collect();
+
+    if !constraints.is_empty() {
+        out.push_str("### 🛑 Active Constraints & Red Lines:\n\n");
+        for c in constraints {
+            let scope_badge = if c.scope == "global" {
+                "[GLOBAL]".to_string()
+            } else {
+                format!("[PROJECT: {}]", c.project_path.as_deref().unwrap_or("current"))
+            };
+            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, c.title, c.content));
+            if !c.entities.is_empty() {
+                out.push_str(&format!("  *Entities: {}*\n", c.entities.join(", ")));
+            }
+        }
+        out.push('\n');
+    }
+
+    if !preferences.is_empty() {
+        out.push_str("### 💡 User Preferences & Coding Habits:\n\n");
+        for p in preferences {
+            let scope_badge = if p.scope == "global" {
+                "[GLOBAL]".to_string()
+            } else {
+                format!("[PROJECT: {}]", p.project_path.as_deref().unwrap_or("current"))
+            };
+            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, p.title, p.content));
+            if !p.entities.is_empty() {
+                out.push_str(&format!("  *Entities: {}*\n", p.entities.join(", ")));
+            }
+        }
+        out.push('\n');
+    }
+
+    if !architecture.is_empty() {
+        out.push_str("### 📐 Key Architecture Decisions:\n\n");
+        for a in architecture {
+            let scope_badge = if a.scope == "global" {
+                "[GLOBAL]".to_string()
+            } else {
+                format!("[PROJECT: {}]", a.project_path.as_deref().unwrap_or("current"))
+            };
+            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, a.title, a.content));
+            if !a.entities.is_empty() {
+                out.push_str(&format!("  *Entities: {}*\n", a.entities.join(", ")));
+            }
+        }
+        out.push('\n');
+    }
+
+    if !others.is_empty() {
+        out.push_str("### 📌 Other Active Guidelines:\n\n");
+        for o in others {
+            out.push_str(&format!("- **[{}] {}**\n  {}\n", o.category, o.title, o.content));
+        }
+        out.push('\n');
+    }
+
+    out
 }
 
 pub async fn run_mcp_stdio(db: Database) -> Result<(), Box<dyn std::error::Error>> {
@@ -413,3 +714,94 @@ async fn handle_rpc_frame(line: &str, server: &MemoryMcpServer) -> Option<JsonRp
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_mcp_tools_list() {
+        let tools = MemoryMcpServer::tool_definitions();
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(tool_names.contains(&"memory_record".into()));
+        assert!(tool_names.contains(&"memory_get_preferences".into()));
+        assert!(tool_names.contains(&"memory_query".into()));
+        assert!(tool_names.contains(&"memory_recent".into()));
+        assert!(tool_names.contains(&"memory_current_screen".into()));
+        assert!(tool_names.contains(&"memory_stats".into()));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_record_and_get_preferences() {
+        let db = Database::in_memory().unwrap();
+        let server = MemoryMcpServer::new(db);
+
+        // 1. Record global user preference
+        let res1 = server
+            .call_tool(
+                "memory_record",
+                json!({
+                    "category": "user_preference",
+                    "scope": "global",
+                    "title": "Concise code edits",
+                    "content": "Keep edits small and avoid large unchanged blocks",
+                    "entities": ["edit", "code"]
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(res1.contains("Successfully recorded memory"));
+
+        // 2. Record project-specific constraint
+        let res2 = server
+            .call_tool(
+                "memory_record",
+                json!({
+                    "category": "constraint",
+                    "scope": "project",
+                    "project_path": "/Users/lucas/wz/project-x",
+                    "title": "No Lombok",
+                    "content": "Never use lombok annotations in project-x",
+                    "entities": ["lombok", "java"]
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(res2.contains("Successfully recorded memory"));
+
+        // 3. Query preferences without project_path -> only global
+        let global_prefs = server
+            .call_tool("memory_get_preferences", json!({}))
+            .await
+            .unwrap();
+        assert!(global_prefs.contains("Concise code edits"));
+        assert!(!global_prefs.contains("No Lombok"));
+
+        // 4. Query preferences with project_path -> global + project
+        let project_prefs = server
+            .call_tool(
+                "memory_get_preferences",
+                json!({
+                    "project_path": "/Users/lucas/wz/project-x"
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(project_prefs.contains("Concise code edits"));
+        assert!(project_prefs.contains("No Lombok"));
+
+        // 5. Query via memory_query -> finds agent records
+        let query_res = server
+            .call_tool(
+                "memory_query",
+                json!({
+                    "query": "Lombok"
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(query_res.contains("Agent Cognitive Records"));
+        assert!(query_res.contains("No Lombok"));
+    }
+}
+
