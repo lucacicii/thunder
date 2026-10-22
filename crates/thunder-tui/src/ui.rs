@@ -5,11 +5,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -58,105 +58,26 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(header, chunks[0]);
 
     // 2. Center Timeline
-    let mut lines: Vec<Line> = Vec::new();
-    for item in &app.timeline {
-        match item {
-            TimelineItem::User { text } => {
-                let mut user_spans = vec![Span::styled(
-                    "❯ You: ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )];
-                user_spans.extend(thunder_markdown::parse_inline(text));
-                lines.push(Line::from(user_spans));
-                lines.push(Line::from(""));
-            }
-            TimelineItem::Assistant {
-                content,
-                reasoning,
-                streaming,
-            } => {
-                if !reasoning.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled("  💭 Thinking: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(reasoning, Style::default().fg(Color::DarkGray)),
-                    ]));
-                }
-                let prefix = if *streaming {
-                    "⚡ Thunder (streaming):"
-                } else {
-                    "⚡ Thunder:"
-                };
-                lines.push(Line::from(vec![Span::styled(
-                    prefix,
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                let md_lines =
-                    thunder_markdown::render_markdown_default(content, chunks[1].width as usize);
-                for md_line in md_lines {
-                    lines.push(md_line);
-                }
-                lines.push(Line::from(""));
-            }
-            TimelineItem::ToolCallCard {
-                name,
-                args_summary,
-                status,
-                ..
-            } => {
-                let (badge, color, detail) = match status {
-                    ToolCardStatus::Running => ("⏳ RUN", Color::Yellow, args_summary.clone()),
-                    ToolCardStatus::Success {
-                        output_preview,
-                        duration_ms,
-                    } => (
-                        "✓ OK",
-                        Color::Green,
-                        format!("({duration_ms}ms) {output_preview}"),
-                    ),
-                    ToolCardStatus::Error {
-                        error_preview,
-                        duration_ms,
-                    } => (
-                        "✖ ERR",
-                        Color::Red,
-                        format!("({duration_ms}ms) {error_preview}"),
-                    ),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  [{badge}] {name} "),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(detail, Style::default().fg(Color::Gray)),
-                ]));
-            }
-            TimelineItem::SystemNotice { text } => {
-                lines.push(Line::from(vec![
-                    Span::styled("  ℹ ", Style::default().fg(Color::Blue)),
-                    Span::styled(text, Style::default().fg(Color::Gray)),
-                ]));
-            }
-        }
-    }
+    //
+    // Rendered per item through the cache: a frame only re-parses the messages
+    // whose content actually changed (normally just the streaming tail).
+    let width = chunks[1].width;
+    let lines = app.transcript.lines(&app.timeline, width, render_item);
 
     // Scroll geometry: `scroll_back` counts rows above the *tail*, so 0 pins the
     // view to the newest line and streaming output is followed automatically.
     // Clamping is mandatory: an offset past the end would scroll the entire
     // transcript out of the viewport and leave an empty pane.
+    // The cache hands back pre-wrapped lines, so this is a plain window slice:
+    // no widget-level wrapping, which used to dominate the frame.
     let total_lines = lines.len();
     let view_height = chunks[1].height.saturating_sub(2) as usize; // borders
     let max_scroll = total_lines.saturating_sub(view_height);
-    let scroll_top = max_scroll.saturating_sub(app.scroll_back as usize);
-    let scroll_top = u16::try_from(scroll_top).unwrap_or(u16::MAX);
+    let first = max_scroll.saturating_sub(app.scroll_back as usize);
+    let window: Vec<Line> = lines.into_iter().skip(first).take(view_height).collect();
 
-    let timeline_widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Timeline "))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_top, 0));
+    let timeline_widget =
+        Paragraph::new(window).block(Block::default().borders(Borders::ALL).title(" Timeline "));
     frame.render_widget(timeline_widget, chunks[1]);
 
     // 3. Bottom Composer + Status Bar
@@ -490,4 +411,93 @@ fn scroll_viewport(selected: usize, total: usize, visible: usize) -> usize {
     } else {
         selected - half
     }
+}
+
+/// Render one timeline item into display lines at `width`.
+///
+/// Split out of [`render`] so the transcript cache can render a single changed
+/// item instead of the whole conversation.
+fn render_item(item: &TimelineItem, width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match item {
+        TimelineItem::User { text } => {
+            let mut user_spans = vec![Span::styled(
+                "❯ You: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            user_spans.extend(thunder_markdown::parse_inline(text));
+            lines.push(Line::from(user_spans));
+            lines.push(Line::from(""));
+        }
+        TimelineItem::Assistant {
+            content,
+            reasoning,
+            streaming,
+        } => {
+            if !reasoning.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  💭 Thinking: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(reasoning.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+            let prefix = if *streaming {
+                "⚡ Thunder (streaming):"
+            } else {
+                "⚡ Thunder:"
+            };
+            lines.push(Line::from(vec![Span::styled(
+                prefix,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            lines.extend(thunder_markdown::render_markdown_default(
+                content,
+                width as usize,
+            ));
+            lines.push(Line::from(""));
+        }
+        TimelineItem::ToolCallCard {
+            name,
+            args_summary,
+            status,
+            ..
+        } => {
+            let (badge, color, detail) = match status {
+                ToolCardStatus::Running => ("⏳ RUN", Color::Yellow, args_summary.clone()),
+                ToolCardStatus::Success {
+                    output_preview,
+                    duration_ms,
+                } => (
+                    "✓ OK",
+                    Color::Green,
+                    format!("({duration_ms}ms) {output_preview}"),
+                ),
+                ToolCardStatus::Error {
+                    error_preview,
+                    duration_ms,
+                } => (
+                    "✖ ERR",
+                    Color::Red,
+                    format!("({duration_ms}ms) {error_preview}"),
+                ),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  [{badge}] {name} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(detail, Style::default().fg(Color::Gray)),
+            ]));
+        }
+        TimelineItem::SystemNotice { text } => {
+            lines.push(Line::from(vec![
+                Span::styled("  ℹ ", Style::default().fg(Color::Blue)),
+                Span::styled(text.clone(), Style::default().fg(Color::Gray)),
+            ]));
+        }
+    }
+    lines
 }

@@ -31,7 +31,7 @@ fn timeline_renders_user_and_assistant_markdown_into_the_frame() {
 
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     let text = buffer_text(&terminal);
     assert!(
@@ -60,7 +60,7 @@ fn timeline_still_renders_when_scroll_offset_is_stale_and_large() {
 
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     let text = buffer_text(&terminal);
     assert!(
@@ -81,7 +81,7 @@ fn streaming_reasoning_only_turn_is_visible() {
 
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     let text = buffer_text(&terminal);
     assert!(

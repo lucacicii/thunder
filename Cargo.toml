@@ -82,6 +82,14 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+# A debug build of the TUI is the default for `cargo run`, and the render path is
+# dominated by dependencies: pulldown-cmark, syntect, and ratatui's line layout
+# were ~7x slower unoptimized (42.8 ms/frame vs 5.6 ms at 120 messages). Optimizing
+# only the dependencies keeps `cargo build` incremental while making `cargo run`
+# usable.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.tui-dev]
 inherits = "release"
 lto = false

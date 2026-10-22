@@ -67,7 +67,7 @@ impl TuiRunner {
 
         loop {
             if needs_redraw {
-                terminal.draw(|f| ui::render(f, &app))?;
+                terminal.draw(|f| ui::render(f, &mut app))?;
                 needs_redraw = false;
             }
 
@@ -76,11 +76,11 @@ impl TuiRunner {
             }
 
             tokio::select! {
-                _ = ticker.tick() => {
-                    if app.is_running {
-                        needs_redraw = true;
-                    }
-                }
+                // Heartbeat only: a frame is never redrawn because time passed,
+                // only because something actually changed. Redrawing on the tick
+                // meant re-rendering the transcript 20 times a second while a run
+                // was live, even when no token had arrived.
+                _ = ticker.tick() => {}
                 Some(msg) = rx.recv() => {
                     handle_runner_msg(&mut app, msg).await;
                     // Coalesce high-speed token delta bursts before drawing

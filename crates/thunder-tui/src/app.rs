@@ -479,6 +479,13 @@ pub struct App {
     pub autocomplete_index: usize,
     pub suggestions: Vec<String>,
     pub suggestion_index: usize,
+    /// Per-item rendering cache for the transcript.
+    ///
+    /// Markdown parsing is by far the most expensive part of a frame, and a
+    /// transcript's history never changes. Without this, every frame re-parsed
+    /// every finished message (42 ms/frame in a debug build at 120 items, of
+    /// which the streaming message accounted for under 1 ms).
+    pub transcript: crate::transcript_cache::TranscriptCache,
 }
 
 impl App {
@@ -517,6 +524,7 @@ impl App {
             autocomplete_index: 0,
             suggestions: Vec::new(),
             suggestion_index: 0,
+            transcript: crate::transcript_cache::TranscriptCache::default(),
         }
     }
 

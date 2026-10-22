@@ -91,7 +91,7 @@ async fn tui_app_handles_slash_commands_events_and_renders_cleanly() {
     // 4. Render frame onto Ratatui `TestBackend` to verify layout never panics
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // 5. Load saved session via `/load sess-saved-42`
     assert!(app.handle_slash_command("/load sess-saved-42").await);
@@ -225,7 +225,7 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
     // Test rendering frame with modal open
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // Commit selection in modal
     let selected = app.commit_picker_selection().await;
@@ -235,7 +235,7 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
 
     // Test Popover rendering when input starts with '/'
     app.input = "/mod".to_string();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // Test /tools opens tools picker modal
     assert!(app.handle_slash_command("/tools").await);
@@ -287,7 +287,7 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
 
     // Render frame with Popover showing /think options
     app.input = "/think ".to_string();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // 17. Test suggestions and ghost text placeholder
     app.input.clear();
@@ -299,7 +299,7 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
     let _initial_sug = app.current_suggestion().unwrap().to_string();
 
     // Render frame with Ghost Text suggestion line
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // Cycle suggestion
     app.cycle_suggestion();
