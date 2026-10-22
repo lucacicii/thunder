@@ -107,5 +107,5 @@ thunder-memory uninstall-launchagent  # 卸载 macOS LaunchAgent
 
 ## 📐 算法调研与白皮书
 
-详见：[docs/architecture.md](docs/architecture.md)。
-在该文档中深入对比了 **Mem0**、**Screenpipe**、**Letta (MemGPT)**、**Stanford Generative Agents** 和 **Zep (Graphiti)** 等开源实现，并系统性阐述了本项目认知模型与工程架构的设计选型。
+- **核心算法设计白皮书**：[docs/architecture.md](docs/architecture.md)（深度调研对比 Mem0、Screenpipe、Letta、Stanford Generative Agents 等，并阐述三层混合认知架构）。
+- **开发者指南与隔离规范**：[docs/development.md](docs/development.md)（本地开发与系统正式常驻版本的隔离、双轨工作流与升级发布说明）。
