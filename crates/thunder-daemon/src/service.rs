@@ -191,6 +191,12 @@ impl DaemonService {
         }
     }
 
+    /// Number of tasks currently in flight. Gate for `SIGUSR1` hot reload: replacing
+    /// the image mid-task would silently drop the tool-call pairing invariants.
+    pub async fn active_task_count(&self) -> usize {
+        self.active_tasks.lock().await.len()
+    }
+
     pub async fn shutdown(&self) {
         let tasks = self.active_tasks.lock().await;
         for state in tasks.values() {
@@ -563,11 +569,8 @@ impl DaemonService {
             }
             DaemonRequest::ListWorkspaces { id } => {
                 let list = self.locator.registry().list().await;
-                self.reply_ok(
-                    id,
-                    serde_json::to_value(list).unwrap_or_else(|_| json!([])),
-                )
-                .await;
+                self.reply_ok(id, serde_json::to_value(list).unwrap_or_else(|_| json!([])))
+                    .await;
             }
             DaemonRequest::BindWorkspace {
                 id,
@@ -582,11 +585,8 @@ impl DaemonService {
                     .registry()
                     .bind_or_update(PathBuf::from(path), name, aliases, keywords, tech_stack)
                     .await;
-                self.reply_ok(
-                    id,
-                    serde_json::to_value(rec).unwrap_or_else(|_| json!({})),
-                )
-                .await;
+                self.reply_ok(id, serde_json::to_value(rec).unwrap_or_else(|_| json!({})))
+                    .await;
             }
             DaemonRequest::LocateWorkspace {
                 id,

@@ -1,8 +1,6 @@
-use std::path::PathBuf;
 use tempfile::TempDir;
 use thunder_locator::{
-    CandidateSource, LocateVerdict, MemoryBridge, WorkspaceLocator, WorkspaceRecord,
-    WorkspaceRegistry,
+    CandidateSource, LocateVerdict, MemoryBridge, WorkspaceLocator, WorkspaceRegistry,
 };
 
 #[tokio::test]
@@ -46,10 +44,15 @@ async fn test_locator_direct_match_and_alias() {
     let unrelated = root.join("unrelated");
     std::fs::create_dir_all(&unrelated).unwrap();
 
-    let verdict1 = locator.locate("请帮忙修复 anfeng 的登录接口", &unrelated).await;
+    let verdict1 = locator
+        .locate("请帮忙修复 anfeng 的登录接口", &unrelated)
+        .await;
     match verdict1 {
         LocateVerdict::DirectMatch { target_path, .. } => {
-            assert_eq!(target_path.canonicalize().unwrap(), dir_a.canonicalize().unwrap());
+            assert_eq!(
+                target_path.canonicalize().unwrap(),
+                dir_a.canonicalize().unwrap()
+            );
         }
         other => panic!("Expected DirectMatch, got {:?}", other),
     }
@@ -58,16 +61,24 @@ async fn test_locator_direct_match_and_alias() {
     let verdict2 = locator.locate("重构安丰仓储的报表统计", &unrelated).await;
     match verdict2 {
         LocateVerdict::DirectMatch { target_path, .. } => {
-            assert_eq!(target_path.canonicalize().unwrap(), dir_a.canonicalize().unwrap());
+            assert_eq!(
+                target_path.canonicalize().unwrap(),
+                dir_a.canonicalize().unwrap()
+            );
         }
         other => panic!("Expected DirectMatch, got {:?}", other),
     }
 
     // 3. Keyword match for agent-resume-panel
-    let verdict3 = locator.locate("修复 composer 窗口无法聚焦的问题", &unrelated).await;
+    let verdict3 = locator
+        .locate("修复 composer 窗口无法聚焦的问题", &unrelated)
+        .await;
     match verdict3 {
         LocateVerdict::DirectMatch { target_path, .. } => {
-            assert_eq!(target_path.canonicalize().unwrap(), dir_b.canonicalize().unwrap());
+            assert_eq!(
+                target_path.canonicalize().unwrap(),
+                dir_b.canonicalize().unwrap()
+            );
         }
         other => panic!("Expected DirectMatch, got {:?}", other),
     }
@@ -102,7 +113,10 @@ async fn test_locator_already_in_workspace() {
     let verdict = locator.locate("查看 anfeng 的配置", &dir_a).await;
     match verdict {
         LocateVerdict::AlreadyInWorkspace { current_path, .. } => {
-            assert_eq!(current_path.canonicalize().unwrap(), dir_a.canonicalize().unwrap());
+            assert_eq!(
+                current_path.canonicalize().unwrap(),
+                dir_a.canonicalize().unwrap()
+            );
         }
         other => panic!("Expected AlreadyInWorkspace, got {:?}", other),
     }
@@ -197,7 +211,10 @@ async fn test_locator_nonexistent_directory_safety() {
     let verdict = locator.locate("打开不存在的项目", &curr).await;
     match verdict {
         LocateVerdict::DirectMatch { target_path, .. } => {
-            panic!("Must not direct match a non-existent directory: {:?}", target_path);
+            panic!(
+                "Must not direct match a non-existent directory: {:?}",
+                target_path
+            );
         }
         LocateVerdict::NeedConfirmation { candidates, .. } => {
             assert!(candidates.iter().all(|c| c.path.exists()));
@@ -254,7 +271,10 @@ async fn test_locator_with_thunder_memory_sqlite() {
     let verdict = locator.locate("修改山钢的大屏看板", &other_dir).await;
     match verdict {
         LocateVerdict::DirectMatch { target_path, .. } => {
-            assert_eq!(target_path.canonicalize().unwrap(), proj_dir.canonicalize().unwrap());
+            assert_eq!(
+                target_path.canonicalize().unwrap(),
+                proj_dir.canonicalize().unwrap()
+            );
         }
         other => panic!("Expected DirectMatch from thunder-memory, got {:?}", other),
     }

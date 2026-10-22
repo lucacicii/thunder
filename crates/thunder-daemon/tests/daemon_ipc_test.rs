@@ -284,7 +284,7 @@ async fn daemon_workspace_locator_api_and_auto_routing() {
         } => {
             assert_eq!(id.as_deref(), Some("l-1"));
             assert!(success);
-            assert!(d.as_array().unwrap().len() >= 1);
+            assert!(!d.as_array().unwrap().is_empty());
         }
         other => panic!("unexpected list response: {other:?}"),
     }

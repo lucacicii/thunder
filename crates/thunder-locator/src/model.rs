@@ -116,6 +116,12 @@ pub enum LocateVerdict {
 
 fn sanitize_id(raw: &str) -> String {
     raw.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

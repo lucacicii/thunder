@@ -104,19 +104,24 @@ impl WorkspaceLocator {
         }
 
         // 3. Evaluate current workspace affinity vs cross-project intention
-        let mut candidates: Vec<WorkspaceCandidate> = scored_map
-            .into_values()
-            .map(|(_, cand)| cand)
-            .collect();
+        let mut candidates: Vec<WorkspaceCandidate> =
+            scored_map.into_values().map(|(_, cand)| cand).collect();
 
-        candidates.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Check top candidate
         if let Some(top) = candidates.first() {
             if top.path == canonical_current {
                 return LocateVerdict::AlreadyInWorkspace {
                     current_path: canonical_current,
-                    reason: format!("Matched current workspace '{}' (confidence: {:.2})", top.display_name, top.confidence),
+                    reason: format!(
+                        "Matched current workspace '{}' (confidence: {:.2})",
+                        top.display_name, top.confidence
+                    ),
                 };
             }
 
@@ -154,7 +159,9 @@ impl WorkspaceLocator {
 
         // Slot 2+: Top candidates or top memory projects
         for cand in candidates.into_iter().take(3) {
-            if cand.path != canonical_current && !fallback_candidates.iter().any(|c| c.path == cand.path) {
+            if cand.path != canonical_current
+                && !fallback_candidates.iter().any(|c| c.path == cand.path)
+            {
                 fallback_candidates.push(cand);
             }
         }
@@ -195,11 +202,10 @@ impl WorkspaceLocator {
 /// Tokenize and extract significant keywords from user prompt.
 pub fn extract_tokens(prompt: &str) -> Vec<String> {
     let stop_words: HashSet<&str> = [
-        "修复", "修改", "查看", "优化", "重构", "编写", "增加", "实现", "帮忙", "帮我",
-        "在", "和", "与", "到", "将", "把", "是", "的", "了", "有", "么", "吗", "呢",
-        "一个", "一下", "怎样", "怎么", "如何", "这个", "那个", "项目", "代码", "工程",
-        "目录", "请", "想", "要", "fix", "update", "check", "the", "a", "an", "in", "to",
-        "for", "of", "and", "or", "on", "with",
+        "修复", "修改", "查看", "优化", "重构", "编写", "增加", "实现", "帮忙", "帮我", "在", "和",
+        "与", "到", "将", "把", "是", "的", "了", "有", "么", "吗", "呢", "一个", "一下", "怎样",
+        "怎么", "如何", "这个", "那个", "项目", "代码", "工程", "目录", "请", "想", "要", "fix",
+        "update", "check", "the", "a", "an", "in", "to", "for", "of", "and", "or", "on", "with",
     ]
     .into_iter()
     .collect();
@@ -284,7 +290,10 @@ fn score_registered_record(
 
     if match_count > 0 {
         let score = (0.60 + (match_count as f32 * 0.15)).min(0.90);
-        return (score, format!("命中画像关键词: [{}]", matched_terms.join(", ")));
+        return (
+            score,
+            format!("命中画像关键词: [{}]", matched_terms.join(", ")),
+        );
     }
 
     (0.0, String::new())

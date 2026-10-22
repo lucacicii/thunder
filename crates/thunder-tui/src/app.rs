@@ -830,7 +830,10 @@ impl App {
         };
 
         match loc.locate(prompt, &self.workspace_dir).await {
-            thunder_locator::LocateVerdict::AlreadyInWorkspace { current_path, reason } => {
+            thunder_locator::LocateVerdict::AlreadyInWorkspace {
+                current_path,
+                reason,
+            } => {
                 tracing::debug!("Already in workspace: {reason}");
                 Some(current_path)
             }
@@ -846,9 +849,7 @@ impl App {
                 Some(target_path)
             }
             thunder_locator::LocateVerdict::NeedConfirmation {
-                candidates,
-                reason,
-                ..
+                candidates, reason, ..
             } => {
                 self.pending_locator_prompt = Some(prompt.to_string());
                 self.timeline.push(TimelineItem::SystemNotice {

@@ -39,4 +39,40 @@
 
 # 或直接运行二进制
 cargo run -p thunder-daemon --bin thunder-daemon
+
+# 指定工作区与独立数据根
+cargo run -p thunder-daemon --bin thunder-daemon -- --workspace /path/to/project --config-dir /tmp/thunder-dev
 ```
+
+`--config-dir` 等价于先导出 `THUNDER_CONFIG_DIR`，会把 `conversations/`、`state/`、`scratchpad/`、`logs/` 以及 `models.json` / `auth.json` 的查找根整体重定向。
+
+---
+
+## 运行时状态与热重启（SIGUSR1）
+
+启动时 daemon 会写一份运行时标记：
+
+```jsonc
+// <data_root>/state/daemon-<pid>.json
+{
+  "pid": 86390,
+  "exe": "/Users/you/.cargo/bin/thunder-daemon",
+  "version": "0.1.0",
+  "protocol_version": 3,
+  "hot_reload": true,
+  "started_at_ms": 1792671257555,
+  "config_dir": "/Users/you/.thunder"
+}
+```
+
+`hot_reload: true` 表示这个 daemon 支持**原地换心**。收到 `SIGUSR1` 时：
+
+| 条件 | 行为 |
+|---|---|
+| `active_tasks` 非空 | 拒绝，日志 `warn`，旧进程继续服务 |
+| `current_exe` 文件缺失 / 无执行位 | 拒绝，日志 `error`，不冒险 exec |
+| 空闲且二进制可执行 | 等 120ms 冲刷在途 NDJSON 帧 → `execv(自己, 原 argv)` |
+
+`execv` 保留 pid、argv、环境变量与 stdio 管道，所以 Electron 桌面端的 readline 连接不会断开，无需重启 App。新进程重新写一份状态文件（`started_at_ms` 变化），调用方据此确认成功。
+
+调用入口是 `thunderctl reload`（见 [`crates/thunder-cli`](../thunder-cli/README.md)）。**不要手工 `kill -USR1`**：对不认识该信号的旧版本，它的默认动作是终止进程。

@@ -367,9 +367,7 @@ async fn tui_app_workspace_locator_auto_switch_and_fast_tagging() {
     );
 
     // 2. Unknown prompt triggers fast tagging modal
-    let res2 = app
-        .evaluate_workspace_location("完全陌生的未知任务")
-        .await;
+    let res2 = app.evaluate_workspace_location("完全陌生的未知任务").await;
     assert!(res2.is_none(), "Must pause execution for confirmation");
     assert!(app.picker.is_open, "Must open picker modal");
     assert_eq!(

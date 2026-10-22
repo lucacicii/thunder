@@ -76,7 +76,11 @@ impl MemoryBridge {
     }
 
     /// Query project paths whose historical prompts or entities match any of the given keywords.
-    pub fn search_project_associations(&self, keywords: &[String], limit: usize) -> Vec<(PathBuf, usize)> {
+    pub fn search_project_associations(
+        &self,
+        keywords: &[String],
+        limit: usize,
+    ) -> Vec<(PathBuf, usize)> {
         if keywords.is_empty() {
             return Vec::new();
         }
@@ -122,7 +126,7 @@ impl MemoryBridge {
         }
 
         let mut sorted: Vec<(PathBuf, usize)> = path_scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         sorted.truncate(limit);
         sorted
     }

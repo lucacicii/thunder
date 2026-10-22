@@ -23,11 +23,22 @@ impl WorkspaceRegistry {
     pub async fn load_or_init(storage_path: PathBuf, memory_bridge: MemoryBridge) -> Self {
         let catalog = if storage_path.exists() {
             match tokio::fs::read_to_string(&storage_path).await {
-                Ok(content) => serde_json::from_str::<WorkspaceCatalog>(&content).unwrap_or_else(|e| {
-                    debug!("Failed to parse {}: {e}, starting fresh", storage_path.display());
-                    WorkspaceCatalog { version: 1, workspaces: Vec::new() }
-                }),
-                Err(_) => WorkspaceCatalog { version: 1, workspaces: Vec::new() },
+                Ok(content) => {
+                    serde_json::from_str::<WorkspaceCatalog>(&content).unwrap_or_else(|e| {
+                        debug!(
+                            "Failed to parse {}: {e}, starting fresh",
+                            storage_path.display()
+                        );
+                        WorkspaceCatalog {
+                            version: 1,
+                            workspaces: Vec::new(),
+                        }
+                    })
+                }
+                Err(_) => WorkspaceCatalog {
+                    version: 1,
+                    workspaces: Vec::new(),
+                },
             }
         } else {
             let mut cat = WorkspaceCatalog {
@@ -141,7 +152,11 @@ impl WorkspaceRegistry {
     pub async fn record_hit(&self, path: &Path) {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut cat = self.catalog.write().await;
-        if let Some(item) = cat.workspaces.iter_mut().find(|w| w.canonical_path == canonical) {
+        if let Some(item) = cat
+            .workspaces
+            .iter_mut()
+            .find(|w| w.canonical_path == canonical)
+        {
             item.hit_count += 1;
             item.last_used_ms = now_ms();
         }
@@ -154,8 +169,7 @@ impl WorkspaceRegistry {
         if let Some(parent) = self.storage_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let serialized = serde_json::to_string_pretty(&*cat)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let serialized = serde_json::to_string_pretty(&*cat).map_err(std::io::Error::other)?;
         tokio::fs::write(&self.storage_path, serialized).await
     }
 }
