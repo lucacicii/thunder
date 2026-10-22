@@ -1,0 +1,20 @@
+[package]
+name = "thunder-markdown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Aesthetic, streaming-lenient, width-exact Markdown renderer for Ratatui and terminal UIs"
+license.workspace = true
+
+[dependencies]
+ratatui.workspace = true
+unicode-width.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
