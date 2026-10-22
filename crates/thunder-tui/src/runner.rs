@@ -1,7 +1,7 @@
 use crate::app::{resolve_completion_context, App, InputCompletionContext, TimelineItem};
 use crate::ui;
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyModifiers},
+    event::{Event, EventStream, MouseEvent, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -52,7 +52,11 @@ impl TuiRunner {
     pub async fn run(&self, mut app: App) -> io::Result<()> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -85,170 +89,22 @@ impl TuiRunner {
                     }
                     needs_redraw = true;
                 }
-                Some(Ok(Event::Key(key))) = reader.next() => {
-                    needs_redraw = true;
-                    // 1. If Picker Modal is open, route keys to the modal
-                    if app.picker.is_open {
-                        match key.code {
-                            KeyCode::Esc => {
-                                app.picker.close();
-                            }
-                            KeyCode::Up => {
-                                app.picker.move_selection_up();
-                            }
-                            KeyCode::Down => {
-                                app.picker.move_selection_down();
-                            }
-                            KeyCode::Backspace => {
-                                app.picker.handle_backspace();
-                            }
-                            KeyCode::Enter => {
-                                app.commit_picker_selection().await;
-                            }
-                            KeyCode::Char(ch) => {
-                                app.picker.handle_char(ch);
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    // 2. If autocomplete popover is active (input starts with '/')
-                    if app.input.starts_with('/') {
-                        if let Some(ctx) = resolve_completion_context(&app.input, &app) {
-                            match ctx {
-                                InputCompletionContext::Command { matches } => {
-                                    match key.code {
-                                        KeyCode::Tab => {
-                                            if !matches.is_empty() {
-                                                let cmd = matches[app.autocomplete_index % matches.len()];
-                                                app.input = format!("/{} ", cmd.name);
-                                                app.autocomplete_index = 0;
-                                            }
-                                            continue;
-                                        }
-                                        KeyCode::Up if !matches.is_empty() => {
-                                            if app.autocomplete_index == 0 {
-                                                app.autocomplete_index = matches.len() - 1;
-                                            } else {
-                                                app.autocomplete_index -= 1;
-                                            }
-                                            continue;
-                                        }
-                                        KeyCode::Down if !matches.is_empty() => {
-                                            app.autocomplete_index = (app.autocomplete_index + 1) % matches.len();
-                                            continue;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                InputCompletionContext::Argument { command, candidates, .. } => {
-                                    if !candidates.is_empty() {
-                                        match key.code {
-                                            KeyCode::Tab => {
-                                                let next = (app.autocomplete_index + 1) % candidates.len();
-                                                app.autocomplete_index = next;
-                                                app.input = format!("/{} {}", command.name, candidates[next]);
-                                                continue;
-                                            }
-                                            KeyCode::BackTab => {
-                                                let prev = if app.autocomplete_index == 0 {
-                                                    candidates.len().saturating_sub(1)
-                                                } else {
-                                                    app.autocomplete_index - 1
-                                                };
-                                                app.autocomplete_index = prev;
-                                                app.input = format!("/{} {}", command.name, candidates[prev]);
-                                                continue;
-                                            }
-                                            KeyCode::Up => {
-                                                if app.autocomplete_index == 0 {
-                                                    app.autocomplete_index = candidates.len() - 1;
-                                                } else {
-                                                    app.autocomplete_index -= 1;
-                                                }
-                                                continue;
-                                            }
-                                            KeyCode::Down => {
-                                                app.autocomplete_index = (app.autocomplete_index + 1) % candidates.len();
-                                                continue;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
+                Some(Ok(event)) = reader.next() => {
+                    match event {
+                        Event::Key(key) => {
+                            if handle_key_event(&mut app, key, &tx).await {
+                                needs_redraw = true;
                             }
                         }
-                    }
-
-                    // 3. If input is empty, Tab accepts suggestion and Up/Down cycles suggestions
-                    if app.input.is_empty() && !app.is_running {
-                        match key.code {
-                            KeyCode::Tab => {
-                                if app.accept_suggestion() {
-                                    continue;
-                                }
-                            }
-                            KeyCode::Down | KeyCode::Up => {
-                                app.cycle_suggestion();
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // 4. Normal typing and shortcuts
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                            if app.is_running {
-                                app.cancel_active_run();
-                            } else {
-                                app.should_quit = true;
+                        Event::Mouse(mouse) => {
+                            if handle_mouse_event(&mut app, &mouse) {
+                                needs_redraw = true;
                             }
                         }
-                        (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
-                            app.toggle_pause();
-                        }
-                        (KeyCode::BackTab, _) => {
-                            app.toggle_mode();
-                        }
-                        (KeyCode::Esc, _) => {
-                            if app.is_running {
-                                app.cancel_active_run();
-                            } else {
-                                app.input.clear();
-                                app.autocomplete_index = 0;
-                            }
-                        }
-                        (KeyCode::Up, _) => {
-                            app.scroll_offset = app.scroll_offset.saturating_sub(2);
-                        }
-                        (KeyCode::Down, _) => {
-                            app.scroll_offset = app.scroll_offset.saturating_add(2);
-                        }
-                        (KeyCode::Backspace, _) => {
-                            app.input.pop();
+                        Event::Paste(text) => {
+                            app.input.push_str(&text);
                             app.autocomplete_index = 0;
-                        }
-                        (KeyCode::Enter, _) => {
-                            let line = std::mem::take(&mut app.input);
-                            app.autocomplete_index = 0;
-                            let trimmed = line.trim().to_string();
-                            if trimmed.is_empty() {
-                                continue;
-                            }
-                            if app.handle_slash_command(&trimmed).await {
-                                continue;
-                            }
-                            if app.is_running {
-                                app.steer_active_run(trimmed);
-                            } else {
-                                spawn_agent_turn(&mut app, trimmed, tx.clone()).await;
-                            }
-                        }
-                        (KeyCode::Char(ch), _) => {
-                            app.input.push(ch);
-                            app.autocomplete_index = 0;
+                            needs_redraw = true;
                         }
                         _ => {}
                     }
@@ -257,7 +113,11 @@ impl TuiRunner {
         }
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
         Ok(())
     }
@@ -372,5 +232,191 @@ async fn handle_runner_msg(app: &mut App, msg: RunnerMsg) {
                 });
             }
         }
+    }
+}
+
+/// Handle keyboard events; returns true when the frame needs a redraw.
+async fn handle_key_event(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: &mpsc::UnboundedSender<RunnerMsg>,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // 1. Picker Modal takes all keys while open
+    if app.picker.is_open {
+        match key.code {
+            KeyCode::Esc => app.picker.close(),
+            KeyCode::Up => app.picker.move_selection_up(),
+            KeyCode::Down => app.picker.move_selection_down(),
+            KeyCode::Backspace => app.picker.handle_backspace(),
+            KeyCode::Enter => {
+                app.commit_picker_selection().await;
+            }
+            KeyCode::Char(ch) => app.picker.handle_char(ch),
+            _ => {}
+        }
+        return true;
+    }
+
+    // 2. Slash-command autocomplete popover
+    if app.input.starts_with('/') {
+        if let Some(ctx) = resolve_completion_context(&app.input, app) {
+            match ctx {
+                InputCompletionContext::Command { matches } => match key.code {
+                    KeyCode::Tab if !matches.is_empty() => {
+                        let cmd = matches[app.autocomplete_index % matches.len()];
+                        app.input = format!("/{} ", cmd.name);
+                        app.autocomplete_index = 0;
+                        return true;
+                    }
+                    KeyCode::Up if !matches.is_empty() => {
+                        if app.autocomplete_index == 0 {
+                            app.autocomplete_index = matches.len() - 1;
+                        } else {
+                            app.autocomplete_index -= 1;
+                        }
+                        return true;
+                    }
+                    KeyCode::Down if !matches.is_empty() => {
+                        app.autocomplete_index = (app.autocomplete_index + 1) % matches.len();
+                        return true;
+                    }
+                    _ => {}
+                },
+                InputCompletionContext::Argument {
+                    command,
+                    candidates,
+                    ..
+                } => {
+                    if !candidates.is_empty() {
+                        match key.code {
+                            KeyCode::Tab => {
+                                let next = (app.autocomplete_index + 1) % candidates.len();
+                                app.autocomplete_index = next;
+                                app.input = format!("/{} {}", command.name, candidates[next]);
+                                return true;
+                            }
+                            KeyCode::BackTab => {
+                                let prev = if app.autocomplete_index == 0 {
+                                    candidates.len().saturating_sub(1)
+                                } else {
+                                    app.autocomplete_index - 1
+                                };
+                                app.autocomplete_index = prev;
+                                app.input = format!("/{} {}", command.name, candidates[prev]);
+                                return true;
+                            }
+                            KeyCode::Up => {
+                                if app.autocomplete_index == 0 {
+                                    app.autocomplete_index = candidates.len() - 1;
+                                } else {
+                                    app.autocomplete_index -= 1;
+                                }
+                                return true;
+                            }
+                            KeyCode::Down => {
+                                app.autocomplete_index =
+                                    (app.autocomplete_index + 1) % candidates.len();
+                                return true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Ghost-text follow-up suggestions (only when input is empty and idle)
+    if app.input.is_empty() && !app.is_running {
+        match key.code {
+            KeyCode::Tab => {
+                if app.accept_suggestion() {
+                    return true;
+                }
+            }
+            KeyCode::Down | KeyCode::Up => {
+                app.cycle_suggestion();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 4. Normal typing and shortcuts
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+            if app.is_running {
+                app.cancel_active_run();
+            } else {
+                app.should_quit = true;
+            }
+        }
+        (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
+            app.toggle_pause();
+        }
+        // Arrow keys scroll the transcript ONLY while the input has text;
+        // with an empty input the suggestion cycler above already consumed them.
+        (KeyCode::Up, _) if !app.input.is_empty() => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(2);
+        }
+        (KeyCode::Down, _) if !app.input.is_empty() => {
+            app.scroll_offset = app.scroll_offset.saturating_add(2);
+        }
+        (KeyCode::PageUp, _) => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(10);
+        }
+        (KeyCode::PageDown, _) => {
+            app.scroll_offset = app.scroll_offset.saturating_add(10);
+        }
+        (KeyCode::BackTab, _) => {
+            app.toggle_mode();
+        }
+        (KeyCode::Esc, _) => {
+            if app.is_running {
+                app.cancel_active_run();
+            } else {
+                app.input.clear();
+                app.autocomplete_index = 0;
+            }
+        }
+        (KeyCode::Backspace, _) => {
+            app.input.pop();
+            app.autocomplete_index = 0;
+        }
+        (KeyCode::Enter, _) => {
+            let line = std::mem::take(&mut app.input);
+            app.autocomplete_index = 0;
+            let trimmed = line.trim().to_string();
+            if !trimmed.is_empty() && !app.handle_slash_command(&trimmed).await {
+                if app.is_running {
+                    app.steer_active_run(trimmed);
+                } else {
+                    spawn_agent_turn(app, trimmed, tx.clone()).await;
+                }
+            }
+        }
+        (KeyCode::Char(ch), _) => {
+            app.input.push(ch);
+            app.autocomplete_index = 0;
+        }
+        _ => {}
+    }
+    true
+}
+
+/// Handle mouse events; returns true when the frame needs a redraw.
+fn handle_mouse_event(app: &mut App, mouse: &MouseEvent) -> bool {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            app.scroll_offset = app.scroll_offset.saturating_add(3);
+            true
+        }
+        MouseEventKind::ScrollDown => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+            true
+        }
+        _ => false,
     }
 }
