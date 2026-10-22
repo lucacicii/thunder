@@ -43,6 +43,280 @@ pub enum TimelineItem {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerItem {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub badge: Option<String>,
+}
+
+impl PickerItem {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            subtitle: subtitle.into(),
+            badge: None,
+        }
+    }
+
+    pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
+        self.badge = Some(badge.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    Model,
+    ResumeSession,
+    PromptTemplate,
+    Tools,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PickerState {
+    pub is_open: bool,
+    pub kind: Option<PickerKind>,
+    pub title: String,
+    pub filter_text: String,
+    pub selected_index: usize,
+    pub items: Vec<PickerItem>,
+}
+
+impl PickerState {
+    pub fn open(&mut self, kind: PickerKind, title: impl Into<String>, items: Vec<PickerItem>) {
+        self.is_open = true;
+        self.kind = Some(kind);
+        self.title = title.into();
+        self.filter_text.clear();
+        self.selected_index = 0;
+        self.items = items;
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.kind = None;
+        self.filter_text.clear();
+        self.selected_index = 0;
+        self.items.clear();
+    }
+
+    pub fn filtered_items(&self) -> Vec<&PickerItem> {
+        let needle = self.filter_text.trim().to_lowercase();
+        if needle.is_empty() {
+            return self.items.iter().collect();
+        }
+        self.items
+            .iter()
+            .filter(|item| {
+                item.title.to_lowercase().contains(&needle)
+                    || item.id.to_lowercase().contains(&needle)
+                    || item.subtitle.to_lowercase().contains(&needle)
+                    || item
+                        .badge
+                        .as_deref()
+                        .map(|b| b.to_lowercase().contains(&needle))
+                        .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    pub fn move_selection_up(&mut self) {
+        let len = self.filtered_items().len();
+        if len > 0 {
+            if self.selected_index == 0 {
+                self.selected_index = len - 1;
+            } else {
+                self.selected_index -= 1;
+            }
+        }
+    }
+
+    pub fn move_selection_down(&mut self) {
+        let len = self.filtered_items().len();
+        if len > 0 {
+            self.selected_index = (self.selected_index + 1) % len;
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<&PickerItem> {
+        let filtered = self.filtered_items();
+        if filtered.is_empty() {
+            None
+        } else {
+            let idx = self.selected_index.min(filtered.len() - 1);
+            Some(filtered[idx])
+        }
+    }
+
+    pub fn handle_char(&mut self, ch: char) {
+        self.filter_text.push(ch);
+        self.selected_index = 0;
+    }
+
+    pub fn handle_backspace(&mut self) {
+        self.filter_text.pop();
+        self.selected_index = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlashCommandDef {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub args_hint: &'static str,
+    pub description: &'static str,
+}
+
+pub static ALL_SLASH_COMMANDS: &[SlashCommandDef] = &[
+    SlashCommandDef {
+        name: "model",
+        aliases: &["m"],
+        args_hint: "[id]",
+        description: "Open interactive model picker modal or switch model",
+    },
+    SlashCommandDef {
+        name: "resume",
+        aliases: &["switch", "load", "sessions"],
+        args_hint: "[id | #]",
+        description: "Open interactive session picker modal or resume by ID/index",
+    },
+    SlashCommandDef {
+        name: "prompt",
+        aliases: &["template", "prompts"],
+        args_hint: "[name]",
+        description: "Open prompt templates picker or load template into input",
+    },
+    SlashCommandDef {
+        name: "tools",
+        aliases: &["mcp"],
+        args_hint: "",
+        description: "Open tool catalog modal showing core, MCP, and script tools",
+    },
+    SlashCommandDef {
+        name: "mode",
+        aliases: &[],
+        args_hint: "[yolo | plan]",
+        description: "Toggle or set permission mode (Shift+Tab to toggle)",
+    },
+    SlashCommandDef {
+        name: "think",
+        aliases: &["thinking"],
+        args_hint: "[off | low | medium | high | max]",
+        description: "View or set reasoning effort bound to this session",
+    },
+    SlashCommandDef {
+        name: "compact",
+        aliases: &["prune", "compress"],
+        args_hint: "",
+        description: "Compact conversation history and prune tokens via checkpoint",
+    },
+    SlashCommandDef {
+        name: "stats",
+        aliases: &["tokens", "usage", "cost"],
+        args_hint: "",
+        description: "Display dialogue turns, token estimations, and tool stats",
+    },
+    SlashCommandDef {
+        name: "new",
+        aliases: &[],
+        args_hint: "",
+        description: "Start a fresh conversation session",
+    },
+    SlashCommandDef {
+        name: "rename",
+        aliases: &[],
+        args_hint: "[title | --auto]",
+        description: "Rename current session or regenerate title with --auto",
+    },
+    SlashCommandDef {
+        name: "workspace",
+        aliases: &["cwd", "dir"],
+        args_hint: "[path]",
+        description: "View or change current workspace directory",
+    },
+    SlashCommandDef {
+        name: "export",
+        aliases: &["dump", "save"],
+        args_hint: "[path]",
+        description: "Export conversation messages to Markdown file",
+    },
+    SlashCommandDef {
+        name: "pause",
+        aliases: &["hold"],
+        args_hint: "",
+        description: "Pause running agent at next tool boundary (Ctrl+P)",
+    },
+    SlashCommandDef {
+        name: "unpause",
+        aliases: &["go", "continue"],
+        args_hint: "",
+        description: "Resume paused agent task execution",
+    },
+    SlashCommandDef {
+        name: "queue",
+        aliases: &["pending", "queued"],
+        args_hint: "[clear]",
+        description: "Inspect or clear queued steering messages",
+    },
+    SlashCommandDef {
+        name: "health",
+        aliases: &["doctor"],
+        args_hint: "",
+        description: "Run system health and environment diagnostics",
+    },
+    SlashCommandDef {
+        name: "image",
+        aliases: &["attach", "img"],
+        args_hint: "<path>",
+        description: "Inspect and attach local image to next prompt",
+    },
+    SlashCommandDef {
+        name: "clear",
+        aliases: &[],
+        args_hint: "",
+        description: "Clear timeline display",
+    },
+    SlashCommandDef {
+        name: "help",
+        aliases: &["?"],
+        args_hint: "",
+        description: "Show interactive commands and keyboard shortcuts",
+    },
+    SlashCommandDef {
+        name: "quit",
+        aliases: &["exit", "q"],
+        args_hint: "",
+        description: "Cleanly exit Thunder TUI",
+    },
+];
+
+pub fn filter_slash_commands(input: &str) -> Vec<&'static SlashCommandDef> {
+    if !input.starts_with('/') {
+        return Vec::new();
+    }
+    let query = input.trim_start_matches('/').to_lowercase();
+    let query_token = query.split_whitespace().next().unwrap_or("");
+    ALL_SLASH_COMMANDS
+        .iter()
+        .filter(|cmd| {
+            if query_token.is_empty() {
+                return true;
+            }
+            if cmd.name.starts_with(query_token) {
+                return true;
+            }
+            cmd.aliases.iter().any(|a| a.starts_with(query_token))
+        })
+        .collect()
+}
+
 pub struct App {
     pub model: String,
     pub mode: String,
@@ -63,6 +337,8 @@ pub struct App {
     pub active_pause: Option<Arc<PauseGate>>,
     pub active_steer: Option<Arc<SteerQueues>>,
     pub should_quit: bool,
+    pub picker: PickerState,
+    pub autocomplete_index: usize,
 }
 
 impl App {
@@ -83,7 +359,7 @@ impl App {
             provider_registry: ProviderRegistry::default(),
             tool_registry: ToolRegistry::new(),
             timeline: vec![TimelineItem::SystemNotice {
-                text: "Welcome to Thunder TUI (Microkernel Edition). Type /help for commands."
+                text: "Welcome to Thunder TUI. Type / to view commands or /help for guidance."
                     .to_string(),
             }],
             input: String::new(),
@@ -97,6 +373,8 @@ impl App {
             active_pause: None,
             active_steer: None,
             should_quit: false,
+            picker: PickerState::default(),
+            autocomplete_index: 0,
         }
     }
 
@@ -202,7 +480,177 @@ impl App {
         }
     }
 
-    /// Apply a streaming `AgentEvent` from `ReActAgentLoop` onto the TUI timeline.
+    pub fn open_model_picker(&mut self) {
+        let models = self.provider_registry.list_available();
+        let items: Vec<PickerItem> = models
+            .iter()
+            .map(|m| {
+                let badge = if m.available {
+                    format!("{} ctx", format_tokens(m.context_window))
+                } else {
+                    "no-auth".to_string()
+                };
+                let status_label = if m.available { "Ready" } else { "Missing Auth" };
+                let subtitle = format!(
+                    "Provider: {} │ Status: {} │ API: {:?}",
+                    m.provider, status_label, m.api
+                );
+                PickerItem::new(m.selection_id(), m.selection_id(), subtitle).with_badge(badge)
+            })
+            .collect();
+
+        let mut final_items = items;
+        if final_items.is_empty() {
+            final_items.push(
+                PickerItem::new(
+                    self.model.clone(),
+                    self.model.clone(),
+                    "Active configured model",
+                )
+                .with_badge("Current"),
+            );
+        }
+        self.picker
+            .open(PickerKind::Model, "Select LLM Model", final_items);
+    }
+
+    pub async fn open_session_picker(&mut self) {
+        if let Some(ref store) = self.store {
+            let filter = ConversationFilter::new().with_min_turns(1);
+            if let Ok(list) = store.list(&filter).await {
+                let items: Vec<PickerItem> = list
+                    .iter()
+                    .map(|s| {
+                        let title = s.title.as_deref().unwrap_or("Untitled");
+                        let subtitle =
+                            format!("Updated: {} │ {} tokens", s.updated_at_ms, s.total_tokens);
+                        let badge = format!("{} turns", s.turn_count);
+                        PickerItem::new(s.id.clone(), title, subtitle).with_badge(badge)
+                    })
+                    .collect();
+
+                if items.is_empty() {
+                    self.timeline.push(TimelineItem::SystemNotice {
+                        text: "No previous saved sessions found in storage.".to_string(),
+                    });
+                } else {
+                    self.picker.open(
+                        PickerKind::ResumeSession,
+                        "Resume Conversation Session",
+                        items,
+                    );
+                }
+            }
+        }
+    }
+
+    pub async fn open_prompt_picker(&mut self) {
+        let candidates = vec![
+            self.workspace_dir.join(".thunder").join("prompts"),
+            thunder_protocol::thunder_subdir("prompts"),
+        ];
+
+        let mut items = Vec::new();
+        for dir in candidates {
+            if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+                while let Ok(Some(e)) = entries.next_entry().await {
+                    let p = e.path();
+                    if p.extension().is_some_and(|ext| ext == "md") {
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            let title = format!("/prompt {stem}");
+                            let subtitle = format!("File: {}", p.display());
+                            items.push(PickerItem::new(stem, title, subtitle).with_badge(".md"));
+                        }
+                    }
+                }
+            }
+        }
+
+        if items.is_empty() {
+            self.timeline.push(TimelineItem::SystemNotice {
+                text: "No prompt templates found in .thunder/prompts/ or ~/.thunder/prompts/.\nAdd templates as markdown files (e.g. .thunder/prompts/review.md).".to_string(),
+            });
+        } else {
+            items.sort_by(|a, b| a.id.cmp(&b.id));
+            self.picker
+                .open(PickerKind::PromptTemplate, "Load Prompt Template", items);
+        }
+    }
+
+    pub fn open_tools_picker(&mut self) {
+        let snap = self.tool_registry.current();
+        let mut items: Vec<PickerItem> = snap
+            .descriptors
+            .values()
+            .map(|d| {
+                let badge = if d.name.starts_with("core__") {
+                    "Core"
+                } else if d.name.starts_with("script__") {
+                    "Script"
+                } else {
+                    "MCP"
+                };
+                PickerItem::new(d.name.clone(), d.name.clone(), d.description.clone())
+                    .with_badge(badge)
+            })
+            .collect();
+        items.sort_by(|a, b| a.id.cmp(&b.id));
+
+        self.picker.open(
+            PickerKind::Tools,
+            format!(
+                "Registered Tools (Catalog v{}, {} total)",
+                snap.version,
+                items.len()
+            ),
+            items,
+        );
+    }
+
+    pub async fn commit_picker_selection(&mut self) -> Option<String> {
+        let selected = self.picker.selected_item().cloned()?;
+        let kind = self.picker.kind?;
+        self.picker.close();
+
+        match kind {
+            PickerKind::Model => {
+                self.model = selected.id.clone();
+                self.conversation.model = Some(self.model.clone());
+                self.set_status_message(format!("Switched model to '{}'", self.model));
+                Some(selected.id)
+            }
+            PickerKind::ResumeSession => {
+                self.load_conversation(&selected.id).await;
+                Some(selected.id)
+            }
+            PickerKind::PromptTemplate => {
+                let candidates = vec![
+                    self.workspace_dir.join(".thunder").join("prompts"),
+                    thunder_protocol::thunder_subdir("prompts"),
+                ];
+                let file_name = format!("{}.md", selected.id);
+                for dir in candidates {
+                    let p = dir.join(&file_name);
+                    if p.is_file() {
+                        if let Ok(text) = tokio::fs::read_to_string(&p).await {
+                            self.input = text.trim().to_string();
+                            self.set_status_message(format!(
+                                "Loaded prompt template '{}'",
+                                selected.id
+                            ));
+                            return Some(selected.id);
+                        }
+                    }
+                }
+                None
+            }
+            PickerKind::Tools => {
+                self.set_status_message(format!("Selected tool '{}'", selected.id));
+                Some(selected.id)
+            }
+        }
+    }
+
     pub fn apply_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TurnStart {
@@ -328,7 +776,6 @@ impl App {
         }
     }
 
-    /// Execute a slash command (starts with `/`). Returns `true` if handled as a slash command.
     pub async fn handle_slash_command(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
         if !trimmed.starts_with('/') {
@@ -345,7 +792,7 @@ impl App {
                     text: "\
 ⚡ Thunder Commands Reference:
   Session:
-    /resume [id | #]  - List recent sessions or resume by ID / index (aliases: /switch, /load)
+    /resume [id | #]  - Open interactive session picker or resume by ID/index (aliases: /switch, /load)
     /new              - Start a brand new conversation session
     /sessions         - Display saved sessions overview
     /rename <title>   - Rename current session (or /rename --auto)
@@ -353,16 +800,16 @@ impl App {
     /stats            - Display tokens, turns, and execution stats dashboard
     /export [path]    - Export session messages to Markdown file (alias: /save)
   Configuration & Mode:
-    /model [id]       - View current LLM model or switch model
+    /model [id]       - Open interactive model picker or switch model
     /think [level]    - Set thinking effort (off, low, medium, high, max)
     /mode [yolo|plan] - Toggle or set permission mode (Shift+Tab to toggle)
     /workspace [dir]  - View or change workspace directory (alias: /cwd)
-    /tools            - Inspect all registered tools (core, mcp, scripts)
+    /tools            - Open interactive tools catalog modal
   Control:
     /pause, /unpause  - Pause / resume task at tool boundary (Ctrl+P)
     /queue [clear]    - View or clear pending steering messages
   Plugins & Templates:
-    /prompt [name]    - Browse or load prompt templates from .thunder/prompts/
+    /prompt [name]    - Open prompt templates picker or load template
     /health           - Run system and environment health diagnostics (alias: /doctor)
     /image <path>     - Inspect and attach a local image file
   General:
@@ -400,24 +847,7 @@ impl App {
             }
             "/model" => {
                 if arg.is_empty() {
-                    let list: Vec<String> = self
-                        .provider_registry
-                        .list_available()
-                        .iter()
-                        .map(|m| {
-                            format!(
-                                "{} ({})",
-                                m.selection_id(),
-                                if m.available { "ready" } else { "no-auth" }
-                            )
-                        })
-                        .collect();
-                    let text = if list.is_empty() {
-                        format!("Current model: {} (no catalog models loaded)", self.model)
-                    } else {
-                        format!("Current: {}\nAvailable: {}", self.model, list.join(", "))
-                    };
-                    self.timeline.push(TimelineItem::SystemNotice { text });
+                    self.open_model_picker();
                 } else {
                     self.model = arg.to_string();
                     self.conversation.model = Some(self.model.clone());
@@ -445,77 +875,15 @@ impl App {
                 }
             }
             "/tools" => {
-                let snap = self.tool_registry.current();
-                let mut names: Vec<String> = snap
-                    .descriptors
-                    .values()
-                    .map(|d| format!("{} ({})", d.name, d.uri))
-                    .collect();
-                names.sort();
-                let text = format!(
-                    "CatalogSnapshot v{} ({} tools): {}",
-                    snap.version,
-                    names.len(),
-                    if names.is_empty() {
-                        "none".to_string()
-                    } else {
-                        names.join(", ")
-                    }
-                );
-                self.timeline.push(TimelineItem::SystemNotice { text });
+                self.open_tools_picker();
             }
             "/sessions" => {
-                if let Some(ref store) = self.store {
-                    let filter = ConversationFilter::new().with_min_turns(1);
-                    if let Ok(list) = store.list(&filter).await {
-                        let text = if list.is_empty() {
-                            "No saved sessions found in storage.".to_string()
-                        } else {
-                            let mut lines = Vec::new();
-                            lines.push("Recent Saved Sessions:".to_string());
-                            for (idx, s) in list.iter().take(15).enumerate() {
-                                let title = s.title.as_deref().unwrap_or("Untitled");
-                                lines.push(format!(
-                                    "  [{}] `{}` — {} ({} turns, {} tokens)",
-                                    idx + 1,
-                                    s.id,
-                                    title,
-                                    s.turn_count,
-                                    s.total_tokens
-                                ));
-                            }
-                            lines.push(
-                                "Tip: Use `/resume 1` or `/resume <id>` to switch.".to_string(),
-                            );
-                            lines.join("\n")
-                        };
-                        self.timeline.push(TimelineItem::SystemNotice { text });
-                    }
-                }
+                self.open_session_picker().await;
             }
             "/resume" | "/load_session" | "/switch" | "/load" => {
                 if arg.is_empty() {
-                    // List recent sessions with numeric indices
-                    if let Some(ref store) = self.store {
-                        let filter = ConversationFilter::new().with_min_turns(1);
-                        if let Ok(list) = store.list(&filter).await {
-                            let mut lines = Vec::new();
-                            lines.push("Select a session to resume:".to_string());
-                            for (idx, s) in list.iter().take(10).enumerate() {
-                                let title = s.title.as_deref().unwrap_or("Untitled");
-                                lines.push(format!("  [{}] `{}` — {}", idx + 1, s.id, title));
-                            }
-                            lines.push(
-                                "Type `/resume <#>` (e.g. `/resume 1`) or `/resume <session_id>`."
-                                    .to_string(),
-                            );
-                            self.timeline.push(TimelineItem::SystemNotice {
-                                text: lines.join("\n"),
-                            });
-                        }
-                    }
+                    self.open_session_picker().await;
                 } else {
-                    // Check if numeric index (#1, 1, etc.)
                     let clean_num = arg.trim_start_matches('#');
                     let mut resolved_id = arg.to_string();
                     if let Ok(idx) = clean_num.parse::<usize>() {
@@ -711,36 +1079,13 @@ impl App {
                 }
             }
             "/prompt" | "/prompts" | "/template" => {
-                let candidates = vec![
-                    self.workspace_dir.join(".thunder").join("prompts"),
-                    thunder_protocol::thunder_subdir("prompts"),
-                ];
-
                 if arg.is_empty() {
-                    let mut found = Vec::new();
-                    for dir in candidates {
-                        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
-                            while let Ok(Some(e)) = entries.next_entry().await {
-                                let p = e.path();
-                                if p.extension().is_some_and(|ext| ext == "md") {
-                                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                                        found.push(format!("  /prompt {stem} ({})", p.display()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if found.is_empty() {
-                        self.timeline.push(TimelineItem::SystemNotice {
-                            text: "No prompt templates found in .thunder/prompts/ or ~/.thunder/prompts/.\nCreate templates as `.md` files in `.thunder/prompts/<name>.md`.".to_string(),
-                        });
-                    } else {
-                        found.sort();
-                        self.timeline.push(TimelineItem::SystemNotice {
-                            text: format!("Available Prompt Templates:\n{}", found.join("\n")),
-                        });
-                    }
+                    self.open_prompt_picker().await;
                 } else {
+                    let candidates = vec![
+                        self.workspace_dir.join(".thunder").join("prompts"),
+                        thunder_protocol::thunder_subdir("prompts"),
+                    ];
                     let file_name = if arg.ends_with(".md") {
                         arg.to_string()
                     } else {
@@ -866,7 +1211,6 @@ impl App {
         true
     }
 
-    /// Enqueue a steering message into an active run when the user presses Enter while running.
     pub fn steer_active_run(&mut self, text: String) {
         if let Some(ref queues) = self.active_steer {
             queues.steering.enqueue(ChatMessage::user(text.clone()));
@@ -885,5 +1229,15 @@ fn summarize_line(raw: &str, max_chars: usize) -> String {
     } else {
         let head: String = single.chars().take(max_chars).collect();
         format!("{head}…")
+    }
+}
+
+fn format_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
     }
 }

@@ -1,4 +1,4 @@
-use crate::app::{App, TimelineItem};
+use crate::app::{filter_slash_commands, App, TimelineItem};
 use crate::ui;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyModifiers},
@@ -91,6 +91,61 @@ impl TuiRunner {
                     }
                 }
                 Some(Ok(Event::Key(key))) = reader.next() => {
+                    // 1. If Picker Modal is open, route keys to the modal
+                    if app.picker.is_open {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.picker.close();
+                            }
+                            KeyCode::Up => {
+                                app.picker.move_selection_up();
+                            }
+                            KeyCode::Down => {
+                                app.picker.move_selection_down();
+                            }
+                            KeyCode::Backspace => {
+                                app.picker.handle_backspace();
+                            }
+                            KeyCode::Enter => {
+                                app.commit_picker_selection().await;
+                            }
+                            KeyCode::Char(ch) => {
+                                app.picker.handle_char(ch);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // 2. If autocomplete popover is active (input starts with '/')
+                    if app.input.starts_with('/') {
+                        let matches = filter_slash_commands(&app.input);
+                        match key.code {
+                            KeyCode::Tab => {
+                                if !matches.is_empty() {
+                                    let cmd = matches[app.autocomplete_index % matches.len()];
+                                    app.input = format!("/{} ", cmd.name);
+                                    app.autocomplete_index = 0;
+                                }
+                                continue;
+                            }
+                            KeyCode::Up if !matches.is_empty() => {
+                                if app.autocomplete_index == 0 {
+                                    app.autocomplete_index = matches.len() - 1;
+                                } else {
+                                    app.autocomplete_index -= 1;
+                                }
+                                continue;
+                            }
+                            KeyCode::Down if !matches.is_empty() => {
+                                app.autocomplete_index = (app.autocomplete_index + 1) % matches.len();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // 3. Normal typing and shortcuts
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                             if app.is_running {
@@ -110,6 +165,7 @@ impl TuiRunner {
                                 app.cancel_active_run();
                             } else {
                                 app.input.clear();
+                                app.autocomplete_index = 0;
                             }
                         }
                         (KeyCode::Up, _) => {
@@ -120,9 +176,11 @@ impl TuiRunner {
                         }
                         (KeyCode::Backspace, _) => {
                             app.input.pop();
+                            app.autocomplete_index = 0;
                         }
                         (KeyCode::Enter, _) => {
                             let line = std::mem::take(&mut app.input);
+                            app.autocomplete_index = 0;
                             let trimmed = line.trim().to_string();
                             if trimmed.is_empty() {
                                 continue;
@@ -138,6 +196,7 @@ impl TuiRunner {
                         }
                         (KeyCode::Char(ch), _) => {
                             app.input.push(ch);
+                            app.autocomplete_index = 0;
                         }
                         _ => {}
                     }
