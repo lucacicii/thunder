@@ -288,4 +288,23 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
     // Render frame with Popover showing /think options
     app.input = "/think ".to_string();
     terminal.draw(|f| ui::render(f, &app)).unwrap();
+
+    // 17. Test suggestions and ghost text placeholder
+    app.input.clear();
+    app.update_suggestions();
+    assert!(
+        !app.suggestions.is_empty(),
+        "must produce follow-up suggestions"
+    );
+    let _initial_sug = app.current_suggestion().unwrap().to_string();
+
+    // Render frame with Ghost Text suggestion line
+    terminal.draw(|f| ui::render(f, &app)).unwrap();
+
+    // Cycle suggestion
+    app.cycle_suggestion();
+
+    // Accept suggestion with Tab
+    assert!(app.accept_suggestion());
+    assert!(!app.input.is_empty());
 }

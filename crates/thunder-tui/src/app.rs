@@ -474,6 +474,8 @@ pub struct App {
     pub should_quit: bool,
     pub picker: PickerState,
     pub autocomplete_index: usize,
+    pub suggestions: Vec<String>,
+    pub suggestion_index: usize,
 }
 
 impl App {
@@ -510,6 +512,39 @@ impl App {
             should_quit: false,
             picker: PickerState::default(),
             autocomplete_index: 0,
+            suggestions: Vec::new(),
+            suggestion_index: 0,
+        }
+    }
+
+    pub fn update_suggestions(&mut self) {
+        self.suggestions =
+            thunder_suggest::generate_heuristic_suggestions(&self.conversation.messages);
+        self.suggestion_index = 0;
+    }
+
+    pub fn current_suggestion(&self) -> Option<&str> {
+        if self.suggestions.is_empty() {
+            None
+        } else {
+            let idx = self.suggestion_index % self.suggestions.len();
+            Some(&self.suggestions[idx])
+        }
+    }
+
+    pub fn cycle_suggestion(&mut self) {
+        if !self.suggestions.is_empty() {
+            self.suggestion_index = (self.suggestion_index + 1) % self.suggestions.len();
+        }
+    }
+
+    pub fn accept_suggestion(&mut self) -> bool {
+        if let Some(sug) = self.current_suggestion().map(str::to_string) {
+            self.input = sug;
+            self.set_status_message("Accepted follow-up suggestion (Enter to send)");
+            true
+        } else {
+            false
         }
     }
 

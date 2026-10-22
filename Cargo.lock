@@ -2220,6 +2220,7 @@ dependencies = [
  "thunder-protocol",
  "thunder-providers",
  "thunder-registry",
+ "thunder-suggest",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2330,6 +2331,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "thunder-suggest"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thunder-core",
+ "thunder-protocol",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "thunder-tui"
 version = "0.1.0"
 dependencies = [
@@ -2347,6 +2364,7 @@ dependencies = [
  "thunder-protocol",
  "thunder-providers",
  "thunder-registry",
+ "thunder-suggest",
  "tokio",
  "tokio-util",
  "tracing",

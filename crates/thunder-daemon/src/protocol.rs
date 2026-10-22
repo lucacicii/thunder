@@ -192,6 +192,13 @@ pub enum DaemonResponse {
         final_content: Option<String>,
         finish_reason: String,
         active_plugins: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        suggested_questions: Vec<String>,
+    },
+    SuggestedQuestions {
+        task_id: String,
+        session_id: Option<String>,
+        questions: Vec<String>,
     },
     TaskFailed {
         task_id: String,

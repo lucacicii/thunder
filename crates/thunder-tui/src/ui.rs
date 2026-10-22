@@ -160,8 +160,31 @@ pub fn render(frame: &mut Frame, app: &App) {
             app.estimated_tokens, app.status_message
         )
     };
-    let composer = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title(input_title));
+    let composer = if app.input.is_empty() && !app.is_running {
+        if let Some(sug) = app.current_suggestion() {
+            let ghost_line = Line::from(vec![
+                Span::styled("💡 ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    sug,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Span::styled(
+                    " (Tab: Accept · ↑/↓: Switch)",
+                    Style::default().fg(Color::Rgb(80, 80, 95)),
+                ),
+            ]);
+            Paragraph::new(ghost_line)
+                .block(Block::default().borders(Borders::ALL).title(input_title))
+        } else {
+            Paragraph::new(app.input.as_str())
+                .block(Block::default().borders(Borders::ALL).title(input_title))
+        }
+    } else {
+        Paragraph::new(app.input.as_str())
+            .block(Block::default().borders(Borders::ALL).title(input_title))
+    };
     frame.render_widget(composer, chunks[2]);
 
     // 4. Floating Command / Argument Autocomplete Popover (above bottom composer)
