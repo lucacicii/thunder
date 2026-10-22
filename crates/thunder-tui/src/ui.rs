@@ -119,6 +119,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(composer, chunks[2]);
 
+    // Cursor. ratatui hides the cursor every frame unless a position is set, so
+    // without this the prompt has no caret at all and typing feels blind.
+    if let Some(position) = compose_cursor(app, chunks[2]) {
+        frame.set_cursor_position(position);
+    }
+
     // 4. Floating Command / Argument Autocomplete Popover (above bottom composer)
     if !app.picker.is_open && app.input.starts_with('/') {
         if let Some(ctx) = resolve_completion_context(&app.input, app) {
@@ -500,4 +506,37 @@ fn render_item(item: &TimelineItem, width: u16) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+/// Where the caret belongs inside the prompt box, or `None` to hide it.
+///
+/// The caret sits one cell past the text the user typed. While a picker modal is
+/// open the composer is not the focus, so the caret is hidden instead of
+/// blinking behind a dialog.
+pub fn compose_cursor(app: &App, area: Rect) -> Option<(u16, u16)> {
+    if app.picker.is_open {
+        return None;
+    }
+
+    let inner_left = area.x.saturating_add(1); // left border
+    let inner_top = area.y.saturating_add(1); // top border
+    let inner_width = area.width.saturating_sub(2);
+    if inner_width == 0 || area.height < 3 {
+        return None;
+    }
+
+    // One screen row per `inner_width` cells: the caret follows wrapped input
+    // instead of running off the right edge.
+    let used = unicode_width::UnicodeWidthStr::width(app.input.as_str());
+    let column = used % inner_width as usize;
+    let row = used / inner_width as usize;
+    let max_row = area.height.saturating_sub(2) as usize; // minus both borders
+    if row > max_row {
+        return None;
+    }
+
+    Some((
+        inner_left.saturating_add(column as u16),
+        inner_top.saturating_add(row as u16),
+    ))
 }
