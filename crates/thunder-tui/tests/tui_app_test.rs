@@ -308,3 +308,77 @@ async fn picker_modal_and_autocomplete_popover_work_end_to_end() {
     assert!(app.accept_suggestion());
     assert!(!app.input.is_empty());
 }
+
+#[tokio::test]
+async fn tui_app_workspace_locator_auto_switch_and_fast_tagging() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    let target_dir = root.join("my-cool-project");
+    std::fs::create_dir_all(&target_dir).unwrap();
+
+    let current_dir = root.join("default-workspace");
+    std::fs::create_dir_all(&current_dir).unwrap();
+
+    let mem_bridge = thunder_locator::MemoryBridge::new(root.join("memory.db"));
+    let ws_reg = thunder_locator::WorkspaceRegistry::load_or_init(
+        root.join("workspaces.json"),
+        mem_bridge.clone(),
+    )
+    .await;
+
+    // Bind a profile
+    ws_reg
+        .bind_or_update(
+            target_dir.clone(),
+            Some("my-cool-project".to_string()),
+            vec!["酷项目".to_string()],
+            vec!["cool".to_string()],
+            vec![],
+        )
+        .await;
+
+    let locator = std::sync::Arc::new(thunder_locator::WorkspaceLocator::new(ws_reg, mem_bridge));
+
+    let mut app = App::new("lucastech/zai/glm-5.3").with_locator(locator);
+    app.workspace_dir = current_dir.clone();
+
+    // 1. Direct match auto switch
+    let res = app
+        .evaluate_workspace_location("修复酷项目的登录功能")
+        .await;
+    assert_eq!(
+        res.unwrap().canonicalize().unwrap(),
+        target_dir.canonicalize().unwrap()
+    );
+    assert_eq!(
+        app.workspace_dir.canonicalize().unwrap(),
+        target_dir.canonicalize().unwrap()
+    );
+    assert_eq!(
+        app.conversation
+            .workspace
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap()
+            .canonicalize()
+            .unwrap(),
+        target_dir.canonicalize().unwrap()
+    );
+
+    // 2. Unknown prompt triggers fast tagging modal
+    let res2 = app
+        .evaluate_workspace_location("完全陌生的未知任务")
+        .await;
+    assert!(res2.is_none(), "Must pause execution for confirmation");
+    assert!(app.picker.is_open, "Must open picker modal");
+    assert_eq!(
+        app.picker.kind,
+        Some(thunder_tui::PickerKind::WorkspaceTagging)
+    );
+
+    // Commit selection in picker
+    let resumed = app.commit_picker_selection().await;
+    assert_eq!(resumed.as_deref(), Some("完全陌生的未知任务"));
+    assert!(!app.picker.is_open);
+}

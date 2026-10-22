@@ -121,6 +121,7 @@ pub struct DaemonService {
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<thunder_ask::QuestionOutcome>>>>,
     output_tx: mpsc::Sender<String>,
     default_workspace: PathBuf,
+    locator: Arc<thunder_locator::WorkspaceLocator>,
     driver_factory: Option<DriverFactory>,
     std_bin_override: Option<PathBuf>,
 }
@@ -143,6 +144,15 @@ impl DaemonService {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
+        let mem_bridge =
+            thunder_locator::MemoryBridge::new(thunder_locator::MemoryBridge::default_db_path());
+        let ws_reg = thunder_locator::WorkspaceRegistry::load_or_init(
+            thunder_locator::WorkspaceRegistry::default_storage_path(),
+            mem_bridge.clone(),
+        )
+        .await;
+        let locator = Arc::new(thunder_locator::WorkspaceLocator::new(ws_reg, mem_bridge));
+
         Ok((
             Self {
                 provider_registry: Arc::new(RwLock::new(provider_registry)),
@@ -152,11 +162,17 @@ impl DaemonService {
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 output_tx,
                 default_workspace,
+                locator,
                 driver_factory: None,
                 std_bin_override: None,
             },
             output_rx,
         ))
+    }
+
+    pub fn with_locator(mut self, locator: Arc<thunder_locator::WorkspaceLocator>) -> Self {
+        self.locator = locator;
+        self
     }
 
     pub fn with_driver_factory(mut self, factory: DriverFactory) -> Self {
@@ -545,6 +561,48 @@ impl DaemonService {
                 )
                 .await;
             }
+            DaemonRequest::ListWorkspaces { id } => {
+                let list = self.locator.registry().list().await;
+                self.reply_ok(
+                    id,
+                    serde_json::to_value(list).unwrap_or_else(|_| json!([])),
+                )
+                .await;
+            }
+            DaemonRequest::BindWorkspace {
+                id,
+                path,
+                name,
+                aliases,
+                keywords,
+                tech_stack,
+            } => {
+                let rec = self
+                    .locator
+                    .registry()
+                    .bind_or_update(PathBuf::from(path), name, aliases, keywords, tech_stack)
+                    .await;
+                self.reply_ok(
+                    id,
+                    serde_json::to_value(rec).unwrap_or_else(|_| json!({})),
+                )
+                .await;
+            }
+            DaemonRequest::LocateWorkspace {
+                id,
+                prompt,
+                workspace_dir,
+            } => {
+                let current = workspace_dir
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.default_workspace.clone());
+                let verdict = self.locator.locate(&prompt, &current).await;
+                self.reply_ok(
+                    id,
+                    serde_json::to_value(verdict).unwrap_or_else(|_| json!({})),
+                )
+                .await;
+            }
             DaemonRequest::AnswerQuestion {
                 id,
                 question_id,
@@ -580,9 +638,43 @@ impl DaemonService {
                 ..
             } => {
                 let sid = session_id.unwrap_or_else(|| format!("sess-{}", now_ms()));
-                let ws_path = workspace_dir
+                let mut ws_path = workspace_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.default_workspace.clone());
+
+                // Auto-locate workspace if not explicitly pinned or matching cross-project intent
+                match self.locator.locate(&prompt, &ws_path).await {
+                    thunder_locator::LocateVerdict::DirectMatch {
+                        target_path,
+                        reason,
+                        ..
+                    } => {
+                        tracing::info!(
+                            target = %target_path.display(),
+                            %reason,
+                            "Daemon auto-located and switched workspace"
+                        );
+                        ws_path = target_path;
+                    }
+                    thunder_locator::LocateVerdict::NeedConfirmation { candidates, .. } => {
+                        // In Daemon mode without explicit workspace override,
+                        // bind tokens to current active workspace as fallback memory
+                        if let Some(first) = candidates.first() {
+                            let tokens = thunder_locator::extract_tokens(&prompt);
+                            self.locator
+                                .registry()
+                                .bind_or_update(
+                                    first.path.clone(),
+                                    None,
+                                    Vec::new(),
+                                    tokens,
+                                    Vec::new(),
+                                )
+                                .await;
+                        }
+                    }
+                    thunder_locator::LocateVerdict::AlreadyInWorkspace { .. } => {}
+                }
 
                 if let Some(ref m) = mode {
                     if let Some(normalized) = normalize_mode(m) {

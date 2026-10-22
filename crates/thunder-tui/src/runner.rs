@@ -260,7 +260,9 @@ async fn handle_key_event(
             KeyCode::Down => app.picker.move_selection_down(),
             KeyCode::Backspace => app.picker.handle_backspace(),
             KeyCode::Enter => {
-                app.commit_picker_selection().await;
+                if let Some(resumed_prompt) = app.commit_picker_selection().await {
+                    spawn_agent_turn(app, resumed_prompt, tx.clone()).await;
+                }
             }
             KeyCode::Char(ch) => app.picker.handle_char(ch),
             _ => {}
@@ -407,7 +409,7 @@ async fn handle_key_event(
             if !trimmed.is_empty() && !app.handle_slash_command(&trimmed).await {
                 if app.is_running {
                     app.steer_active_run(trimmed);
-                } else {
+                } else if app.evaluate_workspace_location(&trimmed).await.is_some() {
                     spawn_agent_turn(app, trimmed, tx.clone()).await;
                 }
             }
