@@ -95,15 +95,17 @@ pub fn parse_inline(text: &str, theme: &MarkdownTheme) -> Vec<Span<'static>> {
             continue;
         }
 
-        // 4. Italic: *...* or _..._
-        if chars[i] == '*' || chars[i] == '_' {
+        // 4. Italic: *...* or _..._ (only opening _ when not preceded by an alphanumeric character)
+        if chars[i] == '*' || (chars[i] == '_' && (i == 0 || !chars[i - 1].is_alphanumeric())) {
             let marker = chars[i];
             flush_buf!();
             i += 1;
             let mut italic_text = String::new();
             let mut closed = false;
             while i < len {
-                if chars[i] == marker {
+                if chars[i] == marker
+                    && (marker != '_' || i + 1 == len || !chars[i + 1].is_alphanumeric())
+                {
                     closed = true;
                     i += 1;
                     break;

@@ -164,25 +164,29 @@ pub fn parse_blocks(source: &str) -> Vec<MarkdownBlock> {
 
         // 9. Standard Paragraph (accumulate adjacent lines)
         let mut para_lines = Vec::new();
+        para_lines.push(raw_lines[i].trim_end());
+        i += 1;
+
         while i < raw_lines.len() {
             let cur = raw_lines[i].trim_end();
             if cur.trim().is_empty()
-                || cur.starts_with('#')
-                || cur.starts_with("```")
-                || cur.trim_start().starts_with('>')
-                || cur.trim_start().starts_with("- [")
-                || cur.trim_start().starts_with("- ")
-                || cur.trim_start().starts_with("* ")
+                || parse_fence_start(cur).is_some()
+                || parse_heading(cur).is_some()
                 || is_thematic_break(cur)
+                || cur.trim_start().starts_with('>')
+                || parse_task_item(cur).is_some()
+                || parse_list_item(cur).is_some()
+                || (cur.contains('|')
+                    && i + 1 < raw_lines.len()
+                    && is_table_delimiter(raw_lines[i + 1]))
             {
                 break;
             }
             para_lines.push(cur);
             i += 1;
         }
-        if !para_lines.is_empty() {
-            blocks.push(MarkdownBlock::Paragraph(para_lines.join(" ")));
-        }
+
+        blocks.push(MarkdownBlock::Paragraph(para_lines.join(" ")));
     }
 
     blocks

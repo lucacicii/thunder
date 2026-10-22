@@ -59,39 +59,34 @@ impl TuiRunner {
         let (tx, mut rx) = mpsc::unbounded_channel::<RunnerMsg>();
         let mut reader = EventStream::new();
         let mut ticker = tokio::time::interval(self.tick_rate);
+        let mut needs_redraw = true;
 
         loop {
-            terminal.draw(|f| ui::render(f, &app))?;
+            if needs_redraw {
+                terminal.draw(|f| ui::render(f, &app))?;
+                needs_redraw = false;
+            }
 
             if app.should_quit {
                 break;
             }
 
             tokio::select! {
-                _ = ticker.tick() => {}
-                Some(msg) = rx.recv() => {
-                    match msg {
-                        RunnerMsg::AgentEvent(ev) => {
-                            app.apply_agent_event(ev);
-                        }
-                        RunnerMsg::RunFinished { messages, outcome } => {
-                            app.is_running = false;
-                            app.is_paused = false;
-                            app.active_cancel = None;
-                            app.active_pause = None;
-                            app.active_steer = None;
-                            app.conversation.set_messages(messages);
-                            app.update_suggestions();
-                            app.save_current_conversation().await;
-                            if let Err(err) = outcome {
-                                app.timeline.push(TimelineItem::SystemNotice {
-                                    text: format!("Run ended: {err}"),
-                                });
-                            }
-                        }
+                _ = ticker.tick() => {
+                    if app.is_running {
+                        needs_redraw = true;
                     }
                 }
+                Some(msg) = rx.recv() => {
+                    handle_runner_msg(&mut app, msg).await;
+                    // Coalesce high-speed token delta bursts before drawing
+                    while let Ok(next_msg) = rx.try_recv() {
+                        handle_runner_msg(&mut app, next_msg).await;
+                    }
+                    needs_redraw = true;
+                }
                 Some(Ok(Event::Key(key))) = reader.next() => {
+                    needs_redraw = true;
                     // 1. If Picker Modal is open, route keys to the modal
                     if app.picker.is_open {
                         match key.code {
@@ -355,4 +350,27 @@ async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSend
         let messages = agent.context().get_messages();
         let _ = tx.send(RunnerMsg::RunFinished { messages, outcome });
     });
+}
+
+async fn handle_runner_msg(app: &mut App, msg: RunnerMsg) {
+    match msg {
+        RunnerMsg::AgentEvent(ev) => {
+            app.apply_agent_event(ev);
+        }
+        RunnerMsg::RunFinished { messages, outcome } => {
+            app.is_running = false;
+            app.is_paused = false;
+            app.active_cancel = None;
+            app.active_pause = None;
+            app.active_steer = None;
+            app.conversation.set_messages(messages);
+            app.update_suggestions();
+            app.save_current_conversation().await;
+            if let Err(err) = outcome {
+                app.timeline.push(TimelineItem::SystemNotice {
+                    text: format!("Run ended: {err}"),
+                });
+            }
+        }
+    }
 }
