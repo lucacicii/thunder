@@ -4,17 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "Aesthetic, streaming-lenient, width-exact Markdown renderer for Ratatui and terminal UIs"
+description = "Aesthetic, streaming-lenient Markdown renderer for Ratatui, built on the tui-markdown engine"
 license.workspace = true
 
 [dependencies]
 ratatui.workspace = true
-unicode-width.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+tui-markdown = "0.3"
 
 [dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true
