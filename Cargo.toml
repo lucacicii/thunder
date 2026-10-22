@@ -5,6 +5,8 @@ edition = "2021"
 authors = ["lucas"]
 description = "Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Composer Training Data Pipeline"
 license = "Apache-2.0"
+repository = "https://github.com/lucacicii/thunder-memory"
+homepage = "https://github.com/lucacicii/thunder-memory"
 
 [[bin]]
 name = "thunder-memory"
