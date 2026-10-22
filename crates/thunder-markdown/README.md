@@ -1,46 +1,75 @@
 # 🎨 thunder-markdown
 
-`thunder-markdown` 是专为终端 TUI 与大模型对话流式输出打造的高美感 Markdown 渲染引擎（以独立 Crate 发布）。
+`thunder-markdown` 是 Thunder 的终端 Markdown 渲染层。
 
-它不依赖任何具体的 Agent 业务逻辑或内核组件，**只依赖 `ratatui` 和 `unicode-width`**，输出原生的 `Vec<ratatui::text::Line<'static>>`。
+它**不自己实现 Markdown 解析器**，而是把解析、表格、GFM 告警、语法高亮全部委托给久经考验的
+[`tui-markdown`](https://crates.io/crates/tui-markdown) 引擎（基于 `pulldown-cmark` + `syntect`），
+自己只负责两件事：
 
----
-
-## 核心设计与视觉亮点
-
-1. **流式未闭合悲观容错（Streaming Lenient）**：
-   * 大模型打字时代码块可能停在未闭合状态（如 ````rust\nfn main() { ` 尚未输出末尾的 ` ``` `）；
-   * `thunder-markdown` 自动将未闭合的代码块识别为流式进行中（渲染 `(streaming…)` 卡片底边），**绝不闪烁或跳回普通纯文本**。
-
-2. **语言徽章代码卡片（Syntax Highlighted Code Cards）**：
-   * 代码块渲染为带有圆角边框、语言标识（如 `[rust]`, `[python]`, `[bash]`）和行号的独立卡片；
-   * 内置零分配多语言语法高亮：关键字（紫色加粗）、字符串（翠绿色）、数值（橙色）、注释（暗灰斜体）、类型（青色加粗）。
-
-3. **Callout / Alert 警告框原生支持**：
-   * 自动解析 GitHub 规范的 Callout 语法：
-     * `> [!TIP]` $\to$ 绿色提示框 `💡 TIP`
-     * `> [!NOTE]` $\to$ 蓝色通知框 `ℹ️ NOTE`
-     * `> [!WARNING]` $\to$ 黄色警告框 `⚠️ WARNING`
-     * `> [!IMPORTANT]` $\to$ 红色警示框 `🚨 IMPORTANT`
-
-4. **对齐优化与丰富行内元素**：
-   * **标题**：`H1`（带色块标记 `█ `）、`H2`（带左侧竖线 `│ `）、`H3`（带原点 `• `）；
-   * **行内代码**：`` `code` `` 带有深色背景底衬与青色高亮；
-   * **任务列表**：`- [x]` 渲染为绿色勾选 `✔`，`- [ ]` 渲染为暗灰色圆圈 `○`；
-   * **表格**：基于 `unicode-width` 精准计算中英文混合宽度，绘制规整的 Unicode 栅格边框；
-   * **引用**：带有高对比度琥珀色引用条 `▎ `。
+1. **Thunder 的配色主题**（`MarkdownTheme`）；
+2. **流式容错预处理**（LLM 打字时未闭合的代码围栏）。
 
 ---
 
-## 使用示例
+## 为什么用 `tui-markdown` 而不是自研解析器
+
+自研解析器曾经在 LLM 流式输出中踩过一个致命问题：遇到 `#include <stdio.h>`、`#define`、`#tag`
+这类以 `#` 开头但不是标题的行时，段落循环没有推进索引，直接**死循环把 TUI 卡死**。
+
+通用解析器把这类边界情况交给上游维护，Thunder 只补上 LLM 场景真正需要的那一层：
+**未闭合代码围栏的合成闭合**。
+
+```text
+LLM 正在输出：              close_unterminated_fences 之后：
+```rust                      ```rust
+fn main() {                  fn main() {
+    println!("hi")               println!("hi")
+                             ```
+                             ← 自动补一个围栏结束符
+```
+
+没有这一步，`pulldown-cmark` 会把围栏之后的所有文字吞进段落，屏幕上就会出现
+“代码块一闪变成普通正文” 的抽搐。
+
+---
+
+## 主题
+
+`MarkdownTheme` 实现 `tui_markdown::StyleSheet`，提供 Thunder 的深色开发者配色：
+
+| 元素 | 样式 |
+|---|---|
+| H1 | 天蓝 `#38bdf8` + 加粗 |
+| H2 | 亮白 `#f8fafc` + 加粗 |
+| H3–H6 | 柔和灰蓝 `#94a3b8` + 加粗 |
+| 行内 code / 代码块 | 青蓝 `#7dd3fc` on 深板岩 `#1e293b` |
+| 链接 | 天蓝 + 下划线 |
+| 引用块 | 灰蓝 + 斜体 |
+| 告警 NOTE / TIP / IMPORTANT / WARNING / CAUTION | 蓝 / 绿 / 紫 / 黄 / 红 |
+| 表格表头 / 边框 | 亮白加粗 / 深灰 |
+| 列表标记 | 天蓝 |
+
+---
+
+## 使用
 
 ```rust
-use thunder_markdown::{render_markdown, render_markdown_default, MarkdownTheme};
+use thunder_markdown::{render_markdown, render_markdown_default, parse_inline};
 
-// 1. 使用默认主题直接渲染
-let lines = render_markdown_default("# Hello\n```rust\nfn main() {}\n```", 80);
+// 整段 Markdown → Ratatui 行（可直接塞进 Paragraph）
+let lines = render_markdown_default("## 标题\n\n- 列表\n\n```rust\nfn a() {}\n```", 80);
 
-// 2. 自定义主题与样式
-let theme = MarkdownTheme::default();
-let lines = render_markdown(source_text, term_width, &theme);
+// 自定义主题
+let theme = thunder_markdown::MarkdownTheme::default();
+let lines = render_markdown(source, width, &theme);
+
+// 单行内联样式（用于用户输入的原文回显，不走块级解析）
+let spans = parse_inline("修改 `src/lib.rs` 里的 **MAX_VAL**");
 ```
+
+---
+
+## 依赖
+
+* `ratatui` 0.30（`tui-markdown` 0.3 基于 `ratatui-core`，与 0.30 类型一致）
+* `tui-markdown` 0.3

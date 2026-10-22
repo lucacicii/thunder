@@ -68,10 +68,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )];
-                user_spans.extend(thunder_markdown::parse_inline(
-                    text,
-                    &thunder_markdown::MarkdownTheme::default(),
-                ));
+                user_spans.extend(thunder_markdown::parse_inline(text));
                 lines.push(Line::from(user_spans));
                 lines.push(Line::from(""));
             }
