@@ -143,10 +143,20 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
 
+    // Scroll geometry: `scroll_back` counts rows above the *tail*, so 0 pins the
+    // view to the newest line and streaming output is followed automatically.
+    // Clamping is mandatory: an offset past the end would scroll the entire
+    // transcript out of the viewport and leave an empty pane.
+    let total_lines = lines.len();
+    let view_height = chunks[1].height.saturating_sub(2) as usize; // borders
+    let max_scroll = total_lines.saturating_sub(view_height);
+    let scroll_top = max_scroll.saturating_sub(app.scroll_back as usize);
+    let scroll_top = u16::try_from(scroll_top).unwrap_or(u16::MAX);
+
     let timeline_widget = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Timeline "))
         .wrap(Wrap { trim: false })
-        .scroll((app.scroll_offset, 0));
+        .scroll((scroll_top, 0));
     frame.render_widget(timeline_widget, chunks[1]);
 
     // 3. Bottom Composer + Status Bar
