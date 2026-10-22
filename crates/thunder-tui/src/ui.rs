@@ -62,15 +62,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     for item in &app.timeline {
         match item {
             TimelineItem::User { text } => {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "❯ You: ",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(text),
-                ]));
+                let mut user_spans = vec![Span::styled(
+                    "❯ You: ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                user_spans.extend(thunder_markdown::parse_inline(
+                    text,
+                    &thunder_markdown::MarkdownTheme::default(),
+                ));
+                lines.push(Line::from(user_spans));
                 lines.push(Line::from(""));
             }
             TimelineItem::Assistant {
@@ -85,19 +87,21 @@ pub fn render(frame: &mut Frame, app: &App) {
                     ]));
                 }
                 let prefix = if *streaming {
-                    "⚡ Thunder (streaming): "
+                    "⚡ Thunder (streaming):"
                 } else {
-                    "⚡ Thunder: "
+                    "⚡ Thunder:"
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(content),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                let md_lines =
+                    thunder_markdown::render_markdown_default(content, chunks[1].width as usize);
+                for md_line in md_lines {
+                    lines.push(md_line);
+                }
                 lines.push(Line::from(""));
             }
             TimelineItem::ToolCallCard {
