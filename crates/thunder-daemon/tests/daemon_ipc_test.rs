@@ -740,3 +740,117 @@ async fn an_extra_workspace_dir_that_does_not_exist_rejects_the_run() {
         other => panic!("expected a failed response, got {other:?}"),
     }
 }
+
+/// `active_plugins` must report what answered, not what was intended.
+///
+/// The daemon discovers `thunder-std` as a sibling binary. A host that ships the
+/// daemon without it gets a run with **zero tools**; the frame used to say
+/// `["thunder-std", "kv-cache-shield"]` anyway, which is precisely the wrong answer
+/// for the one case a host needs it: a broken sidecar.
+#[tokio::test]
+async fn a_run_without_thunder_std_does_not_claim_to_have_it() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "done",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(
+        service
+            .with_driver_factory(Arc::new(move |_| {
+                Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+            }))
+            // A path that cannot start: same effect as a missing sibling binary.
+            .with_std_binary(std::path::PathBuf::from("/nonexistent/thunder-std")),
+    );
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-nostd",
+        "task_id": "task-nostd",
+        "session_id": "sess-nostd",
+        "prompt": "do the thing",
+        "workspace_dir": ws.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    let mut plugins: Option<Vec<String>> = None;
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { active_plugins, .. } => {
+                plugins = Some(active_plugins);
+                break;
+            }
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let plugins = plugins.expect("the run must complete");
+    assert!(
+        !plugins.iter().any(|id| id == "thunder-std"),
+        "a run with no tool pack must not report one: {plugins:?}"
+    );
+    assert!(
+        plugins.iter().any(|id| id == "kv-cache-shield"),
+        "the kernel facility is always mounted: {plugins:?}"
+    );
+}
+
+/// The other half: with the real binary present, it is reported.
+#[tokio::test]
+async fn a_run_that_has_thunder_std_reports_it() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "done",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-std",
+        "task_id": "task-std",
+        "session_id": "sess-std",
+        "prompt": "do the thing",
+        "workspace_dir": ws.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    let mut plugins: Option<Vec<String>> = None;
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { active_plugins, .. } => {
+                plugins = Some(active_plugins);
+                break;
+            }
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let plugins = plugins.expect("the run must complete");
+    assert!(
+        plugins.iter().any(|id| id == "thunder-std"),
+        "the sibling binary is present in this build, so it must be reported: {plugins:?}"
+    );
+}
