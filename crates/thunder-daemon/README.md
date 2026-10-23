@@ -22,7 +22,7 @@
    * `cancel_task`：优雅取消任务。
 
 3. **权限与模式管理**：
-   * `get_permission_state` / `set_mode`：管理会话模式（`yolo` / `plan` / `ask` / `acceptEdits`），状态变动时推送 `mode_changed` 帧。
+   * `get_permission_state` / `set_mode`：管理会话模式（`yolo` / `plan`；`ask` 等旧名一律归一为 `yolo`，因为 daemon 只对 `plan` 有分支），状态变动时推送 `mode_changed` 帧。
    * 集成 `thunder-plan`，在 `plan` 模式下拦截文件修改，并在 `exit_plan_mode` 成功后自动将模式翻转回 `yolo`。
 
 4. **人机互动（问答气泡）**：
