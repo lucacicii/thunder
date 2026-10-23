@@ -63,6 +63,14 @@ cargo build
 ```
 编译完成后，系统中的 `thunder-memory`、Thunder Agent 的 MCP 工具调用，都会**立即自动跑在你刚刚编译出来的最新代码上**，无需反复拷贝二进制。
 
+> ⚠️ 每改一次都要重新签名，否则屏幕录制授权会失效：
+> ```bash
+> codesign --force --sign "Thunder Local Signing" \
+>   --identifier com.lucas.thunder-memory --timestamp=none target/debug/thunder-memory
+> ```
+> 原因见 [FAQ 第 1 条](#五常见问题与注意事项-faq)（ad-hoc 签名的 DR 就是 cdhash）。
+> 只想稳定日常使用、不频繁改代码时，请用 `./scripts/install-release.sh`。
+
 ---
 
 ## 三、常用调试与开发命令
@@ -118,6 +126,20 @@ echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_sta
 当某个新功能或优化测试完毕，准备作为日常正式版固化时：
 
 ```bash
+# 一条命令完成：构建 → 停止守护进程 → 覆盖安装 → 重新签名 → 启动 → 校验
+./scripts/install-release.sh
+```
+
+**不要手工 `cp` / 软链接替换二进制**（旧版文档里的做法）。`cargo build` 产出的二进制
+只有 ld 生成的 ad-hoc 签名，其 identifier 与 cdhash 都由内容派生，每次编译都会变；
+macOS 的屏幕录制授权是按 designated requirement 匹配的，内容一变授权就“不再匹配”，
+于是每次截图都重新弹授权框。`install-release.sh` 会用固定的本地自签名身份重新签名，
+把 DR 固定成 `identifier "com.lucas.thunder-memory" and certificate root = H"<证书指纹>"`，
+与二进制内容无关，之后无论重编译多少次都不会再弹框。
+
+手工步骤（等价）：
+
+```bash
 # 1. 优雅停止后台常驻进程
 thunder-memory stop
 
@@ -125,9 +147,10 @@ thunder-memory stop
 cd /Users/lucas/wz/GitHub/thunder-memory
 cargo build --release
 
-# 3. 替换系统正式二进制（如果之前用了软链接可重新固化，或链接到 release）
+# 3. 替换系统正式二进制并用固定身份重签名
 cp target/release/thunder-memory ~/.cargo/bin/thunder-memory
-# 或者：ln -sf $(pwd)/target/release/thunder-memory ~/.cargo/bin/thunder-memory
+codesign --force --sign "Thunder Local Signing" \
+  --identifier com.lucas.thunder-memory --timestamp=none ~/.cargo/bin/thunder-memory
 
 # 4. 重新启动守护进程并验证运行状态
 thunder-memory start
@@ -139,8 +162,24 @@ thunder-memory status
 
 ## 五、常见问题与注意事项 (FAQ)
 
-1. **macOS 屏幕录制权限提示**：
-   - `thunder-memory` 默认调用系统自带的 `/usr/sbin/screencapture`，它继承终端（Terminal / iTerm / Cursor）的“屏幕与系统录制”权限。如果截图为空或全黑，请检查 macOS `系统设置 -> 隐私与安全性 -> 屏幕与系统录制` 中是否允许了你当前运行的宿主终端。
+1. **macOS 屏幕录制权限反复弹框**：
+   - `thunder-memory` 通过自带的 Swift 助手（`~/.thunder/bin/thunder-vision-ocr`）调用
+     `/usr/sbin/screencapture`，TCC 会把这次录屏请求归因到负责进程（responsible process），
+     也就是 `thunder-memory` 本体，所以授权列表里出现的是 `thunder-memory` 而不是终端。
+   - **典型症状**：系统设置里 `屏幕与系统录制` 中 `thunder-memory` 的开关明明是打开的、
+     却每次截图都重新弹框。原因不是开关没生效，而是 TCC 存的授权条目里记录的
+     designated requirement 与当前二进制对不上了。`log show --predicate 'process == "tccd"'`
+     里能看到关键行：
+     `Failed to match existing code requirement for subject /Users/lucas/.cargo/bin/thunder-memory and service kTCCServiceScreenCapture`。
+   - 只有 ad-hoc 签名（`codesign -dvvv` 显示 `adhoc,linker-signed`、`Internal requirements=none`）
+     的二进制才会这样，因为它的 DR 实质是 cdhash，重新编译即失效。
+     用 `./scripts/install-release.sh` 安装即彻底解决；自签名证书的创建方法见脚本内注释。
+   - 已经装了 ad-hoc 版本、列表里留下旧条目的情况：在 `系统设置 -> 隐私与安全性 ->
+     屏幕与系统录制` 里用 `−` 删掉 `thunder-memory` 那条旧记录，然后重启守护进程触发出**一次**
+     授权框，打开开关即可（此后不再弹）。
+   - 检查当前二进制的 DR 是否已稳定：
+     `codesign -d -r- -vv ~/.cargo/bin/thunder-memory 2>&1 | grep designated`，
+     稳定版本输出里只有 `identifier` + `certificate root`，**不应出现 cdhash**。
 2. **PID 锁残留**：
    - 若异常崩溃导致 `thunder-memory start` 报错已有实例运行，可检查并清理 PID 文件：`rm -f ~/.thunder/thunder-memory.pid`。
 3. **SQLite 锁冲突**：
