@@ -17,6 +17,9 @@ pub enum MemoryError {
     #[error("Synthesis error: {0}")]
     Synthesis(String),
 
+    #[error("Inference error: {0}")]
+    Inference(String),
+
     #[error("HTTP client error: {0}")]
     Http(#[from] reqwest::Error),
 

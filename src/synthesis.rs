@@ -1,7 +1,9 @@
 use crate::config::MemoryConfig;
 use crate::db::{Database, NewLongTermMemory, RawCaptureRow};
 use crate::error::MemoryError;
+use crate::local_model::LocalModelEngine;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,10 +29,30 @@ pub struct SynthesisEngine {
     db: Database,
     config: MemoryConfig,
     http_client: reqwest::Client,
+    local_model: Option<Arc<LocalModelEngine>>,
 }
 
 impl SynthesisEngine {
     pub fn new(db: Database, config: MemoryConfig) -> Self {
+        let local_model = if config.is_local_model_ready() {
+            match LocalModelEngine::load(&config.local_gguf_path(), &config.local_tokenizer_path()) {
+                Ok(engine) => {
+                    info!("In-process local Qwen2.5 synthesis model loaded and active");
+                    Some(Arc::new(engine))
+                }
+                Err(e) => {
+                    warn!("Failed to initialize in-process local model: {e}");
+                    None
+                }
+            }
+        } else {
+            debug!(
+                "In-process model files not present at {}, run `thunder-memory download-model` to enable",
+                config.model_dir.display()
+            );
+            None
+        };
+
         Self {
             db,
             config,
@@ -38,7 +60,13 @@ impl SynthesisEngine {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),
+            local_model,
         }
+    }
+
+    pub fn with_local_model(mut self, model: Arc<LocalModelEngine>) -> Self {
+        self.local_model = Some(model);
+        self
     }
 
     /// Run one synthesis cycle: cluster unprocessed screen captures, extract insights, and commit to long-term memory
@@ -153,9 +181,27 @@ impl SynthesisEngine {
         episodes
     }
 
-    /// Extract structured insight from an episode using LLM or heuristic fallback
+    /// Extract structured insight from an episode using local in-process model, LLM endpoint, or heuristic fallback
     pub async fn extract_insight(&self, episode: &CaptureEpisode) -> Result<SynthesizedInsight, MemoryError> {
-        // Try calling small model if endpoint is configured or local default exists
+        // 1. Prefer in-process local model if available
+        if let Some(ref local) = self.local_model {
+            match local.extract_insight(&episode.app_name, &episode.window_title, &episode.combined_text) {
+                Ok(insight) => {
+                    info!(
+                        category = %insight.category,
+                        title = %insight.title,
+                        score = %insight.importance_score,
+                        "In-process local model successfully synthesized insight"
+                    );
+                    return Ok(insight);
+                }
+                Err(e) => {
+                    warn!("In-process local model inference failed: {e}, attempting fallbacks");
+                }
+            }
+        }
+
+        // 2. Try calling external small model if endpoint is configured
         if let Some(ref endpoint) = self.config.llm_endpoint {
             match self.call_llm_endpoint(endpoint, episode).await {
                 Ok(insight) => return Ok(insight),
@@ -165,7 +211,7 @@ impl SynthesisEngine {
             }
         }
 
-        // Fast, deterministic heuristic extractor
+        // 3. Fast, deterministic heuristic extractor
         Ok(Self::heuristic_extract(episode))
     }
 

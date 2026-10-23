@@ -89,8 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(e) => format!("{} ({})", config.cloud_model.as_deref().unwrap_or("default"), e),
                 None => "Agent-side Reasoning via MCP".to_string(),
             };
+            let inprocess_info = if config.is_local_model_ready() {
+                format!("Ready [Candle Metal GPU] ({})", config.local_gguf_path().display())
+            } else {
+                format!("Not ready (run `thunder-memory download-model` to setup in {:?})", config.model_dir)
+            };
+            println!("  🧠 In-Process Local AI: {}", inprocess_info);
             println!("  🔬 Edge Small Model:   {}", edge_info);
-            println!("  🧠 Cloud Large Model:  {}", cloud_info);
+            println!("  ☁️  Cloud Large Model:  {}", cloud_info);
 
             if config.db_path.exists() {
                 let db = Database::open(&config.db_path)?;
@@ -455,6 +461,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        "download-model" => {
+            println!("══════════════════════════════════════════════════════════════════");
+            println!("  ⬇️  Downloading In-Process Local Model for thunder-memory");
+            println!("  Model: Qwen2.5-0.5B-Instruct-Q4_K_M (~350MB)");
+            println!("  Target Directory: {:?}", config.model_dir);
+            println!("══════════════════════════════════════════════════════════════════");
+            if let Err(e) = thunder_memory::local_model::download_default_model(&config).await {
+                eprintln!("❌ Download failed: {e}");
+                std::process::exit(1);
+            }
+            println!("🎉 In-process model ready! Thunder-memory will now use native Metal GPU inference.");
+        }
+
         "mcp" => {
             config.ensure_dirs()?;
             let db = Database::open(&config.db_path)?;
@@ -469,6 +488,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  start                   Start daemon in background detached");
             println!("  stop                    Stop running background daemon");
             println!("  status                  Show daemon and database status");
+            println!("  download-model          Download in-process Qwen2.5 small model (~350MB)");
             println!("  ocr-once                Run instant screen capture & OCR test");
             println!("  synthesize              Trigger manual memory synthesis cycle");
             println!("  sync-composer           Sync workbench_composer_sends from desktop.db");

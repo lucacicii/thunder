@@ -57,6 +57,18 @@ pub struct MemoryConfig {
 
     /// Path to cold archive SQLite database (default: ~/.thunder/memory_archive.db)
     pub archive_db_path: PathBuf,
+
+    /// Directory for in-process local models (default: ~/.thunder/models)
+    pub model_dir: PathBuf,
+
+    /// Local GGUF quantized model filename (default: qwen2.5-0.5b-instruct-q4_k_m.gguf)
+    pub local_model_file: String,
+
+    /// Local tokenizer filename (default: tokenizer.json)
+    pub local_tokenizer_file: String,
+
+    /// Whether to enable in-process local model inference (default: true)
+    pub enable_local_model: bool,
 }
 
 impl Default for MemoryConfig {
@@ -86,11 +98,29 @@ impl Default for MemoryConfig {
             min_capture_interval_secs: 2,
             max_capture_interval_secs: 60,
             archive_db_path: thunder_dir.join("memory_archive.db"),
+            model_dir: thunder_dir.join("models"),
+            local_model_file: "qwen2.5-0.5b-instruct-q4_k_m.gguf".to_string(),
+            local_tokenizer_file: "tokenizer.json".to_string(),
+            enable_local_model: true,
         }
     }
 }
 
 impl MemoryConfig {
+    pub fn local_gguf_path(&self) -> PathBuf {
+        self.model_dir.join(&self.local_model_file)
+    }
+
+    pub fn local_tokenizer_path(&self) -> PathBuf {
+        self.model_dir.join(&self.local_tokenizer_file)
+    }
+
+    pub fn is_local_model_ready(&self) -> bool {
+        self.enable_local_model
+            && self.local_gguf_path().is_file()
+            && self.local_tokenizer_path().is_file()
+    }
+
     /// Load configuration from ~/.thunder/memory.toml or ~/.thunder/config.toml, falling back to defaults
     pub fn load() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

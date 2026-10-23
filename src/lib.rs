@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod error;
+pub mod local_model;
 pub mod mcp;
 pub mod search;
 pub mod synthesis;
@@ -19,6 +20,7 @@ pub use db::{
     NewLongTermMemory, RawCaptureRow, SuppressionMask,
 };
 pub use error::MemoryError;
+pub use local_model::LocalModelEngine;
 pub use mcp::{run_mcp_stdio, MemoryMcpServer};
 pub use search::{MemorySearchEngine, ScoredMemory};
 pub use synthesis::{CaptureEpisode, SynthesisEngine, SynthesizedInsight};
