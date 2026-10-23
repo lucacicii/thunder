@@ -12,6 +12,21 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+/// Owns the daemon pid file for the lifetime of a foreground run.
+struct PidFileGuard {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        // Only remove the file if it still belongs to this process.
+        if MemoryDaemon::read_pid(&self.path) == Some(self.pid) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 pub struct MemoryDaemon {
     config: MemoryConfig,
     db: Database,
@@ -39,6 +54,10 @@ impl MemoryDaemon {
 
     /// Run foreground daemon event loop until cancelled
     pub async fn run_foreground(&self, cancel: CancellationToken) -> Result<(), MemoryError> {
+        // Own the pid file so that `status`/`stop` keep working for daemons started by
+        // launchd (KeepAlive), not only for `thunder-memory start`.
+        let _pid_guard = Self::acquire_pid_file();
+
         info!("Starting thunder-memory daemon in foreground...");
         info!("Database: {:?}", self.config.db_path);
         info!(
@@ -268,6 +287,41 @@ impl MemoryDaemon {
 
     fn is_pid_running(pid: u32) -> bool {
         unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    /// Keeps `~/.thunder/thunder-memory.pid` pointed at the live daemon and removes it on
+    /// exit. Without this, a daemon spawned by launchd (the LaunchAgent runs `run`) never
+    /// recorded its own pid: the file kept the pid of a dead or *different* daemon, so
+    /// `status` reported the wrong process and two capture loops kept writing duplicates
+    /// into the same database.
+    fn acquire_pid_file() -> Option<PidFileGuard> {
+        let path = Self::pid_file_path();
+        let pid = std::process::id();
+
+        if let Some(existing) = Self::read_pid(&path) {
+            if existing != pid && Self::is_pid_running(existing) {
+                warn!(
+                    "Another thunder-memory daemon is already running (PID {}). Two capture \
+                     loops would write duplicate captures to the same database - stop the \
+                     stale one with `kill {}`.",
+                    existing,
+                    existing
+                );
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                warn!("Could not create pid directory {:?}: {e}", parent);
+                return None;
+            }
+        }
+        if let Err(e) = std::fs::write(&path, pid.to_string()) {
+            warn!("Could not write pid file {:?}: {e}", path);
+            return None;
+        }
+
+        Some(PidFileGuard { path, pid })
     }
 
     /// Generate macOS LaunchAgent plist content

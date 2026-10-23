@@ -9,6 +9,13 @@ use std::sync::Arc;
 use tokenizers::Tokenizer;
 use tracing::{debug, info, warn};
 
+/// CTRL-style repetition penalty applied over the last `REPETITION_WINDOW` tokens.
+const REPETITION_PENALTY: f32 = 1.15;
+const REPETITION_WINDOW: usize = 64;
+/// Hard budget for the OCR text embedded in the synthesis prompt.
+const MAX_PROMPT_CHARS: usize = 1200;
+const MAX_LINE_CHARS: usize = 120;
+
 pub struct LocalModelEngine {
     model: Arc<Mutex<ModelWeights>>,
     tokenizer: Arc<Tokenizer>,
@@ -101,7 +108,13 @@ impl LocalModelEngine {
             .forward(&input, 0)
             .map_err(|e| MemoryError::Inference(format!("Model forward failed: {e}")))?;
 
-        let mut next_token = sample_token(&logits, prompt_tokens.len().saturating_sub(1))?;
+        let mut next_token = sample_token(
+            &logits,
+            prompt_tokens.len().saturating_sub(1),
+            &all_tokens,
+            REPETITION_PENALTY,
+            REPETITION_WINDOW,
+        )?;
 
         // 2. Autoregressive decoding
         for step in 0..max_tokens {
@@ -121,7 +134,17 @@ impl LocalModelEngine {
                 .forward(&input, pos)
                 .map_err(|e| MemoryError::Inference(format!("Forward step failed: {e}")))?;
 
-            next_token = sample_token(&logits, 0)?;
+            // Stop as soon as the JSON object is closed. Without this a 0.5B model keeps
+            // rambling up to max_tokens and the trailing garbage breaks JSON parsing.
+            if let Ok(partial) = self.tokenizer.decode(&generated, false) {
+                let open_braces = partial.matches('{').count();
+                let close_braces = partial.matches('}').count();
+                if close_braces > 0 && close_braces >= open_braces {
+                    break;
+                }
+            }
+
+            next_token = sample_token(&logits, 0, &all_tokens, REPETITION_PENALTY, REPETITION_WINDOW)?;
         }
 
         let output = self
@@ -139,11 +162,26 @@ impl LocalModelEngine {
         window_title: &str,
         combined_text: &str,
     ) -> Result<SynthesizedInsight, MemoryError> {
-        let truncated_text: String = combined_text
-            .lines()
-            .take(30)
-            .collect::<Vec<_>>()
-            .join("\n");
+        // OCR text from a busy window can be tens of thousands of characters. A 0.5B model
+        // loses the plot if the prompt is huge, so keep a hard character budget and clip
+        // pathologically long single lines (usually repeated IDE/explorer labels).
+        let mut truncated_text = String::new();
+        for line in combined_text.lines().take(40) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let clipped: String = if line.chars().count() > MAX_LINE_CHARS {
+                line.chars().take(MAX_LINE_CHARS).collect()
+            } else {
+                line.to_string()
+            };
+            if truncated_text.chars().count() + clipped.chars().count() > MAX_PROMPT_CHARS {
+                break;
+            }
+            truncated_text.push_str(&clipped);
+            truncated_text.push('\n');
+        }
 
         let prompt = format!(
             "<|im_start|>system\n\
@@ -170,7 +208,13 @@ Screen Content:\n\
     }
 }
 
-fn sample_token(logits: &Tensor, pos: usize) -> Result<u32, MemoryError> {
+fn sample_token(
+    logits: &Tensor,
+    pos: usize,
+    history: &[u32],
+    repetition_penalty: f32,
+    repetition_window: usize,
+) -> Result<u32, MemoryError> {
     let logits = logits
         .squeeze(0)
         .map_err(|e| MemoryError::Inference(format!("Squeeze failed: {e}")))?;
@@ -183,9 +227,26 @@ fn sample_token(logits: &Tensor, pos: usize) -> Result<u32, MemoryError> {
         logits
     };
 
-    let logits_v: Vec<f32> = row
+    let mut logits_v: Vec<f32> = row
         .to_vec1()
         .map_err(|e| MemoryError::Inference(format!("Logits to vec failed: {e}")))?;
+
+    // Greedy decoding degenerates into loops on small quantized models ("…重复同一句…").
+    // Apply the standard CTRL-style repetition penalty over the recent token window.
+    if repetition_penalty > 1.0 && !history.is_empty() {
+        let start = history.len().saturating_sub(repetition_window);
+        for &tok in &history[start..] {
+            let idx = tok as usize;
+            if idx < logits_v.len() {
+                let v = logits_v[idx];
+                logits_v[idx] = if v > 0.0 {
+                    v / repetition_penalty
+                } else {
+                    v * repetition_penalty
+                };
+            }
+        }
+    }
 
     // Greedy argmax
     let mut max_idx = 0;
@@ -211,8 +272,11 @@ pub fn parse_synthesized_json(
     let end = raw.rfind('}').map(|i| i + 1).unwrap_or(raw.len());
     let slice = &raw[start..end];
 
-    #[derive(serde::Deserialize)]
-    struct RawInsight {
+    // Tiny quantized models are sloppy JSON writers: they emit `"importance_score": "5.3"`
+    // (string instead of number), or `_title` / `__summary__` style keys. Parse leniently
+    // instead of throwing the whole insight away.
+    #[derive(Default)]
+    struct LenientInsight {
         category: Option<String>,
         title: Option<String>,
         summary: Option<String>,
@@ -220,11 +284,60 @@ pub fn parse_synthesized_json(
         importance_score: Option<f32>,
     }
 
-    if let Ok(parsed) = serde_json::from_str::<RawInsight>(slice) {
-        let cat = parsed
-            .category
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "code_development".to_string());
+    fn lenient_parse(slice: &str) -> Option<LenientInsight> {
+        // Small models also emit single-quoted arrays, e.g. `'key_entities': ['a', 'b']`.
+        let value: serde_json::Value = match serde_json::from_str(slice) {
+            Ok(v) => v,
+            Err(_) => serde_json::from_str(&slice.replace('\'', "\"")).ok()?,
+        };
+        let map = value.as_object()?;
+
+        let mut out = LenientInsight::default();
+        for (raw_key, v) in map {
+            let key: String = raw_key
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_lowercase();
+            let as_string = |v: &serde_json::Value| match v {
+                serde_json::Value::String(s) => Some(s.trim().to_string()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            };
+            match key.as_str() {
+                "category" => out.category = as_string(v),
+                "title" => out.title = as_string(v),
+                "summary" | "summarytext" => out.summary = as_string(v),
+                "keyentities" | "entities" | "keyentity" => {
+                    out.key_entities = v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| match e {
+                                serde_json::Value::String(s) => {
+                                    let s = s.trim();
+                                    (!s.is_empty()).then(|| s.to_string())
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    });
+                }
+                "importance" | "importancescore" | "score" => {
+                    out.importance_score = as_string(v).and_then(|s| s.parse::<f32>().ok());
+                }
+                _ => {}
+            }
+        }
+
+        Some(out)
+    }
+
+    if let Some(parsed) = lenient_parse(slice) {
+        let cat = parsed.category.unwrap_or_default();
+        let cat = if cat.trim().is_empty() {
+            "code_development".to_string()
+        } else {
+            cat.trim().to_lowercase()
+        };
 
         let fallback_title = if !fallback_window.is_empty() {
             format!("{fallback_app}: {fallback_window}")
@@ -361,6 +474,30 @@ mod tests {
         assert_eq!(insight.category, "research");
         assert_eq!(insight.title, "Study Candle Metal");
         assert_eq!(insight.importance_score, 9.0);
+    }
+
+    #[test]
+    fn test_parse_lenient_keys_and_string_score() {
+        // Observed real output of Qwen2.5-0.5B: prefixed keys and a stringified score.
+        let raw = "{ \"category\": \"debugging\", \"_title\": \"Fix WAL Lock\", \"__summary__\": \"Resolved a lock contention.\", \"key_entities\": [], \"importance_score\": \"7.3\"}";
+        let insight = parse_synthesized_json(raw, "Agent Resume", "工作台").unwrap();
+        assert_eq!(insight.category, "debugging");
+        assert_eq!(insight.title, "Fix WAL Lock");
+        assert_eq!(insight.summary, "Resolved a lock contention.");
+        assert_eq!(insight.importance_score, 7.3);
+    }
+
+    #[test]
+    fn test_parse_single_quoted_entities() {
+        // Observed real output: single-quoted arrays around the entity list.
+        let raw = "{ \"category\": \"code_development\", \"title\": \"\", \"summary\": \"修复终端环境变量\",  'key_entities': ['Agent Resume', 'thunder'], \"importance_score\": 8.5}";
+        let insight = parse_synthesized_json(raw, "Agent Resume", "工作台").unwrap();
+        assert_eq!(insight.category, "code_development");
+        assert_eq!(insight.summary, "修复终端环境变量");
+        assert_eq!(insight.key_entities, vec!["Agent Resume", "thunder"]);
+        assert_eq!(insight.importance_score, 8.5);
+        // Empty title must fall back to app:window
+        assert_eq!(insight.title, "Agent Resume: 工作台");
     }
 
     #[test]
