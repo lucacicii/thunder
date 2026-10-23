@@ -187,7 +187,7 @@ async fn circuit_break_mid_batch_leaves_no_unpaired_tool_calls() {
     let mut agent = ReActAgentLoop::new(loop_config(ws.path()), registry, driver);
     let err = agent.run("fail repeatedly").await.expect_err("must abort");
     assert!(
-        err.contains("consecutive tool execution errors"),
+        err.contains("circuit breaker"),
         "expected a circuit-break abort, got: {err}"
     );
 
@@ -264,4 +264,88 @@ fn pairing_assertion_detects_orphaned_tool_calls() {
     ];
     let result = std::panic::catch_unwind(|| assert_tool_calls_are_paired(&messages));
     assert!(result.is_err(), "orphaned tool_call must be detected");
+}
+
+#[tokio::test]
+async fn jittering_failures_abort_the_run() {
+    let ws = tempdir().unwrap();
+    let registry = ToolRegistry::new();
+    registry
+        .register_provider(Arc::new(JitterProvider {
+            calls: std::sync::Mutex::new(0),
+        }))
+        .await
+        .unwrap();
+
+    // `err, err, ok` repeated: the consecutive counter never exceeds two, so only the
+    // sliding error-rate window can catch this run. Eleven calls put the eighth error
+    // inside the twelve-result window.
+    let turns: Vec<LlmTurnResponse> = (0..11)
+        .map(|n| LlmTurnResponse::simple("again", vec![echo_call(&format!("j{n}"), n as u32)]))
+        .collect();
+    let driver = Arc::new(ScriptedMockDriver::new(turns));
+
+    let mut agent = ReActAgentLoop::new(
+        AgentLoopConfig {
+            budget: thunder_core::LoopBudget {
+                max_turns: 40,
+                max_context_resets: 0,
+                ..Default::default()
+            },
+            ..loop_config(ws.path())
+        },
+        registry,
+        driver,
+    );
+    let err = agent.run("jitter").await.expect_err("must abort");
+    assert!(
+        err.contains("circuit breaker"),
+        "expected the error-rate breaker, got: {err}"
+    );
+    assert!(
+        err.contains("failed"),
+        "the message must explain the failure rate: {err}"
+    );
+    let messages = agent.context().get_messages();
+    assert_tool_calls_are_paired(&messages);
+}
+
+/// Fails on two of every three calls, so no consecutive streak ever builds up.
+struct JitterProvider {
+    calls: std::sync::Mutex<usize>,
+}
+
+#[async_trait]
+impl ToolProvider for JitterProvider {
+    fn provider_id(&self) -> &str {
+        "jitter"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<ToolDescriptor>, ToolExecutionError> {
+        Ok(vec![ToolDescriptor::new_mcp(
+            "jitter",
+            "echo",
+            "echo",
+            json!({ "type": "object" }),
+        )])
+    }
+
+    async fn call_tool(
+        &self,
+        _name: &str,
+        _arguments: Value,
+        _ctx: &ExecutionContext,
+    ) -> Result<String, ToolExecutionError> {
+        let mut n = self.calls.lock().unwrap();
+        let idx = *n;
+        *n += 1;
+        if idx % 3 == 2 {
+            Ok("ok".to_string())
+        } else {
+            Err(ToolExecutionError::NonZeroExit {
+                code: 1,
+                stderr: "boom".to_string(),
+            })
+        }
+    }
 }

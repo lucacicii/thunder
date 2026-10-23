@@ -756,12 +756,17 @@ impl ReActAgentLoop {
                     self.close_pending_tool_calls(
                         &turn_resp.tool_calls,
                         call_idx + 1,
-                        "loop guard: too many consecutive tool errors",
+                        "loop guard: too many failed tool calls",
                     );
                     cache_warmer::mark_idle(&self.config.session_id);
+                    // Report both numbers: a clean streak and a jittering failure rate
+                    // both land here, and they mean different things to the operator.
                     return Err(format!(
-                        "LoopGuard circuit breaker: {} consecutive tool execution errors",
-                        self.loop_guard.consecutive_errors()
+                        "LoopGuard circuit breaker: {} consecutive, {} of the last {} tool \
+                         calls failed",
+                        self.loop_guard.consecutive_errors(),
+                        self.loop_guard.window_errors(),
+                        self.loop_guard.error_window()
                     ));
                 }
             }

@@ -88,7 +88,7 @@ cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
 1. `A-B-A-B` 周期循环全盲——只判「连续 N 条完全相等」（`crates/thunder-core/src/loop_guard.rs`）。
 2. 连续错误计数被**单次成功清零**，`err,err,ok,err,err,ok` 永不触发熔断。
 
-修复：周期检测由新模块 `crates/thunder-core/src/cycles.rs` 承担（Phase D）。**窗口错误率（抖动式错误）仍未做**，`consecutive_errors` 依旧被单次成功清零——见 KI-11。
+修复：周期检测由新模块 `crates/thunder-core/src/cycles.rs` 承担（Phase D）；抖动式错误由 KI-11 的滑动窗口错误率覆盖。
 
 ---
 
@@ -138,11 +138,11 @@ cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
 
 ---
 
-## KI-11 连续错误计数仍被单次成功清零 `open` `P2`
+## KI-11 连续错误计数仍被单次成功清零 `fixed` `P2`
 
 `crates/thunder-core/src/loop_guard.rs` 的 `record_tool_result()` 一遇成功就把 `consecutive_errors` 归零，因此 `err,err,ok,err,err,ok` 这种抖动式失败永远不会触发熔断。原方案 §6.4 计划用「最近 12 次里错误 ≥ 8」的窗口错误率替代，Phase D 未实现（周期检测优先落地）。
 
-建议：加滑动窗口错误率，保留现有连续计数作快通道。
+修复：`LoopGuard` 增加滑动窗口错误率（默认「最近 12 次里 ≥ 8 次失败」），与连续计数并行：连续计数当快通道，窗口负责 `err,err,ok,err,err,ok` 这类抖动。中止消息同时报告「连续 N 次」与「最近 W 次里 M 次失败」。`with_error_window()` 可覆盖阈值。
 
 ---
 
