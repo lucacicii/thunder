@@ -546,8 +546,7 @@ impl ReActAgentLoop {
                 }
 
                 stats.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                stats.mutations = self.progress.total_mutations();
-                stats.novel_observations = self.progress.total_novel_observations();
+                self.fill_progress_stats(&mut stats);
                 cache_warmer::mark_idle(&self.config.session_id);
                 self.emit(ThunderEvent::AgentFinished {
                     turns: turn,
@@ -862,6 +861,18 @@ impl ReActAgentLoop {
             .await)
     }
 
+    /// Copy the progress/calibration counters onto the run stats.
+    ///
+    /// `peak_*_streak` is the whole point of keeping these numbers: it says how close the
+    /// run came to each stall threshold, so the thresholds can be tuned from real traffic
+    /// instead of log scraping.
+    fn fill_progress_stats(&self, stats: &mut AgentStats) {
+        stats.mutations = self.progress.total_mutations();
+        stats.novel_observations = self.progress.total_novel_observations();
+        stats.peak_no_novel_streak = self.progress.peak_no_novel_streak();
+        stats.peak_mutation_free_streak = self.progress.peak_mutation_free_streak();
+    }
+
     /// Recovery level L0/L1: try to get the run unstuck before giving up.
     ///
     /// Returns `true` when the context was reset and the caller should keep going.
@@ -939,7 +950,9 @@ impl ReActAgentLoop {
         cache_warmer::invalidate(&self.config.session_id);
         self.loop_guard.reset();
         self.cycles.reset();
-        self.progress = ProgressTracker::from_config(self.config.stall);
+        // `reset()` keeps the calibration peaks: recovery restarts detection, it does
+        // not throw away what the run already learned about the thresholds.
+        self.progress.reset();
         tracing::debug!(turn, handoff_tokens, "context rebuilt for recovery");
         handoff_tokens
     }
@@ -1026,8 +1039,7 @@ impl ReActAgentLoop {
         };
 
         stats.total_duration_ms = run_start.elapsed().as_millis() as u64;
-        stats.mutations = self.progress.total_mutations();
-        stats.novel_observations = self.progress.total_novel_observations();
+        self.fill_progress_stats(&mut stats);
         stats.finish_reason = Some(reason);
         cache_warmer::mark_idle(&self.config.session_id);
         self.emit(ThunderEvent::AgentFinished {

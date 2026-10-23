@@ -139,6 +139,24 @@ async fn main() {
     match agent.run(prompt).await {
         Ok(outcome) => {
             println!("{}", outcome.final_response);
+            if std::env::var("THUNDER_STATS").is_ok() {
+                // Calibration view: how close did this run get to each stall threshold?
+                let s = &outcome.stats;
+                eprintln!(
+                    "stats: turns={} tools={} mutations={} novel_results={} \
+                     peak_no_novel_streak={} peak_mutation_free_streak={} stall_events={} \
+                     reason={} tokens={}",
+                    s.total_turns,
+                    s.total_tool_executions,
+                    s.mutations,
+                    s.novel_observations,
+                    s.peak_no_novel_streak,
+                    s.peak_mutation_free_streak,
+                    s.stall_events,
+                    outcome.wire_finish_reason(),
+                    s.total_prompt_tokens + s.total_completion_tokens,
+                );
+            }
             if outcome.stopped_early() {
                 // Hitting a ceiling is not a failure: the summary on stdout is the
                 // result, so exit 0 and report the reason on stderr.

@@ -607,6 +607,34 @@ max_restarts = 0                # L2，daemon 侧配 1
 
 **零告警**：所有调用 `novel=true`，`mutation_free_streak` 与 `no_novel_streak` 全程 0，无 cycle、无 stall、无 wrap-up。说明 `Mutating` 指纹（含内容）确实让「连续多文件新建/编辑」全部算作进展。
 
+### 校准口径（`THUNDER_STATS=1`）
+
+`AgentStats` 新增两个峰值字段，把「这一跑离阈值有多近」直接带出来，不必翻日志：
+
+| 字段 | 含义 |
+|---|---|
+| `peak_no_novel_streak` | 本次 run 达到过的最高「无新工具结果」连续轮数 |
+| `peak_mutation_free_streak` | 最高「无 mutation 且无新信息」连续轮数 |
+
+峰值**跨恢复保留**：`ProgressTracker::reset()` 只清检测状态，不清校准数据。
+
+CLI 加了一行可选输出（`THUNDER_STATS=1`）：
+
+```bash
+$ THUNDER_STATS=1 thunder "修复 divide 除零 bug"
+stats: turns=5 tools=5 mutations=1 novel_results=5 peak_no_novel_streak=0 \
+       peak_mutation_free_streak=0 stall_events=0 reason=done tokens=8207
+```
+
+两轮真实任务的读数：
+
+| run | turns | tools | mutations | peak_no_novel | peak_mutation_free | tokens |
+|---|---|---|---|---|---|---|
+| A（修 bug） | 5 | 5 | 1 | **0** | **0** | 8.2k |
+| B（建 3 模块，37 测试全绿） | 5 | 13 | 8 | **0** | **0** | 57.6k |
+
+判定规则：`peak_no_novel_streak` 长期停在 0–1 ⇒ 阈值 6 过于宽松但安全；偶发到 4–5 ⇒ 阈值 6 偏紧，应上调；两轮样本都远未触及，说明**当前的瓶颈不是误报，是样本量**。
+
 ### 结论
 
 - 阈值 `8 / 6` 在两轮真实任务中均未误触发，但样本太小（2 个任务、22 次调用），不足以证明参数正确，只证明「没有立刻炸」。

@@ -163,6 +163,16 @@ Thunder Agent error: sse error: error reading sse body: error decoding response 
 
 ---
 
+## KI-14 阈值校准缺少聚合口径 `fixed` `P2`
+
+停滞阈值（8/6）是经验值，而验证它们需要 `no_novel_streak` 的真实分布；原先只能靠 `RUST_LOG=thunder_core::agent_loop=debug` 扒日志。
+
+修复：`AgentStats` 增加 `peak_no_novel_streak` / `peak_mutation_free_streak`（跨恢复保留），CLI 支持 `THUNDER_STATS=1` 打一行汇总。
+
+遗留：daemon / TUI 尚未展示这两个字段（数据已在 `LoopComplete.stats` 里，面板按需读取即可）。
+
+---
+
 ## 附录：本次改造期间的验证命令
 
 ```bash
@@ -171,4 +181,5 @@ cargo test -p thunder-core --lib
 cargo test -p thunder-core --test loop_guard_context_balance   # Phase A 回归
 cargo test -p thunder-core --test progress_observation         # Phase B 观察
 cargo test --workspace --no-fail-fast                          # 57 个 suite 全绿
+THUNDER_STATS=1 target/debug/thunder "<prompt>"                # 单次任务的校准读数
 ```

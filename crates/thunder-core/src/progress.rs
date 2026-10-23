@@ -109,6 +109,10 @@ pub struct ProgressTracker {
     results: HashSet<u64>,
     mutation_free_streak: usize,
     no_novel_output_streak: usize,
+    /// Highest value each streak reached in this run. Diagnostics only: the stall
+    /// thresholds are tuned from these peaks, so they survive `reset()`.
+    peak_mutation_free_streak: usize,
+    peak_no_novel_streak: usize,
     turn_had_mutation: bool,
     turn_had_novel_output: bool,
     mutation_free_turns: usize,
@@ -134,6 +138,8 @@ impl ProgressTracker {
             results: HashSet::new(),
             mutation_free_streak: 0,
             no_novel_output_streak: 0,
+            peak_mutation_free_streak: 0,
+            peak_no_novel_streak: 0,
             turn_had_mutation: false,
             turn_had_novel_output: false,
             mutation_free_turns,
@@ -198,6 +204,11 @@ impl ProgressTracker {
         self.turn_had_mutation = false;
         self.turn_had_novel_output = false;
 
+        self.peak_mutation_free_streak = self
+            .peak_mutation_free_streak
+            .max(self.mutation_free_streak);
+        self.peak_no_novel_streak = self.peak_no_novel_streak.max(self.no_novel_output_streak);
+
         if self.mutation_free_streak >= self.mutation_free_turns {
             return Some(StallSignal::MutationFree(self.mutation_free_streak));
         }
@@ -223,8 +234,27 @@ impl ProgressTracker {
         self.no_novel_output_streak
     }
 
+    /// Highest `mutation_free_streak` reached in this run (survives `reset()`).
+    pub fn peak_mutation_free_streak(&self) -> usize {
+        self.peak_mutation_free_streak
+    }
+
+    /// Highest `no_novel_output_streak` reached in this run (survives `reset()`).
+    ///
+    /// Compare this against `stall_no_novel_turns`: a run that never exceeded 2 is well
+    /// clear of a threshold of 6, while one that reached 5 means the threshold is tight.
+    pub fn peak_no_novel_streak(&self) -> usize {
+        self.peak_no_novel_streak
+    }
+
+    /// Clear the run state, keeping the peaks: recovery resets detection, not the
+    /// calibration data collected so far.
     pub fn reset(&mut self) {
+        let (peak_mutation, peak_novel) =
+            (self.peak_mutation_free_streak, self.peak_no_novel_streak);
         *self = Self::new(self.mutation_free_turns, self.no_novel_turns);
+        self.peak_mutation_free_streak = peak_mutation;
+        self.peak_no_novel_streak = peak_novel;
     }
 }
 
@@ -352,6 +382,32 @@ mod tests {
         );
         assert_eq!(tracker.on_turn_end(), None);
         assert_eq!(tracker.mutation_free_streak(), 1);
+    }
+
+    #[test]
+    fn peaks_record_the_worst_streaks_and_survive_reset() {
+        // Thresholds far above what the run reaches: nothing stalls, but the peaks
+        // still record how close it came — that is the calibration signal.
+        let mut tracker = ProgressTracker::new(50, 50);
+        tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
+        tracker.on_turn_end(); // novel
+        for _ in 0..4 {
+            tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
+            tracker.on_turn_end();
+        }
+        assert_eq!(tracker.no_novel_output_streak(), 4);
+        assert_eq!(tracker.peak_no_novel_streak(), 4);
+
+        // Break the streak, then reset the way recovery does.
+        tracker.record(ProgressKind::Observing, "read_file", "{}", "fresh");
+        tracker.on_turn_end();
+        tracker.reset();
+        assert_eq!(tracker.no_novel_output_streak(), 0, "detection restarts");
+        assert_eq!(
+            tracker.peak_no_novel_streak(),
+            4,
+            "calibration data must survive a recovery reset"
+        );
     }
 
     #[test]
