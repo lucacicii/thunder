@@ -14,7 +14,7 @@ use thunder_core::{
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ObservedEvent, ThunderEvent};
 use thunder_providers::prelude::{clamp_title, generate_title, ProviderRegistry, RpiAiClient};
-use thunder_registry::{start_hot_reload_watcher, ToolRegistry};
+use thunder_registry::ToolRegistry;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -121,6 +121,7 @@ pub struct DaemonService {
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<thunder_ask::QuestionOutcome>>>>,
     output_tx: mpsc::Sender<String>,
     default_workspace: PathBuf,
+    locator: Arc<thunder_locator::WorkspaceLocator>,
     driver_factory: Option<DriverFactory>,
     std_bin_override: Option<PathBuf>,
 }
@@ -143,6 +144,15 @@ impl DaemonService {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
+        let mem_bridge =
+            thunder_locator::MemoryBridge::new(thunder_locator::MemoryBridge::default_db_path());
+        let ws_reg = thunder_locator::WorkspaceRegistry::load_or_init(
+            thunder_locator::WorkspaceRegistry::default_storage_path(),
+            mem_bridge.clone(),
+        )
+        .await;
+        let locator = Arc::new(thunder_locator::WorkspaceLocator::new(ws_reg, mem_bridge));
+
         Ok((
             Self {
                 provider_registry: Arc::new(RwLock::new(provider_registry)),
@@ -152,11 +162,17 @@ impl DaemonService {
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 output_tx,
                 default_workspace,
+                locator,
                 driver_factory: None,
                 std_bin_override: None,
             },
             output_rx,
         ))
+    }
+
+    pub fn with_locator(mut self, locator: Arc<thunder_locator::WorkspaceLocator>) -> Self {
+        self.locator = locator;
+        self
     }
 
     pub fn with_driver_factory(mut self, factory: DriverFactory) -> Self {
@@ -173,6 +189,12 @@ impl DaemonService {
         if let Ok(line) = serde_json::to_string(&resp) {
             let _ = self.output_tx.send(line).await;
         }
+    }
+
+    /// Number of tasks currently in flight. Gate for `SIGUSR1` hot reload: replacing
+    /// the image mid-task would silently drop the tool-call pairing invariants.
+    pub async fn active_task_count(&self) -> usize {
+        self.active_tasks.lock().await.len()
     }
 
     pub async fn shutdown(&self) {
@@ -545,6 +567,42 @@ impl DaemonService {
                 )
                 .await;
             }
+            DaemonRequest::ListWorkspaces { id } => {
+                let list = self.locator.registry().list().await;
+                self.reply_ok(id, serde_json::to_value(list).unwrap_or_else(|_| json!([])))
+                    .await;
+            }
+            DaemonRequest::BindWorkspace {
+                id,
+                path,
+                name,
+                aliases,
+                keywords,
+                tech_stack,
+            } => {
+                let rec = self
+                    .locator
+                    .registry()
+                    .bind_or_update(PathBuf::from(path), name, aliases, keywords, tech_stack)
+                    .await;
+                self.reply_ok(id, serde_json::to_value(rec).unwrap_or_else(|_| json!({})))
+                    .await;
+            }
+            DaemonRequest::LocateWorkspace {
+                id,
+                prompt,
+                workspace_dir,
+            } => {
+                let current = workspace_dir
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.default_workspace.clone());
+                let verdict = self.locator.locate(&prompt, &current).await;
+                self.reply_ok(
+                    id,
+                    serde_json::to_value(verdict).unwrap_or_else(|_| json!({})),
+                )
+                .await;
+            }
             DaemonRequest::AnswerQuestion {
                 id,
                 question_id,
@@ -580,9 +638,43 @@ impl DaemonService {
                 ..
             } => {
                 let sid = session_id.unwrap_or_else(|| format!("sess-{}", now_ms()));
-                let ws_path = workspace_dir
+                let mut ws_path = workspace_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.default_workspace.clone());
+
+                // Auto-locate workspace if not explicitly pinned or matching cross-project intent
+                match self.locator.locate(&prompt, &ws_path).await {
+                    thunder_locator::LocateVerdict::DirectMatch {
+                        target_path,
+                        reason,
+                        ..
+                    } => {
+                        tracing::info!(
+                            target = %target_path.display(),
+                            %reason,
+                            "Daemon auto-located and switched workspace"
+                        );
+                        ws_path = target_path;
+                    }
+                    thunder_locator::LocateVerdict::NeedConfirmation { candidates, .. } => {
+                        // In Daemon mode without explicit workspace override,
+                        // bind tokens to current active workspace as fallback memory
+                        if let Some(first) = candidates.first() {
+                            let tokens = thunder_locator::extract_tokens(&prompt);
+                            self.locator
+                                .registry()
+                                .bind_or_update(
+                                    first.path.clone(),
+                                    None,
+                                    Vec::new(),
+                                    tokens,
+                                    Vec::new(),
+                                )
+                                .await;
+                        }
+                    }
+                    thunder_locator::LocateVerdict::AlreadyInWorkspace { .. } => {}
+                }
 
                 if let Some(ref m) = mode {
                     if let Some(normalized) = normalize_mode(m) {
@@ -742,9 +834,15 @@ impl DaemonService {
         let cfg = ThunderConfig::load_from_workspace(&workspace_cwd).await;
         let registry = self.build_workspace_registry(&workspace_cwd, &cfg).await;
         let tools_dir = workspace_cwd.join(".thunder").join("tools");
-        let _watcher = start_hot_reload_watcher(registry.clone(), tools_dir, None)
-            .await
-            .ok();
+        let poll = std::time::Duration::from_millis(cfg.sandbox.debounce_ms.max(50));
+        let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
+            registry.clone(),
+            tools_dir,
+            None,
+            poll,
+        )
+        .await
+        .ok();
 
         let existing_conv = self.store.load(&session_id).await.ok().flatten();
 
@@ -762,7 +860,11 @@ impl DaemonService {
             workspace_cwd: workspace_cwd.clone(),
             system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
             model: model_label,
-            max_turns: cfg.agent.max_turns,
+            budget: cfg.agent.to_budget(),
+            stall: thunder_core::StallConfig {
+                mutation_free_turns: cfg.agent.stall_mutation_free_turns,
+                no_novel_turns: cfg.agent.stall_no_novel_turns,
+            },
             pruning: ContextPruningConfig {
                 max_context_tokens: cfg.agent.max_context_tokens,
                 ..ContextPruningConfig::default()
@@ -836,11 +938,15 @@ impl DaemonService {
                 let suggest_engine = thunder_suggest::SuggestionEngine::new();
                 let suggestions = suggest_engine.generate_suggestions(&conv.messages).await;
 
+                // `wire_finish_reason()` reports `done` whenever an answer exists —
+                // including a wrap-up summary after hitting a ceiling — so the desktop
+                // panel does not print "without producing an answer" next to real text.
+                let finish_reason = outcome.wire_finish_reason().to_string();
                 self.send_response(DaemonResponse::TaskCompleted {
                     task_id,
                     session_id,
                     final_content: Some(outcome.final_response),
-                    finish_reason: "done".to_string(),
+                    finish_reason,
                     active_plugins: vec!["thunder-std".to_string(), "kv-cache-shield".to_string()],
                     suggested_questions: suggestions,
                 })

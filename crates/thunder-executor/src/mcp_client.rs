@@ -466,6 +466,7 @@ impl ToolProvider for McpToolProvider {
             let description = tool.description.unwrap_or_default();
             let desc = if self.is_core {
                 ToolDescriptor::new_core(&tool.name, description, tool.input_schema.clone())
+                    .with_progress(tool.progress)
             } else {
                 ToolDescriptor::new_mcp(
                     &self.server_name,
@@ -473,6 +474,7 @@ impl ToolProvider for McpToolProvider {
                     description,
                     tool.input_schema.clone(),
                 )
+                .with_progress(tool.progress)
             };
             schema_map.insert(tool.name.clone(), tool.input_schema.clone());
             schema_map.insert(desc.name.clone(), tool.input_schema);

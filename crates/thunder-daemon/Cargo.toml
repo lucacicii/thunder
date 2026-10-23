@@ -20,6 +20,7 @@ thunder-core.workspace = true
 thunder-plan.workspace = true
 thunder-ask.workspace = true
 thunder-suggest.workspace = true
+thunder-locator.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

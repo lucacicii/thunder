@@ -20,6 +20,7 @@ thunder-core.workspace = true
 thunder-plan.workspace = true
 thunder-suggest.workspace = true
 thunder-markdown.workspace = true
+thunder-locator.workspace = true
 async-trait.workspace = true
 crossterm.workspace = true
 futures-util.workspace = true

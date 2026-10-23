@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use thunder_core::{FsConversationStore, ThunderConfig};
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_providers::prelude::ProviderRegistry;
-use thunder_registry::{start_hot_reload_watcher, ToolRegistry};
+use thunder_registry::ToolRegistry;
 use thunder_tui::{App, TuiRunner};
 use tracing_subscriber::EnvFilter;
 
@@ -60,17 +60,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let tools_dir = workspace_dir.join(".thunder").join("tools");
-    let _watcher = start_hot_reload_watcher(tool_registry.clone(), tools_dir, None)
-        .await
-        .ok();
+    let poll = std::time::Duration::from_millis(cfg.sandbox.debounce_ms.max(50));
+    let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
+        tool_registry.clone(),
+        tools_dir,
+        None,
+        poll,
+    )
+    .await
+    .ok();
 
     let store_root = FsConversationStore::default_store_root();
     let store = FsConversationStore::new(store_root).await?;
 
+    let mem_bridge =
+        thunder_locator::MemoryBridge::new(thunder_locator::MemoryBridge::default_db_path());
+    let ws_reg = thunder_locator::WorkspaceRegistry::load_or_init(
+        thunder_locator::WorkspaceRegistry::default_storage_path(),
+        mem_bridge.clone(),
+    )
+    .await;
+    let locator = std::sync::Arc::new(thunder_locator::WorkspaceLocator::new(ws_reg, mem_bridge));
+
     let mut app = App::new(model)
         .with_store(store)
         .with_provider_registry(registry)
-        .with_tool_registry(tool_registry);
+        .with_tool_registry(tool_registry)
+        .with_locator(locator);
     app.workspace_dir = workspace_dir;
     app.set_status_message(format!("Workspace: {}", app.workspace_dir.display()));
 

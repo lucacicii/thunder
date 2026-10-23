@@ -1,4 +1,5 @@
 use crate::schema::ExecutionContext;
+use crate::schema::ProgressKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -127,6 +128,11 @@ pub struct McpToolInfo {
     pub description: Option<String>,
     #[serde(default = "default_object_schema")]
     pub input_schema: Value,
+    /// Optional plugin-declared state-change semantics. Third-party MCP servers that
+    /// do not send this field fall back to [`ProgressKind::Neutral`], which keeps
+    /// their tools usable while leaving them out of the mutation signal.
+    #[serde(default, skip_serializing_if = "ProgressKind::is_default")]
+    pub progress: ProgressKind,
 }
 
 fn default_object_schema() -> Value {
@@ -181,5 +187,53 @@ impl McpCallToolResult {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod progress_wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn progress_kind_survives_the_tools_list_wire() {
+        let info = McpToolInfo {
+            name: "write_file".to_string(),
+            description: None,
+            input_schema: json!({"type": "object"}),
+            progress: ProgressKind::Mutating,
+        };
+        let wire = serde_json::to_value(&info).unwrap();
+        assert_eq!(wire["progress"], json!("mutating"));
+        let back: McpToolInfo = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.progress, ProgressKind::Mutating);
+    }
+
+    #[test]
+    fn neutral_is_omitted_and_defaults_back() {
+        let info = McpToolInfo {
+            name: "bash".to_string(),
+            description: None,
+            input_schema: json!({"type": "object"}),
+            progress: ProgressKind::Neutral,
+        };
+        let wire = serde_json::to_value(&info).unwrap();
+        assert!(
+            wire.get("progress").is_none(),
+            "neutral must not be serialized so third-party servers stay byte-identical"
+        );
+        let back: McpToolInfo = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.progress, ProgressKind::Neutral);
+    }
+
+    #[test]
+    fn third_party_servers_without_the_field_still_parse() {
+        let wire = json!({
+            "name": "mcp__git__commit",
+            "description": "commit",
+            "inputSchema": {"type": "object"}
+        });
+        let back: McpToolInfo = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.progress, ProgressKind::Neutral);
     }
 }

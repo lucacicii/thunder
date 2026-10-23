@@ -6,7 +6,7 @@ use thunder_core::{
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_providers::prelude::{client_for_selection, ProviderRegistry};
-use thunder_registry::{start_hot_reload_watcher, ToolRegistry};
+use thunder_registry::ToolRegistry;
 
 #[tokio::main]
 async fn main() {
@@ -62,11 +62,17 @@ async fn main() {
         }
     }
 
-    // 3. Start `.thunder/tools/` 200ms hot-reload watcher.
+    // 3. Start the `.thunder/tools/` hot-reload poller.
     let tools_dir = workspace_cwd.join(".thunder").join("tools");
-    let _watcher = start_hot_reload_watcher(registry.clone(), tools_dir, None)
-        .await
-        .ok();
+    let poll = Duration::from_millis(config.sandbox.debounce_ms.max(50));
+    let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
+        registry.clone(),
+        tools_dir,
+        None,
+        poll,
+    )
+    .await
+    .ok();
 
     if args.is_empty() || args[0] == "--list-tools" {
         let snap = registry.current();
@@ -80,8 +86,12 @@ async fn main() {
     let prompt = args.join(" ");
     let session_id = format!("sess-{}", std::process::id());
 
+    // LLM request timeout, not the sandbox's: a stream that takes longer than
+    // `sandbox.timeout_ms` (30 s by default) is a normal long generation, not a hang.
+    // The daemon and the TUI already use 120 s.
+    const LLM_REQUEST_TIMEOUT_MS: u64 = 120_000;
     let (spec, llm_client) =
-        match client_for_selection(&config.agent.model, config.sandbox.timeout_ms).await {
+        match client_for_selection(&config.agent.model, LLM_REQUEST_TIMEOUT_MS).await {
             Ok(pair) => pair,
             Err(err) => {
                 eprintln!(
@@ -108,7 +118,11 @@ async fn main() {
         workspace_cwd,
         system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
         model: spec.id.clone(),
-        max_turns: config.agent.max_turns,
+        budget: config.agent.to_budget(),
+        stall: thunder_core::StallConfig {
+            mutation_free_turns: config.agent.stall_mutation_free_turns,
+            no_novel_turns: config.agent.stall_no_novel_turns,
+        },
         pruning,
         tool_timeout: Duration::from_millis(config.sandbox.timeout_ms),
         cache_warm_settings: spec.prompt_cache_warm_settings(None),
@@ -125,6 +139,33 @@ async fn main() {
     match agent.run(prompt).await {
         Ok(outcome) => {
             println!("{}", outcome.final_response);
+            if std::env::var("THUNDER_STATS").is_ok() {
+                // Calibration view: how close did this run get to each stall threshold?
+                let s = &outcome.stats;
+                eprintln!(
+                    "stats: turns={} tools={} mutations={} novel_results={} \
+                     peak_no_novel_streak={} peak_mutation_free_streak={} stall_events={} \
+                     reason={} tokens={}",
+                    s.total_turns,
+                    s.total_tool_executions,
+                    s.mutations,
+                    s.novel_observations,
+                    s.peak_no_novel_streak,
+                    s.peak_mutation_free_streak,
+                    s.stall_events,
+                    outcome.wire_finish_reason(),
+                    s.total_prompt_tokens + s.total_completion_tokens,
+                );
+            }
+            if outcome.stopped_early() {
+                // Hitting a ceiling is not a failure: the summary on stdout is the
+                // result, so exit 0 and report the reason on stderr.
+                eprintln!(
+                    "note: run stopped early ({} after {} turn(s)); rerun the same prompt to continue.",
+                    outcome.wire_finish_reason(),
+                    outcome.turns_executed
+                );
+            }
         }
         Err(err) => {
             eprintln!("Thunder Agent error: {err}");

@@ -3,8 +3,20 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 max_turns = 16
 max_context_tokens = 128000
+wall_clock_secs = 1800
+max_total_tokens = 2000000
+max_tool_calls_per_turn = 16
+warn_at = 0.75
+stall_mutation_free_turns = 8
+stall_no_novel_turns = 6
+max_context_resets = 2
+max_restarts = 0
 
 [sandbox]
 timeout_ms = 30000
 max_output_bytes = 65536
-debounce_ms = 200
+debounce_ms = 500
+
+[mcp_servers.thunder-memory]
+command = "thunder-memory"
+args = ["mcp"]

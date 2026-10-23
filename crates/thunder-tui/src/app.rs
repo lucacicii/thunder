@@ -77,6 +77,7 @@ pub enum PickerKind {
     ResumeSession,
     PromptTemplate,
     Tools,
+    WorkspaceTagging,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -476,6 +477,8 @@ pub struct App {
     pub active_steer: Option<Arc<SteerQueues>>,
     pub should_quit: bool,
     pub picker: PickerState,
+    pub locator: Option<std::sync::Arc<thunder_locator::WorkspaceLocator>>,
+    pub pending_locator_prompt: Option<String>,
     pub autocomplete_index: usize,
     pub suggestions: Vec<String>,
     pub suggestion_index: usize,
@@ -521,6 +524,8 @@ impl App {
             active_steer: None,
             should_quit: false,
             picker: PickerState::default(),
+            locator: None,
+            pending_locator_prompt: None,
             autocomplete_index: 0,
             suggestions: Vec::new(),
             suggestion_index: 0,
@@ -788,6 +793,96 @@ impl App {
         );
     }
 
+    pub fn with_locator(
+        mut self,
+        locator: std::sync::Arc<thunder_locator::WorkspaceLocator>,
+    ) -> Self {
+        self.locator = Some(locator);
+        self
+    }
+
+    pub async fn switch_workspace(&mut self, new_workspace: PathBuf) {
+        let canonical = new_workspace.canonicalize().unwrap_or(new_workspace);
+        self.workspace_dir = canonical.clone();
+        self.conversation.workspace = Some(canonical.to_string_lossy().into_owned());
+        self.set_status_message(format!("Workspace: {}", canonical.display()));
+
+        if let Some(ref loc) = self.locator {
+            loc.registry().record_hit(&canonical).await;
+        }
+
+        // Dynamically mount external MCP servers from target workspace's .thunder/config.toml
+        let cfg = thunder_core::ThunderConfig::load_from_workspace(&canonical).await;
+        for (name, mcp_cfg) in &cfg.mcp_servers {
+            if let Ok(provider) = thunder_executor::McpToolProvider::connect(name, mcp_cfg).await {
+                let _ = self.tool_registry.register_provider(provider).await;
+            }
+        }
+
+        if let Some(ref store) = self.store {
+            let _ = store.save(&self.conversation).await;
+        }
+    }
+
+    pub async fn evaluate_workspace_location(&mut self, prompt: &str) -> Option<PathBuf> {
+        let Some(ref loc) = self.locator else {
+            return Some(self.workspace_dir.clone());
+        };
+
+        match loc.locate(prompt, &self.workspace_dir).await {
+            thunder_locator::LocateVerdict::AlreadyInWorkspace {
+                current_path,
+                reason,
+            } => {
+                tracing::debug!("Already in workspace: {reason}");
+                Some(current_path)
+            }
+            thunder_locator::LocateVerdict::DirectMatch {
+                target_path,
+                reason,
+                ..
+            } => {
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!("🧭 自动定位工作区: {} ({reason})", target_path.display()),
+                });
+                self.switch_workspace(target_path.clone()).await;
+                Some(target_path)
+            }
+            thunder_locator::LocateVerdict::NeedConfirmation {
+                candidates, reason, ..
+            } => {
+                self.pending_locator_prompt = Some(prompt.to_string());
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!(
+                        "⚠️ {reason}。请在弹出的候选中快速确认归属目录（回车保存记忆并执行）："
+                    ),
+                });
+
+                let mut items = Vec::new();
+                for (idx, cand) in candidates.into_iter().enumerate() {
+                    let badge = match cand.source {
+                        thunder_locator::CandidateSource::CurrentWorkspace => "Current",
+                        thunder_locator::CandidateSource::Registered => "Profile",
+                        thunder_locator::CandidateSource::MemoryHistory => "Memory",
+                        thunder_locator::CandidateSource::SessionHistory => "Session",
+                    };
+                    let path_str = cand.path.to_string_lossy().to_string();
+                    let subtitle = format!("[#{}] {} ({})", idx + 1, path_str, cand.reason);
+                    items.push(
+                        PickerItem::new(path_str, cand.display_name, subtitle).with_badge(badge),
+                    );
+                }
+
+                self.picker.open(
+                    PickerKind::WorkspaceTagging,
+                    "🧭 快速标记工作区记忆 (回车写入并执行)",
+                    items,
+                );
+                None
+            }
+        }
+    }
+
     pub async fn commit_picker_selection(&mut self) -> Option<String> {
         let selected = self.picker.selected_item().cloned()?;
         let kind = self.picker.kind?;
@@ -828,6 +923,30 @@ impl App {
             PickerKind::Tools => {
                 self.set_status_message(format!("Selected tool '{}'", selected.id));
                 Some(selected.id)
+            }
+            PickerKind::WorkspaceTagging => {
+                let target_path = PathBuf::from(&selected.id);
+                let prompt = self.pending_locator_prompt.take().unwrap_or_default();
+
+                if let Some(ref loc) = self.locator {
+                    let tokens = thunder_locator::extract_tokens(&prompt);
+                    loc.registry()
+                        .bind_or_update(target_path.clone(), None, Vec::new(), tokens, Vec::new())
+                        .await;
+                }
+
+                self.switch_workspace(target_path.clone()).await;
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!(
+                        "✅ 工作区记忆已记录并入库，切换至: {}",
+                        target_path.display()
+                    ),
+                });
+                if !prompt.is_empty() {
+                    Some(prompt)
+                } else {
+                    None
+                }
             }
         }
     }
@@ -953,7 +1072,50 @@ impl App {
                     text: format!("Error: {message}"),
                 });
             }
+            AgentEvent::Custom { kind, payload } => {
+                self.handle_custom_event(&kind, &payload);
+            }
             _ => {}
+        }
+    }
+
+    /// Kernel-emitted display signals travel as `Custom { kind, payload }` so the
+    /// wire shape stays open-ended: a client that does not know a `kind` ignores it.
+    fn handle_custom_event(&mut self, kind: &str, payload: &serde_json::Value) {
+        match kind {
+            "budget_notice" => {
+                let reason = payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("near_limit");
+                let detail = payload
+                    .get("detail")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let text = match reason {
+                    "near_limit" => format!("⚠ Budget warning: {detail}"),
+                    "stalled" => format!("⚠ No progress detected: {detail}"),
+                    "exhausted" => format!("⚠ Budget exhausted: {detail}"),
+                    other => format!("⚠ Budget notice ({other}): {detail}"),
+                };
+                self.timeline.push(TimelineItem::SystemNotice { text });
+            }
+            "loop_recovered" => {
+                let level = payload
+                    .get("level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("recovery");
+                let reason = payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!("⟳ Auto-recovered ({level}): {reason}"),
+                });
+            }
+            other => {
+                tracing::debug!(kind = other, "ignoring unknown custom agent event");
+            }
         }
     }
 
@@ -1178,17 +1340,54 @@ impl App {
                             self.workspace_dir.display()
                         ),
                     });
+                } else if arg == "list" {
+                    if let Some(ref loc) = self.locator {
+                        let list = loc.registry().list().await;
+                        if list.is_empty() {
+                            self.timeline.push(TimelineItem::SystemNotice {
+                                text: "No workspace memories recorded yet.".to_string(),
+                            });
+                        } else {
+                            let mut text = "📁 Recorded Workspace Profiles:\n".to_string();
+                            for w in list {
+                                text.push_str(&format!(
+                                    "  - {} (hits: {})\n    path: {}\n    aliases: {:?}\n    keywords: {:?}\n",
+                                    w.name, w.hit_count, w.canonical_path.display(), w.aliases, w.keywords
+                                ));
+                            }
+                            self.timeline.push(TimelineItem::SystemNotice { text });
+                        }
+                    } else {
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: "Workspace locator is not enabled.".to_string(),
+                        });
+                    }
+                } else if let Some(alias) = arg.strip_prefix("bind ") {
+                    let alias = alias.trim();
+                    if let Some(ref loc) = self.locator {
+                        let rec = loc
+                            .registry()
+                            .bind_or_update(
+                                self.workspace_dir.clone(),
+                                None,
+                                vec![alias.to_string()],
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                            .await;
+                        self.timeline.push(TimelineItem::SystemNotice {
+                            text: format!(
+                                "Bound alias '{}' to workspace '{}' ({})",
+                                alias,
+                                rec.name,
+                                rec.canonical_path.display()
+                            ),
+                        });
+                    }
                 } else {
                     let p = PathBuf::from(arg);
                     if p.is_dir() {
-                        let canonical = p.canonicalize().unwrap_or(p);
-                        self.workspace_dir = canonical.clone();
-                        self.conversation.workspace =
-                            Some(canonical.to_string_lossy().into_owned());
-                        self.set_status_message(format!(
-                            "Workspace changed to {}",
-                            canonical.display()
-                        ));
+                        self.switch_workspace(p).await;
                     } else {
                         self.timeline.push(TimelineItem::SystemNotice {
                             text: format!("Directory not found: {}", p.display()),

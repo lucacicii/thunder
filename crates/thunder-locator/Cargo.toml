@@ -1,0 +1,23 @@
+[package]
+name = "thunder-locator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Automatic workspace directory locator and hybrid memory registry for Thunder Agent"
+license.workspace = true
+
+[dependencies]
+thunder-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "fs"] }
+tracing.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

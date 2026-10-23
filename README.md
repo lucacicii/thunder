@@ -45,6 +45,7 @@ Thunder 是一个采用**纯粹微内核架构（Microkernel Architecture）**�
 | [`thunder-ask`](crates/thunder-ask/README.md) | `crates/thunder-ask` | 人机交互问答扩展包（ask_user_question 与抽象 Handler） |
 | [`thunder-daemon`](crates/thunder-daemon/README.md) | `crates/thunder-daemon` | Desktop Sidecar 守护进程（NDJSON 协议 v3，对接 Electron 桌面端） |
 | [`thunder-tui`](crates/thunder-tui/README.md) | `crates/thunder-tui` | 交互式终端 UI（流式时间线、运行中 Steer/Pause、Slash 命令） |
+| [`thunder-cli`](crates/thunder-cli/README.md) | `crates/thunder-cli` | `thunderctl` 运行时管理（dev / prod / bundled 三态、status 诊断、reload 热重启） |
 
 ---
 
@@ -60,15 +61,26 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 max_turns = 16
 max_context_tokens = 128000
+# 运行预算：0 表示不限。wall_clock_secs 是唯一能停住"确实在进展"的长任务的闸门。
+wall_clock_secs = 1800
+max_total_tokens = 2000000
+max_tool_calls_per_turn = 16
+warn_at = 0.75
+# 停滞检测阈值（连续多少轮没有新的状态变更 / 新的工具结果才算停滞）
+stall_mutation_free_turns = 8
+stall_no_novel_turns = 6
+# 自愈：停滞时允许重置上下文的次数；整轮重启默认关闭
+max_context_resets = 2
+max_restarts = 0
 
 [sandbox]
 timeout_ms = 30000
 max_output_bytes = 65536
-debounce_ms = 200
+# `.thunder/tools/` 的轮询间隔（ms）。0 用内置默认；改大省 IO，改小更快热重载。
+debounce_ms = 500
 ```
 
 ### 2. 交互式终端 TUI
-
 ```bash
 # 启动 TUI 界面（自动挂载核心工具与本地脚本）
 ./run.sh
@@ -107,18 +119,39 @@ cargo run -p thunder-core -- --list-models
 cargo run -p thunder-core -- "重构当前模块的单元测试"
 ```
 
+### 5. 运行时管理（`thunderctl`）
+
+`thunderctl` 管理「跑哪一份二进制」：仓库构建、安装版、还是 Agent Resume 自带版。
+
+```bash
+# 一次性安装：构建 4 个二进制并固化到 ~/.cargo/bin
+cargo install --path crates/thunder-cli
+thunderctl install
+
+# 日常开发：构建 + 把 Desktop 指向本仓库 target/tui-dev
+thunderctl dev
+
+# 改完代码让常驻 daemon 原地换心（pid 不变，不重启 App）
+thunderctl reload
+
+# 诊断：解析链、运行中进程、三方版本对比、数据量
+thunderctl status
+```
+
+完整流程（含三态切换、profile 取舍、数据隔离、故障排查）见
+[`docs/development.md`](docs/development.md)。
+
 ---
 
 ## 🧪 质量门禁与测试
 
 ```bash
-# 格式化检查
+# 与 CI 完全一致的本地门禁（fmt → clippy → test）
+bash scripts/ci.sh
+
+# 或分项执行
 cargo fmt --all -- --check
-
-# 代码静态检查（零警告容忍）
 cargo clippy --workspace --all-targets -- -D warnings
-
-# 全工作区测试（覆盖微内核、沙箱、热插拔、MCP 进程、流式驱动、TUI 与 IPC）
 cargo test --workspace
 ```
 
@@ -127,3 +160,4 @@ cargo test --workspace
 ## 📖 架构文档
 
 * 完整架构技术规范书请参阅：[`docs/architecture.md`](docs/architecture.md)
+* 开发模式、三态切换与热重启指南请参阅：[`docs/development.md`](docs/development.md)

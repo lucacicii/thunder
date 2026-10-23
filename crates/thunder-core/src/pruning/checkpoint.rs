@@ -247,7 +247,12 @@ pub fn serialize_region(messages: &[ChatMessage]) -> String {
     out
 }
 
-fn is_mutating_tool_name(name: &str) -> bool {
+/// Last-resort guess for tools the catalog does not know about (a tool removed from the
+/// snapshot mid-turn, or a name that never was registered).
+///
+/// This used to be the primary judgement, which made the kernel sniff tool semantics by
+/// name. It is now only the fallback behind [`mutating_oracle`].
+pub fn looks_mutating_by_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("write")
         || lower.contains("edit")
@@ -258,7 +263,25 @@ fn is_mutating_tool_name(name: &str) -> bool {
         || lower.contains("create")
 }
 
-pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>) {
+/// Build the "does this tool change state?" predicate from a frozen catalog snapshot.
+///
+/// Plugins declare [`ProgressKind`] once; the pruning layer asks this predicate instead of
+/// guessing from the tool name. Unknown names fall back to [`looks_mutating_by_name`].
+pub fn mutating_oracle(snapshot: &thunder_registry::CatalogSnapshot) -> impl Fn(&str) -> bool + '_ {
+    move |name: &str| match snapshot.descriptors.get(name) {
+        Some(descriptor) => descriptor.progress == thunder_protocol::ProgressKind::Mutating,
+        None => looks_mutating_by_name(name),
+    }
+}
+
+/// Split the file paths a conversation touched into (read-only, modified).
+///
+/// `is_mutating` decides which side a tool belongs to; pass
+/// [`mutating_oracle`]`(&registry.current())` in the agent loop.
+pub fn extract_file_lists(
+    messages: &[ChatMessage],
+    is_mutating: &(dyn Fn(&str) -> bool + Send + Sync),
+) -> (Vec<String>, Vec<String>) {
     let mut read = std::collections::BTreeSet::new();
     let mut modified = std::collections::BTreeSet::new();
 
@@ -277,7 +300,7 @@ pub fn extract_file_lists(messages: &[ChatMessage]) -> (Vec<String>, Vec<String>
             let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if is_mutating_tool_name(&tc.function.name) {
+            if is_mutating(&tc.function.name) {
                 modified.insert(path.to_string());
             } else {
                 read.insert(path.to_string());
@@ -492,8 +515,50 @@ mod tests {
                 ToolCall::new_function("t3", "core__read_file", r#"{"path":"b.rs"}"#),
             ]),
         )];
-        let (read, modified) = extract_file_lists(&msgs);
+        let (read, modified) = extract_file_lists(&msgs, &looks_mutating_by_name);
         assert_eq!(read, vec!["a.rs".to_string()]);
         assert_eq!(modified, vec!["b.rs".to_string()]);
+    }
+
+    #[test]
+    fn declared_progress_kind_beats_the_name_heuristic() {
+        // A tool named like a reader that actually writes, and vice versa. The declared
+        // kind must win: names are not semantics.
+        let msgs = vec![ChatMessage::assistant(
+            None,
+            Some(vec![
+                ToolCall::new_function("t1", "core__read_file", r#"{"path":"a.rs"}"#),
+                ToolCall::new_function("t2", "core__write_file", r#"{"path":"b.rs"}"#),
+            ]),
+        )];
+        let inverted = |name: &str| name.ends_with("read_file");
+        let (read, modified) = extract_file_lists(&msgs, &inverted);
+        assert_eq!(read, vec!["b.rs".to_string()], "declared Observing");
+        assert_eq!(modified, vec!["a.rs".to_string()], "declared Mutating");
+    }
+
+    #[test]
+    fn the_oracle_prefers_the_descriptor_and_falls_back_to_names() {
+        use thunder_protocol::{ProgressKind, ToolDescriptor};
+        use thunder_registry::CatalogSnapshot;
+
+        let mut snapshot = CatalogSnapshot::empty();
+        let mut descriptor =
+            ToolDescriptor::new("core__sneaky", "d", serde_json::json!({}), "core://sneaky");
+        descriptor = descriptor.with_progress(ProgressKind::Mutating);
+        snapshot
+            .descriptors
+            .insert(descriptor.name.clone(), descriptor);
+
+        let oracle = mutating_oracle(&snapshot);
+        assert!(
+            oracle("core__sneaky"),
+            "declared Mutating wins over the name"
+        );
+        assert!(
+            oracle("core__write_file"),
+            "unknown name falls back to the name heuristic"
+        );
+        assert!(!oracle("core__read_file"));
     }
 }

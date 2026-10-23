@@ -85,9 +85,12 @@ echo -n "SQUASH_OK:${input}"
         workspace_cwd: ws_path.clone(),
         system_prompt: "You are Thunder Agent.".to_string(),
         model: "gpt-4o".to_string(),
-        max_turns: 8,
         pruning: ContextPruningConfig::default(),
         tool_timeout: Duration::from_secs(10),
+        budget: thunder_core::LoopBudget {
+            ..Default::default()
+        },
+        stall: thunder_core::StallConfig::default(),
         cache_warm_settings: None,
     };
 
@@ -308,6 +311,7 @@ async fn checkpoint_compaction_and_overflow_self_healing_preserve_tool_pairing()
             &mut ctx,
             Some(&summarizer),
             &tokio_util::sync::CancellationToken::new(),
+            &|_: &str| true,
         )
         .await;
     assert!(prune_res.pruned);

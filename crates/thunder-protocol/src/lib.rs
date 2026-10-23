@@ -25,8 +25,8 @@ pub use paths::{
     THUNDER_CONFIG_DIR_ENV, THUNDER_DIR_NAME,
 };
 pub use schema::{
-    sanitize_identifier, ExecutionContext, ToolDescriptor, ToolExecutionError, ToolExecutionResult,
-    ToolNamespace, ToolProvider,
+    sanitize_identifier, ExecutionContext, ProgressKind, ToolDescriptor, ToolExecutionError,
+    ToolExecutionResult, ToolNamespace, ToolProvider,
 };
 pub use stream::{
     ChatRequestOptions, LLMClientTrait, LLMStreamChunk, StreamToolCallDelta, UnconfiguredLLMClient,

@@ -15,7 +15,7 @@ use thunder_executor::{
 };
 use thunder_protocol::{
     ContextEnvelopeMeta, ExecutionContext, McpCallToolResult, McpToolCallParams, McpToolInfo,
-    ToolExecutionError,
+    ProgressKind, ToolExecutionError,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as TokioMutex;
@@ -99,6 +99,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
     vec![
         McpToolInfo {
             name: "read_file".to_string(),
+            progress: ProgressKind::Observing,
             description: Some(
                 "Read the contents of a file (resolves relative paths against _meta.workspace_cwd)."
                     .to_string(),
@@ -125,6 +126,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "write_file".to_string(),
+            progress: ProgressKind::Mutating,
             description: Some(
                 "Atomically write content to a file with per-path locking, creating parent directories if needed."
                     .to_string(),
@@ -147,6 +149,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "edit_block".to_string(),
+            progress: ProgressKind::Mutating,
             description: Some(
                 "Replace an exact, unique text block in a file atomically with per-path locking.".to_string(),
             ),
@@ -172,6 +175,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "bash".to_string(),
+            progress: ProgressKind::Neutral,
             description: Some(
                 "Execute a bash command inside an isolated process group with 64KB flood protection."
                     .to_string(),
@@ -198,6 +202,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "grep".to_string(),
+            progress: ProgressKind::Observing,
             description: Some(
                 "Search file contents for a pattern using in-process ripgrep (respects .gitignore)."
                     .to_string(),
@@ -240,6 +245,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "find".to_string(),
+            progress: ProgressKind::Observing,
             description: Some(
                 "Search for files by glob pattern (respects .gitignore).".to_string(),
             ),
@@ -265,6 +271,7 @@ pub fn std_tool_definitions() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "ls".to_string(),
+            progress: ProgressKind::Observing,
             description: Some(
                 "List directory entries (single level, directories first with trailing '/', then files with sizes)."
                     .to_string(),
@@ -1018,4 +1025,37 @@ fn new_searcher_with_context(before: usize, after: usize) -> Searcher {
         .before_context(before)
         .after_context(after)
         .build()
+}
+
+#[cfg(test)]
+mod progress_kind_tests {
+    use super::*;
+
+    fn kind(name: &str) -> ProgressKind {
+        std_tool_definitions()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("tool {name} must exist"))
+            .progress
+    }
+
+    #[test]
+    fn file_mutators_are_declared_mutating() {
+        assert_eq!(kind("write_file"), ProgressKind::Mutating);
+        assert_eq!(kind("edit_block"), ProgressKind::Mutating);
+    }
+
+    #[test]
+    fn readers_are_declared_observing() {
+        for tool in ["read_file", "grep", "find", "ls"] {
+            assert_eq!(kind(tool), ProgressKind::Observing, "{tool}");
+        }
+    }
+
+    #[test]
+    fn bash_stays_neutral() {
+        // `echo x > f` leaves no trace in the arguments, so bash can never satisfy
+        // the `Mutating` idempotency contract.
+        assert_eq!(kind("bash"), ProgressKind::Neutral);
+    }
 }

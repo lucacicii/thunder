@@ -17,9 +17,31 @@ pub struct AgentStats {
     pub total_tool_time_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_tokens_per_second: Option<f64>,
+    /// Number of turns that produced a new state-change digest.
+    #[serde(default)]
+    pub mutations: usize,
+    /// Number of tool results that were new information (first time seen).
+    #[serde(default)]
+    pub novel_observations: usize,
+    /// Number of turns closed with a stall signal.
+    #[serde(default)]
+    pub stall_events: usize,
+    /// Highest "no new tool result" streak reached in this run. Compare it against the
+    /// configured threshold to tune it: a run that peaked at 2 is far from a limit of 6,
+    /// one that peaked at 5 means the limit is tight.
+    #[serde(default)]
+    pub peak_no_novel_streak: usize,
+    /// Highest "no state mutation, and nothing new learned" streak reached in this run.
+    #[serde(default)]
+    pub peak_mutation_free_streak: usize,
+    /// The authoritative reason the loop ended, kept even when the wire-level
+    /// `LoopComplete.finish_reason` reports `Done` because a wrap-up summary was
+    /// produced (see `docs/agent-loop-budget-and-recovery.md` §3.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Done,

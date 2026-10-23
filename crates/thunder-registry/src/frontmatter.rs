@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
 use thunder_executor::ScriptEntry;
-use thunder_protocol::ToolDescriptor;
+use thunder_protocol::{ProgressKind, ToolDescriptor};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Maximum number of header lines scanned for `@thunder ... @end` frontmatter (§3.2).
@@ -15,6 +15,11 @@ struct RawScriptFrontmatter {
     description: String,
     #[serde(default = "default_parameters_schema")]
     parameters: Value,
+    /// Optional state-change semantics so script tools can take part in the agent
+    /// loop's progress/stall detection (`progress: mutating`). Defaults to
+    /// `neutral`, which is the safe answer for an arbitrary shell script.
+    #[serde(default)]
+    progress: ProgressKind,
 }
 
 fn default_parameters_schema() -> Value {
@@ -45,11 +50,14 @@ pub fn parse_frontmatter_str(content: &str) -> Result<Option<ToolDescriptor>, St
             if parsed.name.trim().is_empty() {
                 return Err("Frontmatter 'name' must not be empty".to_string());
             }
-            return Ok(Some(ToolDescriptor::new_script(
-                parsed.name.trim(),
-                parsed.description.trim(),
-                parsed.parameters,
-            )));
+            return Ok(Some(
+                ToolDescriptor::new_script(
+                    parsed.name.trim(),
+                    parsed.description.trim(),
+                    parsed.parameters,
+                )
+                .with_progress(parsed.progress),
+            ));
         }
 
         yaml_lines.push(strip_comment_prefix(line));
@@ -214,6 +222,35 @@ echo "done"
             "自动压缩当前分支的所有特性提交并推送到远端"
         );
         assert_eq!(desc.input_schema["required"][0], "base_branch");
+    }
+
+    #[test]
+    fn parses_progress_kind_from_frontmatter() {
+        let script = r#"#!/usr/bin/env bash
+# @thunder
+# name: fmt_fix
+# description: rewrite formatting
+# progress: mutating
+# @end
+"#;
+        let desc = parse_frontmatter_str(script).unwrap().unwrap();
+        assert_eq!(desc.progress, ProgressKind::Mutating);
+    }
+
+    #[test]
+    fn script_tools_default_to_neutral_progress() {
+        let script = r#"#!/usr/bin/env bash
+# @thunder
+# name: unknown_script
+# description: whatever this does
+# @end
+"#;
+        let desc = parse_frontmatter_str(script).unwrap().unwrap();
+        assert_eq!(
+            desc.progress,
+            ProgressKind::Neutral,
+            "an arbitrary shell script cannot promise idempotent args"
+        );
     }
 
     #[test]

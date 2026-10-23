@@ -8,7 +8,10 @@ pub use frontmatter::{
     parse_frontmatter_str, parse_script_file, scan_scripts_dir, MAX_FRONTMATTER_SCAN_LINES,
 };
 pub use registry::{CatalogSnapshot, ToolRegistry};
-pub use watcher::{start_hot_reload_watcher, RegistryWatcherHandle, DEFAULT_DEBOUNCE_MS};
+pub use watcher::{
+    start_hot_reload_watcher, start_hot_reload_watcher_with_interval, RegistryWatcherHandle,
+    DEFAULT_POLL_INTERVAL_MS,
+};
 
 #[cfg(test)]
 mod tests {

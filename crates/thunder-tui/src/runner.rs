@@ -22,7 +22,7 @@ enum RunnerMsg {
     AgentEvent(AgentEvent),
     RunFinished {
         messages: Vec<ChatMessage>,
-        outcome: Result<String, String>,
+        outcome: Result<thunder_core::AgentLoopOutcome, String>,
     },
 }
 
@@ -188,7 +188,11 @@ async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSend
             workspace_cwd: ws_dir,
             system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
             model: model_id,
-            max_turns: cfg.agent.max_turns,
+            budget: cfg.agent.to_budget(),
+            stall: thunder_core::StallConfig {
+                mutation_free_turns: cfg.agent.stall_mutation_free_turns,
+                no_novel_turns: cfg.agent.stall_no_novel_turns,
+            },
             pruning: ContextPruningConfig {
                 max_context_tokens: spec.context_window.min(cfg.agent.max_context_tokens),
                 ..ContextPruningConfig::default()
@@ -215,7 +219,7 @@ async fn spawn_agent_turn(app: &mut App, prompt: String, tx: mpsc::UnboundedSend
             .with_middleware(mw)
             .with_event_sink(bridge);
 
-        let outcome = agent.run(prompt).await.map(|o| o.final_response);
+        let outcome = agent.run(prompt).await;
         let messages = agent.context().get_messages();
         let _ = tx.send(RunnerMsg::RunFinished { messages, outcome });
     });
@@ -235,10 +239,32 @@ async fn handle_runner_msg(app: &mut App, msg: RunnerMsg) {
             app.conversation.set_messages(messages);
             app.update_suggestions();
             app.save_current_conversation().await;
-            if let Err(err) = outcome {
-                app.timeline.push(TimelineItem::SystemNotice {
-                    text: format!("Run ended: {err}"),
-                });
+            match outcome {
+                Ok(outcome) if outcome.finish_reason != thunder_core::FinishReason::Done => {
+                    // A wrap-up summary is real content, so this is not a failure: the
+                    // context is already persisted, and a follow-up prompt resumes with a
+                    // warm prefix cache.
+                    let text = if outcome.stopped_early() {
+                        format!(
+                            "⏸ Stopped after {} turn(s) ({}). Send another message to continue.",
+                            outcome.turns_executed,
+                            outcome.wire_finish_reason()
+                        )
+                    } else {
+                        format!(
+                            "⏸ Stopped after {} turn(s) ({}); no wrap-up summary was produced.",
+                            outcome.turns_executed,
+                            outcome.wire_finish_reason()
+                        )
+                    };
+                    app.timeline.push(TimelineItem::SystemNotice { text });
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    app.timeline.push(TimelineItem::SystemNotice {
+                        text: format!("Run ended: {err}"),
+                    });
+                }
             }
         }
     }
@@ -260,7 +286,9 @@ async fn handle_key_event(
             KeyCode::Down => app.picker.move_selection_down(),
             KeyCode::Backspace => app.picker.handle_backspace(),
             KeyCode::Enter => {
-                app.commit_picker_selection().await;
+                if let Some(resumed_prompt) = app.commit_picker_selection().await {
+                    spawn_agent_turn(app, resumed_prompt, tx.clone()).await;
+                }
             }
             KeyCode::Char(ch) => app.picker.handle_char(ch),
             _ => {}
@@ -407,7 +435,7 @@ async fn handle_key_event(
             if !trimmed.is_empty() && !app.handle_slash_command(&trimmed).await {
                 if app.is_running {
                     app.steer_active_run(trimmed);
-                } else {
+                } else if app.evaluate_workspace_location(&trimmed).await.is_some() {
                     spawn_agent_turn(app, trimmed, tx.clone()).await;
                 }
             }
