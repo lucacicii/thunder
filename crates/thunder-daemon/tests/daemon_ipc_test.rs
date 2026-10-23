@@ -318,3 +318,234 @@ async fn daemon_workspace_locator_api_and_auto_routing() {
         other => panic!("unexpected locate response: {other:?}"),
     }
 }
+
+/// `attachments` used to be swallowed by `RunTask`'s `..`: the app sent an image,
+/// got `{"started": true}`, and the model received plain text. This is the
+/// acceptance test for the fix — the image has to survive the whole way to the
+/// stored conversation, where `get_conversation` hands it back to the app.
+#[tokio::test]
+async fn run_task_attachments_reach_the_persisted_user_message() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "it is blue",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-img",
+        "task_id": "task-img",
+        "session_id": "sess-img",
+        "prompt": "what colour is this?",
+        "workspace_dir": ws.path().to_string_lossy(),
+        "attachments": [{
+            "mimeType": "image/png",
+            "name": "shot.png",
+            "data": "aGVsbG8="
+        }]
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    // The model itself has to see the image, not just the store.
+    let recorded = driver.recorded_messages();
+    let seen_by_model = recorded
+        .iter()
+        .flatten()
+        .find(|message| message.image_count() == 1)
+        .expect("the driver must be handed a user message carrying the image");
+    let image = seen_by_model
+        .image_parts()
+        .next()
+        .and_then(|part| part.as_image())
+        .expect("the image part must survive the multimodal message builder");
+    assert_eq!(image, ("image/png", "aGVsbG8="));
+    assert_eq!(
+        seen_by_model.content_str(),
+        Some("what colour is this?"),
+        "the prompt text must still lead the turn the model sees"
+    );
+
+    let get_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "get_conversation",
+        "id": "g-img",
+        "session_id": "sess-img"
+    }))
+    .unwrap();
+    service.handle_request(get_req).await;
+    let conv: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+
+    let user = conv["data"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .expect("the run must persist its user turn");
+    let parts = user["parts"]
+        .as_array()
+        .expect("the user turn must carry parts");
+
+    assert_eq!(parts.len(), 2, "prompt text plus one image: {parts:?}");
+    assert_eq!(parts[0]["type"], "text");
+    assert_eq!(parts[0]["text"], "what colour is this?");
+    assert_eq!(parts[1]["type"], "image");
+    assert_eq!(parts[1]["mimeType"], "image/png");
+    assert_eq!(parts[1]["data"], "aGVsbG8=");
+    assert_eq!(parts[1]["name"], "shot.png");
+}
+
+/// The other half of the fix: an attachment that cannot be delivered must fail the
+/// request instead of starting a run without it.
+#[tokio::test]
+async fn run_task_with_an_undeliverable_attachment_is_rejected_before_the_run_starts() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "should never be reached",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-bad",
+        "task_id": "task-bad",
+        "session_id": "sess-bad",
+        "prompt": "what colour is this?",
+        "workspace_dir": ws.path().to_string_lossy(),
+        "attachments": [{ "mimeType": "image/png", "name": "ghost.png" }]
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    let frame: DaemonResponse = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+    match frame {
+        DaemonResponse::Response {
+            id, success, error, ..
+        } => {
+            assert_eq!(id.as_deref(), Some("r-bad"));
+            assert!(!success, "an undeliverable attachment must not start a run");
+            let error = error.expect("the rejection must say why");
+            assert!(error.contains("ghost.png"), "{error}");
+            assert!(error.contains("neither `data` nor `path`"), "{error}");
+        }
+        other => panic!("expected a failed response, got {other:?}"),
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "no task frame may follow a rejected run_task"
+    );
+}
+
+/// Steering carried images through the same hole as `run_task`, and the steer queue
+/// was already built to hold them (`image_count` is reported on `steer_accepted`).
+#[tokio::test]
+async fn steer_task_attachments_are_queued_as_parts() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    // The first turn sleeps inside a tool call so a steer can land while it runs.
+    let driver = Arc::new(ScriptedMockDriver::new(vec![
+        LlmTurnResponse::simple(
+            "running a slow command",
+            vec![ToolCallRequest {
+                id: "call-slow".into(),
+                name: "core__bash".into(),
+                arguments: json!({ "command": "sleep 0.4" }),
+            }],
+        ),
+        LlmTurnResponse::simple("done", vec![]),
+    ]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-steer",
+        "task_id": "task-steer",
+        "session_id": "sess-steer",
+        "prompt": "start",
+        "workspace_dir": ws.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    let steer_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "steer_task",
+        "id": "s-1",
+        "task_id": "task-steer",
+        "message": "also look at this",
+        "behavior": "steer",
+        "attachments": [{
+            "mimeType": "image/png",
+            "name": "second.png",
+            "data": "d29ybGQ="
+        }]
+    }))
+    .unwrap();
+    service.handle_request(steer_req).await;
+
+    let mut steered = false;
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::Response { id, success, .. } if id.as_deref() == Some("s-1") => {
+                assert!(success, "a valid attachment must be queued");
+            }
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+        steered = true;
+    }
+
+    assert!(steered, "the run must have emitted frames");
+    let recorded = driver.recorded_messages();
+    let steered_turn = recorded
+        .iter()
+        .flatten()
+        .find(|message| {
+            message.content_str() == Some("also look at this") && message.image_count() == 1
+        })
+        .expect("the steered message must reach the model with its image");
+    assert_eq!(
+        steered_turn
+            .image_parts()
+            .next()
+            .and_then(|part| part.as_image()),
+        Some(("image/png", "d29ybGQ="))
+    );
+}

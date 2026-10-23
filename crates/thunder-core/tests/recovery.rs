@@ -449,3 +449,75 @@ async fn the_handoff_uses_the_declared_progress_kind_not_the_tool_name() {
         "declared Mutating must land in the modified list, handoff was:\n{handoff}"
     );
 }
+
+/// A recovered run is still the same question about the same image.
+///
+/// Recovery rebuilds the context from the goal, so `goal` alone is not enough: the
+/// attached image has to be restored too, or the agent silently starts answering a
+/// different prompt after the reset.
+#[tokio::test]
+async fn a_context_reset_keeps_the_attached_image() {
+    use thunder_protocol::ContentPart;
+
+    let ws = tempdir().unwrap();
+    let sink = Arc::new(Sink::default());
+
+    let mut steps: Vec<LlmTurnResponse> = (0..3)
+        .map(|n| LlmTurnResponse::simple("spinning", vec![call(&format!("i{n}"), n)]))
+        .collect();
+    steps.push(LlmTurnResponse::simple("RECOVERED: it is blue", vec![]));
+
+    let driver = Arc::new(ScriptedMockDriver::new(steps));
+    let mut agent = ReActAgentLoop::new(
+        config(
+            ws.path(),
+            LoopBudget {
+                max_turns: 20,
+                wall_clock: None,
+                max_total_tokens: 0,
+                max_context_resets: 1,
+                ..LoopBudget::default()
+            },
+            StallConfig {
+                mutation_free_turns: 100,
+                no_novel_turns: 2,
+            },
+        ),
+        registry().await,
+        driver,
+    )
+    .with_event_sink(sink.clone());
+
+    let prompt = "what colour is this screenshot?";
+    let outcome = agent
+        .run_with_parts(
+            prompt,
+            vec![
+                ContentPart::text(prompt),
+                ContentPart::image("image/png", "aGVsbG8="),
+            ],
+        )
+        .await
+        .expect("run completes");
+
+    assert_eq!(outcome.finish_reason, FinishReason::Done);
+    assert_eq!(sink.recovered().len(), 1, "the run must have reset once");
+
+    let messages = agent.context().get_messages();
+    let restored = messages
+        .iter()
+        .find(|message| message.image_count() == 1)
+        .expect("the image must survive the context reset");
+    assert_eq!(
+        restored
+            .image_parts()
+            .next()
+            .and_then(|part| part.as_image()),
+        Some(("image/png", "aGVsbG8="))
+    );
+    assert_eq!(
+        restored.content_str(),
+        Some(prompt),
+        "the restored turn must still be the original question"
+    );
+}
