@@ -61,6 +61,17 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 max_turns = 16
 max_context_tokens = 128000
+# 运行预算：0 表示不限。wall_clock_secs 是唯一能停住"确实在进展"的长任务的闸门。
+wall_clock_secs = 1800
+max_total_tokens = 2000000
+max_tool_calls_per_turn = 16
+warn_at = 0.75
+# 停滞检测阈值（连续多少轮没有新的状态变更 / 新的工具结果才算停滞）
+stall_mutation_free_turns = 8
+stall_no_novel_turns = 6
+# 自愈：停滞时允许重置上下文的次数；整轮重启默认关闭
+max_context_resets = 2
+max_restarts = 0
 
 [sandbox]
 timeout_ms = 30000

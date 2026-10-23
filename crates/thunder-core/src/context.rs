@@ -30,6 +30,81 @@ pub struct MessageEntry {
     pub estimated_tokens: usize,
 }
 
+/// Placeholder body used when a `tool_call` never produced a real result.
+pub const ABORTED_TOOL_RESULT_PLACEHOLDER: &str =
+    "[aborted: this tool call was not executed because the run ended early.]";
+
+/// Repair `tool_calls` / tool-message pairing in a message list before it is
+/// replayed to a provider.
+///
+/// Providers require every assistant `tool_calls` entry to be followed by a tool
+/// message carrying the matching id; a single unpaired entry makes the whole
+/// conversation unusable (HTTP 400). Conversations persisted by older builds can
+/// already be in that state, so the agent loop repairs on load. Orphaned tool
+/// messages (no matching `tool_call`) are dropped for the same reason.
+///
+/// Returns the repaired list plus the number of messages inserted or dropped; a
+/// non-zero count on load means the persisted conversation was corrupt.
+pub fn repair_tool_call_pairing(messages: Vec<ChatMessage>) -> (Vec<ChatMessage>, usize) {
+    use std::collections::VecDeque;
+
+    fn flush(
+        out: &mut Vec<ChatMessage>,
+        pending: &mut VecDeque<(String, Option<String>)>,
+        repaired: &mut usize,
+    ) {
+        while let Some((id, name)) = pending.pop_front() {
+            out.push(ChatMessage::tool(id, ABORTED_TOOL_RESULT_PLACEHOLDER, name));
+            *repaired += 1;
+        }
+    }
+
+    let mut out = Vec::with_capacity(messages.len());
+    let mut pending: VecDeque<(String, Option<String>)> = VecDeque::new();
+    let mut repaired = 0usize;
+
+    for msg in messages {
+        match &msg {
+            ChatMessage::Assistant {
+                tool_calls: Some(calls),
+                ..
+            } => {
+                flush(&mut out, &mut pending, &mut repaired);
+                pending = calls
+                    .iter()
+                    .map(|c| (c.id.clone(), Some(c.function.name.clone())))
+                    .collect();
+                out.push(msg);
+            }
+            ChatMessage::Tool { tool_call_id, .. } => {
+                if pending.iter().any(|(id, _)| id == tool_call_id) {
+                    // Results must stay in request order: fill any skipped ones first.
+                    while pending
+                        .front()
+                        .map(|(id, _)| id != tool_call_id)
+                        .unwrap_or(false)
+                    {
+                        let (id, name) = pending.pop_front().expect("front checked above");
+                        out.push(ChatMessage::tool(id, ABORTED_TOOL_RESULT_PLACEHOLDER, name));
+                        repaired += 1;
+                    }
+                    pending.pop_front();
+                    out.push(msg);
+                } else {
+                    // Orphaned tool result: no `tool_call` asked for it.
+                    repaired += 1;
+                }
+            }
+            _ => {
+                flush(&mut out, &mut pending, &mut repaired);
+                out.push(msg);
+            }
+        }
+    }
+    flush(&mut out, &mut pending, &mut repaired);
+    (out, repaired)
+}
+
 /// Token-accounting message buffer preserving exact message prefixes between compactions.
 #[derive(Debug, Clone, Default)]
 pub struct ContextBuffer {
@@ -231,5 +306,99 @@ impl ContextBuffer {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.total_estimated_tokens = 0;
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use serde_json::json;
+    use thunder_protocol::ToolCall;
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall::new_function(id, "mcp__test__echo", json!({ "n": 1 }).to_string())
+    }
+
+    fn assistant_with(ids: &[&str]) -> ChatMessage {
+        ChatMessage::assistant_turn(
+            None,
+            Some(ids.iter().map(|id| call(id)).collect()),
+            None,
+            None,
+        )
+    }
+
+    fn tool_ids(messages: &[ChatMessage]) -> Vec<String> {
+        messages
+            .iter()
+            .filter_map(|m| match m {
+                ChatMessage::Tool { tool_call_id, .. } => Some(tool_call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fills_tool_calls_that_never_ran() {
+        let messages = vec![
+            ChatMessage::user("go"),
+            assistant_with(&["a", "b", "c"]),
+            ChatMessage::tool("a", "ok", None),
+        ];
+        let (repaired, count) = repair_tool_call_pairing(messages);
+        assert_eq!(count, 2);
+        assert_eq!(tool_ids(&repaired), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn drops_orphaned_tool_results() {
+        let messages = vec![
+            ChatMessage::user("go"),
+            ChatMessage::tool("ghost", "stale", None),
+            ChatMessage::assistant_text("done"),
+        ];
+        let (repaired, count) = repair_tool_call_pairing(messages);
+        assert_eq!(count, 1);
+        assert!(tool_ids(&repaired).is_empty());
+        assert_eq!(repaired.len(), 2);
+    }
+
+    #[test]
+    fn keeps_matching_pairs_untouched() {
+        let messages = vec![
+            ChatMessage::user("go"),
+            assistant_with(&["a", "b"]),
+            ChatMessage::tool("a", "ok", None),
+            ChatMessage::tool("b", "ok", None),
+            ChatMessage::assistant_text("done"),
+        ];
+        let before = messages.len();
+        let (repaired, count) = repair_tool_call_pairing(messages);
+        assert_eq!(count, 0, "a balanced payload must not be rewritten");
+        assert_eq!(repaired.len(), before);
+        assert_eq!(tool_ids(&repaired), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn reorders_placeholders_to_preserve_request_order() {
+        // `a` never produced a result, `b` did: the placeholder for `a` has to
+        // come first or providers reject the out-of-order result.
+        let messages = vec![
+            ChatMessage::user("go"),
+            assistant_with(&["a", "b"]),
+            ChatMessage::tool("b", "ok", None),
+        ];
+        let (repaired, count) = repair_tool_call_pairing(messages);
+        assert_eq!(count, 1);
+        assert_eq!(tool_ids(&repaired), vec!["a", "b"]);
+        let contents: Vec<&str> = repaired
+            .iter()
+            .filter_map(|m| match m {
+                ChatMessage::Tool { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(contents[0], ABORTED_TOOL_RESULT_PLACEHOLDER);
+        assert_eq!(contents[1], "ok");
     }
 }

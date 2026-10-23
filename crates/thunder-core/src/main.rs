@@ -108,7 +108,11 @@ async fn main() {
         workspace_cwd,
         system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
         model: spec.id.clone(),
-        max_turns: config.agent.max_turns,
+        budget: config.agent.to_budget(),
+        stall: thunder_core::StallConfig {
+            mutation_free_turns: config.agent.stall_mutation_free_turns,
+            no_novel_turns: config.agent.stall_no_novel_turns,
+        },
         pruning,
         tool_timeout: Duration::from_millis(config.sandbox.timeout_ms),
         cache_warm_settings: spec.prompt_cache_warm_settings(None),
@@ -125,6 +129,15 @@ async fn main() {
     match agent.run(prompt).await {
         Ok(outcome) => {
             println!("{}", outcome.final_response);
+            if outcome.stopped_early() {
+                // Hitting a ceiling is not a failure: the summary on stdout is the
+                // result, so exit 0 and report the reason on stderr.
+                eprintln!(
+                    "note: run stopped early ({} after {} turn(s)); rerun the same prompt to continue.",
+                    outcome.wire_finish_reason(),
+                    outcome.turns_executed
+                );
+            }
         }
         Err(err) => {
             eprintln!("Thunder Agent error: {err}");

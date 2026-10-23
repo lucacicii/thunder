@@ -97,6 +97,39 @@ pub fn sanitize_identifier(raw: &str) -> String {
         .collect()
 }
 
+/// What a tool does to the workspace, declared by the plugin and consumed by the
+/// agent loop's stall detector.
+///
+/// The kernel never interprets tool arguments or output; it only needs one bit of
+/// knowledge that it cannot derive itself: whether calling this tool can change
+/// state. Everything else (windows, thresholds, exit actions) stays in the core.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressKind {
+    /// Contract: identical arguments imply an identical world state (idempotent).
+    /// The agent loop treats `hash(args)` as a snapshot of the state it wrote, so a
+    /// repeated call with unchanged content counts as no progress.
+    Mutating,
+    /// Read-only. An unchanged argument list plus an unchanged output means no new
+    /// information was gained.
+    Observing,
+    /// The side effect cannot be described by the arguments, or the source is not
+    /// trusted (shell execution, third-party MCP servers). Only output digests are
+    /// used as a fallback signal.
+    ///
+    /// `bash` **must** stay `Neutral`: it breaks the `Mutating` contract because
+    /// `echo x > f` leaves no trace of the write in its arguments.
+    #[default]
+    Neutral,
+}
+
+impl ProgressKind {
+    /// Returns true for [`ProgressKind::Neutral`], letting wire structs omit the field.
+    pub fn is_default(&self) -> bool {
+        *self == ProgressKind::Neutral
+    }
+}
+
 /// Unified tool schema descriptor (§6.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolDescriptor {
@@ -108,6 +141,9 @@ pub struct ToolDescriptor {
     pub input_schema: Value,
     /// Canonical internal URI (`core://...`, `mcp://.../...`, `script://...`).
     pub uri: String,
+    /// Declared by the plugin; drives the core's progress/stall detection.
+    #[serde(default)]
+    pub progress: ProgressKind,
 }
 
 impl ToolDescriptor {
@@ -122,7 +158,13 @@ impl ToolDescriptor {
             description: description.into(),
             input_schema,
             uri: uri.into(),
+            progress: ProgressKind::default(),
         }
+    }
+
+    pub fn with_progress(mut self, progress: ProgressKind) -> Self {
+        self.progress = progress;
+        self
     }
 
     pub fn from_namespace(
@@ -135,6 +177,7 @@ impl ToolDescriptor {
             description: description.into(),
             input_schema,
             uri: ns.to_uri(),
+            progress: ProgressKind::default(),
         }
     }
 

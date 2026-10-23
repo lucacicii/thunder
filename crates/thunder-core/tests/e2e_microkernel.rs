@@ -85,9 +85,12 @@ echo -n "SQUASH_OK:${input}"
         workspace_cwd: ws_path.clone(),
         system_prompt: "You are Thunder Agent.".to_string(),
         model: "gpt-4o".to_string(),
-        max_turns: 8,
         pruning: ContextPruningConfig::default(),
         tool_timeout: Duration::from_secs(10),
+        budget: thunder_core::LoopBudget {
+            ..Default::default()
+        },
+        stall: thunder_core::StallConfig::default(),
         cache_warm_settings: None,
     };
 

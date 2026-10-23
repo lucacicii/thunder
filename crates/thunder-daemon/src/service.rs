@@ -854,7 +854,11 @@ impl DaemonService {
             workspace_cwd: workspace_cwd.clone(),
             system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
             model: model_label,
-            max_turns: cfg.agent.max_turns,
+            budget: cfg.agent.to_budget(),
+            stall: thunder_core::StallConfig {
+                mutation_free_turns: cfg.agent.stall_mutation_free_turns,
+                no_novel_turns: cfg.agent.stall_no_novel_turns,
+            },
             pruning: ContextPruningConfig {
                 max_context_tokens: cfg.agent.max_context_tokens,
                 ..ContextPruningConfig::default()
@@ -928,11 +932,15 @@ impl DaemonService {
                 let suggest_engine = thunder_suggest::SuggestionEngine::new();
                 let suggestions = suggest_engine.generate_suggestions(&conv.messages).await;
 
+                // `wire_finish_reason()` reports `done` whenever an answer exists —
+                // including a wrap-up summary after hitting a ceiling — so the desktop
+                // panel does not print "without producing an answer" next to real text.
+                let finish_reason = outcome.wire_finish_reason().to_string();
                 self.send_response(DaemonResponse::TaskCompleted {
                     task_id,
                     session_id,
                     final_content: Some(outcome.final_response),
-                    finish_reason: "done".to_string(),
+                    finish_reason,
                     active_plugins: vec!["thunder-std".to_string(), "kv-cache-shield".to_string()],
                     suggested_questions: suggestions,
                 })

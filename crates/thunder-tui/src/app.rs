@@ -1072,7 +1072,50 @@ impl App {
                     text: format!("Error: {message}"),
                 });
             }
+            AgentEvent::Custom { kind, payload } => {
+                self.handle_custom_event(&kind, &payload);
+            }
             _ => {}
+        }
+    }
+
+    /// Kernel-emitted display signals travel as `Custom { kind, payload }` so the
+    /// wire shape stays open-ended: a client that does not know a `kind` ignores it.
+    fn handle_custom_event(&mut self, kind: &str, payload: &serde_json::Value) {
+        match kind {
+            "budget_notice" => {
+                let reason = payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("near_limit");
+                let detail = payload
+                    .get("detail")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let text = match reason {
+                    "near_limit" => format!("⚠ Budget warning: {detail}"),
+                    "stalled" => format!("⚠ No progress detected: {detail}"),
+                    "exhausted" => format!("⚠ Budget exhausted: {detail}"),
+                    other => format!("⚠ Budget notice ({other}): {detail}"),
+                };
+                self.timeline.push(TimelineItem::SystemNotice { text });
+            }
+            "loop_recovered" => {
+                let level = payload
+                    .get("level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("recovery");
+                let reason = payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                self.timeline.push(TimelineItem::SystemNotice {
+                    text: format!("⟳ Auto-recovered ({level}): {reason}"),
+                });
+            }
+            other => {
+                tracing::debug!(kind = other, "ignoring unknown custom agent event");
+            }
         }
     }
 

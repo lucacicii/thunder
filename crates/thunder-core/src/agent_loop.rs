@@ -1,11 +1,15 @@
+use crate::budget::LoopBudget;
+use crate::budget::{BudgetLimit, BudgetState, BudgetUsage};
 use crate::cache_warmer::{self, WarmSnapshot};
-use crate::context::{ContextBuffer, ContextPruningConfig};
+use crate::context::{repair_tool_call_pairing, ContextBuffer, ContextPruningConfig};
 use crate::conversation::now_ms;
+use crate::cycles::{CycleAction, CycleDetector};
 use crate::gateway::{KvCacheShield, META_CALL_TOOL, META_DISCOVER_TOOLS};
 use crate::llm::{LlmDriver, ToolCallRequest};
 use crate::loop_guard::LoopGuard;
 use crate::middleware::MiddlewarePipeline;
 use crate::pause::PauseGate;
+use crate::progress::{ProgressTracker, StallConfig};
 use crate::pruning::{
     extract_context_overflow_limit, is_context_overflow_error, ContextPruner, PruneResult,
     Summarizer,
@@ -18,8 +22,8 @@ use std::time::{Duration, Instant};
 use thunder_executor::ScratchpadManager;
 use thunder_protocol::{
     AgentEvent, AgentStats, ChatMessage, EventSink, ExecutionContext, FinishReason, LLMClientTrait,
-    PromptCacheWarmSettings, ThunderEvent, ToolCall, ToolDefinition, ToolExecResultPayload,
-    ToolExecutionError, ToolExecutionResult, TurnStats,
+    ProgressKind, PromptCacheWarmSettings, ThunderEvent, ToolCall, ToolDefinition,
+    ToolExecResultPayload, ToolExecutionError, ToolExecutionResult, TurnStats,
 };
 use thunder_registry::{CatalogSnapshot, ToolRegistry};
 use tokio::sync::Semaphore;
@@ -32,10 +36,13 @@ pub struct AgentLoopConfig {
     pub workspace_cwd: PathBuf,
     pub system_prompt: String,
     pub model: String,
-    pub max_turns: usize,
     pub pruning: ContextPruningConfig,
     pub tool_timeout: Duration,
     pub cache_warm_settings: Option<PromptCacheWarmSettings>,
+    /// Run-level ceilings. Phase C observes them; phase D enforces them.
+    pub budget: LoopBudget,
+    /// Stall thresholds for the progress tracker.
+    pub stall: StallConfig,
 }
 
 impl Default for AgentLoopConfig {
@@ -45,10 +52,11 @@ impl Default for AgentLoopConfig {
             workspace_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
             model: "gpt-4o".to_string(),
-            max_turns: 16,
             pruning: ContextPruningConfig::default(),
             tool_timeout: Duration::from_secs(30),
             cache_warm_settings: None,
+            budget: LoopBudget::default(),
+            stall: StallConfig::default(),
         }
     }
 }
@@ -61,6 +69,37 @@ pub struct AgentLoopOutcome {
     pub compactions_triggered: usize,
     pub system_faults: Vec<String>,
     pub stats: AgentStats,
+    /// The authoritative reason the loop stopped, even when `final_response` came
+    /// from a wrap-up turn and therefore exists (see [`AgentLoopOutcome::wire_finish_reason`]).
+    pub finish_reason: FinishReason,
+}
+
+impl AgentLoopOutcome {
+    /// Wire/client-facing finish reason under the single rule from
+    /// `docs/agent-loop-budget-and-recovery.md` §3.4: a run that produced an answer
+    /// reports `done`, and only a run with no answer at all reports why it stopped.
+    /// Clients rely on this — `agent-resume-panel` prints "… without producing an
+    /// answer" for any non-`done` reason.
+    pub fn wire_finish_reason(&self) -> &'static str {
+        if self.final_response.trim().is_empty() {
+            match self.finish_reason {
+                FinishReason::Done => "done",
+                FinishReason::MaxTurnsExceeded => "max_turns_exceeded",
+                FinishReason::BudgetExceeded => "budget_exceeded",
+                FinishReason::Cancelled => "cancelled",
+                FinishReason::Error => "error",
+            }
+        } else {
+            "done"
+        }
+    }
+
+    /// True when the loop stopped for a reason other than a natural answer; the
+    /// content is still usable, so clients should offer to continue rather than
+    /// present a failure.
+    pub fn stopped_early(&self) -> bool {
+        !self.final_response.trim().is_empty() && self.finish_reason != FinishReason::Done
+    }
 }
 
 /// Microkernel ReAct Agent Loop state machine (§1, §4.1, §4.3, §5.3).
@@ -77,6 +116,8 @@ pub struct ReActAgentLoop {
     summary_semaphore: Arc<Semaphore>,
     pruner: ContextPruner,
     loop_guard: LoopGuard,
+    progress: ProgressTracker,
+    cycles: CycleDetector,
     pause_gate: Option<Arc<PauseGate>>,
     steer_queues: Option<Arc<SteerQueues>>,
     scratchpad: Option<ScratchpadManager>,
@@ -103,6 +144,8 @@ impl ReActAgentLoop {
             summary_semaphore: Arc::new(Semaphore::new(2)),
             pruner,
             loop_guard: LoopGuard::default(),
+            progress: ProgressTracker::default(),
+            cycles: CycleDetector::default(),
             pause_gate: None,
             steer_queues: None,
             scratchpad: None,
@@ -146,6 +189,16 @@ impl ReActAgentLoop {
 
     pub fn with_initial_messages(mut self, messages: Vec<ChatMessage>) -> Self {
         if !messages.is_empty() {
+            // Heal conversations persisted by older builds: one unpaired `tool_call`
+            // makes the whole prefix unreplayable (see `repair_tool_call_pairing`).
+            let (messages, repaired) = repair_tool_call_pairing(messages);
+            if repaired > 0 {
+                tracing::warn!(
+                    session_id = %self.config.session_id,
+                    repaired,
+                    "repaired unpaired tool_calls in restored conversation"
+                );
+            }
             self.context = ContextBuffer::with_messages(messages);
         }
         self
@@ -189,14 +242,24 @@ impl ReActAgentLoop {
         let run_start = Instant::now();
         cache_warmer::invalidate(&self.config.session_id);
         self.loop_guard.reset();
-
+        self.progress = ProgressTracker::from_config(self.config.stall);
+        self.cycles.reset();
+        let mut budget = BudgetState::new(self.config.budget.clone(), run_start);
         self.context.push(ChatMessage::user(user_prompt));
         let mut system_faults = Vec::new();
         let mut compactions_triggered = 0usize;
         let mut stats = AgentStats::default();
         let cancel = self.cancellation_token.clone();
 
-        for turn in 1..=self.config.max_turns {
+        // Single source of truth: the loop bound is the budget's turn ceiling.
+        // `0` means unlimited, so the loop relies on the other limits (and on the
+        // user) to end it.
+        let turn_cap = if self.config.budget.max_turns == 0 {
+            usize::MAX
+        } else {
+            self.config.budget.max_turns
+        };
+        for turn in 1..=turn_cap {
             if cancel.is_cancelled() {
                 self.emit_agent(AgentEvent::LoopComplete {
                     finish_reason: FinishReason::Cancelled,
@@ -213,6 +276,53 @@ impl ReActAgentLoop {
             }
 
             let turn_start = Instant::now();
+            budget.record_turn();
+
+            // Phase C: observe the budget. A near-limit crossing is announced once per
+            // run so a client can warn the user; nothing is enforced until phase D.
+            match budget.check() {
+                BudgetUsage::NearLimit(limit) => {
+                    let detail = format!(
+                        "{}% of {} used ({} turn(s), {} token(s), {:.0}s elapsed)",
+                        (self.config.budget.warn_at * 100.0).round(),
+                        limit.as_str(),
+                        budget.turns_used(),
+                        budget.tokens_used(),
+                        budget.elapsed().as_secs_f32(),
+                    );
+                    self.emit_budget_notice(turn, "near_limit", &detail);
+                }
+                BudgetUsage::Exhausted(limit) => {
+                    // A turn ceiling is reported as such: clients have distinct copy for
+                    // "maximum number of turns" and "token budget".
+                    let (reason, reason_label) = match limit {
+                        BudgetLimit::Turns => {
+                            (FinishReason::MaxTurnsExceeded, "max_turns_exceeded")
+                        }
+                        _ => (FinishReason::BudgetExceeded, "budget_exceeded"),
+                    };
+                    let detail = format!(
+                        "{} limit reached ({} turn(s), {} token(s), {:.0}s elapsed)",
+                        limit.as_str(),
+                        budget.turns_used(),
+                        budget.tokens_used(),
+                        budget.elapsed().as_secs_f32(),
+                    );
+                    return Ok(self
+                        .wrap_up_turn(
+                            reason,
+                            turn,
+                            reason_label,
+                            &detail,
+                            run_start,
+                            stats,
+                            compactions_triggered,
+                            system_faults,
+                        )
+                        .await);
+                }
+                BudgetUsage::Ok => {}
+            }
 
             // 1. Lock-free snapshot acquisition at Turn Start (§4.1):
             // Freezes the tool view for the entire turn so mid-turn hot-reloads cannot cause structural drift.
@@ -303,6 +413,7 @@ impl ReActAgentLoop {
                 }
             };
 
+            budget.record_tokens(turn_resp.prompt_tokens, turn_resp.completion_tokens);
             stats.total_turns = turn;
             stats.total_prompt_tokens += turn_resp.prompt_tokens;
             stats.total_completion_tokens += turn_resp.completion_tokens;
@@ -404,6 +515,8 @@ impl ReActAgentLoop {
                 }
 
                 stats.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                stats.mutations = self.progress.total_mutations();
+                stats.novel_observations = self.progress.total_novel_observations();
                 cache_warmer::mark_idle(&self.config.session_id);
                 self.emit(ThunderEvent::AgentFinished {
                     turns: turn,
@@ -414,18 +527,21 @@ impl ReActAgentLoop {
                     final_content: Some(turn_resp.content.clone()),
                     stats: stats.clone(),
                 });
+                stats.finish_reason = Some(FinishReason::Done);
                 return Ok(AgentLoopOutcome {
                     final_response: turn_resp.content,
                     turns_executed: turn,
                     compactions_triggered,
                     system_faults,
                     stats,
+                    finish_reason: FinishReason::Done,
                 });
             }
 
             // 5. Execute requested tool calls against the frozen `turn_snapshot` (§1).
-            for call in &turn_resp.tool_calls {
+            for (call_idx, call) in turn_resp.tool_calls.iter().enumerate() {
                 if cancel.is_cancelled() {
+                    self.close_pending_tool_calls(&turn_resp.tool_calls, call_idx, "run cancelled");
                     return Err("Task cancelled".to_string());
                 }
                 if let Some(ref gate) = self.pause_gate {
@@ -438,7 +554,56 @@ impl ReActAgentLoop {
                     .loop_guard
                     .record_and_check_repetition(&call.name, &args_serialized);
 
+                // Cycle detection works on the *action* signature (tool + arguments), so
+                // it is decidable before dispatch and can stop the call from running.
+                let action = crate::cycles::fingerprint_action(
+                    turn_snapshot
+                        .descriptors
+                        .get(&call.name)
+                        .map(|d| d.progress)
+                        .unwrap_or(ProgressKind::Neutral),
+                    &call.name,
+                    &args_serialized,
+                );
+                let cycle_warning = match self.cycles.record(action) {
+                    CycleAction::SoftWarn(hit) => Some(format!(
+                        "[System Notice: you have repeated the same {}-step cycle {} times \
+                         without new information. Change your approach: verify the current \
+                         result, pick a different source of information, or summarize and stop.]",
+                        hit.period, hit.cycles
+                    )),
+                    CycleAction::HardAbort(hit) => {
+                        self.close_pending_tool_calls(
+                            &turn_resp.tool_calls,
+                            call_idx,
+                            "loop cycle detected",
+                        );
+                        let detail = format!(
+                            "the same {}-step cycle repeated {} times",
+                            hit.period, hit.cycles
+                        );
+                        return Ok(self
+                            .wrap_up_turn(
+                                FinishReason::BudgetExceeded,
+                                turn,
+                                "stalled",
+                                &detail,
+                                run_start,
+                                stats,
+                                compactions_triggered,
+                                system_faults,
+                            )
+                            .await);
+                    }
+                    CycleAction::None => None,
+                };
+
                 if self.loop_guard.is_repetition_limit_exceeded() {
+                    self.close_pending_tool_calls(
+                        &turn_resp.tool_calls,
+                        call_idx,
+                        "loop guard: identical tool call repeated without progress",
+                    );
                     cache_warmer::mark_idle(&self.config.session_id);
                     return Err(format!(
                         "LoopGuard circuit breaker: tool '{}' repeated identically too many times",
@@ -499,7 +664,31 @@ impl ReActAgentLoop {
                 if original_bytes == 0 {
                     original_bytes = result_text.len();
                 }
-                if let Some(warn) = rep_warning {
+
+                // Phase B: progress observation only. The digest never changes control
+                // flow yet; it feeds tracing + AgentStats so the stall thresholds can be
+                // calibrated against real runs before they are enforced.
+                let progress_kind = turn_snapshot
+                    .descriptors
+                    .get(&call.name)
+                    .map(|d| d.progress)
+                    .unwrap_or(ProgressKind::Neutral);
+                let novel =
+                    self.progress
+                        .record(progress_kind, &call.name, &args_serialized, &result_text);
+                tracing::debug!(
+                    turn,
+                    tool = %call.name,
+                    kind = ?progress_kind,
+                    novel,
+                    mutations = self.progress.total_mutations(),
+                    novel_observations = self.progress.total_novel_observations(),
+                    mutation_free_streak = self.progress.mutation_free_streak(),
+                    no_novel_streak = self.progress.no_novel_output_streak(),
+                    "tool progress signal"
+                );
+
+                for warn in [rep_warning, cycle_warning].into_iter().flatten() {
                     result_text.push_str("\n\n");
                     result_text.push_str(&warn);
                 }
@@ -525,6 +714,11 @@ impl ReActAgentLoop {
                 ));
 
                 if self.loop_guard.is_circuit_broken() {
+                    self.close_pending_tool_calls(
+                        &turn_resp.tool_calls,
+                        call_idx + 1,
+                        "loop guard: too many consecutive tool errors",
+                    );
                     cache_warmer::mark_idle(&self.config.session_id);
                     return Err(format!(
                         "LoopGuard circuit breaker: {} consecutive tool execution errors",
@@ -538,6 +732,39 @@ impl ReActAgentLoop {
                 finish_reason: "tool_calls".to_string(),
                 stats: turn_stats,
             });
+
+            // Stall detection: the run already started changing things and then stopped
+            // producing anything new. Wrap up rather than burning the remaining budget.
+            if let Some(signal) = self.progress.on_turn_end() {
+                stats.stall_events += 1;
+                let detail = match signal {
+                    crate::progress::StallSignal::MutationFree(turns) => {
+                        format!("{turns} turn(s) without a new state mutation")
+                    }
+                    crate::progress::StallSignal::NoNovelObservation(turns) => {
+                        format!("{turns} turn(s) without any new tool result")
+                    }
+                };
+                tracing::warn!(
+                    turn,
+                    %detail,
+                    mutations = self.progress.total_mutations(),
+                    novel_observations = self.progress.total_novel_observations(),
+                    "stall detected; wrapping up"
+                );
+                return Ok(self
+                    .wrap_up_turn(
+                        FinishReason::BudgetExceeded,
+                        turn,
+                        "stalled",
+                        &detail,
+                        run_start,
+                        stats,
+                        compactions_triggered,
+                        system_faults,
+                    )
+                    .await);
+            }
 
             // Drain any mid-turn steering messages before the next turn starts.
             if let Some(ref queues) = self.steer_queues {
@@ -555,11 +782,170 @@ impl ReActAgentLoop {
             }
         }
 
+        tracing::debug!(
+            turns = stats.total_turns,
+            mutations = self.progress.total_mutations(),
+            novel_observations = self.progress.total_novel_observations(),
+            stall_events = stats.stall_events,
+            "agent loop exhausted its turn budget"
+        );
+        let detail = format!("{turn_cap} turn(s) used");
+        Ok(self
+            .wrap_up_turn(
+                FinishReason::MaxTurnsExceeded,
+                turn_cap,
+                "max_turns_exceeded",
+                &detail,
+                run_start,
+                stats,
+                compactions_triggered,
+                system_faults,
+            )
+            .await)
+    }
+
+    /// Close a run that hit a ceiling by giving the model one final, tool-free turn.
+    ///
+    /// Phase D never reports these outcomes as errors: the user gets a summary of what
+    /// was done and what remains. If the wrap-up call itself fails, the last assistant
+    /// text in the context is reused as the answer; only when there is truly nothing to
+    /// show does the outcome keep a non-`done` reason on the wire.
+    async fn wrap_up_turn(
+        &mut self,
+        reason: FinishReason,
+        turn: usize,
+        reason_label: &str,
+        detail: &str,
+        run_start: Instant,
+        mut stats: AgentStats,
+        compactions_triggered: usize,
+        system_faults: Vec<String>,
+    ) -> AgentLoopOutcome {
+        let cancel = self.cancellation_token.clone();
+        // Single place where a ceiling announces itself, so clients get exactly one
+        // machine signal per stop regardless of which limit fired.
+        self.emit_budget_notice(turn, reason_label, detail);
+        self.context.inject_system_notification(format!(
+            "<budget_notice>\nThe run is stopping: {reason_label} ({detail}).\n\
+             Do not call any more tools. Summarize in at most 150 words:\n\
+             1) what is done, 2) what is unfinished, 3) the next concrete step.\n</budget_notice>"
+        ));
+
+        let wrapped = self
+            .llm
+            .complete_streaming(
+                &self.context.get_messages(),
+                &[],
+                turn,
+                self.event_sink.as_ref(),
+                &cancel,
+            )
+            .await;
+
+        let content = match wrapped {
+            Ok(resp) => {
+                stats.total_turns = turn;
+                stats.total_prompt_tokens += resp.prompt_tokens;
+                stats.total_completion_tokens += resp.completion_tokens;
+                self.context
+                    .push(ChatMessage::assistant_text(resp.content.clone()));
+                let turn_stats = TurnStats {
+                    turn,
+                    prompt_tokens: resp.prompt_tokens,
+                    completion_tokens: resp.completion_tokens,
+                    cached_tokens: resp.cached_tokens,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: resp.prompt_tokens + resp.completion_tokens,
+                    tool_calls_count: 0,
+                    duration_ms: 0,
+                };
+                self.emit_agent(AgentEvent::TurnEnd {
+                    turn,
+                    finish_reason: reason_label.to_string(),
+                    stats: turn_stats,
+                });
+                resp.content
+            }
+            Err(err) => {
+                tracing::warn!(
+                    turn,
+                    error = %err,
+                    "wrap-up turn failed; falling back to the last assistant text"
+                );
+                self.last_assistant_text().unwrap_or_default()
+            }
+        };
+
+        // No fabricated placeholder: an empty answer must stay empty so the wire rule
+        // in §3.4 can surface the real stop reason to the client.
+        let final_content = if content.trim().is_empty() {
+            String::new()
+        } else {
+            content
+        };
+
+        stats.total_duration_ms = run_start.elapsed().as_millis() as u64;
+        stats.mutations = self.progress.total_mutations();
+        stats.novel_observations = self.progress.total_novel_observations();
+        stats.finish_reason = Some(reason);
         cache_warmer::mark_idle(&self.config.session_id);
-        Err(format!(
-            "AgentLoop exceeded maximum turns ({})",
-            self.config.max_turns
-        ))
+        self.emit(ThunderEvent::AgentFinished {
+            turns: turn,
+            final_response: final_content.clone(),
+        });
+        self.emit_agent(AgentEvent::LoopComplete {
+            finish_reason: reason,
+            final_content: (!final_content.is_empty()).then(|| final_content.clone()),
+            stats: stats.clone(),
+        });
+
+        AgentLoopOutcome {
+            final_response: final_content,
+            turns_executed: turn,
+            compactions_triggered,
+            system_faults,
+            stats,
+            finish_reason: reason,
+        }
+    }
+
+    /// Last assistant text still present in the context, used as a fallback answer
+    /// when the wrap-up call cannot run.
+    fn last_assistant_text(&self) -> Option<String> {
+        self.context
+            .get_messages()
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                ChatMessage::Assistant { content, .. } => content
+                    .as_deref()
+                    .filter(|c| !c.trim().is_empty())
+                    .map(str::to_string),
+                _ => None,
+            })
+    }
+
+    /// Fill in placeholder tool results for every call in `calls[start..]`.
+    ///
+    /// An early exit must never leave an assistant message whose `tool_calls` have no
+    /// matching tool messages: providers reject that shape with HTTP 400, and the
+    /// daemon persists the conversation context verbatim, so a single unpaired
+    /// `tool_call` poisons every later run of that session.
+    fn close_pending_tool_calls(&mut self, calls: &[ToolCallRequest], start: usize, reason: &str) {
+        if start >= calls.len() {
+            return;
+        }
+        for call in calls.iter().skip(start) {
+            let placeholder = format!(
+                "[aborted: {reason}. This tool call was not executed because the run ended early.]"
+            );
+            self.context.push(ChatMessage::tool(
+                call.id.clone(),
+                placeholder,
+                Some(call.name.clone()),
+            ));
+        }
     }
 
     fn build_summarizer(&self) -> Option<Summarizer> {
@@ -659,6 +1045,19 @@ impl ReActAgentLoop {
         if let Some(ref sink) = self.event_sink {
             sink.on_event(event);
         }
+    }
+
+    /// Phase C transport for budget/recovery signals: `Custom` keeps the wire shape
+    /// open-ended so clients that do not know the `kind` simply ignore it.
+    fn emit_budget_notice(&self, turn: usize, reason: &str, detail: &str) {
+        self.emit_agent(AgentEvent::Custom {
+            kind: "budget_notice".to_string(),
+            payload: json!({
+                "turn": turn,
+                "reason": reason,
+                "detail": detail,
+            }),
+        });
     }
 
     fn emit_agent(&self, event: AgentEvent) {
