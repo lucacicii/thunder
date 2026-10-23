@@ -9,6 +9,7 @@ pub mod error;
 pub mod local_model;
 pub mod mcp;
 pub mod search;
+pub mod server;
 pub mod synthesis;
 
 pub use capture::{OcrEngine, RawCaptureJson, ScreenCaptureRecord};
@@ -23,6 +24,7 @@ pub use error::MemoryError;
 pub use local_model::LocalModelEngine;
 pub use mcp::{run_mcp_stdio, MemoryMcpServer};
 pub use search::{MemorySearchEngine, ScoredMemory};
+pub use server::{serve, ServeOptions};
 pub use synthesis::{CaptureEpisode, SynthesisEngine, SynthesizedInsight};
 
 /// Safely slice a string up to max_bytes without splitting multi-byte UTF-8 character boundaries.

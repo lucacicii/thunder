@@ -5,6 +5,8 @@ use thunder_memory::config::MemoryConfig;
 use thunder_memory::daemon::MemoryDaemon;
 use thunder_memory::db::Database;
 use thunder_memory::search::MemorySearchEngine;
+use thunder_memory::local_model::{GenOptions, LocalModelEngine};
+use thunder_memory::server::{serve, ServeOptions};
 use thunder_memory::synthesis::SynthesisEngine;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -469,6 +471,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        "serve" => {
+            let mut serve_opts = ServeOptions::default();
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--port" if i + 1 < args.len() => {
+                        serve_opts.port = args[i + 1].parse().unwrap_or(serve_opts.port);
+                        i += 2;
+                    }
+                    "--host" if i + 1 < args.len() => {
+                        serve_opts.host = args[i + 1].clone();
+                        i += 2;
+                    }
+                    "--max-tokens-cap" if i + 1 < args.len() => {
+                        serve_opts.max_tokens_cap = args[i + 1].parse().unwrap_or(serve_opts.max_tokens_cap);
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("Unknown argument for `serve`: {other}");
+                        eprintln!("Usage: thunder-memory serve [--host 127.0.0.1] [--port 8787] [--max-tokens-cap 1024]");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            serve(config, serve_opts).await?;
+        }
+
+        "ask" => {
+            let mut prompt_parts: Vec<String> = Vec::new();
+            let mut max_tokens = 256usize;
+            let mut temperature = 0.7f32;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--max-tokens" if i + 1 < args.len() => {
+                        max_tokens = args[i + 1].parse().unwrap_or(max_tokens);
+                        i += 2;
+                    }
+                    "--temperature" if i + 1 < args.len() => {
+                        temperature = args[i + 1].parse().unwrap_or(temperature);
+                        i += 2;
+                    }
+                    "--greedy" => {
+                        temperature = 0.0;
+                        i += 1;
+                    }
+                    other => {
+                        prompt_parts.push(other.to_string());
+                        i += 1;
+                    }
+                }
+            }
+            let prompt = prompt_parts.join(" ");
+            if prompt.trim().is_empty() {
+                eprintln!("Usage: thunder-memory ask <prompt> [--max-tokens 256] [--temperature 0.7] [--greedy]");
+                std::process::exit(1);
+            }
+            if !config.is_local_model_ready() {
+                eprintln!(
+                    "❌ Local model not found in {:?}. Run `thunder-memory download-model` first.",
+                    config.model_dir
+                );
+                std::process::exit(1);
+            }
+
+            let gguf = config.local_gguf_path();
+            let tokenizer = config.local_tokenizer_path();
+            let engine = tokio::task::spawn_blocking(move || LocalModelEngine::load(&gguf, &tokenizer))
+                .await??;
+
+            let chatml = thunder_memory::local_model::render_chatml(&[(
+                "user".to_string(),
+                prompt.clone(),
+            )]);
+            let opts = GenOptions::chat(temperature, 0.95);
+            let answer = tokio::task::spawn_blocking(move || engine.generate_with(&chatml, max_tokens, &opts))
+                .await??;
+            println!("{}", answer.trim());
+        }
+
         "download-model" => {
             println!("══════════════════════════════════════════════════════════════════");
             println!("  ⬇️  Downloading In-Process Local Model for thunder-memory");
@@ -496,6 +578,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  start                   Start daemon in background detached");
             println!("  stop                    Stop running background daemon");
             println!("  status                  Show daemon and database status");
+            println!("  serve                   Run an OpenAI-compatible HTTP endpoint for the local model");
+            println!("  ask <prompt>            One-shot prompt against the in-process local model");
             println!("  download-model          Download in-process Qwen2.5 small model (~350MB)");
             println!("  ocr-once                Run instant screen capture & OCR test");
             println!("  synthesize              Trigger manual memory synthesis cycle");
