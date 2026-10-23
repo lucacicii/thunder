@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryConfig {
     /// Path to thunder-memory SQLite database
     pub db_path: PathBuf,
@@ -19,13 +20,25 @@ pub struct MemoryConfig {
     pub composer_db_path: PathBuf,
 
     /// Local or remote OpenAI-compatible LLM endpoint URL (e.g. http://localhost:11434/v1)
+    #[serde(alias = "edge_endpoint")]
     pub llm_endpoint: Option<String>,
 
     /// Small model name to use for memory synthesis (e.g. qwen2.5-coder, llama3.2, etc.)
+    #[serde(alias = "edge_model")]
     pub llm_model: String,
 
     /// Optional API key for LLM endpoint
+    #[serde(alias = "edge_api_key")]
     pub llm_api_key: Option<String>,
+
+    /// Cloud frontier model endpoint URL for nightly deep consolidation (e.g. https://api.openai.com/v1)
+    pub cloud_endpoint: Option<String>,
+
+    /// Cloud model name (e.g. gpt-4o, claude-3-7-sonnet, deepseek-chat)
+    pub cloud_model: Option<String>,
+
+    /// Optional API key for cloud frontier model endpoint
+    pub cloud_api_key: Option<String>,
 
     /// Minimum average OCR confidence (0.0 .. 1.0) required to record a screen capture
     pub min_confidence: f32,
@@ -64,6 +77,9 @@ impl Default for MemoryConfig {
             llm_endpoint: None,
             llm_model: "qwen2.5-coder".to_string(),
             llm_api_key: None,
+            cloud_endpoint: None,
+            cloud_model: None,
+            cloud_api_key: None,
             min_confidence: 0.1,
             raw_capture_retention_days: 2,
             memory_archive_days: 30,
@@ -75,6 +91,59 @@ impl Default for MemoryConfig {
 }
 
 impl MemoryConfig {
+    /// Load configuration from ~/.thunder/memory.toml or ~/.thunder/config.toml, falling back to defaults
+    pub fn load() -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let thunder_dir = PathBuf::from(&home).join(".thunder");
+
+        // 1. Try ~/.thunder/memory.toml
+        let memory_toml = thunder_dir.join("memory.toml");
+        if memory_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&memory_toml) {
+                if let Ok(cfg) = toml::from_str::<MemoryConfig>(&content) {
+                    return cfg;
+                }
+            }
+        }
+
+        // 2. Try ~/.thunder/config.toml under [memory] table
+        let config_toml = thunder_dir.join("config.toml");
+        if config_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_toml) {
+                if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
+                    if let Some(mem_val) = parsed.get("memory") {
+                        if let Ok(cfg) = mem_val.clone().try_into::<MemoryConfig>() {
+                            return cfg;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback to default + env vars
+        let mut cfg = Self::default();
+
+        if let Ok(endpoint) = std::env::var("THUNDER_MEMORY_LLM_ENDPOINT") {
+            cfg.llm_endpoint = Some(endpoint);
+        }
+        if let Ok(model) = std::env::var("THUNDER_MEMORY_LLM_MODEL") {
+            cfg.llm_model = model;
+        }
+        if let Ok(key) = std::env::var("THUNDER_MEMORY_LLM_KEY") {
+            cfg.llm_api_key = Some(key);
+        }
+        if let Ok(endpoint) = std::env::var("THUNDER_MEMORY_CLOUD_ENDPOINT") {
+            cfg.cloud_endpoint = Some(endpoint);
+        }
+        if let Ok(model) = std::env::var("THUNDER_MEMORY_CLOUD_MODEL") {
+            cfg.cloud_model = Some(model);
+        }
+        if let Ok(key) = std::env::var("THUNDER_MEMORY_CLOUD_KEY") {
+            cfg.cloud_api_key = Some(key);
+        }
+
+        cfg
+    }
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         if let Some(parent) = self.db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -100,5 +169,35 @@ impl MemoryConfig {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_toml_parsing() {
+        let toml_str = r#"
+            capture_interval_secs = 10
+            min_capture_interval_secs = 3
+            edge_endpoint = "http://localhost:11434/v1"
+            edge_model = "qwen2.5-coder:7b"
+            cloud_endpoint = "https://api.openai.com/v1"
+            cloud_model = "gpt-4o"
+            cloud_api_key = "sk-test"
+        "#;
+
+        let cfg: MemoryConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.capture_interval_secs, 10);
+        assert_eq!(cfg.min_capture_interval_secs, 3);
+        assert_eq!(cfg.llm_endpoint, Some("http://localhost:11434/v1".to_string()));
+        assert_eq!(cfg.llm_model, "qwen2.5-coder:7b");
+        assert_eq!(cfg.cloud_endpoint, Some("https://api.openai.com/v1".to_string()));
+        assert_eq!(cfg.cloud_model, Some("gpt-4o".to_string()));
+        assert_eq!(cfg.cloud_api_key, Some("sk-test".to_string()));
+        // Defaults preserved
+        assert_eq!(cfg.raw_capture_retention_days, 2);
+        assert_eq!(cfg.memory_archive_days, 30);
     }
 }

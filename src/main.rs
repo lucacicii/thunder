@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .try_init();
 
-    let config = MemoryConfig::default();
+    let config = MemoryConfig::load();
 
     match subcommand {
         "run" => {
@@ -81,6 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  📂 Database:     {:?}", config.db_path);
             println!("  📋 Composer DB:  {:?}", config.resolve_composer_db_path().unwrap_or_else(|| PathBuf::from("not found")));
             println!("  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s", config.capture_interval_secs, config.min_capture_interval_secs, config.max_capture_interval_secs, config.synthesis_interval_secs);
+            let edge_info = match &config.llm_endpoint {
+                Some(e) => format!("{} ({})", config.llm_model, e),
+                None => "Heuristic Rule Engine (Offline / Zero-Cost)".to_string(),
+            };
+            let cloud_info = match &config.cloud_endpoint {
+                Some(e) => format!("{} ({})", config.cloud_model.as_deref().unwrap_or("default"), e),
+                None => "Agent-side Reasoning via MCP".to_string(),
+            };
+            println!("  🔬 Edge Small Model:   {}", edge_info);
+            println!("  🧠 Cloud Large Model:  {}", cloud_info);
 
             if config.db_path.exists() {
                 let db = Database::open(&config.db_path)?;
