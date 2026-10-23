@@ -298,11 +298,13 @@ pub fn resolve_context(meta: Option<&ContextEnvelopeMeta>) -> ExecutionContext {
             session_id: m.session_id.clone(),
             workspace_cwd: m.workspace_cwd.clone(),
             timeout: Duration::from_millis(m.timeout_ms.max(100)),
+            extra_workspace_dirs: m.workspace_dirs.clone(),
         },
         None => ExecutionContext {
             session_id: "default-session".to_string(),
             workspace_cwd: fallback_cwd,
             timeout: Duration::from_secs(30),
+            extra_workspace_dirs: Vec::new(),
         },
     }
 }
@@ -530,6 +532,8 @@ async fn handle_bash(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
         session_id: ctx.session_id.clone(),
         workspace_cwd: cwd,
         timeout,
+        // A shell command is anchored to one cwd; the extra roots are search scope.
+        extra_workspace_dirs: Vec::new(),
     };
 
     match execute_shell_command(command, &call_ctx, DEFAULT_MAX_OUTPUT_BYTES).await {
@@ -554,7 +558,48 @@ async fn handle_grep(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
         return Err("Pattern must not be empty".to_string());
     }
 
-    let root_raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    // An explicit `path` means exactly that one place. Without one, every root the
+    // host put in scope is searched, and `limit` is the budget for the whole call
+    // rather than per root — otherwise a second directory would silently double it.
+    if let Some(root_raw) = args.get("path").and_then(|v| v.as_str()) {
+        return grep_one(args, ctx, root_raw, None).await;
+    }
+    let roots = ctx.search_roots();
+    if roots.len() == 1 {
+        return grep_one(args, ctx, ".", None).await;
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| (v as usize).max(1))
+        .unwrap_or(DEFAULT_MATCH_LIMIT);
+    let per_root = (limit / roots.len()).max(1);
+
+    let mut sections = Vec::new();
+    for root in &roots {
+        let root_str = root.to_string_lossy().to_string();
+        match grep_one(args, ctx, &root_str, Some(per_root)).await {
+            Ok(body) => sections.push(format!("== {root_str} ==\n{body}")),
+            Err(err) => sections.push(format!("== {root_str} ==\n[{err}]")),
+        }
+    }
+    Ok(sections.join("\n\n"))
+}
+
+async fn grep_one(
+    args: &Value,
+    ctx: &ExecutionContext,
+    root_raw: &str,
+    limit_override: Option<usize>,
+) -> Result<String, String> {
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required parameter 'pattern'".to_string())?;
+    if pattern.is_empty() {
+        return Err("Pattern must not be empty".to_string());
+    }
+
     let root = resolve_path(&ctx.workspace_cwd, root_raw);
     if !root.exists() {
         return Err(format!("Path not found: {}", root.display()));
@@ -574,11 +619,12 @@ async fn handle_grep(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let context_lines = args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let match_limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| (v as usize).max(1))
-        .unwrap_or(DEFAULT_MATCH_LIMIT);
+    let match_limit = limit_override.unwrap_or_else(|| {
+        args.get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| (v as usize).max(1))
+            .unwrap_or(DEFAULT_MATCH_LIMIT)
+    });
 
     let effective_pattern = if literal {
         regex::escape(pattern)
@@ -677,7 +723,45 @@ async fn handle_find(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
         return Err("Pattern must not be empty".to_string());
     }
 
-    let path_raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    if let Some(root_raw) = args.get("path").and_then(|v| v.as_str()) {
+        return find_one(args, ctx, root_raw, None).await;
+    }
+    let roots = ctx.search_roots();
+    if roots.len() == 1 {
+        return find_one(args, ctx, ".", None).await;
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| (v as usize).max(1))
+        .unwrap_or(DEFAULT_FIND_LIMIT);
+    let per_root = (limit / roots.len()).max(1);
+
+    let mut sections = Vec::new();
+    for root in &roots {
+        let root_str = root.to_string_lossy().to_string();
+        match find_one(args, ctx, &root_str, Some(per_root)).await {
+            Ok(body) => sections.push(format!("== {root_str} ==\n{body}")),
+            Err(err) => sections.push(format!("== {root_str} ==\n[{err}]")),
+        }
+    }
+    Ok(sections.join("\n\n"))
+}
+
+async fn find_one(
+    args: &Value,
+    ctx: &ExecutionContext,
+    path_raw: &str,
+    limit_override: Option<usize>,
+) -> Result<String, String> {
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required parameter 'pattern'".to_string())?;
+    if pattern.trim().is_empty() {
+        return Err("Pattern must not be empty".to_string());
+    }
+
     let root = resolve_path(&ctx.workspace_cwd, path_raw);
     if !root.exists() {
         return Err(format!("Path not found: {}", root.display()));
@@ -688,11 +772,12 @@ async fn handle_find(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
 
     let glob_set =
         build_glob_set(pattern)?.ok_or_else(|| "Pattern must not be empty".to_string())?;
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| (v as usize).max(1))
-        .unwrap_or(DEFAULT_FIND_LIMIT);
+    let limit = limit_override.unwrap_or_else(|| {
+        args.get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| (v as usize).max(1))
+            .unwrap_or(DEFAULT_FIND_LIMIT)
+    });
 
     let shared = Arc::new(FindShared {
         results: Mutex::new(Vec::new()),
@@ -751,7 +836,26 @@ async fn handle_find(args: &Value, ctx: &ExecutionContext) -> Result<String, Str
 }
 
 async fn handle_ls(args: &Value, ctx: &ExecutionContext) -> Result<String, String> {
-    let path_raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    if let Some(root_raw) = args.get("path").and_then(|v| v.as_str()) {
+        return ls_one(ctx, root_raw).await;
+    }
+    let roots = ctx.search_roots();
+    if roots.len() == 1 {
+        return ls_one(ctx, ".").await;
+    }
+
+    let mut sections = Vec::new();
+    for root in &roots {
+        let root_str = root.to_string_lossy().to_string();
+        match ls_one(ctx, &root_str).await {
+            Ok(body) => sections.push(format!("== {root_str} ==\n{body}")),
+            Err(err) => sections.push(format!("== {root_str} ==\n[{err}]")),
+        }
+    }
+    Ok(sections.join("\n\n"))
+}
+
+async fn ls_one(ctx: &ExecutionContext, path_raw: &str) -> Result<String, String> {
     let root = resolve_path(&ctx.workspace_cwd, path_raw);
     if !root.exists() {
         return Err(format!("Path not found: {}", root.display()));

@@ -151,6 +151,10 @@ pub struct ReActAgentLoop {
     goal_parts: Vec<ContentPart>,
     pause_gate: Option<Arc<PauseGate>>,
     steer_queues: Option<Arc<SteerQueues>>,
+    /// Host-declared directories beyond `workspace_cwd`. Kept on the loop rather than in
+    /// `AgentLoopConfig` so a run option stays an option: every existing config literal
+    /// keeps its shape, and a host that has nothing extra says nothing.
+    extra_workspace_dirs: Vec<PathBuf>,
     scratchpad: Option<ScratchpadManager>,
     cancellation_token: CancellationToken,
     middleware: MiddlewarePipeline,
@@ -181,6 +185,7 @@ impl ReActAgentLoop {
             goal_parts: Vec::new(),
             pause_gate: None,
             steer_queues: None,
+            extra_workspace_dirs: Vec::new(),
             scratchpad: None,
             cancellation_token: CancellationToken::new(),
             middleware: MiddlewarePipeline::new(),
@@ -207,6 +212,14 @@ impl ReActAgentLoop {
 
     pub fn with_steer_queues(mut self, queues: Arc<SteerQueues>) -> Self {
         self.steer_queues = Some(queues);
+        self
+    }
+
+    pub fn with_extra_workspace_dirs(
+        mut self,
+        extra_workspace_dirs: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        self.extra_workspace_dirs = extra_workspace_dirs.into_iter().collect();
         self
     }
 
@@ -1166,7 +1179,8 @@ impl ReActAgentLoop {
             &self.config.session_id,
             &self.config.workspace_cwd,
             self.config.tool_timeout,
-        );
+        )
+        .with_extra_workspace_dirs(self.extra_workspace_dirs.clone());
 
         // Meta-tool 1: `thunder__discover_tools` (§4.3)
         if call.name == META_DISCOVER_TOOLS {

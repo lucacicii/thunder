@@ -76,7 +76,6 @@ pub enum DaemonRequest {
         model: Option<String>,
         #[serde(default)]
         model_descriptor: Option<Box<ModelDescriptor>>,
-        use_mock: Option<bool>,
         workspace_dir: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,

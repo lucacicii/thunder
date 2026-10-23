@@ -13,6 +13,10 @@ pub struct ContextEnvelopeMeta {
     pub session_id: String,
     pub workspace_cwd: PathBuf,
     pub timeout_ms: u64,
+    /// Additional directories in scope for this call. Absent means "primary only",
+    /// so a server that does not know the field keeps its old behaviour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_dirs: Vec<PathBuf>,
 }
 
 impl From<&ExecutionContext> for ContextEnvelopeMeta {
@@ -21,6 +25,7 @@ impl From<&ExecutionContext> for ContextEnvelopeMeta {
             session_id: ctx.session_id.clone(),
             workspace_cwd: ctx.workspace_cwd.clone(),
             timeout_ms: ctx.timeout.as_millis() as u64,
+            workspace_dirs: ctx.extra_workspace_dirs.clone(),
         }
     }
 }

@@ -235,8 +235,13 @@ impl ToolDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionContext {
     pub session_id: String,
+    /// The primary workspace: relative paths resolve here, `bash` runs here, writes land here.
     pub workspace_cwd: PathBuf,
     pub timeout: Duration,
+    /// Additional directories the host wants in scope. They widen *search*, not the
+    /// meaning of a relative path: `workspace_cwd` stays the base for anything that is
+    /// written or executed.
+    pub extra_workspace_dirs: Vec<PathBuf>,
 }
 
 impl ExecutionContext {
@@ -249,7 +254,29 @@ impl ExecutionContext {
             session_id: session_id.into(),
             workspace_cwd: workspace_cwd.into(),
             timeout,
+            extra_workspace_dirs: Vec::new(),
         }
+    }
+
+    pub fn with_extra_workspace_dirs(
+        mut self,
+        extra_workspace_dirs: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        self.extra_workspace_dirs = extra_workspace_dirs.into_iter().collect();
+        self
+    }
+
+    /// Every directory in scope, primary first. This is what a search tool walks
+    /// when its caller did not name a path.
+    pub fn search_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::with_capacity(1 + self.extra_workspace_dirs.len());
+        roots.push(self.workspace_cwd.clone());
+        for dir in &self.extra_workspace_dirs {
+            if *dir != self.workspace_cwd && !roots.contains(dir) {
+                roots.push(dir.clone());
+            }
+        }
+        roots
     }
 }
 
