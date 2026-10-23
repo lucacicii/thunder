@@ -14,12 +14,13 @@ use thunder_core::{
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_protocol::{
-    AgentEvent, ChatMessage, ContentPart, EventSink, ObservedEvent, ThunderEvent,
+    AgentEvent, ChatMessage, ContentPart, EventSink, ObservedEvent, ThunderEvent, ToolProvider,
 };
 use thunder_providers::prelude::{clamp_title, generate_title, ProviderRegistry, RpiAiClient};
 use thunder_registry::ToolRegistry;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 const REQUEST_TIMEOUT_MS: u64 = 120_000;
 
@@ -794,7 +795,7 @@ impl DaemonService {
         headless: bool,
     ) {
         let cfg = ThunderConfig::load_from_workspace(&workspace_cwd).await;
-        let registry = self.build_workspace_registry(&workspace_cwd, &cfg).await;
+        let (registry, mounted) = self.build_workspace_registry(&workspace_cwd, &cfg).await;
         let tools_dir = workspace_cwd.join(".thunder").join("tools");
         let poll = std::time::Duration::from_millis(cfg.sandbox.debounce_ms.max(50));
         let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
@@ -918,7 +919,14 @@ impl DaemonService {
                     session_id,
                     final_content: Some(outcome.final_response),
                     finish_reason,
-                    active_plugins: vec!["thunder-std".to_string(), "kv-cache-shield".to_string()],
+                    // What answered, not what was meant to: `mounted` is built from
+                    // successful registrations only. `kv-cache-shield` is a kernel
+                    // facility that every run has, not a provider that can fail.
+                    active_plugins: {
+                        let mut ids = mounted.clone();
+                        ids.push("kv-cache-shield".to_string());
+                        ids
+                    },
                     suggested_questions: suggestions,
                 })
                 .await;
@@ -940,32 +948,74 @@ impl DaemonService {
         }
     }
 
+    /// Build this run's tool registry, and report **what actually answered**.
+    ///
+    /// The second half of the return value is the point: every provider here can fail
+    /// to start, and when one does the run continues with fewer (or zero) tools. The
+    /// caller used to hardcode `["thunder-std", "kv-cache-shield"]` into the
+    /// `task_completed` frame regardless, so a daemon shipped without its sibling
+    /// `thunder-std` ran with **no tools at all** and told the host the tool pack was
+    /// active — the one signal a host has about a broken sidecar, inverted.
     async fn build_workspace_registry(
         &self,
         workspace_cwd: &Path,
         config: &ThunderConfig,
-    ) -> ToolRegistry {
+    ) -> (ToolRegistry, Vec<String>) {
         let registry = ToolRegistry::new();
-        if let Some(std_bin) = self
+        let mut mounted: Vec<String> = Vec::new();
+
+        match self
             .std_bin_override
             .clone()
             .or_else(locate_thunder_std_binary)
         {
-            let std_cfg = McpServerConfig::new(std_bin).as_core();
-            if let Ok(provider) = McpToolProvider::connect("thunder-std", &std_cfg).await {
-                let _ = registry.register_provider(provider).await;
+            Some(std_bin) => {
+                let std_cfg = McpServerConfig::new(std_bin.clone()).as_core();
+                match McpToolProvider::connect("thunder-std", &std_cfg).await {
+                    Ok(provider) => match registry.register_provider(provider).await {
+                        Ok(_) => mounted.push("thunder-std".to_string()),
+                        Err(err) => warn!(
+                            binary = %std_bin.display(),
+                            error = %err,
+                            "thunder-std registered but its tools could not be listed; \
+                             this run has no core tools"
+                        ),
+                    },
+                    Err(err) => warn!(
+                        binary = %std_bin.display(),
+                        error = %err,
+                        "thunder-std did not start; this run has no core tools \
+                         (read_file/write_file/edit_block/bash/grep/find/ls are all gone)"
+                    ),
+                }
             }
+            None => warn!(
+                "thunder-std not found next to the daemon; this run has no core tools. \
+                 It is discovered as a sibling binary, so both have to be shipped together"
+            ),
         }
+
         for (name, mcp_cfg) in &config.mcp_servers {
-            if let Ok(provider) = McpToolProvider::connect(name, mcp_cfg).await {
-                let _ = registry.register_provider(provider).await;
+            match McpToolProvider::connect(name, mcp_cfg).await {
+                Ok(provider) => {
+                    if registry.register_provider(provider).await.is_ok() {
+                        mounted.push(name.clone());
+                    }
+                }
+                Err(err) => warn!(
+                    provider = %name,
+                    error = %err,
+                    "configured MCP server did not start; its tools are missing from this run"
+                ),
             }
         }
+
         let tools_dir = workspace_cwd.join(".thunder").join("tools");
-        if tools_dir.exists() {
-            let _ = registry.reload_scripts_dir(&tools_dir).await;
+        if tools_dir.exists() && registry.reload_scripts_dir(&tools_dir).await.is_ok() {
+            mounted.push(registry.script_provider().provider_id().to_string());
         }
-        registry
+
+        (registry, mounted)
     }
 
     async fn reply_ok(&self, id: Option<String>, data: Value) {
