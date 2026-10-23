@@ -116,11 +116,13 @@ cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
 
 ---
 
-## KI-9 `bash` 无法参与进度判定，只能靠预算兜底 `wontfix`（记录为设计取舍）
+## KI-9 `bash` 无法参与进度判定，只能靠预算兜底 `deferred`（方案已定，暂不实施）
 
 `bash` 的副作用无法由参数刻画（`echo x > f`），因此必须声明 `ProgressKind::Neutral`，只参与输出指纹判定；输出里带耗时/PID 时指纹永远「新鲜」，停滞检测对它失效，只能靠 `wall_clock` 与 `max_turns` 兜底。
 
-彻底解法需要插件把结构化副作用回传（`ToolOutcome { text, progress }`），见方案 §13 Phase F。当前不修。
+彻底解法需要插件把结构化副作用回传（`ToolOutcome { text, progress }`）。完整方案已写好、可直接实施：**`docs/phase-f-tool-progress.md`**（F1 = ABI + core 消费，F2 = bash 工作区指纹差分，F3 = 可选 `file_change` 事件）。
+
+暂缓理由见该文档开头：真机 22 次调用全部 `novel=true`，盲区尚未造成实际误判。
 
 ---
 
