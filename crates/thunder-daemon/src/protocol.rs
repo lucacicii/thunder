@@ -254,12 +254,55 @@ pub enum DaemonResponse {
     },
 }
 
+/// The two approval modes the daemon actually implements, and the aliases each
+/// one answers to.
+///
+/// `plan` is the only mode with behaviour of its own: it installs the plan tools
+/// and refuses writes. Everything else runs every call, so every name the wire
+/// has ever carried for "less strict than plan" — the retired `ask` and
+/// `acceptEdits` included — resolves to `yolo` rather than to a third mode that
+/// nothing branches on. A session that arrives with one of those names is judged
+/// exactly like `yolo`, and `ModeChanged` says so.
 pub fn normalize_mode(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "yolo" | "bypass" | "bypasspermissions" => Some("yolo"),
         "plan" => Some("plan"),
-        "ask" | "default" => Some("ask"),
-        "acceptedits" | "accept_edits" | "autoedit" | "auto_edit" => Some("acceptEdits"),
+        "yolo" | "ask" | "default" | "bypass" | "bypasspermissions" | "acceptedits"
+        | "accept_edits" | "autoedit" | "auto_edit" => Some("yolo"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_mode;
+
+    #[test]
+    fn keeps_only_the_two_implemented_modes() {
+        assert_eq!(normalize_mode("plan"), Some("plan"));
+        assert_eq!(normalize_mode(" PLAN "), Some("plan"));
+        assert_eq!(normalize_mode("yolo"), Some("yolo"));
+    }
+
+    #[test]
+    fn folds_the_ungated_names_into_yolo() {
+        // `ask` and `acceptEdits` never had a gate to attach to, so a session
+        // carrying one runs every call — announcing it as `yolo` is the truth.
+        for raw in [
+            "ask",
+            "default",
+            "acceptEdits",
+            "accept_edits",
+            "autoEdit",
+            "bypass",
+            "bypassPermissions",
+        ] {
+            assert_eq!(normalize_mode(raw), Some("yolo"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_what_it_does_not_know() {
+        assert_eq!(normalize_mode("auto"), None);
+        assert_eq!(normalize_mode(""), None);
     }
 }

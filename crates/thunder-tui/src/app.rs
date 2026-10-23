@@ -196,7 +196,7 @@ pub static ALL_SLASH_COMMANDS: &[SlashCommandDef] = &[
         aliases: &[],
         args_hint: "[yolo | plan]",
         description: "Toggle or set permission mode (Shift+Tab to toggle)",
-        arg_options: &["yolo", "plan", "ask", "acceptEdits"],
+        arg_options: &["yolo", "plan"],
     },
     SlashCommandDef {
         name: "resume",
@@ -1179,7 +1179,7 @@ impl App {
             "/mode" => {
                 if arg.is_empty() {
                     self.toggle_mode();
-                } else if matches!(arg, "yolo" | "plan" | "ask" | "acceptEdits") {
+                } else if matches!(arg, "yolo" | "plan") {
                     self.mode = arg.to_string();
                     self.set_status_message(format!("Mode set to '{}'", self.mode));
                 } else {
