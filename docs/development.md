@@ -84,6 +84,8 @@ thunderctl reload            # 常驻 daemon 原地换二进制，pid 不变
 
 TUI 的代码改动**不需要** `reload`：Desktop 里新开一个 thunder TUI 会话就会用新二进制。
 
+> `cargo test --workspace` 不会产出 `target/debug/thunderctl`（bin 只编译成测试 harness）。干净树上要么先 `cargo build -p thunder-cli`，要么直接用已安装的 `~/.cargo/bin/thunderctl`。
+
 如果只想切配置不构建（比如二进制已经构建好了）：
 
 ```bash
@@ -252,6 +254,8 @@ THUNDER_CONFIG_DIR=$PWD/target/dev-home cargo run -p thunder-daemon --bin thunde
 | `thunderctl dev` 报「构建产物缺失」 | 用了 `--no-build` 但没产物 | 去掉 `--no-build` |
 | TUI 卡顿 / 帧率低 | 跑的是 `debug` 构建 | 用 `tui-dev` 或 `release`：`./run.sh` 或 `THUNDER_TUI_PROFILE=tui-dev ./run.sh` |
 | `thunder-daemon` 起来就报 `--config-dir requires a path` | 参数缺值 | 补上路径，或改用 `THUNDER_CONFIG_DIR` |
+| 终端里 `thunder` / `thunder-tui` 行为不像最新代码 | PATH 命中的是 `~/.cargo/bin` 里的旧安装版 | `thunderctl install` 刷新（不改 Desktop 指向），再用 `cmp ~/.cargo/bin/thunder target/release/thunder` 核对 |
+| `cargo clean` 之后 `thunderctl` 找不到 | `cargo test --workspace` 只把 bin 编译成测试 harness（落在 `target/debug/deps/`），不产出 `target/debug/thunderctl` | `cargo build -p thunder-cli`，或直接用 `~/.cargo/bin/thunderctl` |
 
 ---
 
