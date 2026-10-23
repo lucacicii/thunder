@@ -342,7 +342,17 @@ fn close_pending_tool_calls(&mut self, calls: &[ToolCallRequest], start: usize, 
 - **周期检测**：`crates/thunder-core/src/cycles.rs`，签名 = `(kind, tool, args)`（**执行前**即可判定，能拦掉那次调用）；`pairs >= 2p` 才承认周期，软告警 3 周期，硬中止 4 周期 → 补平 tool 结果后收尾。
 - **偏差记录**：§6.2 原定的「窗口零新颖」硬守卫被去掉。它实际上是空判据（周期的尾部按定义都是重复），真正的误杀保护来自签名含 args——内容演进的合法交替永远不构成同一签名。已在 `cycles.rs` 模块文档里写明。
 
-### 7.4 Phase C 已落地（预算会计，不强制）
+### 7.4 Phase E 已落地（自愈 L0 + L1）
+
+- **触发点**：停滞信号、周期硬中止。两者都先尝试 `try_recover()`，失败才走收尾轮。
+- **L0 策略推动**：已经内建在软告警里（`loop_notice` / cycle notice 追加到 tool 结果尾部）。
+- **L1 上下文重置** `context_reset()`：用现成的 `Summarizer` + `extract_file_lists()` 把卡死轨迹压成 handoff，重建为「system prompt + 原始目标 + `<handoff>`」。`fallback_handoff()` 在摘要器缺失/失败时降级为「已改文件 + 已读文件」清单——恢复失败绝不能让 run 崩溃。
+- **硬约束**：`BudgetState::allow_context_reset()` 限制次数（默认 2），且**重置不充值** turns/tokens/wall-clock；重置后 `loop_guard` / `cycles` / `progress` 一并清零，`cache_warmer::invalidate()` 丢掉死前缀。
+- **可观测**：`Custom{kind:"loop_recovered", payload:{turn, attempt, level, reason, detail, handoff_tokens}}`；TUI 渲染 `⟳ Auto-recovered (context_reset): …`。
+- **L2（整轮重启）仍关闭**：`allow_restart()` 已实现但无人调用，`max_restarts` 默认 0。没有「换模型/换工具集/换计划模式」这类可变杠杆时，重跑只会复读同一个循环。
+- 批内触发时用 `recovered_mid_batch` 标志跳出 tool 循环，`TurnEnd.finish_reason` 记为 `recovered`。
+
+### 7.5 Phase C 已落地（预算会计，不强制）
 
 - `thunder-core/src/budget.rs`：`LoopBudget`（静态上限）/ `BudgetState`（跨 attempt 累加）/ `BudgetUsage::{Ok, NearLimit, Exhausted}`。`allow_context_reset()` / `allow_restart()` 已就位但无人调用（Phase E）。
 - 接线：轮首 `record_turn()` + `check()`；每次 LLM 响应后 `record_tokens()`。`NearLimit` 每个维度每次 run **只报一次**，以 `AgentEvent::Custom { kind: "budget_notice" }` 发出；`Exhausted` 目前只 `tracing::warn!`，**不中断**（Phase D 换成收尾轮）。
@@ -540,7 +550,7 @@ max_restarts = 0                # L2，daemon 侧配 1
 | **B 观察** ✅ 已落地 | §3.1/3.2/4/5 + `tracing` 打点（每次工具调用打印 kind/novel/streak） | 否，`max_turns` 仍 16 | 1 天 |
 | **C 接线** ✅ 已落地 | 预算层（`budget.rs`）+ `warn_at` 只 warn 不收尾 + 配置旋钮 + TUI `Custom` 渲染 | 极小 | 半天 |
 | **D 放开** ✅ 已落地 | 收尾轮 + `max_turns=200` + 停滞早停 + 周期检测启用 + `finish_reason` 贯穿 | 是 | 1 天 |
-| **E 自愈** | L0 + L1（`max_context_resets=2`），L2 留开关 | 是 | 1 天 |
+| **E 自愈** ✅ 已落地 | L0 + L1（`max_context_resets=2`），L2 留开关 | 是 | 1 天 |
 | **F 可选** | `ToolOutcome{ text, progress: Option<ProgressSignal> }` + `From<String>`，让 bash / 第三方 MCP 自报 mutation digest | 否（默认退化） | 1 天 |
 
 **Phase A 应最先独立合入**：纯 bug 修复、零争议、与预算方案解耦，而且它今天就在污染用户会话。

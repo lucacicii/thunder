@@ -122,6 +122,12 @@
 
 ---
 
+## KI-12 L2 整轮重启只有开关没有实现 `open` `P3`
+
+`BudgetState::allow_restart()` 与 `AgentLoopConfig.budget.max_restarts` 已就位，但循环里没有任何调用点：Phase E 只实现了 L1（上下文重置）。要在 L2 生效，除了调用点还需要「每次重启必须改变一个变量」的机制（换模型 / 收敛工具集 / 挂 plan 中间件），否则等于确定性复读同一个死循环。
+
+---
+
 ## KI-11 连续错误计数仍被单次成功清零 `open` `P2`
 
 `crates/thunder-core/src/loop_guard.rs` 的 `record_tool_result()` 一遇成功就把 `consecutive_errors` 归零，因此 `err,err,ok,err,err,ok` 这种抖动式失败永远不会触发熔断。原方案 §6.4 计划用「最近 12 次里错误 ≥ 8」的窗口错误率替代，Phase D 未实现（周期检测优先落地）。

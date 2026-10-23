@@ -29,6 +29,31 @@ use thunder_registry::{CatalogSnapshot, ToolRegistry};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+/// Degraded handoff used when the summarizer is unavailable or its call failed.
+///
+/// Recovery must never take the run down, so this stays useful with no LLM at all: the
+/// new attempt at least knows which files were touched, which is what prevents it from
+/// re-applying edits against stale content.
+fn fallback_handoff(read_files: &[String], modified_files: &[String]) -> String {
+    let mut out = String::from("(no summary available; recovering from the file lists)\n");
+    if !modified_files.is_empty() {
+        out.push_str("Files already modified by the interrupted attempt:\n");
+        for path in modified_files {
+            out.push_str(&format!("- {path}\n"));
+        }
+    }
+    if !read_files.is_empty() {
+        out.push_str("Files already read:\n");
+        for path in read_files.iter().take(20) {
+            out.push_str(&format!("- {path}\n"));
+        }
+    }
+    if modified_files.is_empty() && read_files.is_empty() {
+        out.push_str("No file activity was recorded.\n");
+    }
+    out
+}
+
 /// Configuration for a ReAct Agent Loop session (§2.2).
 #[derive(Clone, Debug)]
 pub struct AgentLoopConfig {
@@ -118,6 +143,8 @@ pub struct ReActAgentLoop {
     loop_guard: LoopGuard,
     progress: ProgressTracker,
     cycles: CycleDetector,
+    /// The prompt that started the current run; recovery rebuilds the context from it.
+    goal: Option<String>,
     pause_gate: Option<Arc<PauseGate>>,
     steer_queues: Option<Arc<SteerQueues>>,
     scratchpad: Option<ScratchpadManager>,
@@ -146,6 +173,7 @@ impl ReActAgentLoop {
             loop_guard: LoopGuard::default(),
             progress: ProgressTracker::default(),
             cycles: CycleDetector::default(),
+            goal: None,
             pause_gate: None,
             steer_queues: None,
             scratchpad: None,
@@ -245,7 +273,10 @@ impl ReActAgentLoop {
         self.progress = ProgressTracker::from_config(self.config.stall);
         self.cycles.reset();
         let mut budget = BudgetState::new(self.config.budget.clone(), run_start);
-        self.context.push(ChatMessage::user(user_prompt));
+        let goal: String = user_prompt.into();
+        // Recovery rebuilds the context from this goal, so keep it for the whole run.
+        self.goal = Some(goal.clone());
+        self.context.push(ChatMessage::user(goal));
         let mut system_faults = Vec::new();
         let mut compactions_triggered = 0usize;
         let mut stats = AgentStats::default();
@@ -539,6 +570,7 @@ impl ReActAgentLoop {
             }
 
             // 5. Execute requested tool calls against the frozen `turn_snapshot` (§1).
+            let mut recovered_mid_batch = false;
             for (call_idx, call) in turn_resp.tool_calls.iter().enumerate() {
                 if cancel.is_cancelled() {
                     self.close_pending_tool_calls(&turn_resp.tool_calls, call_idx, "run cancelled");
@@ -582,6 +614,13 @@ impl ReActAgentLoop {
                             "the same {}-step cycle repeated {} times",
                             hit.period, hit.cycles
                         );
+                        if self
+                            .try_recover(&mut budget, turn, "stalled", &detail)
+                            .await
+                        {
+                            recovered_mid_batch = true;
+                            break;
+                        }
                         return Ok(self
                             .wrap_up_turn(
                                 FinishReason::BudgetExceeded,
@@ -729,9 +768,17 @@ impl ReActAgentLoop {
 
             self.emit_agent(AgentEvent::TurnEnd {
                 turn,
-                finish_reason: "tool_calls".to_string(),
+                finish_reason: if recovered_mid_batch {
+                    "recovered".to_string()
+                } else {
+                    "tool_calls".to_string()
+                },
                 stats: turn_stats,
             });
+
+            if recovered_mid_batch {
+                continue;
+            }
 
             // Stall detection: the run already started changing things and then stopped
             // producing anything new. Wrap up rather than burning the remaining budget.
@@ -750,8 +797,14 @@ impl ReActAgentLoop {
                     %detail,
                     mutations = self.progress.total_mutations(),
                     novel_observations = self.progress.total_novel_observations(),
-                    "stall detected; wrapping up"
+                    "stall detected"
                 );
+                if self
+                    .try_recover(&mut budget, turn, "stalled", &detail)
+                    .await
+                {
+                    continue;
+                }
                 return Ok(self
                     .wrap_up_turn(
                         FinishReason::BudgetExceeded,
@@ -802,6 +855,88 @@ impl ReActAgentLoop {
                 system_faults,
             )
             .await)
+    }
+
+    /// Recovery level L0/L1: try to get the run unstuck before giving up.
+    ///
+    /// Returns `true` when the context was reset and the caller should keep going.
+    /// L2 (a full restart with a changed variable) stays disabled by default: retrying
+    /// the same model with the same tools would only replay the same loop.
+    async fn try_recover(
+        &mut self,
+        budget: &mut BudgetState,
+        turn: usize,
+        reason: &str,
+        detail: &str,
+    ) -> bool {
+        if !budget.allow_context_reset() {
+            tracing::info!(turn, "recovery budget exhausted; wrapping up");
+            return false;
+        }
+        let handoff_tokens = self.context_reset(turn, reason, detail).await;
+        let attempt = budget.resets_used();
+        self.emit_agent(AgentEvent::Custom {
+            kind: "loop_recovered".to_string(),
+            payload: json!({
+                "turn": turn,
+                "attempt": attempt,
+                "level": "context_reset",
+                "reason": reason,
+                "detail": detail,
+                "handoff_tokens": handoff_tokens,
+            }),
+        });
+        tracing::warn!(
+            turn,
+            attempt,
+            %reason,
+            handoff_tokens,
+            "stalled context reset; continuing with a handoff summary"
+        );
+        true
+    }
+
+    /// Replace the stuck trajectory with a summary of what it learned.
+    ///
+    /// Keeps the system prompt, the original goal and a `<handoff>` block (goal,
+    /// confirmed findings, what was already changed on disk, what was tried and failed).
+    /// The discarded prefix had no information value, so the cache is invalidated rather
+    /// than warmed over a dead prefix.
+    async fn context_reset(&mut self, turn: usize, reason: &str, detail: &str) -> usize {
+        let messages = self.context.get_messages();
+        let (read_files, modified_files) = crate::pruning::extract_file_lists(&messages);
+        let region = crate::pruning::serialize_region(&messages);
+        let cancel = self.cancellation_token.clone();
+
+        let summary = match self.build_summarizer() {
+            Some(summarizer) => summarizer
+                .summarize(&region, None, &read_files, &modified_files, &cancel)
+                .await
+                .ok(),
+            None => None,
+        };
+        let handoff = summary.unwrap_or_else(|| fallback_handoff(&read_files, &modified_files));
+        let handoff_tokens = crate::token_estimator::estimate_token_count(&handoff);
+        let goal = self.goal.clone().unwrap_or_default();
+
+        self.context = ContextBuffer::with_system_prompt(&self.config.system_prompt);
+        if !goal.is_empty() {
+            self.context.push(ChatMessage::user(goal));
+        }
+        self.context.inject_system_notification(format!(
+            "<handoff>\nYour previous attempt on this task stalled: {reason} ({detail}).\n\
+             It was cut off. Below is what that attempt established. Continue from it, but \
+             take a different path and do not repeat the sequence that got stuck.\n\
+             {handoff}\n</handoff>"
+        ));
+
+        // A fresh start: no stuck history, so the loop guards start clean too.
+        cache_warmer::invalidate(&self.config.session_id);
+        self.loop_guard.reset();
+        self.cycles.reset();
+        self.progress = ProgressTracker::from_config(self.config.stall);
+        tracing::debug!(turn, handoff_tokens, "context rebuilt for recovery");
+        handoff_tokens
     }
 
     /// Close a run that hit a ceiling by giving the model one final, tool-free turn.

@@ -66,6 +66,7 @@ fn config(ws: &std::path::Path, max_turns: usize) -> AgentLoopConfig {
         tool_timeout: Duration::from_secs(5),
         budget: thunder_core::LoopBudget {
             max_turns,
+            max_context_resets: 0,
             ..Default::default()
         },
         stall: thunder_core::StallConfig::default(),

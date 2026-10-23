@@ -62,6 +62,8 @@ fn config(ws: &std::path::Path, max_turns: usize, stall: StallConfig) -> AgentLo
             max_turns,
             wall_clock: None,
             max_total_tokens: 0,
+            // Recovery is covered by `recovery.rs`; these tests isolate enforcement.
+            max_context_resets: 0,
             ..LoopBudget::default()
         },
         stall,
