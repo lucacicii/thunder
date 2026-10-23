@@ -15,8 +15,8 @@ pub use composer_sync::ComposerSyncEngine;
 pub use config::MemoryConfig;
 pub use daemon::MemoryDaemon;
 pub use db::{
-    ComposerTrainingSample, Database, LongTermMemoryRow, MemoryStats, NewLongTermMemory,
-    RawCaptureRow,
+    CompactionResult, ComposerTrainingSample, Database, LongTermMemoryRow, MemoryStats,
+    NewLongTermMemory, RawCaptureRow, SuppressionMask,
 };
 pub use error::MemoryError;
 pub use mcp::{run_mcp_stdio, MemoryMcpServer};

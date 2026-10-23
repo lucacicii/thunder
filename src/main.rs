@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("  📂 Database:     {:?}", config.db_path);
             println!("  📋 Composer DB:  {:?}", config.resolve_composer_db_path().unwrap_or_else(|| PathBuf::from("not found")));
-            println!("  ⏱️  Intervals:    Capture={}s, Synthesis={}s", config.capture_interval_secs, config.synthesis_interval_secs);
+            println!("  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s", config.capture_interval_secs, config.min_capture_interval_secs, config.max_capture_interval_secs, config.synthesis_interval_secs);
 
             if config.db_path.exists() {
                 let db = Database::open(&config.db_path)?;
@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  🌟 Long-Term Memories:         {}", stats.long_term_memories);
                 println!("  🤖 Agent Rules / Guidelines:   {}", stats.agent_interactions);
                 println!("  🎓 Composer Training Samples:  {}", stats.training_samples);
+                println!("  🛡️  Noise Suppression Hits:     {}", stats.suppression_mask_hits);
                 if let Some(ms) = stats.last_capture_ms {
                     let secs_ago = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -377,6 +378,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        "masks" => {
+            let db = Database::open(&config.db_path)?;
+            let masks = db.get_active_suppression_masks()?;
+            println!("══════════════════════════════════════════════════════════════════");
+            println!("  🛡️  Active Cognitive Noise Suppression Masks ({})", masks.len());
+            println!("══════════════════════════════════════════════════════════════════");
+            for m in masks {
+                println!("  ● Bundle:   {}", m.bundle_id);
+                println!("    Pattern:  {}", m.window_title_pattern);
+                println!("    Reason:   {}", m.reason);
+                println!("    Hits:     {}", m.hit_count);
+                println!("──────────────────────────────────────────────────────────────────");
+            }
+        }
+
+        "mask" => {
+            if args.len() < 4 || args[1] != "add" {
+                println!("Usage: thunder-memory mask add <bundle_id> <window_title_pattern> <reason>");
+                return Ok(());
+            }
+            let db = Database::open(&config.db_path)?;
+            let bundle = &args[2];
+            let pattern = &args[3];
+            let reason = if args.len() > 4 {
+                args[4..].join(" ")
+            } else {
+                "User defined noise mask".to_string()
+            };
+            db.add_suppression_mask(bundle, pattern, &reason)?;
+            println!("✅ Added suppression mask: bundle='{}', pattern='{}'", bundle, pattern);
+        }
+
+        "compact" => {
+            let mut capture_days = config.raw_capture_retention_days;
+            let mut archive_days = config.memory_archive_days;
+
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--days" && i + 1 < args.len() {
+                    capture_days = args[i + 1].parse().unwrap_or(capture_days);
+                    i += 2;
+                } else if args[i] == "--archive-days" && i + 1 < args.len() {
+                    archive_days = args[i + 1].parse().unwrap_or(archive_days);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+
+            println!("🧹 Running aggressive compaction and cold archiving...");
+            println!("   Ephemeral L1 retention: {} days", capture_days);
+            println!("   Episodic L2 archive threshold: {} days", archive_days);
+            println!("   Archive destination: {:?}", config.archive_db_path);
+
+            let db = Database::open(&config.db_path)?;
+            let res = db.compact_and_archive(&config.archive_db_path, capture_days, archive_days)?;
+
+            println!("✅ Compaction complete!");
+            println!("   - Pruned L1 captures:        {}", res.pruned_captures);
+            println!("   - Archived L2 memories:      {}", res.archived_memories);
+            if res.active_db_bytes_before > 0 {
+                let kb_before = res.active_db_bytes_before as f64 / 1024.0;
+                let kb_after = res.active_db_bytes_after as f64 / 1024.0;
+                println!("   - Active DB size:            {:.1} KB -> {:.1} KB", kb_before, kb_after);
+            }
+        }
+
         "mcp" => {
             config.ensure_dirs()?;
             let db = Database::open(&config.db_path)?;
@@ -398,6 +466,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  query <search terms>    Query memory with Generative Agents scoring");
             println!("  preferences [project]   Show active user preferences & constraints");
             println!("  record <cat> <title>    Record explicit memory/preference rule");
+            println!("  compact                 Run aggressive compaction and cold archiving");
+            println!("  masks                   List active noise suppression masks and hit statistics");
+            println!("  mask add <bundle> <pat> Add an autonomous cognitive noise suppression mask");
             println!("  list-memories [limit]   List recent long-term memories");
             println!("  mcp                     Run standard JSON-RPC 2.0 MCP server over stdio");
             println!("  install-launchagent     Install macOS LaunchAgent for autostart");

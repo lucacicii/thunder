@@ -3,7 +3,7 @@ use crate::error::MemoryError;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -47,6 +47,21 @@ pub struct LongTermMemoryRow {
     pub time_window_end_ms: i64,
     pub source_capture_ids: Vec<i64>,
     pub status: String,
+    pub utility_score: f32,
+    pub access_count: i64,
+    pub last_accessed_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuppressionMask {
+    pub id: i64,
+    pub bundle_id: String,
+    pub window_title_pattern: String,
+    pub reason: String,
+    pub hit_count: i64,
+    pub is_active: bool,
+    pub created_at_ms: i64,
+    pub last_hit_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +107,9 @@ pub struct AgentInteractionRow {
     pub suggested_importance: f32,
     pub status: String,
     pub metadata: String,
+    pub utility_score: f32,
+    pub access_count: i64,
+    pub last_accessed_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,18 +119,29 @@ pub struct MemoryStats {
     pub long_term_memories: i64,
     pub agent_interactions: i64,
     pub training_samples: i64,
+    pub suppression_mask_hits: i64,
     pub last_capture_ms: Option<i64>,
     pub last_synthesis_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionResult {
+    pub pruned_captures: usize,
+    pub archived_memories: usize,
+    pub active_db_bytes_before: u64,
+    pub active_db_bytes_after: u64,
 }
 
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    path: Option<PathBuf>,
 }
 
 impl Database {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, MemoryError> {
-        let conn = Connection::open(path)?;
+        let p = path.as_ref().to_path_buf();
+        let conn = Connection::open(&p)?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -122,6 +151,7 @@ impl Database {
         )?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: Some(p),
         };
         db.init_schema()?;
         Ok(db)
@@ -131,6 +161,7 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: None,
         };
         db.init_schema()?;
         Ok(db)
@@ -176,7 +207,10 @@ impl Database {
                 time_window_start_ms INTEGER NOT NULL,
                 time_window_end_ms INTEGER NOT NULL,
                 source_capture_ids TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active'
+                status TEXT NOT NULL DEFAULT 'active',
+                utility_score REAL NOT NULL DEFAULT 1.0,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at_ms INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_long_term_memories_created
@@ -201,7 +235,10 @@ impl Database {
                 entities TEXT NOT NULL DEFAULT '[]',
                 suggested_importance REAL NOT NULL DEFAULT 5.0,
                 status TEXT NOT NULL DEFAULT 'active',
-                metadata TEXT NOT NULL DEFAULT ''
+                metadata TEXT NOT NULL DEFAULT '',
+                utility_score REAL NOT NULL DEFAULT 1.0,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at_ms INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_agent_interactions_scope_cat
@@ -236,6 +273,23 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_composer_training_project
                 ON composer_training_samples(project_path, created_at_ms DESC);
 
+            -- Autonomous Cognitive Noise Suppression Masks
+            CREATE TABLE IF NOT EXISTS suppression_masks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bundle_id TEXT NOT NULL,
+                window_title_pattern TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at_ms INTEGER NOT NULL,
+                last_hit_at_ms INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_suppression_masks_unique
+                ON suppression_masks(bundle_id, window_title_pattern);
+            CREATE INDEX IF NOT EXISTS idx_suppression_masks_active
+                ON suppression_masks(is_active, hit_count DESC);
+
             -- Metadata key-value store for watermarks and sync states
             CREATE TABLE IF NOT EXISTS memory_meta (
                 key TEXT PRIMARY KEY,
@@ -244,6 +298,52 @@ impl Database {
             );
             "#,
         )?;
+
+        // Safe additive column migrations for existing databases
+        let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;", []);
+        let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN last_accessed_at_ms INTEGER NOT NULL DEFAULT 0;", []);
+
+        let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;", []);
+        let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN last_accessed_at_ms INTEGER NOT NULL DEFAULT 0;", []);
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_long_term_memories_utility ON long_term_memories(utility_score DESC, updated_at_ms DESC);",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_interactions_utility ON agent_interactions(utility_score DESC, recorded_at_ms DESC);",
+            [],
+        );
+
+        // Seed default noise suppression masks if table is empty
+        let mask_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM suppression_masks", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        if mask_count == 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let default_masks = [
+                ("com.apple.Music", "*", "Apple Music player window has no cognitive development value"),
+                ("com.spotify.client", "*", "Spotify music player window has no cognitive development value"),
+                ("com.apple.QuickTimePlayerX", "*", "Video playback window has no text development value"),
+                ("com.netease.163music", "*", "NetEase Music player window has no development value"),
+            ];
+            for (bundle, pattern, reason) in default_masks {
+                let _ = conn.execute(
+                    r#"
+                    INSERT OR IGNORE INTO suppression_masks (
+                        bundle_id, window_title_pattern, reason, hit_count, is_active, created_at_ms, last_hit_at_ms
+                    ) VALUES (?1, ?2, ?3, 0, 1, ?4, 0)
+                    "#,
+                    params![bundle, pattern, reason, now],
+                );
+            }
+        }
         Ok(())
     }
 
@@ -444,7 +544,8 @@ impl Database {
                 r#"
                 SELECT id, created_at_ms, updated_at_ms, category, title, summary,
                        key_entities, importance_score, time_window_start_ms,
-                       time_window_end_ms, source_capture_ids, status
+                       time_window_end_ms, source_capture_ids, status,
+                       utility_score, access_count, last_accessed_at_ms
                 FROM long_term_memories
                 WHERE category = ?1 AND status = 'active'
                 ORDER BY updated_at_ms DESC
@@ -469,7 +570,8 @@ impl Database {
             r#"
             SELECT id, created_at_ms, updated_at_ms, category, title, summary,
                    key_entities, importance_score, time_window_start_ms,
-                   time_window_end_ms, source_capture_ids, status
+                   time_window_end_ms, source_capture_ids, status,
+                   utility_score, access_count, last_accessed_at_ms
             FROM long_term_memories
             WHERE title LIKE ?1 OR summary LIKE ?1 OR key_entities LIKE ?1
             ORDER BY importance_score DESC, updated_at_ms DESC
@@ -492,7 +594,8 @@ impl Database {
             r#"
             SELECT id, created_at_ms, updated_at_ms, category, title, summary,
                    key_entities, importance_score, time_window_start_ms,
-                   time_window_end_ms, source_capture_ids, status
+                   time_window_end_ms, source_capture_ids, status,
+                   utility_score, access_count, last_accessed_at_ms
             FROM long_term_memories
             ORDER BY updated_at_ms DESC
             LIMIT ?1
@@ -526,6 +629,9 @@ impl Database {
             time_window_end_ms: row.get(9)?,
             source_capture_ids: sources,
             status: row.get(11)?,
+            utility_score: row.get(12).unwrap_or(1.0),
+            access_count: row.get(13).unwrap_or(0),
+            last_accessed_at_ms: row.get(14).unwrap_or(0),
         })
     }
 
@@ -669,6 +775,9 @@ impl Database {
         let training_samples: i64 = conn
             .query_row("SELECT COUNT(*) FROM composer_training_samples", [], |r| r.get(0))
             .unwrap_or(0);
+        let suppression_mask_hits: i64 = conn
+            .query_row("SELECT COALESCE(SUM(hit_count), 0) FROM suppression_masks", [], |r| r.get(0))
+            .unwrap_or(0);
 
         let last_capture_ms: Option<i64> = conn
             .query_row(
@@ -692,6 +801,7 @@ impl Database {
             long_term_memories,
             agent_interactions,
             training_samples,
+            suppression_mask_hits,
             last_capture_ms,
             last_synthesis_ms,
         })
@@ -774,7 +884,7 @@ impl Database {
                 r#"
                 SELECT id, recorded_at_ms, agent_name, scope, project_path,
                        category, title, content, entities, suggested_importance,
-                       status, metadata
+                       status, metadata, utility_score, access_count, last_accessed_at_ms
                 FROM agent_interactions
                 WHERE status = 'active'
                   AND category IN ('constraint', 'user_preference', 'architecture_decision')
@@ -791,7 +901,7 @@ impl Database {
                 r#"
                 SELECT id, recorded_at_ms, agent_name, scope, project_path,
                        category, title, content, entities, suggested_importance,
-                       status, metadata
+                       status, metadata, utility_score, access_count, last_accessed_at_ms
                 FROM agent_interactions
                 WHERE status = 'active'
                   AND category IN ('constraint', 'user_preference', 'architecture_decision')
@@ -819,8 +929,8 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, recorded_at_ms, agent_name, scope, project_path,
-                       category, title, content, entities, suggested_importance,
-                       status, metadata
+                   category, title, content, entities, suggested_importance,
+                   status, metadata, utility_score, access_count, last_accessed_at_ms
             FROM agent_interactions
             WHERE title LIKE ?1 OR content LIKE ?1 OR entities LIKE ?1
             ORDER BY recorded_at_ms DESC
@@ -846,7 +956,7 @@ impl Database {
             r#"
             SELECT id, recorded_at_ms, agent_name, scope, project_path,
                    category, title, content, entities, suggested_importance,
-                   status, metadata
+                   status, metadata, utility_score, access_count, last_accessed_at_ms
             FROM agent_interactions
             ORDER BY recorded_at_ms DESC
             LIMIT ?1
@@ -888,7 +998,138 @@ impl Database {
             suggested_importance: row.get(9)?,
             status: row.get(10)?,
             metadata: row.get(11)?,
+            utility_score: row.get(12).unwrap_or(1.0),
+            access_count: row.get(13).unwrap_or(0),
+            last_accessed_at_ms: row.get(14).unwrap_or(0),
         })
+    }
+
+    /// Track memory access and optionally update utility score (positive or negative reinforcement)
+    pub fn track_memory_access(
+        &self,
+        target: &str, // "long_term" | "agent"
+        id: i64,
+        utility_delta: f32,
+    ) -> Result<(), MemoryError> {
+        let conn = self.conn.lock();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        match target {
+            "long_term" | "long_term_memory" => {
+                conn.execute(
+                    r#"
+                    UPDATE long_term_memories
+                    SET access_count = access_count + 1,
+                        last_accessed_at_ms = ?1,
+                        utility_score = MAX(0.1, utility_score + ?2),
+                        updated_at_ms = ?1
+                    WHERE id = ?3
+                    "#,
+                    params![now_ms, utility_delta, id],
+                )?;
+            }
+            "agent" | "agent_interaction" => {
+                conn.execute(
+                    r#"
+                    UPDATE agent_interactions
+                    SET access_count = access_count + 1,
+                        last_accessed_at_ms = ?1,
+                        utility_score = MAX(0.1, utility_score + ?2)
+                    WHERE id = ?3
+                    "#,
+                    params![now_ms, utility_delta, id],
+                )?;
+            }
+            _ => return Err(MemoryError::Other(format!("Unknown memory target: {}", target))),
+        }
+        Ok(())
+    }
+
+    /// Retrieve active suppression masks ordered by hit count
+    pub fn get_active_suppression_masks(&self) -> Result<Vec<SuppressionMask>, MemoryError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, bundle_id, window_title_pattern, reason, hit_count, is_active, created_at_ms, last_hit_at_ms
+            FROM suppression_masks
+            WHERE is_active = 1
+            ORDER BY hit_count DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SuppressionMask {
+                id: row.get(0)?,
+                bundle_id: row.get(1)?,
+                window_title_pattern: row.get(2)?,
+                reason: row.get(3)?,
+                hit_count: row.get(4)?,
+                is_active: row.get::<_, i64>(5)? != 0,
+                created_at_ms: row.get(6)?,
+                last_hit_at_ms: row.get(7)?,
+            })
+        })?;
+        let mut masks = Vec::new();
+        for r in rows {
+            masks.push(r?);
+        }
+        Ok(masks)
+    }
+
+    /// Record a hit against a suppression mask
+    pub fn record_suppression_hit(&self, mask_id: i64) -> Result<(), MemoryError> {
+        let conn = self.conn.lock();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        conn.execute(
+            "UPDATE suppression_masks SET hit_count = hit_count + 1, last_hit_at_ms = ?1 WHERE id = ?2",
+            params![now, mask_id],
+        )?;
+        Ok(())
+    }
+
+    /// Check if a given application bundle ID and window title matches an active suppression mask
+    pub fn is_window_suppressed(&self, bundle_id: &str, window_title: &str) -> Result<bool, MemoryError> {
+        let masks = self.get_active_suppression_masks()?;
+        for m in masks {
+            if m.bundle_id == bundle_id || m.bundle_id == "*" {
+                if m.window_title_pattern == "*" || window_title.contains(&m.window_title_pattern) {
+                    let _ = self.record_suppression_hit(m.id);
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Add or update an autonomous suppression mask
+    pub fn add_suppression_mask(
+        &self,
+        bundle_id: &str,
+        window_title_pattern: &str,
+        reason: &str,
+    ) -> Result<i64, MemoryError> {
+        let conn = self.conn.lock();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        conn.execute(
+            r#"
+            INSERT INTO suppression_masks (
+                bundle_id, window_title_pattern, reason, hit_count, is_active, created_at_ms, last_hit_at_ms
+            ) VALUES (?1, ?2, ?3, 0, 1, ?4, 0)
+            ON CONFLICT(bundle_id, window_title_pattern) DO UPDATE SET
+                is_active = 1,
+                reason = excluded.reason
+            "#,
+            params![bundle_id, window_title_pattern, reason, now],
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
     /// Prune raw screen captures older than retention days
@@ -905,6 +1146,187 @@ impl Database {
             params![cutoff_ms],
         )?;
         Ok(count)
+    }
+
+    /// Aggressive compaction and cold archiving:
+    /// 1. Prunes processed L1 captures older than capture_retention_days (48h TTL default).
+    /// 2. Prunes unprocessed orphaned L1 captures older than 7 days.
+    /// 3. Moves unaccessed L2 episodic memories older than memory_archive_days into memory_archive.db.
+    /// 4. Runs SQLite VACUUM to physically shrink memory.db and keep active storage minimal.
+    pub fn compact_and_archive(
+        &self,
+        archive_db_path: &Path,
+        capture_retention_days: u32,
+        memory_archive_days: u32,
+    ) -> Result<CompactionResult, MemoryError> {
+        let bytes_before = self
+            .path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let capture_cutoff_ms = now_ms - (capture_retention_days as i64 * 86_400_000);
+        let memory_cutoff_ms = now_ms - (memory_archive_days as i64 * 86_400_000);
+
+        let conn = self.conn.lock();
+
+        // 1. Prune processed L1 captures older than TTL
+        let mut pruned_captures = conn.execute(
+            "DELETE FROM screen_captures WHERE captured_at_ms < ?1 AND processed = 1",
+            params![capture_cutoff_ms],
+        )?;
+
+        // Also prune unprocessed orphaned captures older than 7 days
+        let orphaned_cutoff = now_ms - (7 * 86_400_000);
+        let orphaned = conn.execute(
+            "DELETE FROM screen_captures WHERE captured_at_ms < ?1 AND processed = 0",
+            params![orphaned_cutoff],
+        )?;
+        pruned_captures += orphaned;
+
+        // 2. Cold Archive L2 Memories
+        if let Some(parent) = archive_db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let mut archive_conn = Connection::open(archive_db_path)?;
+        archive_conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE IF NOT EXISTS long_term_memories (
+                id INTEGER PRIMARY KEY,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                key_entities TEXT NOT NULL,
+                importance_score REAL NOT NULL,
+                time_window_start_ms INTEGER NOT NULL,
+                time_window_end_ms INTEGER NOT NULL,
+                source_capture_ids TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at_ms INTEGER NOT NULL DEFAULT 0,
+                utility_score REAL NOT NULL DEFAULT 1.0,
+                archived_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_archive_category ON long_term_memories(category);
+            CREATE INDEX IF NOT EXISTS idx_archive_archived_at ON long_term_memories(archived_at_ms DESC);
+            "#,
+        )?;
+
+        struct MemoryArchiveRow {
+            id: i64,
+            category: String,
+            title: String,
+            summary: String,
+            key_entities: String,
+            importance_score: f32,
+            time_window_start_ms: i64,
+            time_window_end_ms: i64,
+            source_capture_ids: String,
+            created_at_ms: i64,
+            updated_at_ms: i64,
+            access_count: i64,
+            last_accessed_at_ms: i64,
+            utility_score: f32,
+        }
+
+        let mut candidate_stmt = conn.prepare(
+            r#"
+            SELECT id, category, title, summary, key_entities, importance_score,
+                   time_window_start_ms, time_window_end_ms, source_capture_ids,
+                   created_at_ms, updated_at_ms, access_count, last_accessed_at_ms, utility_score
+            FROM long_term_memories
+            WHERE time_window_end_ms < ?1 AND (access_count = 0 OR last_accessed_at_ms < ?1)
+            "#,
+        )?;
+
+        let rows = candidate_stmt
+            .query_map(params![memory_cutoff_ms], |r| {
+                Ok(MemoryArchiveRow {
+                    id: r.get(0)?,
+                    category: r.get(1)?,
+                    title: r.get(2)?,
+                    summary: r.get(3)?,
+                    key_entities: r.get(4)?,
+                    importance_score: r.get(5)?,
+                    time_window_start_ms: r.get(6)?,
+                    time_window_end_ms: r.get(7)?,
+                    source_capture_ids: r.get(8)?,
+                    created_at_ms: r.get(9)?,
+                    updated_at_ms: r.get(10)?,
+                    access_count: r.get(11)?,
+                    last_accessed_at_ms: r.get(12)?,
+                    utility_score: r.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        drop(candidate_stmt);
+
+        let archived_memories = rows.len();
+        if !rows.is_empty() {
+            let tx = archive_conn.transaction()?;
+            for row in &rows {
+                tx.execute(
+                    r#"
+                    INSERT OR REPLACE INTO long_term_memories (
+                        id, category, title, summary, key_entities, importance_score,
+                        time_window_start_ms, time_window_end_ms, source_capture_ids,
+                        created_at_ms, updated_at_ms, access_count, last_accessed_at_ms,
+                        utility_score, archived_at_ms
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    "#,
+                    params![
+                        row.id,
+                        row.category,
+                        row.title,
+                        row.summary,
+                        row.key_entities,
+                        row.importance_score,
+                        row.time_window_start_ms,
+                        row.time_window_end_ms,
+                        row.source_capture_ids,
+                        row.created_at_ms,
+                        row.updated_at_ms,
+                        row.access_count,
+                        row.last_accessed_at_ms,
+                        row.utility_score,
+                        now_ms,
+                    ],
+                )?;
+            }
+            tx.commit()?;
+
+            // Delete from main database
+            for row in &rows {
+                conn.execute("DELETE FROM long_term_memories WHERE id = ?1", params![row.id])?;
+            }
+        }
+
+        // 3. Physical SQLite VACUUM to reclaim deleted pages
+        let _ = conn.execute_batch("VACUUM;");
+
+        let bytes_after = self
+            .path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        Ok(CompactionResult {
+            pruned_captures,
+            archived_memories,
+            active_db_bytes_before: bytes_before,
+            active_db_bytes_after: bytes_after,
+        })
     }
 }
 
@@ -1050,5 +1472,165 @@ mod tests {
         assert_eq!(prefs_updated.len(), 1);
         assert_eq!(prefs_updated[0].id, 4);
         assert!(prefs_updated[0].content.contains("test subprojects only"));
+    }
+
+    #[test]
+    fn test_state_machine_access_tracking_and_suppression() {
+        let db = Database::in_memory().unwrap();
+
+        // 1. Verify default suppression masks seeded
+        let masks = db.get_active_suppression_masks().unwrap();
+        assert!(!masks.is_empty());
+        assert!(masks.iter().any(|m| m.bundle_id == "com.apple.Music"));
+        assert!(masks.iter().any(|m| m.bundle_id == "com.spotify.client"));
+
+        // 2. Test is_window_suppressed on default mask
+        let suppressed = db.is_window_suppressed("com.spotify.client", "Daily Mix 1").unwrap();
+        assert!(suppressed);
+
+        // Not suppressed
+        let not_suppressed = db.is_window_suppressed("com.microsoft.VSCode", "src/main.rs").unwrap();
+        assert!(!not_suppressed);
+
+        // 3. Add custom suppression mask
+        db.add_suppression_mask("com.tencent.xinWeChat", "微信", "Chat window").unwrap();
+        let wechat_suppressed = db.is_window_suppressed("com.tencent.xinWeChat", "微信 (3条新消息)").unwrap();
+        assert!(wechat_suppressed);
+
+        // 4. Test memory access tracking and utility scoring
+        let mem_id = db.insert_long_term_memory(&NewLongTermMemory {
+            category: "test".into(),
+            title: "Test Memory".into(),
+            summary: "Summary".into(),
+            key_entities: vec![],
+            importance_score: 5.0,
+            time_window_start_ms: 100,
+            time_window_end_ms: 200,
+            source_capture_ids: vec![],
+        }).unwrap();
+
+        // Initial utility_score is 1.0, access_count is 0
+        let recent = db.list_recent_memories(1).unwrap();
+        assert_eq!(recent[0].access_count, 0);
+        assert!((recent[0].utility_score - 1.0).abs() < f32::EPSILON);
+
+        // Positive reinforcement access
+        db.track_memory_access("long_term", mem_id, 0.5).unwrap();
+        let updated = db.list_recent_memories(1).unwrap();
+        assert_eq!(updated[0].access_count, 1);
+        assert!((updated[0].utility_score - 1.5).abs() < f32::EPSILON);
+        assert!(updated[0].last_accessed_at_ms > 0);
+    }
+
+    #[test]
+    fn test_compaction_and_cold_archiving() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let main_db_path = temp_dir.path().join("memory.db");
+        let archive_db_path = temp_dir.path().join("memory_archive.db");
+
+        let db = Database::open(&main_db_path).unwrap();
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // 1. Insert old processed capture (3 days ago > 48h TTL)
+        let old_capture_ms = now_ms - (3 * 86_400_000);
+        let id1 = db.insert_capture(&ScreenCaptureRecord {
+            timestamp_ms: old_capture_ms,
+            app_name: "OldApp".into(),
+            bundle_id: "com.old".into(),
+            window_title: "OldWin".into(),
+            full_text: "old content".into(),
+            avg_confidence: 0.9,
+            content_hash: "hash_old".into(),
+            metadata_json: "[]".into(),
+        }).unwrap();
+        db.mark_captures_processed(&[id1]).unwrap();
+
+        // 2. Insert recent processed capture (1 hour ago < 48h TTL)
+        let recent_capture_ms = now_ms - 3_600_000;
+        let id2 = db.insert_capture(&ScreenCaptureRecord {
+            timestamp_ms: recent_capture_ms,
+            app_name: "RecentApp".into(),
+            bundle_id: "com.recent".into(),
+            window_title: "RecentWin".into(),
+            full_text: "recent content".into(),
+            avg_confidence: 0.9,
+            content_hash: "hash_recent".into(),
+            metadata_json: "[]".into(),
+        }).unwrap();
+        db.mark_captures_processed(&[id2]).unwrap();
+
+        // 3. Insert old inactive L2 memory (40 days ago, never accessed)
+        let old_mem_end_ms = now_ms - (40 * 86_400_000);
+        let mem1 = db.insert_long_term_memory(&NewLongTermMemory {
+            category: "task".into(),
+            title: "Old Inactive Task".into(),
+            summary: "Archivable task".into(),
+            key_entities: vec!["OldEntity".into()],
+            importance_score: 5.0,
+            time_window_start_ms: old_mem_end_ms - 1000,
+            time_window_end_ms: old_mem_end_ms,
+            source_capture_ids: vec![],
+        }).unwrap();
+
+        // 4. Insert old ACTIVE L2 memory (40 days ago, accessed recently)
+        let mem2 = db.insert_long_term_memory(&NewLongTermMemory {
+            category: "task".into(),
+            title: "Old Active Task".into(),
+            summary: "Frequently retrieved task".into(),
+            key_entities: vec!["ActiveEntity".into()],
+            importance_score: 8.0,
+            time_window_start_ms: old_mem_end_ms - 1000,
+            time_window_end_ms: old_mem_end_ms,
+            source_capture_ids: vec![],
+        }).unwrap();
+        db.track_memory_access("long_term", mem2, 1.0).unwrap();
+
+        // 5. Insert recent L2 memory (5 days ago < 30 days)
+        let recent_mem_end_ms = now_ms - (5 * 86_400_000);
+        let mem3 = db.insert_long_term_memory(&NewLongTermMemory {
+            category: "task".into(),
+            title: "Recent Task".into(),
+            summary: "Recent task summary".into(),
+            key_entities: vec!["RecentEntity".into()],
+            importance_score: 7.0,
+            time_window_start_ms: recent_mem_end_ms - 1000,
+            time_window_end_ms: recent_mem_end_ms,
+            source_capture_ids: vec![],
+        }).unwrap();
+
+        // Run compact_and_archive: retention 2 days, archive 30 days
+        let res = db.compact_and_archive(&archive_db_path, 2, 30).unwrap();
+
+        assert_eq!(res.pruned_captures, 1);
+        assert_eq!(res.archived_memories, 1);
+
+        // Verify main DB: mem1 should be deleted; mem2 and mem3 should remain
+        let remaining = db.list_recent_memories(10).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.iter().any(|m| m.id == mem2));
+        assert!(remaining.iter().any(|m| m.id == mem3));
+        assert!(!remaining.iter().any(|m| m.id == mem1));
+
+        // Verify archive DB: contains mem1
+        let archive_conn = Connection::open(&archive_db_path).unwrap();
+        let mut stmt = archive_conn
+            .prepare("SELECT title, access_count, archived_at_ms FROM long_term_memories WHERE id = ?1")
+            .unwrap();
+        let row = stmt
+            .query_row(params![mem1], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(row.0, "Old Inactive Task");
+        assert_eq!(row.1, 0);
+        assert!(row.2 > 0);
     }
 }

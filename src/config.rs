@@ -30,9 +30,20 @@ pub struct MemoryConfig {
     /// Minimum average OCR confidence (0.0 .. 1.0) required to record a screen capture
     pub min_confidence: f32,
 
-    /// Retention period for raw screen captures in days (default: 30).
-    /// Consolidated long-term memories are never pruned.
+    /// Retention period for raw screen captures in days (default: 2 days / 48h TTL).
     pub raw_capture_retention_days: u32,
+
+    /// Cold archive threshold for inactive long-term memories in days (default: 30).
+    pub memory_archive_days: u32,
+
+    /// Minimum interval in seconds between captures during active typing / UI updates (default: 2)
+    pub min_capture_interval_secs: u64,
+
+    /// Maximum interval in seconds between captures during static/idle screens (default: 60)
+    pub max_capture_interval_secs: u64,
+
+    /// Path to cold archive SQLite database (default: ~/.thunder/memory_archive.db)
+    pub archive_db_path: PathBuf,
 }
 
 impl Default for MemoryConfig {
@@ -54,7 +65,11 @@ impl Default for MemoryConfig {
             llm_model: "qwen2.5-coder".to_string(),
             llm_api_key: None,
             min_confidence: 0.1,
-            raw_capture_retention_days: 30,
+            raw_capture_retention_days: 2,
+            memory_archive_days: 30,
+            min_capture_interval_secs: 2,
+            max_capture_interval_secs: 60,
+            archive_db_path: thunder_dir.join("memory_archive.db"),
         }
     }
 }

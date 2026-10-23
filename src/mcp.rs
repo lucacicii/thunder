@@ -224,6 +224,46 @@ impl MemoryMcpServer {
                     "properties": {}
                 }),
             },
+            McpToolInfo {
+                name: "memory_feedback".into(),
+                description: Some("Reinforce or penalize retrieved memory utility based on agent evaluation or citation success.".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_type": {
+                            "type": "string",
+                            "enum": ["long_term", "agent_interaction"],
+                            "description": "Type of memory: 'long_term' or 'agent_interaction'."
+                        },
+                        "memory_id": {
+                            "type": "integer",
+                            "description": "ID of the memory record to reinforce or penalize."
+                        },
+                        "utility_delta": {
+                            "type": "number",
+                            "description": "Positive value to reinforce (e.g. +1.0) or negative value to penalize (e.g. -0.5)."
+                        }
+                    },
+                    "required": ["memory_type", "memory_id", "utility_delta"]
+                }),
+            },
+            McpToolInfo {
+                name: "memory_compact".into(),
+                description: Some("Trigger aggressive compaction of ephemeral L1 captures and cold archiving of inactive L2 memories.".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "capture_retention_days": {
+                            "type": "integer",
+                            "description": "Ephemeral capture retention in days (default: 2)."
+                        },
+                        "memory_archive_days": {
+                            "type": "integer",
+                            "description": "Cold archive threshold in days (default: 30)."
+                        }
+                    }
+                }),
+            },
         ]
     }
 
@@ -311,6 +351,10 @@ impl MemoryMcpServer {
                     .get_active_preferences(project_path)
                     .map_err(|e| format!("Failed to get preferences: {e}"))?;
 
+                for item in &items {
+                    let _ = self.db.track_memory_access("agent_interaction", item.id, 0.05);
+                }
+
                 Ok(format_preferences(&items, project_path))
             }
 
@@ -333,6 +377,13 @@ impl MemoryMcpServer {
                     .db
                     .search_agent_interactions(query, limit)
                     .map_err(|e| e.to_string())?;
+
+                for r in &agent_records {
+                    let _ = self.db.track_memory_access("agent_interaction", r.id, 0.1);
+                }
+                for item in &scored {
+                    let _ = self.db.track_memory_access("long_term", item.memory.id, 0.1);
+                }
 
                 if scored.is_empty() && agent_records.is_empty() {
                     return Ok(format!("No long-term memories or agent records found matching '{}'.", query));
@@ -479,14 +530,67 @@ impl MemoryMcpServer {
             "memory_stats" => {
                 let stats = self.db.get_stats().map_err(|e| e.to_string())?;
                 let out = format!(
-                    "### Thunder Memory Statistics:\n- Total Screen Captures: {}\n- Unprocessed Captures: {}\n- Consolidated Long-Term Memories: {}\n- Agent Interactions / Guidelines: {}\n- Composer Training Samples: {}\n",
+                    "### Thunder Memory Statistics:\n- Total Screen Captures: {}\n- Unprocessed Captures: {}\n- Consolidated Long-Term Memories: {}\n- Agent Interactions / Guidelines: {}\n- Composer Training Samples: {}\n- Cognitive Noise Suppression Hits: {}\n",
                     stats.total_captures,
                     stats.unprocessed_captures,
                     stats.long_term_memories,
                     stats.agent_interactions,
-                    stats.training_samples
+                    stats.training_samples,
+                    stats.suppression_mask_hits
                 );
                 Ok(out)
+            }
+
+            "memory_feedback" => {
+                let memory_type = arguments
+                    .get("memory_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("agent_interaction");
+                let memory_id = arguments
+                    .get("memory_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| "Missing required parameter 'memory_id'".to_string())?;
+                let utility_delta = arguments
+                    .get("utility_delta")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+
+                self.db
+                    .track_memory_access(memory_type, memory_id, utility_delta)
+                    .map_err(|e| format!("Failed to record feedback: {e}"))?;
+
+                Ok(format!(
+                    "✅ Recorded feedback for {} #{}: utility delta {:+.2}",
+                    memory_type, memory_id, utility_delta
+                ))
+            }
+
+            "memory_compact" => {
+                let capture_days = arguments
+                    .get("capture_retention_days")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2) as u32;
+                let archive_days = arguments
+                    .get("memory_archive_days")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(30) as u32;
+
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                let archive_path =
+                    std::path::PathBuf::from(home).join(".thunder").join("memory_archive.db");
+
+                let res = self
+                    .db
+                    .compact_and_archive(&archive_path, capture_days, archive_days)
+                    .map_err(|e| format!("Compaction failed: {e}"))?;
+
+                Ok(format!(
+                    "✅ Compaction complete:\n- Pruned L1 captures: {}\n- Cold archived L2 memories: {}\n- Active DB size: {:.1} KB -> {:.1} KB",
+                    res.pruned_captures,
+                    res.archived_memories,
+                    res.active_db_bytes_before as f64 / 1024.0,
+                    res.active_db_bytes_after as f64 / 1024.0
+                ))
             }
 
             unknown => Err(format!("Unknown memory tool '{}'", unknown)),
@@ -729,6 +833,8 @@ mod tests {
         assert!(tool_names.contains(&"memory_recent".into()));
         assert!(tool_names.contains(&"memory_current_screen".into()));
         assert!(tool_names.contains(&"memory_stats".into()));
+        assert!(tool_names.contains(&"memory_feedback".into()));
+        assert!(tool_names.contains(&"memory_compact".into()));
     }
 
     #[tokio::test]
@@ -802,6 +908,58 @@ mod tests {
             .unwrap();
         assert!(query_res.contains("Agent Cognitive Records"));
         assert!(query_res.contains("No Lombok"));
+
+        // 6. Test memory_feedback
+        let feedback_res = server
+            .call_tool(
+                "memory_feedback",
+                json!({
+                    "memory_type": "agent_interaction",
+                    "memory_id": 2,
+                    "utility_delta": 0.5
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(feedback_res.contains("utility delta +0.50"));
+
+        // 7. Test memory_stats
+        let stats_res = server
+            .call_tool("memory_stats", json!({}))
+            .await
+            .unwrap();
+        assert!(stats_res.contains("Thunder Memory Statistics"));
+        assert!(stats_res.contains("Cognitive Noise Suppression Hits"));
+
+        // 8. Test memory_compact
+        let compact_res = server
+            .call_tool(
+                "memory_compact",
+                json!({
+                    "capture_retention_days": 2,
+                    "memory_archive_days": 30
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(compact_res.contains("Compaction complete"));
+    }
+
+    #[tokio::test]
+    async fn test_rpc_frame_handling() {
+        let db = Database::in_memory().unwrap();
+        let server = MemoryMcpServer::new(db);
+
+        // Ping
+        let ping_req = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let resp = handle_rpc_frame(ping_req, &server).await.unwrap();
+        assert_eq!(resp.id, json!(1));
+
+        // Tools list
+        let list_req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let resp = handle_rpc_frame(list_req, &server).await.unwrap();
+        assert_eq!(resp.id, json!(2));
+        assert!(resp.result.unwrap().get("tools").unwrap().as_array().unwrap().len() >= 8);
     }
 }
 

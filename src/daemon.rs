@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct MemoryDaemon {
     config: MemoryConfig,
@@ -41,14 +41,30 @@ impl MemoryDaemon {
     pub async fn run_foreground(&self, cancel: CancellationToken) -> Result<(), MemoryError> {
         info!("Starting thunder-memory daemon in foreground...");
         info!("Database: {:?}", self.config.db_path);
-        info!("Capture interval: {}s", self.config.capture_interval_secs);
+        info!(
+            "Dynamic perception heartbeat: base={}s, min={}s, max={}s",
+            self.config.capture_interval_secs,
+            self.config.min_capture_interval_secs,
+            self.config.max_capture_interval_secs
+        );
         info!("Synthesis interval: {}s", self.config.synthesis_interval_secs);
 
-        let mut capture_interval =
-            tokio::time::interval(Duration::from_secs(self.config.capture_interval_secs));
+        let mut current_interval = Duration::from_secs(self.config.capture_interval_secs);
+        let min_interval = Duration::from_secs(self.config.min_capture_interval_secs.max(1));
+        let max_interval = Duration::from_secs(
+            self.config
+                .max_capture_interval_secs
+                .max(self.config.capture_interval_secs),
+        );
+        let mut consecutive_idle_ticks: u32 = 0;
+
+        let sleep = tokio::time::sleep(current_interval);
+        tokio::pin!(sleep);
+
         let mut synthesis_interval =
             tokio::time::interval(Duration::from_secs(self.config.synthesis_interval_secs));
         let mut sync_interval = tokio::time::interval(Duration::from_secs(600)); // 10 min
+        let mut maintenance_interval = tokio::time::interval(Duration::from_secs(86_400)); // 24h maintenance
 
         let mut last_hash = self.db.get_last_capture_hash()?;
 
@@ -58,27 +74,54 @@ impl MemoryDaemon {
                     info!("Received shutdown signal, stopping thunder-memory daemon...");
                     break;
                 }
-                _ = capture_interval.tick() => {
+                () = &mut sleep => {
                     match self.ocr.capture_screen() {
                         Ok(rec) => {
-                            if rec.avg_confidence >= self.config.min_confidence {
-                                if OcrEngine::is_diff(last_hash.as_deref(), &rec.content_hash) {
-                                    info!(
-                                        "Screen changed: app='{}', win='{}', chars={}",
-                                        rec.app_name, rec.window_title, rec.full_text.len()
+                            // 1. Noise Suppression Check
+                            match self.db.is_window_suppressed(&rec.bundle_id, &rec.window_title) {
+                                Ok(true) => {
+                                    debug!(
+                                        "Screen suppressed by mask: app='{}', bundle='{}', win='{}'",
+                                        rec.app_name, rec.bundle_id, rec.window_title
                                     );
-                                    if let Err(e) = self.db.insert_capture(&rec) {
-                                        error!("Failed to store screen capture: {}", e);
-                                    } else {
-                                        last_hash = Some(rec.content_hash);
+                                    // Decelerate during background/suppressed windows
+                                    consecutive_idle_ticks = consecutive_idle_ticks.saturating_add(1);
+                                    let next_secs = (current_interval.as_secs() * 2).min(max_interval.as_secs());
+                                    current_interval = Duration::from_secs(next_secs);
+                                }
+                                _ => {
+                                    if rec.avg_confidence >= self.config.min_confidence {
+                                        if OcrEngine::is_diff(last_hash.as_deref(), &rec.content_hash) {
+                                            info!(
+                                                "Screen changed: app='{}', win='{}', chars={}",
+                                                rec.app_name, rec.window_title, rec.full_text.len()
+                                            );
+                                            if let Err(e) = self.db.insert_capture(&rec) {
+                                                error!("Failed to store screen capture: {}", e);
+                                            } else {
+                                                last_hash = Some(rec.content_hash);
+                                            }
+                                            // Dynamic acceleration: snap to min_interval upon active UI change
+                                            consecutive_idle_ticks = 0;
+                                            current_interval = min_interval;
+                                        } else {
+                                            // Screen unchanged: progressive deceleration
+                                            consecutive_idle_ticks = consecutive_idle_ticks.saturating_add(1);
+                                            if consecutive_idle_ticks >= 2 {
+                                                let next_secs = (current_interval.as_secs() + 5).min(max_interval.as_secs());
+                                                current_interval = Duration::from_secs(next_secs);
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                         Err(e) => {
                             warn!("Screen capture/OCR tick failed: {}", e);
+                            current_interval = Duration::from_secs(self.config.capture_interval_secs);
                         }
                     }
+                    sleep.as_mut().reset(tokio::time::Instant::now() + current_interval);
                 }
                 _ = synthesis_interval.tick() => {
                     info!("Running periodic memory synthesis...");
@@ -103,6 +146,24 @@ impl MemoryDaemon {
                         }
                         Err(e) => {
                             warn!("Composer sync tick failed: {}", e);
+                        }
+                    }
+                }
+                _ = maintenance_interval.tick() => {
+                    info!("Running scheduled aggressive compaction and cold archiving...");
+                    match self.db.compact_and_archive(
+                        &self.config.archive_db_path,
+                        self.config.raw_capture_retention_days,
+                        self.config.memory_archive_days,
+                    ) {
+                        Ok(res) => {
+                            info!(
+                                "Compaction complete: pruned {} captures, archived {} memories",
+                                res.pruned_captures, res.archived_memories
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Scheduled compaction failed: {}", e);
                         }
                     }
                 }

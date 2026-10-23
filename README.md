@@ -17,9 +17,11 @@ Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Compose
    - 直接调用 macOS 官方 Apple Vision 深度学习框架 (`VNRecognizeTextRequest`)，利用 Apple Neural Engine / Metal 硬件加速毫秒级多语言识别（简体中文、繁体中文、英文）。
    - 自动获取前台焦点应用名（`appName`，如 Cursor、Terminal、Chrome、WeChat）及活动窗口标题（`windowTitle`）。
    - **感知差分去重（Perceptual Diffing）**：基于内容哈希过滤静止画面，连续无变动的屏幕自动跳过，不产生多余 OCR 与磁盘占用。
-3. **两级分层存储与索引（SQLite WAL 模式）**：
-   - **短期感知流表 (`screen_captures`)**：记录原始识别流、时间戳、应用、窗口、字符置信度与处理状态。
-   - **长期情境与语义记忆表 (`long_term_memories`)**：记录经过小模型加工后的任务进展、重要度评分（1.0 ~ 10.0）、关键技术实体与总结。
+3. **三级认知金字塔与激进冷热隔离（Aggressive Cold Archiving）**：
+   - **L1 短期感知流表 (`screen_captures`)**：48 小时极短 TTL，一旦被 L2 提炼或超期后物理清理，避免无意义原始 OCR 文本膨胀。
+   - **L2 长期情境与语义记忆表 (`long_term_memories`)**：记录经过小模型提炼的任务进展、重要度评分（1.0 ~ 10.0）、关键实体与进展总结。未被频繁调用的历史记录在 30 天后自动归档至 `~/.thunder/memory_archive.db`。
+   - **L3 确定性规则与偏好表 (`agent_interactions`)**：按 `global` 与 `project` 严格双域隔离，记录 Agent 写入的红线、架构决议与反向约束，通过确定性 SQL 状态机（`active` vs `superseded`）无损流转。
+   - **动态感知心跳与认知噪音掩码（Noise Masking）**：自适应心跳机制在检测到活跃 UI 变更时自动加速（至 2s），在静止或抑制窗口时减速（至 60s）；内置音视频播放器与通讯噪音过滤掩码。
 4. **小模型认知提炼与反思引擎 (Synthesis Engine)**：
    - 启发于 **Stanford Generative Agents** 与 **Mem0** 架构：
    - 自动将会话按时间窗口与应用聚类（Episode Clustering）。
@@ -32,13 +34,21 @@ Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Compose
    - 分析意图类型（代码生成、错误修复、架构咨询、反向约束、执行确认等）。
    - 过滤噪音并计算质量评分（Quality Score）。
    - 一键导出为标准 **OpenAI**、**Alpaca** 或 **ShareGPT** 格式的 JSONL 文件，直接用于 SFT / LoRA / DPO 微调。
-6. **三维加权认知检索**：
-   - 基于斯坦福 Generative Agents 认知检索公式：
-     $$\text{Score} = w_{\text{recency}} \cdot \text{Recency} + w_{\text{importance}} \cdot \text{Importance} + w_{\text{relevance}} \cdot \text{Relevance}$$
-   - 支持通过 CLI 或 MCP 工具跨应用检索过去的编码经验与解决过程。
+6. **四维加权认知检索与效用反馈飞轮（Feedback-Driven Retrieval）**：
+   - 基于斯坦福 Generative Agents 认知检索公式与强化学习效用打分：
+     $$\text{Score} = w_{\text{recency}} \cdot \text{Recency} + w_{\text{importance}} \cdot \text{Importance} + w_{\text{relevance}} \cdot \text{Relevance} + w_{\text{utility}} \cdot \text{Utility}$$
+   - 每次 Agent 调用记忆自动记录访问频次与时间戳；支持 `memory_feedback` 接口对高价值记忆予以正反馈强化（强化排序权重）、对失效记忆予以负反馈降权。
 7. **标准 MCP (Model Context Protocol) 服务**：
    - 提供 `thunder-memory mcp` 命令，原生提供 STDIO JSON-RPC 2.0 MCP 接口。
-   - 暴露 `memory_query`、`memory_recent`、`memory_current_screen`、`memory_stats` 四大认知工具。
+   - 暴露 8 项标准工具：
+     - `memory_record`：跨 Agent 确定性持久化规则、偏好与约束（支持 global/project 隔离）。
+     - `memory_get_preferences`：精准拉取当前项目 workspace 与全局生效的活跃约束红线。
+     - `memory_query`：基于四维认知检索公式查询长期记忆与认知记录。
+     - `memory_recent`：罗列近期高价值记忆与 Agent 指南。
+     - `memory_current_screen`：获取当前活动屏幕感知上下文与 OCR 文本。
+     - `memory_stats`：获取屏幕捕获、长期记忆、交互规则与噪音抑制命中率。
+     - `memory_feedback`：对检索出的记忆进行效用强化（+delta）或惩罚（-delta）。
+     - `memory_compact`：手动或定时触发 48h L1 物理修剪与 30d L2 冷归档。
 
 ---
 
@@ -57,18 +67,31 @@ thunder-memory ocr-once --save        # 立即截屏并入库 SQLite
 
 # 3. 记忆提炼与认知查询
 thunder-memory synthesize             # 手动触发一次小模型认知提炼
-thunder-memory query "SQLite WAL"     # 按三维认知评分检索长期记忆
+thunder-memory query "SQLite WAL"     # 按四维认知评分检索长期记忆与 Agent 指南
 thunder-memory list-memories 10       # 罗列最近 10 条长期记忆
 
-# 4. 用户交互训练集同步与导出
+# 4. 偏好规则与反向约束管理
+thunder-memory preferences            # 显示当前全局约束与开发偏好
+thunder-memory preferences /path/to   # 显示指定工作区的针对性约束
+thunder-memory record constraint "No Lombok" "Never use lombok" --scope project --project /path/to
+
+# 5. 存储压缩与冷归档 (Aggressive Cold Archiving)
+thunder-memory compact                # 物理清理 48h 过期感知流，冷归档 30d 未激活记忆至 memory_archive.db
+thunder-memory compact --days 1 --archive-days 14
+
+# 6. 认知噪音掩码 (Noise Suppression)
+thunder-memory masks                  # 查看活跃认知噪音抑制规则及拦截统计
+thunder-memory mask add com.apple.Music "*" "Apple Music window has no text value"
+
+# 7. 用户交互训练集同步与导出
 thunder-memory sync-composer          # 同步 ~/.agent-resume-panel/.../workbench_composer_sends
 thunder-memory export-training openai # 导出 OpenAI 格式微调数据集到 ~/.thunder/training_dataset.jsonl
 thunder-memory export-training alpaca /path/to/dataset.jsonl
 
-# 5. 作为 MCP Server 运行
-thunder-memory mcp                    # 运行标准 STDIO MCP 2.0 服务
+# 8. 作为 MCP Server 运行
+thunder-memory mcp                    # 运行标准 STDIO MCP 2.0 服务（暴露 8 大认知工具）
 
-# 6. 系统开机自启
+# 9. 系统开机自启
 thunder-memory install-launchagent    # 安装 macOS LaunchAgent 开启 24/7 常驻
 thunder-memory uninstall-launchagent  # 卸载 macOS LaunchAgent
 ```
