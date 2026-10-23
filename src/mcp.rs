@@ -512,7 +512,7 @@ impl MemoryMcpServer {
                     out.push_str(&format!("- **Active App**: `{}`\n", c.app_name));
                     out.push_str(&format!("- **Window Title**: `{}`\n", c.window_title));
                     let excerpt = if c.ocr_text.len() > 1000 {
-                        format!("{}...", &c.ocr_text[..1000])
+                        format!("{}...", crate::safe_truncate_str(&c.ocr_text, 1000))
                     } else {
                         c.ocr_text.clone()
                     };

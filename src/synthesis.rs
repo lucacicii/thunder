@@ -2,6 +2,7 @@ use crate::config::MemoryConfig;
 use crate::db::{Database, NewLongTermMemory, RawCaptureRow};
 use crate::error::MemoryError;
 use crate::local_model::LocalModelEngine;
+use crate::safe_truncate_str;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -246,7 +247,7 @@ Respond ONLY with a valid JSON object matching this schema:
             episode.app_name,
             episode.window_title,
             if episode.combined_text.len() > 2500 {
-                &episode.combined_text[..2500]
+                safe_truncate_str(&episode.combined_text, 2500)
             } else {
                 &episode.combined_text
             }
@@ -383,7 +384,10 @@ Respond ONLY with a valid JSON object matching this schema:
             episode.app_name,
             ((episode.end_ms - episode.start_ms).max(1000)) / 1000,
             if episode.combined_text.len() > 200 {
-                format!("{}...", &episode.combined_text[..200].replace('\n', " "))
+                format!(
+                    "{}...",
+                    safe_truncate_str(&episode.combined_text, 200).replace('\n', " ")
+                )
             } else {
                 episode.combined_text.replace('\n', " ")
             }

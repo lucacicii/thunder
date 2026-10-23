@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Characters: {}", rec.full_text.len());
             println!("──────────────────────────────────────────────────────────────────");
             println!("Sample Text:\n{}", if rec.full_text.len() > 500 {
-                format!("{}...", &rec.full_text[..500])
+                format!("{}...", thunder_memory::safe_truncate_str(&rec.full_text, 500))
             } else {
                 rec.full_text.clone()
             });
