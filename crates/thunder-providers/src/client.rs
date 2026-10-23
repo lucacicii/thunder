@@ -255,7 +255,21 @@ fn build_context(options: &ChatRequestOptions, model: &Model) -> Result<Context,
             ChatMessage::User { content, parts, .. } => {
                 let body = match parts {
                     Some(parts) if !parts.is_empty() => {
-                        UserContent::Blocks(parts.iter().map(part_to_content).collect())
+                        let mut blocks: Vec<Content> = parts.iter().map(part_to_content).collect();
+                        // `parts` is the whole user turn whenever it is present, so text
+                        // living only in `content` would vanish. The daemon always sends a
+                        // leading text part, but a conversation written by another host (or
+                        // an older build) can carry image-only parts and a real prompt in
+                        // `content` — and sending an image with no question is worse than
+                        // sending the question twice.
+                        if !content.is_empty()
+                            && !parts
+                                .iter()
+                                .any(|part| matches!(part, ContentPart::Text { .. }))
+                        {
+                            blocks.insert(0, Content::text(content));
+                        }
+                        UserContent::Blocks(blocks)
                     }
                     _ => UserContent::Text(content.clone()),
                 };

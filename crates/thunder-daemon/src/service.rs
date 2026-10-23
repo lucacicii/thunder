@@ -1,3 +1,4 @@
+use crate::attachments::{self, with_leading_text};
 use crate::protocol::{
     normalize_mode, DaemonRequest, DaemonResponse, ModeChangeSource, PROTOCOL_VERSION,
 };
@@ -12,7 +13,9 @@ use thunder_core::{
     PauseGate, ProviderClientDriver, QueueBehavior, ReActAgentLoop, SteerQueues, ThunderConfig,
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
-use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ObservedEvent, ThunderEvent};
+use thunder_protocol::{
+    AgentEvent, ChatMessage, ContentPart, EventSink, ObservedEvent, ThunderEvent,
+};
 use thunder_providers::prelude::{clamp_title, generate_title, ProviderRegistry, RpiAiClient};
 use thunder_registry::ToolRegistry;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -459,7 +462,7 @@ impl DaemonService {
                 task_id,
                 message,
                 behavior,
-                ..
+                attachments: steer_attachments,
             } => {
                 let maybe_state = self.active_tasks.lock().await.get(&task_id).cloned();
                 let Some(state) = maybe_state else {
@@ -467,23 +470,28 @@ impl DaemonService {
                         .await;
                     return;
                 };
+                // Reject the steer rather than queue a message whose images were
+                // dropped: the run keeps going either way, and the user can resend.
+                let steer_parts = match attachments::content_parts(
+                    steer_attachments.as_deref().unwrap_or_default(),
+                ) {
+                    Ok(parts) => parts,
+                    Err(err) => {
+                        self.reply_err(id, err).await;
+                        return;
+                    }
+                };
                 let q_behavior = match behavior.as_deref() {
                     Some("follow_up") => QueueBehavior::FollowUp,
                     _ => QueueBehavior::Steer,
                 };
+                let queued = ChatMessage::user_multimodal(
+                    message.as_str(),
+                    with_leading_text(message.as_str(), steer_parts),
+                );
                 match q_behavior {
-                    QueueBehavior::Steer => {
-                        state
-                            .steer_queues
-                            .steering
-                            .enqueue(ChatMessage::user(message));
-                    }
-                    QueueBehavior::FollowUp => {
-                        state
-                            .steer_queues
-                            .follow_up
-                            .enqueue(ChatMessage::user(message));
-                    }
+                    QueueBehavior::Steer => state.steer_queues.steering.enqueue(queued),
+                    QueueBehavior::FollowUp => state.steer_queues.follow_up.enqueue(queued),
                 }
                 let snap = state.steer_queues.snapshot();
                 self.reply_ok(
@@ -635,9 +643,24 @@ impl DaemonService {
                 workspace_dir,
                 mode,
                 thinking_level,
+                attachments: run_attachments,
                 ..
             } => {
                 let sid = session_id.unwrap_or_else(|| format!("sess-{}", now_ms()));
+
+                // Before anything else: a run whose images cannot reach the model must
+                // not start at all. Failing here leaves no half-started task, no
+                // workspace switch and no session-mode change behind.
+                let content_parts = match attachments::content_parts(
+                    run_attachments.as_deref().unwrap_or_default(),
+                ) {
+                    Ok(parts) => parts,
+                    Err(err) => {
+                        self.reply_err(id, err).await;
+                        return;
+                    }
+                };
+
                 let mut ws_path = workspace_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.default_workspace.clone());
@@ -762,6 +785,7 @@ impl DaemonService {
                         cancel,
                         pause_gate,
                         steer_queues,
+                        content_parts,
                     )
                     .await;
                 });
@@ -830,6 +854,7 @@ impl DaemonService {
         cancel: CancellationToken,
         pause_gate: Arc<PauseGate>,
         steer_queues: Arc<SteerQueues>,
+        attachment_parts: Vec<ContentPart>,
     ) {
         let cfg = ThunderConfig::load_from_workspace(&workspace_cwd).await;
         let registry = self.build_workspace_registry(&workspace_cwd, &cfg).await;
@@ -927,7 +952,8 @@ impl DaemonService {
             .with_middleware(mw)
             .with_event_sink(bridge);
 
-        let run_res = agent.run(prompt).await;
+        let user_parts = with_leading_text(prompt.as_str(), attachment_parts);
+        let run_res = agent.run_with_parts(prompt, user_parts).await;
         self.active_tasks.lock().await.remove(&task_id);
 
         conv.set_messages(agent.context().get_messages());

@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thunder_executor::ScratchpadManager;
 use thunder_protocol::{
-    AgentEvent, AgentStats, ChatMessage, EventSink, ExecutionContext, FinishReason, LLMClientTrait,
-    ProgressKind, PromptCacheWarmSettings, ThunderEvent, ToolCall, ToolDefinition,
+    AgentEvent, AgentStats, ChatMessage, ContentPart, EventSink, ExecutionContext, FinishReason,
+    LLMClientTrait, ProgressKind, PromptCacheWarmSettings, ThunderEvent, ToolCall, ToolDefinition,
     ToolExecResultPayload, ToolExecutionError, ToolExecutionResult, TurnStats,
 };
 use thunder_registry::{CatalogSnapshot, ToolRegistry};
@@ -145,6 +145,10 @@ pub struct ReActAgentLoop {
     cycles: CycleDetector,
     /// The prompt that started the current run; recovery rebuilds the context from it.
     goal: Option<String>,
+    /// Image parts that arrived with [`Self::goal`]. Recovery has to restore them too:
+    /// a task resumed after a context reset is still the same question about the same
+    /// screenshot, so dropping them would silently change what the agent was asked.
+    goal_parts: Vec<ContentPart>,
     pause_gate: Option<Arc<PauseGate>>,
     steer_queues: Option<Arc<SteerQueues>>,
     scratchpad: Option<ScratchpadManager>,
@@ -174,6 +178,7 @@ impl ReActAgentLoop {
             progress: ProgressTracker::default(),
             cycles: CycleDetector::default(),
             goal: None,
+            goal_parts: Vec::new(),
             pause_gate: None,
             steer_queues: None,
             scratchpad: None,
@@ -274,6 +279,21 @@ impl ReActAgentLoop {
         &mut self,
         user_prompt: impl Into<String>,
     ) -> Result<AgentLoopOutcome, String> {
+        self.run_with_parts(user_prompt, Vec::new()).await
+    }
+
+    /// [`Self::run`] for a prompt that carries more than text — images attached by
+    /// the host, as `ContentPart::Image`.
+    ///
+    /// `parts` is expected to be self-sufficient (the prompt text plus the
+    /// attachments, in that order, see `thunder-daemon`'s attachment module). Empty
+    /// `parts` is exactly `run`: the stored user message keeps `parts: None`, so a
+    /// text-only run persists in the shape it always had.
+    pub async fn run_with_parts(
+        &mut self,
+        user_prompt: impl Into<String>,
+        parts: Vec<ContentPart>,
+    ) -> Result<AgentLoopOutcome, String> {
         let run_start = Instant::now();
         cache_warmer::invalidate(&self.config.session_id);
         self.loop_guard.reset();
@@ -283,7 +303,8 @@ impl ReActAgentLoop {
         let goal: String = user_prompt.into();
         // Recovery rebuilds the context from this goal, so keep it for the whole run.
         self.goal = Some(goal.clone());
-        self.context.push(ChatMessage::user(goal));
+        self.goal_parts = parts.clone();
+        self.context.push(ChatMessage::user_multimodal(goal, parts));
         let mut system_faults = Vec::new();
         let mut compactions_triggered = 0usize;
         let mut stats = AgentStats::default();
@@ -958,10 +979,12 @@ impl ReActAgentLoop {
         let handoff = summary.unwrap_or_else(|| fallback_handoff(&read_files, &modified_files));
         let handoff_tokens = crate::token_estimator::estimate_token_count(&handoff);
         let goal = self.goal.clone().unwrap_or_default();
+        let goal_parts = self.goal_parts.clone();
 
         self.context = ContextBuffer::with_system_prompt(&self.config.system_prompt);
         if !goal.is_empty() {
-            self.context.push(ChatMessage::user(goal));
+            self.context
+                .push(ChatMessage::user_multimodal(goal, goal_parts));
         }
         self.context.inject_system_notification(format!(
             "<handoff>\nYour previous attempt on this task stalled: {reason} ({detail}).\n\

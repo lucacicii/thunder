@@ -1,5 +1,6 @@
 //! Thunder Daemon — NDJSON STDIO Sidecar for Desktop UIs (`agent-resume-panel`) and Headless Hosts.
 
+mod attachments;
 pub mod protocol;
 pub mod service;
 
