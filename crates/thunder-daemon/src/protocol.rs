@@ -168,25 +168,6 @@ pub enum DaemonRequest {
         id: Option<String>,
         session_id: String,
     },
-    ListWorkspaces {
-        id: Option<String>,
-    },
-    BindWorkspace {
-        id: Option<String>,
-        path: String,
-        name: Option<String>,
-        #[serde(default)]
-        aliases: Vec<String>,
-        #[serde(default)]
-        keywords: Vec<String>,
-        #[serde(default)]
-        tech_stack: Vec<String>,
-    },
-    LocateWorkspace {
-        id: Option<String>,
-        prompt: String,
-        workspace_dir: Option<String>,
-    },
 }
 
 /// Outgoing message to host (Electron) via stdout.

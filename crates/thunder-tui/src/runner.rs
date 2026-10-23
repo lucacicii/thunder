@@ -435,7 +435,10 @@ async fn handle_key_event(
             if !trimmed.is_empty() && !app.handle_slash_command(&trimmed).await {
                 if app.is_running {
                     app.steer_active_run(trimmed);
-                } else if app.evaluate_workspace_location(&trimmed).await.is_some() {
+                } else {
+                    // The run happens in `app.workspace_dir`, whatever the prompt
+                    // says. Switching workspaces is a `/workspace <path>` or `cd`
+                    // decision, never something inferred from the text.
                     spawn_agent_turn(app, trimmed, tx.clone()).await;
                 }
             }
