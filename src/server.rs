@@ -11,7 +11,7 @@
 
 use crate::config::MemoryConfig;
 use crate::error::MemoryError;
-use crate::local_model::{render_chatml, GenOptions, LocalModelEngine};
+use crate::local_model::{render_chatml, GenOptions, LocalModelEngine, CONTEXT_LENGTH_TOKENS};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +26,10 @@ pub struct ServeOptions {
     /// Hard ceiling for `max_tokens`; a 0.5B model on Metal is fast, but a runaway
     /// request should not block the (single) model lock for minutes.
     pub max_tokens_cap: usize,
+    /// Reject prompts longer than this many tokens. The model itself handles up to
+    /// `CONTEXT_LENGTH_TOKENS`, but prefill cost grows quadratically and long prompts
+    /// exhaust Metal memory long before that, so fail fast with a clear error instead.
+    pub max_prompt_tokens: usize,
 }
 
 impl Default for ServeOptions {
@@ -34,6 +38,7 @@ impl Default for ServeOptions {
             host: "127.0.0.1".to_string(),
             port: 8787,
             max_tokens_cap: 1024,
+            max_prompt_tokens: 8192,
         }
     }
 }
@@ -312,16 +317,36 @@ async fn chat_completions(
     let gen_opts = GenOptions::chat(request.temperature, request.top_p);
     let prompt_tokens = engine.count_tokens(&prompt);
 
+    if let Err(message) = check_prompt_budget(prompt_tokens, opts.max_prompt_tokens) {
+        let body = serde_json::json!({
+            "error": { "message": message, "type": "invalid_request_error", "code": "prompt_too_long" }
+        })
+        .to_string();
+        return write_response(stream, 400, "Bad Request", "application/json", &body, body.len())
+            .await;
+    }
+
+    let max_tokens = match clamp_to_context_window(prompt_tokens, request.max_tokens) {
+        Ok(v) => v,
+        Err(message) => {
+            let body = serde_json::json!({
+                "error": { "message": message, "type": "invalid_request_error", "code": "context_length_exceeded" }
+            })
+            .to_string();
+            return write_response(stream, 400, "Bad Request", "application/json", &body, body.len())
+                .await;
+        }
+    };
+
     debug!(
         messages = request.messages.len(),
-        prompt_tokens, max_tokens = request.max_tokens,
-        "chat completion request"
+        prompt_tokens, max_tokens, "chat completion request"
     );
 
     // Model access is serialized by an internal mutex, so run it off the reactor.
     let engine_task = engine.clone();
     let generated = tokio::task::spawn_blocking(move || {
-        engine_task.generate_with(&prompt, request.max_tokens, &gen_opts)
+        engine_task.generate_with(&prompt, max_tokens, &gen_opts)
     })
     .await;
 
@@ -540,6 +565,33 @@ fn apply_stop_sequences(mut text: String, stop: &[String]) -> String {
     text
 }
 
+/// Clamp `max_tokens` so that `prompt + generated` stays inside the model's context window.
+///
+/// Returns `Err` when the prompt alone leaves no usable room for a completion.
+fn clamp_to_context_window(prompt_tokens: usize, max_tokens: usize) -> Result<usize, String> {
+    // Leave a small margin for the ChatML assistant prefix / template tokens.
+    const MARGIN: usize = 16;
+    let usable = CONTEXT_LENGTH_TOKENS.saturating_sub(MARGIN);
+    if prompt_tokens >= usable {
+        return Err(format!(
+            "prompt is {prompt_tokens} tokens, which leaves no room inside the \
+             {CONTEXT_LENGTH_TOKENS}-token context window"
+        ));
+    }
+    Ok(max_tokens.min(usable - prompt_tokens).max(1))
+}
+
+/// Reject prompts that would exhaust Metal memory during prefill.
+fn check_prompt_budget(prompt_tokens: usize, budget: usize) -> Result<(), String> {
+    if prompt_tokens > budget {
+        return Err(format!(
+            "prompt is {prompt_tokens} tokens, over the {budget}-token prefill budget \
+             (raise it with --max-prompt-tokens)"
+        ));
+    }
+    Ok(())
+}
+
 async fn write_response(
     stream: &mut TcpStream,
     status: u16,
@@ -659,6 +711,27 @@ mod tests {
         assert_eq!(message_text(Some(&content)), "hello\nworld");
         assert_eq!(message_text(Some(&serde_json::json!("raw"))), "raw");
         assert_eq!(message_text(None), "");
+    }
+
+    #[test]
+    fn test_clamp_to_context_window() {
+        // plenty of room: request is honoured
+        assert_eq!(clamp_to_context_window(1000, 256).unwrap(), 256);
+        // request exceeds the remaining window: clamped
+        let prompt = CONTEXT_LENGTH_TOKENS - 16 - 10;
+        assert_eq!(clamp_to_context_window(prompt, 256).unwrap(), 10);
+        // prompt alone fills the window: rejected
+        assert!(clamp_to_context_window(CONTEXT_LENGTH_TOKENS, 16).is_err());
+        assert!(clamp_to_context_window(CONTEXT_LENGTH_TOKENS - 8, 16).is_err());
+    }
+
+    #[test]
+    fn test_check_prompt_budget() {
+        assert!(check_prompt_budget(8192, 8192).is_ok());
+        assert!(check_prompt_budget(8193, 8192).is_err());
+        let msg = check_prompt_budget(20000, 8192).unwrap_err();
+        assert!(msg.contains("20000"));
+        assert!(msg.contains("--max-prompt-tokens"));
     }
 
     #[test]

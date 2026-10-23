@@ -488,9 +488,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         serve_opts.max_tokens_cap = args[i + 1].parse().unwrap_or(serve_opts.max_tokens_cap);
                         i += 2;
                     }
+                    "--max-prompt-tokens" if i + 1 < args.len() => {
+                        serve_opts.max_prompt_tokens = args[i + 1].parse().unwrap_or(serve_opts.max_prompt_tokens);
+                        i += 2;
+                    }
                     other => {
                         eprintln!("Unknown argument for `serve`: {other}");
-                        eprintln!("Usage: thunder-memory serve [--host 127.0.0.1] [--port 8787] [--max-tokens-cap 1024]");
+                        eprintln!("Usage: thunder-memory serve [--host 127.0.0.1] [--port 8787] [--max-tokens-cap 1024] [--max-prompt-tokens 8192]");
                         std::process::exit(1);
                     }
                 }
