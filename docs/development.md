@@ -59,16 +59,25 @@ ln -sf /Users/lucas/wz/GitHub/thunder-memory/target/debug/thunder-memory ~/.carg
 #### 2. 日常修改与热生效
 在此配置下，你在仓库中每次执行：
 ```bash
-cargo build
+./scripts/dev.sh            # = cargo build + 重签名 + 重启守护进程
+./scripts/dev.sh --release  # 想让常驻进程跑 release 时
+./scripts/dev.sh --no-restart  # 只编译+签名，不动守护进程
 ```
-编译完成后，系统中的 `thunder-memory`、Thunder Agent 的 MCP 工具调用，都会**立即自动跑在你刚刚编译出来的最新代码上**，无需反复拷贝二进制。
+几秒后，系统中的 `thunder-memory`、Thunder Agent 的 MCP 工具调用，都会**自动跑在你刚刚编译出来的最新代码上**。
 
-> ⚠️ 每改一次都要重新签名，否则屏幕录制授权会失效：
+> ⚠️ **不要直接 `cargo build` 之后手工拷贝/重链**。cargo 产出的二进制只有 ad-hoc 签名，
+> cdhash 由内容派生，内容一变 TCC 就判定“不是同一个程序”，屏幕录制授权失效并开始弹框。
+> `dev.sh` 每次编译后都会用固定证书重签一次（耗时 ~70ms），DR 恒为
+> `identifier "com.lucas.thunder-memory" and certificate root = H"<证书指纹>"`，
+> 所以你一天编译一百次也不会再弹授权框。
+>
+> 建议加个别名，防止忘了走脚本：
 > ```bash
-> codesign --force --sign "Thunder Local Signing" \
->   --identifier com.lucas.thunder-memory --timestamp=none target/debug/thunder-memory
+> echo "alias tmd='/Users/lucas/wz/GitHub/thunder-memory/scripts/dev.sh'" >> ~/.zshrc
 > ```
-> 原因见 [FAQ 第 1 条](#五常见问题与注意事项-faq)（ad-hoc 签名的 DR 就是 cdhash）。
+> 另：用 `cargo run` 直接跑源码（`target/debug/thunder-memory`）与
+> `~/.cargo/bin/thunder-memory` 是**两个不同的 TCC 主体（路径）**，两边都要各自授权一次；
+> 但签名身份相同，所以各自只需授权一次，编译不影响。
 > 只想稳定日常使用、不频繁改代码时，请用 `./scripts/install-release.sh`。
 
 ---
