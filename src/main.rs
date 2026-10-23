@@ -81,9 +81,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  📂 Database:     {:?}", config.db_path);
             println!("  📋 Composer DB:  {:?}", config.resolve_composer_db_path().unwrap_or_else(|| PathBuf::from("not found")));
             println!("  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s", config.capture_interval_secs, config.min_capture_interval_secs, config.max_capture_interval_secs, config.synthesis_interval_secs);
-            let edge_info = match &config.llm_endpoint {
-                Some(e) => format!("{} ({})", config.llm_model, e),
-                None => "Heuristic Rule Engine (Offline / Zero-Cost)".to_string(),
+            // The edge tier resolves in this order in SynthesisEngine::extract_insight:
+            // in-process local model -> configured small-model endpoint -> heuristics.
+            let edge_info = if config.is_local_model_ready() {
+                format!(
+                    "In-Process {} [Candle Metal] (local)",
+                    config.local_model_file
+                )
+            } else if let Some(e) = &config.llm_endpoint {
+                format!("{} ({})", config.llm_model, e)
+            } else {
+                "Heuristic Rule Engine (Offline / Zero-Cost)".to_string()
             };
             let cloud_info = match &config.cloud_endpoint {
                 Some(e) => format!("{} ({})", config.cloud_model.as_deref().unwrap_or("default"), e),
