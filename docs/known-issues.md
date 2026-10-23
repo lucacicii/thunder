@@ -146,6 +146,23 @@ cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
 
 ---
 
+## KI-13 CLI 的 LLM 请求超时被错接成 sandbox 超时 `fixed` `P1`
+
+`crates/thunder-core/src/main.rs` 用 `client_for_selection(&config.agent.model, config.sandbox.timeout_ms)` 构造模型客户端，即 **LLM HTTP/SSE 超时 = 沙箱工具超时（默认 30s）**。真实任务里一次较长的生成就会在流中途被打断：
+
+```
+Thunder Agent error: sse error: error reading sse body: error decoding response body
+(caused by: request or response body error; operation timed out)
+```
+
+三个入口互相不一致：daemon `REQUEST_TIMEOUT_MS = 120_000`、TUI 硬编码 `120_000`、CLI 用 sandbox 的 30s。
+
+修复：CLI 改用独立的 `LLM_REQUEST_TIMEOUT_MS = 120_000`。真机验证的第二轮任务因此跑通（136s / 15 次调用）。
+
+遗留：三个入口各自硬编码 120s，应提到配置（如 `agent.request_timeout_secs`）统一管理。
+
+---
+
 ## 附录：本次改造期间的验证命令
 
 ```bash

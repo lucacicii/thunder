@@ -86,8 +86,12 @@ async fn main() {
     let prompt = args.join(" ");
     let session_id = format!("sess-{}", std::process::id());
 
+    // LLM request timeout, not the sandbox's: a stream that takes longer than
+    // `sandbox.timeout_ms` (30 s by default) is a normal long generation, not a hang.
+    // The daemon and the TUI already use 120 s.
+    const LLM_REQUEST_TIMEOUT_MS: u64 = 120_000;
     let (spec, llm_client) =
-        match client_for_selection(&config.agent.model, config.sandbox.timeout_ms).await {
+        match client_for_selection(&config.agent.model, LLM_REQUEST_TIMEOUT_MS).await {
             Ok(pair) => pair,
             Err(err) => {
                 eprintln!(

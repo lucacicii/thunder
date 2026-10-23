@@ -579,6 +579,42 @@ max_restarts = 0                # L2，daemon 侧配 1
 
 ---
 
+## 14.1 真机校准记录（Phase B/D 之后）
+
+用 `target/debug/thunder`（CLI）+ `RUST_LOG=thunder_core=debug` 在临时工作区跑真实任务，采集每次工具调用的 `kind / novel / mutations / novel_observations / *streak`。
+
+### Run A：修 bug（读 → 改 → 跑测试）
+
+| turn | 工具 | kind | novel | mutation_free_streak |
+|---|---|---|---|---|
+| 1 | `ls`, `find` | Observing | ✅✅ | 0 |
+| 2 | `read_file` ×2 | Observing | ✅✅ | 0 |
+| 3 | `edit_block` | Mutating | ✅ | 0 |
+| 4 | `bash`（跑测试） | Neutral | ✅ | **1** ← 首轮版本 |
+| 5 | `bash`（复跑） | Neutral | ✅ | **1** ← 首轮版本 |
+
+5.7s / 7 次调用，测试从 2 failed 到全绿。
+
+**发现了一个真实误杀路径**：首轮实现里「本轮没有 Mutating」就累加 `mutation_free_streak`，于是「改一次代码 → 连续几轮跑测试验证」这种完全健康的行为会被计成停滞。Run A 第 4 轮立刻复现（streak 从 0 跳到 1），只是尚未到 8 的阈值。
+
+**修正**：`mutation_free_streak` 只在「本轮既无 mutation **也无新信息**」时才累加。含义变为：`MutationFree` 是比 `NoNovelObservation` 更严格的规则，只在把 `stall_no_novel_turns` 调高时才可能先命中——即「我不信任输出新颖度，但仍要检测是否停手了」时的备选旋钮。
+
+修正后重跑同一任务（Run A2），5 轮 7 次调用，`mutation_free_streak` **全程 0**，5.7s 完成。
+
+### Run B：从零建 3 模块小项目（多文件、长时间）
+
+15 次调用 / 8 轮 / 136s，产出 3 个模块 + 2 个测试文件，41 个测试全绿。
+
+**零告警**：所有调用 `novel=true`，`mutation_free_streak` 与 `no_novel_streak` 全程 0，无 cycle、无 stall、无 wrap-up。说明 `Mutating` 指纹（含内容）确实让「连续多文件新建/编辑」全部算作进展。
+
+### 结论
+
+- 阈值 `8 / 6` 在两轮真实任务中均未误触发，但样本太小（2 个任务、22 次调用），不足以证明参数正确，只证明「没有立刻炸」。
+- 真正被真实数据否掉的是 `MutationFree` 的**语义**，不是它的阈值——这类问题只有真跑才会暴露。
+- Run B 第一次尝试在 30s 处被 `sse error: operation timed out` 打断：CLI 的 LLM 请求超时被错误地接到了 `sandbox.timeout_ms` 上（daemon/TUI 早已是 120s）。已修，见 KI-13。
+
+---
+
 ## 15. 风险与取舍
 
 1. **`Mutating` 契约靠插件自觉。** 违反「相同 args ⇒ 相同状态」会导致误判为持续进展 → 由 `wall_clock` 兜底。

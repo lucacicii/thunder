@@ -176,7 +176,12 @@ impl ProgressTracker {
     /// be judged mutation-stalled: stalling means "it started changing things and
     /// then stopped", not "it is exploring".
     pub fn on_turn_end(&mut self) -> Option<StallSignal> {
-        if self.turn_had_mutation {
+        // A mutation-free turn only counts against the run when it was also
+        // informationally empty. Verification phases are the reason: a live run edited
+        // one file and then spent several turns running tests, and every one of those
+        // turns produced new output — counting them towards "stopped mutating" would
+        // have cut a healthy run short.
+        if self.turn_had_mutation || self.turn_had_novel_output {
             self.mutation_free_streak = 0;
         } else if !self.mutations.is_empty() {
             self.mutation_free_streak += 1;
@@ -295,17 +300,45 @@ mod tests {
     }
 
     #[test]
-    fn mutations_then_silence_triggers_mutation_free() {
+    fn a_verification_phase_is_not_a_stall() {
+        // Edit once, then keep learning new things without editing again: this is a
+        // healthy run (the live-run false positive that motivated the novelty check).
         let mut tracker = ProgressTracker::new(3, 100);
         tracker.record(ProgressKind::Mutating, "write_file", "{\"v\":1}", "ok");
         assert_eq!(tracker.on_turn_end(), None);
 
-        for _ in 0..2 {
-            tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
-            assert_eq!(tracker.on_turn_end(), None);
+        for turn in 0..10 {
+            tracker.record(
+                ProgressKind::Neutral,
+                "bash",
+                &format!("{{\"c\":\"test {turn}\"}}"),
+                &format!("a different test result {turn}"),
+            );
+            assert_eq!(
+                tracker.on_turn_end(),
+                None,
+                "verification turns that produce new output are not a stall"
+            );
         }
+        assert_eq!(tracker.mutation_free_streak(), 0);
+    }
+
+    #[test]
+    fn mutations_then_silence_triggers_mutation_free() {
+        // Only reachable with a stricter-than-default no-novelty threshold: a mutation-
+        // free turn has to be informationally empty too, so this rule is a backstop for
+        // setups that raised `no_novel_turns`.
+        let mut tracker = ProgressTracker::new(2, 100);
+        tracker.record(ProgressKind::Mutating, "write_file", "{\"v\":1}", "ok");
+        assert_eq!(tracker.on_turn_end(), None);
+
+        // First identical read is still new information; the next two are not.
         tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
-        assert_eq!(tracker.on_turn_end(), Some(StallSignal::MutationFree(3)));
+        assert_eq!(tracker.on_turn_end(), None);
+        tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
+        assert_eq!(tracker.on_turn_end(), None);
+        tracker.record(ProgressKind::Observing, "read_file", "{}", "same");
+        assert_eq!(tracker.on_turn_end(), Some(StallSignal::MutationFree(2)));
     }
 
     #[test]
