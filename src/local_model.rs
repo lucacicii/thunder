@@ -15,6 +15,16 @@ const REPETITION_WINDOW: usize = 64;
 /// Hard budget for the OCR text embedded in the synthesis prompt.
 const MAX_PROMPT_CHARS: usize = 1200;
 const MAX_LINE_CHARS: usize = 120;
+/// Prompt tokens fed to the model per prefill forward pass.
+///
+/// Candle's attention computes `q @ k^T`, so one prefill of `n` tokens needs transient
+/// buffers of `O(n²) × heads × 4B` (10k tokens ≈ 6 GB of Metal memory). Feeding the prompt
+/// in chunks keeps the peak at `O(chunk²)` while the KV cache grows linearly as intended.
+const PREFILL_CHUNK_TOKENS: usize = 512;
+/// Native context window of the shipped Qwen2.5-0.5B GGUF (`qwen2.context_length`).
+/// Candle only uses it to precompute the RoPE tables - there is no YaRN scaling, so a
+/// position beyond this is a hard error rather than a silent quality drop.
+pub const CONTEXT_LENGTH_TOKENS: usize = 32_768;
 
 /// Decoding options for one generation request.
 #[derive(Debug, Clone)]
@@ -221,23 +231,31 @@ impl LocalModelEngine {
         let mut all_tokens = prompt_tokens.to_vec();
         let mut generated = Vec::new();
 
-        // 1. Initial prefill
-        let input = Tensor::new(prompt_tokens, &self.device)
-            .and_then(|t| t.unsqueeze(0))
-            .map_err(|e| MemoryError::Inference(format!("Tensor creation failed: {e}")))?;
+        if prompt_tokens.len() > CONTEXT_LENGTH_TOKENS {
+            return Err(MemoryError::Inference(format!(
+                "prompt is {} tokens but the model context window is {CONTEXT_LENGTH_TOKENS}",
+                prompt_tokens.len()
+            )));
+        }
 
-        let logits = model
-            .forward(&input, 0)
-            .map_err(|e| MemoryError::Inference(format!("Model forward failed: {e}")))?;
+        // 1. Initial prefill, chunked to keep the O(seq²) attention buffers small.
+        let mut logits = None;
+        for (start, len) in chunk_ranges(prompt_tokens.len(), PREFILL_CHUNK_TOKENS) {
+            let input = Tensor::new(&prompt_tokens[start..start + len], &self.device)
+                .and_then(|t| t.unsqueeze(0))
+                .map_err(|e| MemoryError::Inference(format!("Tensor creation failed: {e}")))?;
+
+            let out = model
+                .forward(&input, start)
+                .map_err(|e| MemoryError::Inference(format!("Model forward failed: {e}")))?;
+            logits = Some(out);
+        }
+
+        let logits = logits
+            .ok_or_else(|| MemoryError::Inference("empty prompt prefill".to_string()))?;
 
         let mut rng = Rng::new(opts.seed);
-        let mut next_token = sample_token(
-            &logits,
-            prompt_tokens.len().saturating_sub(1),
-            &all_tokens,
-            opts,
-            &mut rng,
-        )?;
+        let mut next_token = sample_token(&logits, 0, &all_tokens, opts, &mut rng)?;
 
         // 2. Autoregressive decoding
         for step in 0..max_tokens {
@@ -331,6 +349,15 @@ Screen Content:\n\
 
         parse_synthesized_json(&full_json, app_name, window_title)
     }
+}
+
+/// Split `total` tokens into `(start, len)` prefill chunks of at most `chunk` tokens.
+fn chunk_ranges(total: usize, chunk: usize) -> Vec<(usize, usize)> {
+    let chunk = chunk.max(1);
+    (0..total)
+        .step_by(chunk)
+        .map(|start| (start, chunk.min(total - start)))
+        .collect()
 }
 
 fn sample_token(
@@ -656,6 +683,23 @@ mod tests {
         assert_eq!(insight.category, "research");
         assert_eq!(insight.title, "Study Candle Metal");
         assert_eq!(insight.importance_score, 9.0);
+    }
+
+    #[test]
+    fn test_chunk_ranges() {
+        assert_eq!(chunk_ranges(0, 512), Vec::new());
+        assert_eq!(chunk_ranges(10, 512), vec![(0, 10)]);
+        assert_eq!(chunk_ranges(512, 512), vec![(0, 512)]);
+        assert_eq!(chunk_ranges(513, 512), vec![(0, 512), (512, 1)]);
+        assert_eq!(
+            chunk_ranges(1200, 512),
+            vec![(0, 512), (512, 512), (1024, 176)]
+        );
+        // chunk size 0 must not panic or loop forever
+        assert_eq!(chunk_ranges(3, 0), vec![(0, 1), (1, 1), (2, 1)]);
+        // every token is covered exactly once
+        let total: usize = chunk_ranges(10237, 512).iter().map(|(_, len)| *len).sum();
+        assert_eq!(total, 10237);
     }
 
     #[test]

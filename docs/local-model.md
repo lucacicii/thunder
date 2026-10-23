@@ -101,6 +101,7 @@ thunder-memory serve                            # 127.0.0.1:8787
 thunder-memory serve --port 9000                # 换端口
 thunder-memory serve --host 0.0.0.0             # 局域网/容器可访问（注意无鉴权！）
 thunder-memory serve --max-tokens-cap 2048      # 放宽单次生成上限（默认 1024）
+thunder-memory serve --max-prompt-tokens 16384  # 放宽 prompt 预算（默认 8192，见「上下文与内存」）
 ```
 
 启动后模型常驻内存，**RSS ≈ 1.1 GB**。
@@ -156,7 +157,7 @@ curl -s localhost:8787/v1/chat/completions \
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `messages` | 必填 | `[{role, content}]`，`content` 支持 **string 或 content parts 数组** |
-| `max_tokens` / `max_completion_tokens` | 256 | `clamp(1, --max-tokens-cap)` |
+| `max_tokens` / `max_completion_tokens` | 256 | `clamp(1, --max-tokens-cap)`，并受上下文窗口二次 clamp |
 | `temperature` | 0.7 | `clamp(0, 2)`；`0` = 贪心 |
 | `top_p` | 0.95 | 核采样阈值 |
 | `stop` | 空 | string 或 string[]，命中即截断 |
@@ -167,11 +168,34 @@ curl -s localhost:8787/v1/chat/completions \
 
 - 非流式：标准 `chat.completion`，含 `usage`（token 数由 tokenizer 实算）。
 - 流式：因为引擎是**同步整段生成**，所以只发**一个 delta 块** + `finish_reason: stop` + `[DONE]`。OpenAI SDK / Agent CLI 都能吃。
-- 错误：`{"error":{"message":"...","type":"invalid_request_error"}}`，状态码 `400`（body/字段不合法）、`404`（路由未知）、`413`（body > 8 MB）、`431`（header > 64 KB）、`500`（推理失败）。
+- 错误：`{"error":{"message":"...","type":"invalid_request_error","code":"..."}}`，状态码 `400`（body/字段不合法、`prompt_too_long`、`context_length_exceeded`）、`404`（路由未知）、`413`（body > 8 MB）、`431`（header > 64 KB）、`500`（推理失败）。
 
 ### 并发
 
 模型被单个 `Mutex` 串行化，推理跑在 `spawn_blocking`（不堵 reactor）。并发请求**不报错但排队**——不要指望它扛并发。
+
+### 上下文与内存（重要）
+
+模型原生上下文 **32768**（GGUF `qwen2.context_length`，candle 只拿它预计算 RoPE 表，没有 YaRN，超过即报错）。但**能吃多少 prompt 由内存决定，不是由 32K 决定**：candle 的 attention 是 `q @ kᵀ`，单次 prefill 的瞬时缓冲是 `O(seq²) × 14 heads × 4B`，10k token 一次性喂进去要 ~6 GB 显存。
+
+因此 `generate_with` 采用 **chunked prefill**（每块 512 token，只保留最后一块的 logits），把峰值从 `O(seq²)` 压到 `O(chunk²)`，KV cache 按 24 KB/token 线性增长（32K 打满 ≈ 768 MB）。
+
+实测（24 GB Mac，chunked prefill）：
+
+| prompt tokens | prefill 耗时 | 吞吐 | RSS |
+|---|---|---|---|
+| 6,512 | 9.0 s | 723 tok/s | 1.11 GB |
+| 13,012 | 31.9 s | 407 tok/s | 1.11 GB |
+| 19,512 | 67.0 s | 291 tok/s | 1.20 GB |
+
+改造前同样的 15k prompt 会直接 `Metal error Failed to create metal resource: Buffer`，且 RSS 会涨到 2.4 GB 不回落。
+
+两级保护（都返回 `400` + 明确 message，而不是让客户端等 20 秒再吃一个 Metal 错误）：
+
+| 保护 | 默认 | 触发 | 错误码 |
+|---|---|---|---|
+| prompt 预算 | 8192 token | prompt 超过预算 | `prompt_too_long` |
+| 上下文窗口 | 32768（含 16 token 余量） | `prompt + max_tokens` 超出 | `context_length_exceeded`（`max_tokens` 会被自动 clamp 到剩余空间；prompt 本身就塞满时直接拒绝） |
 
 ---
 
@@ -226,7 +250,8 @@ print(r.choices[0].message.content)
 | 指标 | 数值 |
 |---|---|
 | 模型加载（`ask` 每次都要付） | ≈ 3.3 s |
-| 稳态生成速度 | **≈ 200 token/s**（200 token / 0.93 s，0.5B Q4_K_M，`serve` 单并发） |
+| 稳态 decode 速度 | **≈ 200 token/s**（200 token / 0.93 s，0.5B Q4_K_M，`serve` 单并发） |
+| prefill 速度 | 723 → 291 tok/s（6.5K → 19.5K token，随长度二次衰减） |
 | 首个请求延迟 | 明显更慢（Metal kernel / 着色器预热，可达数秒），之后稳定 |
 | `serve` 常驻 RSS | ≈ 1.1 GB |
 | 与 daemon 的关系 | 两个进程**各自持有一份模型**；`ask`/`serve` 的启停不影响 daemon 的感知与提炼 |
@@ -258,6 +283,11 @@ candle-transformers = { version = "0.11", features = ["metal"] }   # ← 关键�
 ### 2. 输出无限重复 / 满屏刷同一句
 
 0.5B 贪心解码的典型退化。检查是否用的是 `GenOptions::synthesis()`（带 penalty + JSON 早停）；自写调用时至少设置 `repetition_penalty = 1.15`。
+
+### 2.1 `400 prompt_too_long` / `Metal error ... Failed to create metal resource: Buffer`
+
+- `prompt_too_long`：`serve` 的 prompt 预算（默认 8192 token）拦下了，按需 `--max-prompt-tokens`。
+- 若直接吃到 Metal buffer 分配失败，说明绕过保护或系统内存吃紧（swap 占用高时更容易）：缩小 prompt、关掉别的吃内存进程，或确认用的是带 chunked prefill 的版本（老版本 15k token 必挂）。
 
 ### 3. `serve` 报 `local model not found`
 
@@ -295,7 +325,7 @@ kill <多余的那个 PID>
 ## 八、开发与验证
 
 ```bash
-cargo test                       # 30 个单测（含 7 个 HTTP 层测试）
+cargo test                       # 33 个单测（含 9 个 HTTP 层测试 + chunked prefill 用例）
 cargo run -- ask "hello" --greedy --max-tokens 8   # 不安装也能验证模型
 cargo run -- serve --port 8788                     # 不占用常驻端口试新代码
 ```
