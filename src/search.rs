@@ -28,7 +28,9 @@ impl MemorySearchEngine {
         query_text: &str,
         limit: usize,
     ) -> Result<Vec<ScoredMemory>, MemoryError> {
-        let candidates = self.db.list_recent_memories(limit * 3)?;
+        // Superseded memories were folded into a consolidated one; scoring them
+        // again would cite the same work twice.
+        let candidates = self.db.list_recent_active_memories(limit * 3)?;
         let query_terms: Vec<String> = query_text
             .to_lowercase()
             .split_whitespace()

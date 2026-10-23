@@ -28,7 +28,12 @@ Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Compose
    - 提取活动类别（`code_development`, `debugging`, `research`, `documentation`, `communication` 等）。
    - Mem0 状态更新机制：连续任务触发 `UPDATE` 续写进展；切换场景或关键突破触发 `ADD` 生成新记忆。
    - 支持配置本地 Ollama、Apple MLX 或任意 OpenAI 兼容端点；未配置端点时无缝回退至内置启发式规则抽取器（thunder-memory 自身不再加载任何模型）。
-5. **用户交互训练数据同步与导出 (Training Data Pipeline)**：
+5. **双模型分层：即时档 + 空闲深度档**：
+   - **即时档**（`llm_endpoint`，每 300s）：小模型把未处理的感知流聚类成 episode，一条 episode 一条长期记忆。
+   - **空闲档**（`consolidation_endpoint`，桌面静止 15min 且距上次 ≥6h）：大模型读最近 7 天的记忆，把讲同一件事的碎片合并重写；源记录标 `superseded`，不再进入检索（`query` / `memory_recent`），但它们的时间窗与 capture id 会继承到合并后的记忆上。
+   - 分组失败（模型不可用、返回不可解析的 JSON）不会丢数据：该组源记忆保持 `active`，下一个空闲窗口自动重试。
+   - 手动触发：`thunder-memory consolidate [--dry-run]`。
+6. **用户交互训练数据同步与导出 (Training Data Pipeline)**：
    - 自动检测并对接 `~/.agent-resume-panel/.desktop/desktop.db` 中的 `workbench_composer_sends` 表。
    - 自动根据增量水印（Watermark）同步用户真实提示词。
    - 分析意图类型（代码生成、错误修复、架构咨询、反向约束、执行确认等）。
@@ -67,17 +72,26 @@ thunder-memory ocr-once --save        # 立即截屏并入库 SQLite
 
 # 3. 记忆提炼与认知查询
 thunder-memory synthesize             # 手动触发一次小模型认知提炼
+thunder-memory consolidate            # 手动触发一次大模型深度整理（--dry-run 只预览）
 thunder-memory query "SQLite WAL"     # 按四维认知评分检索长期记忆与 Agent 指南
-thunder-memory list-memories 10       # 罗列最近 10 条长期记忆
+thunder-memory list-memories 10       # 罗列最近 10 条长期记忆（含 superseded）
 
 # 3.1 推理后端（外部模型，thunder-memory 不内置任何模型）
-# 提炼与反思走 OpenAI 兼容端点，推荐 Ollama：
-#   ollama pull qwen2.5-coder:0.5b
+# 两个档位都是 OpenAI 兼容端点，可以同源（都指向 Ollama）也可以两处：
 #   ~/.thunder/memory.toml:
+#     # 即时档：本地小模型
 #     llm_endpoint = "http://127.0.0.1:11434/v1"
 #     llm_model    = "qwen2.5-coder:0.5b"
-# 也可以用环境变量：THUNDER_MEMORY_LLM_ENDPOINT / THUNDER_MEMORY_LLM_MODEL / THUNDER_MEMORY_LLM_KEY
-# `thunder-memory status` 会探测端点并报告模型是否已 pull。
+#     # 空闲深度档：大模型（可远程，需 key）
+#     consolidation_endpoint = "https://www.lucastech.xyz/v1"
+#     consolidation_model    = "ollama-cloud/nemotron-3-nano:30b"
+#     consolidation_api_key  = "sk-..."
+#     consolidation_idle_minutes = 15
+#     consolidation_interval_secs = 21600
+#     consolidation_window_days = 7
+# 也可以用环境变量：THUNDER_MEMORY_LLM_ENDPOINT / _MODEL / _KEY，
+#                  THUNDER_MEMORY_CONSOLIDATION_ENDPOINT / _MODEL / _KEY
+# `thunder-memory status` 会探测两个端点并报告模型是否就绪。
 
 # 4. 偏好规则与反向约束管理
 thunder-memory preferences            # 显示当前全局约束与开发偏好

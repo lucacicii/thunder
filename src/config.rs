@@ -31,6 +31,29 @@ pub struct MemoryConfig {
     /// Optional API key for LLM endpoint
     pub llm_api_key: Option<String>,
 
+    /// OpenAI-compatible endpoint for the idle deep-consolidation tier
+    /// (the big model that merges and de-duplicates what the small model wrote).
+    /// Unset disables the tier entirely.
+    pub consolidation_endpoint: Option<String>,
+
+    /// Model name served by `consolidation_endpoint` (e.g. `ollama-cloud/nemotron-3-nano:30b`)
+    pub consolidation_model: String,
+
+    /// Optional API key for `consolidation_endpoint`
+    pub consolidation_api_key: Option<String>,
+
+    /// A large model on a slow link gets minutes, not the small tier's seconds
+    pub consolidation_timeout_secs: u64,
+
+    /// How long the desktop must stay unchanged before a deep pass may run (minutes)
+    pub consolidation_idle_minutes: u64,
+
+    /// Minimum gap between deep passes (seconds), so an idle machine does not loop
+    pub consolidation_interval_secs: u64,
+
+    /// Long-term memories younger than this are the deep pass's input (days)
+    pub consolidation_window_days: u64,
+
     /// Minimum average OCR confidence (0.0 .. 1.0) required to record a screen capture
     pub min_confidence: f32,
 
@@ -68,6 +91,13 @@ impl Default for MemoryConfig {
             llm_endpoint: None,
             llm_model: "qwen2.5-coder:0.5b".to_string(),
             llm_api_key: None,
+            consolidation_endpoint: None,
+            consolidation_model: "ollama-cloud/nemotron-3-nano:30b".to_string(),
+            consolidation_api_key: None,
+            consolidation_timeout_secs: 180,
+            consolidation_idle_minutes: 15,
+            consolidation_interval_secs: 21_600,
+            consolidation_window_days: 7,
             min_confidence: 0.1,
             raw_capture_retention_days: 2,
             memory_archive_days: 30,
@@ -119,6 +149,15 @@ impl MemoryConfig {
         }
         if let Ok(key) = std::env::var("THUNDER_MEMORY_LLM_KEY") {
             cfg.llm_api_key = Some(key);
+        }
+        if let Ok(endpoint) = std::env::var("THUNDER_MEMORY_CONSOLIDATION_ENDPOINT") {
+            cfg.consolidation_endpoint = Some(endpoint);
+        }
+        if let Ok(model) = std::env::var("THUNDER_MEMORY_CONSOLIDATION_MODEL") {
+            cfg.consolidation_model = model;
+        }
+        if let Ok(key) = std::env::var("THUNDER_MEMORY_CONSOLIDATION_KEY") {
+            cfg.consolidation_api_key = Some(key);
         }
 
         cfg

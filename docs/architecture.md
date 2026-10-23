@@ -101,6 +101,16 @@ $$\text{Score}(m) = w_{\text{recency}} \cdot \text{Recency}(m) + w_{\text{import
        │ Tier 3: 长期情境与语义记忆 (long_term_memories)      │
        │  - title, summary, key_entities, importance_score   │
        │  - time_window, source_captures, status             │
+       └──────────────────────────┬──────────────────────────┘
+                                  │
+                                  │ 桌面静止 15min 且距上次 ≥6h（可配）
+                                  ▼
+       ┌─────────────────────────────────────────────────────┐
+       │ Tier 3.5: 空闲深度整理 (Deep Consolidation)         │
+       │  - 大模型（可与即时档同源或异地，如云端 30B）       │
+       │  - 按 category 分组，合并讲同一件事的记忆碎片      │
+       │  - 新记忆继承时间窗与 capture id；源记录 superseded│
+       │  - 失败不丢数据：源保持 active，下个空闲窗口重试    │
        └─────────────────────────────────────────────────────┘
                                   ▲
                                   │ 关联对齐

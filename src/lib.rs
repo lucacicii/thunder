@@ -3,6 +3,7 @@
 pub mod capture;
 pub mod composer_sync;
 pub mod config;
+pub mod consolidation;
 pub mod daemon;
 pub mod db;
 pub mod error;
@@ -13,6 +14,7 @@ pub mod synthesis;
 pub use capture::{OcrEngine, RawCaptureJson, ScreenCaptureRecord};
 pub use composer_sync::ComposerSyncEngine;
 pub use config::MemoryConfig;
+pub use consolidation::{ConsolidationEngine, ConsolidationReport, ConsolidatedMemory};
 pub use daemon::MemoryDaemon;
 pub use db::{
     CompactionResult, ComposerTrainingSample, Database, LongTermMemoryRow, MemoryStats,

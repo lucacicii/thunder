@@ -444,9 +444,12 @@ impl MemoryMcpServer {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(5) as usize;
 
+                // Retrieval only: a superseded memory was folded into a
+                // consolidated one, and an agent reading both would treat one
+                // piece of work as two.
                 let memories = self
                     .db
-                    .list_recent_memories(limit)
+                    .list_recent_active_memories(limit)
                     .map_err(|e| e.to_string())?;
 
                 let agent_records = self

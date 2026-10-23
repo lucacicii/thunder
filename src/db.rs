@@ -587,7 +587,11 @@ impl Database {
         Ok(results)
     }
 
-    /// List recent long-term memories
+    /// List recent long-term memories, every status — the diagnostic view.
+    ///
+    /// Retrieval never comes through here: a memory folded into a later
+    /// consolidation pass is still true historically, but re-serving it beside
+    /// the consolidated one is how an agent ends up citing the same fact twice.
     pub fn list_recent_memories(&self, limit: usize) -> Result<Vec<LongTermMemoryRow>, MemoryError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -608,6 +612,91 @@ impl Database {
             results.push(r?);
         }
         Ok(results)
+    }
+
+    /// List recent `active` long-term memories — the retrieval view.
+    pub fn list_recent_active_memories(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<LongTermMemoryRow>, MemoryError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at_ms, updated_at_ms, category, title, summary,
+                   key_entities, importance_score, time_window_start_ms,
+                   time_window_end_ms, source_capture_ids, status,
+                   utility_score, access_count, last_accessed_at_ms
+            FROM long_term_memories
+            WHERE status = 'active'
+            ORDER BY updated_at_ms DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], Self::map_long_term_row)?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// Active long-term memories updated since `since_ms`, oldest first.
+    ///
+    /// Oldest first on purpose: the deep-consolidation pass reads them in the
+    /// order they happened, which is the only order that makes "this episode
+    /// continued that one" visible to the model.
+    pub fn list_active_memories_since(
+        &self,
+        since_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<LongTermMemoryRow>, MemoryError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at_ms, updated_at_ms, category, title, summary,
+                   key_entities, importance_score, time_window_start_ms,
+                   time_window_end_ms, source_capture_ids, status,
+                   utility_score, access_count, last_accessed_at_ms
+            FROM long_term_memories
+            WHERE status = 'active' AND updated_at_ms >= ?1
+            ORDER BY time_window_start_ms ASC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![since_ms, limit as i64], Self::map_long_term_row)?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// Mark memories as folded into a consolidated one. Returns how many moved.
+    pub fn supersede_memories(&self, ids: &[i64]) -> Result<usize, MemoryError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE long_term_memories SET status = 'superseded', updated_at_ms = ?1 \
+             WHERE status = 'active' AND id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+        query_params.push(&now_ms);
+        for id in ids {
+            query_params.push(id);
+        }
+        let moved = stmt.execute(query_params.as_slice())?;
+        debug!("Superseded {moved} long_term_memories");
+        Ok(moved)
     }
 
     fn map_long_term_row(row: &rusqlite::Row) -> rusqlite::Result<LongTermMemoryRow> {

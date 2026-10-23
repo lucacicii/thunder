@@ -1,6 +1,7 @@
 use crate::capture::OcrEngine;
 use crate::composer_sync::ComposerSyncEngine;
 use crate::config::MemoryConfig;
+use crate::consolidation::ConsolidationEngine;
 use crate::db::Database;
 use crate::error::MemoryError;
 use crate::synthesis::SynthesisEngine;
@@ -32,6 +33,7 @@ pub struct MemoryDaemon {
     db: Database,
     ocr: Arc<OcrEngine>,
     synthesis: Arc<SynthesisEngine>,
+    consolidation: Arc<ConsolidationEngine>,
     composer_sync: Arc<ComposerSyncEngine>,
 }
 
@@ -41,6 +43,7 @@ impl MemoryDaemon {
         let db = Database::open(&config.db_path)?;
         let ocr = Arc::new(OcrEngine::new()?);
         let synthesis = Arc::new(SynthesisEngine::new(db.clone(), config.clone()));
+        let consolidation = Arc::new(ConsolidationEngine::new(db.clone(), config.clone()));
         let composer_sync = Arc::new(ComposerSyncEngine::new(db.clone(), config.clone()));
 
         Ok(Self {
@@ -48,6 +51,7 @@ impl MemoryDaemon {
             db,
             ocr,
             synthesis,
+            consolidation,
             composer_sync,
         })
     }
@@ -67,6 +71,16 @@ impl MemoryDaemon {
             self.config.max_capture_interval_secs
         );
         info!("Synthesis interval: {}s", self.config.synthesis_interval_secs);
+        if self.consolidation.is_enabled() {
+            info!(
+                "Deep consolidation: {} when idle {}min, at most every {}s",
+                self.config.consolidation_model,
+                self.config.consolidation_idle_minutes,
+                self.config.consolidation_interval_secs
+            );
+        } else {
+            info!("Deep consolidation tier: off (no `consolidation_endpoint`)");
+        }
 
         let mut current_interval = Duration::from_secs(self.config.capture_interval_secs);
         let min_interval = Duration::from_secs(self.config.min_capture_interval_secs.max(1));
@@ -86,6 +100,14 @@ impl MemoryDaemon {
         let mut maintenance_interval = tokio::time::interval(Duration::from_secs(86_400)); // 24h maintenance
 
         let mut last_hash = self.db.get_last_capture_hash()?;
+        // The deep tier is gated on idleness, so the loop has to remember when
+        // the desktop last *changed* — not when it last ticked, which happens
+        // every minute even on a static screen.
+        let mut last_change = std::time::Instant::now();
+        let mut last_consolidation = std::time::Instant::now();
+        let idle_threshold = Duration::from_secs(self.config.consolidation_idle_minutes * 60);
+        let consolidation_gap =
+            Duration::from_secs(self.config.consolidation_interval_secs.max(60));
 
         loop {
             tokio::select! {
@@ -123,6 +145,7 @@ impl MemoryDaemon {
                                             // Dynamic acceleration: snap to min_interval upon active UI change
                                             consecutive_idle_ticks = 0;
                                             current_interval = min_interval;
+                                            last_change = std::time::Instant::now();
                                         } else {
                                             // Screen unchanged: progressive deceleration
                                             consecutive_idle_ticks = consecutive_idle_ticks.saturating_add(1);
@@ -141,6 +164,34 @@ impl MemoryDaemon {
                         }
                     }
                     sleep.as_mut().reset(tokio::time::Instant::now() + current_interval);
+
+                    // Deep consolidation, when the desktop has been quiet long
+                    // enough and the previous pass is old enough. Spawned rather
+                    // than awaited: a cloud model can take a minute, and the
+                    // capture loop should not stop measuring while it thinks.
+                    if self.consolidation.is_enabled()
+                        && last_change.elapsed() >= idle_threshold
+                        && last_consolidation.elapsed() >= consolidation_gap
+                    {
+                        last_consolidation = std::time::Instant::now();
+                        let engine = Arc::clone(&self.consolidation);
+                        tokio::spawn(async move {
+                            info!("Desktop idle, running deep memory consolidation...");
+                            match engine.run(false).await {
+                                Ok(report) if report.is_empty() => {
+                                    debug!(
+                                        "Deep consolidation had nothing to merge ({} candidates, {} groups)",
+                                        report.candidates, report.groups
+                                    );
+                                }
+                                Ok(report) => info!(
+                                    "Deep consolidation: {} memories produced, {} superseded from {} candidates",
+                                    report.produced, report.superseded, report.candidates
+                                ),
+                                Err(e) => warn!("Deep consolidation failed: {e}"),
+                            }
+                        });
+                    }
                 }
                 _ = synthesis_interval.tick() => {
                     info!("Running periodic memory synthesis...");

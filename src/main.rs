@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use thunder_memory::capture::OcrEngine;
 use thunder_memory::composer_sync::ComposerSyncEngine;
 use thunder_memory::config::MemoryConfig;
+use thunder_memory::consolidation::ConsolidationEngine;
 use thunder_memory::daemon::MemoryDaemon;
 use thunder_memory::db::Database;
 use thunder_memory::search::MemorySearchEngine;
@@ -90,11 +91,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "{} ({}) — {}",
                     config.llm_model,
                     endpoint,
-                    probe_llm_endpoint(endpoint, &config.llm_model).await
+                    probe_llm_endpoint(endpoint, &config.llm_model, config.llm_api_key.as_deref()).await
                 ),
                 None => "No endpoint configured — Heuristic Rule Engine (Offline / Zero-Cost)".to_string(),
             };
             println!("  🔬 Synthesis Model:    {}", edge_info);
+            // Second tier: the big model that merges what the small one wrote,
+            // gated on the desktop being idle.
+            let deep_info = match &config.consolidation_endpoint {
+                Some(endpoint) => format!(
+                    "{} ({}) — {} | idle {}min, ≤1/{}s",
+                    config.consolidation_model,
+                    endpoint,
+                    probe_llm_endpoint(
+                        endpoint,
+                        &config.consolidation_model,
+                        config.consolidation_api_key.as_deref()
+                    )
+                    .await,
+                    config.consolidation_idle_minutes,
+                    config.consolidation_interval_secs
+                ),
+                None => "off (no `consolidation_endpoint`)".to_string(),
+            };
+            println!("  🌙 Deep Consolidation: {}", deep_info);
 
             if config.db_path.exists() {
                 let db = Database::open(&config.db_path)?;
@@ -459,6 +479,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        "consolidate" => {
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            config.ensure_dirs()?;
+            let db = Database::open(&config.db_path)?;
+            let engine = ConsolidationEngine::new(db, config);
+            if !engine.is_enabled() {
+                eprintln!("❌ No `consolidation_endpoint` configured (see ~/.thunder/memory.toml).");
+                std::process::exit(1);
+            }
+            println!(
+                "🌙 Running deep memory consolidation{}...",
+                if dry_run { " (dry run)" } else { "" }
+            );
+            let report = engine.run(dry_run).await?;
+            println!(
+                "✅ {} candidates, {} groups merged → {} memories produced, {} superseded{}",
+                report.candidates,
+                report.groups,
+                report.produced,
+                report.superseded,
+                if dry_run { " (dry run, nothing written)" } else { "" }
+            );
+        }
+
         "mcp" => {
             config.ensure_dirs()?;
             let db = Database::open(&config.db_path)?;
@@ -475,6 +519,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  status                  Show daemon and database status");
             println!("  ocr-once                Run instant screen capture & OCR test");
             println!("  synthesize              Trigger manual memory synthesis cycle");
+            println!("  consolidate [--dry-run] Merge recent memories with the big model");
             println!("  sync-composer           Sync workbench_composer_sends from desktop.db");
             println!("  export-training [fmt]   Export training dataset (openai | alpaca | sharegpt)");
             println!("  query <search terms>    Query memory with Generative Agents scoring");
@@ -494,21 +539,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Ask an OpenAI-compatible endpoint what it serves, so `status` can say whether
-/// the synthesis model is actually there.
+/// the model for a tier is actually there.
 ///
-/// A stopped Ollama is invisible otherwise: synthesis logs one warning per cycle
-/// and quietly falls back to the rule extractor, which looks like "the model is
-/// just not very good" rather than "nothing is answering".
-async fn probe_llm_endpoint(endpoint: &str, model: &str) -> String {
+/// A stopped Ollama or a wrong key is invisible otherwise: the tier logs one
+/// warning per run and quietly falls back, which looks like "the model is just
+/// not very good" rather than "nothing is answering".
+async fn probe_llm_endpoint(endpoint: &str, model: &str, api_key: Option<&str>) -> String {
     let url = format!("{}/models", endpoint.trim_end_matches('/'));
     let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
+        .timeout(std::time::Duration::from_millis(4000))
         .build()
     else {
         return "probe failed".to_string();
     };
 
-    let resp = match client.get(&url).send().await {
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {key}"));
+    }
+
+    let resp = match req.send().await {
         Ok(resp) => resp,
         Err(e) => return format!("unreachable ({e})"),
     };
