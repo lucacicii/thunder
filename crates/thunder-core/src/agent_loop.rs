@@ -257,8 +257,15 @@ impl ReActAgentLoop {
     pub async fn compact_now(&mut self) -> PruneResult {
         let summarizer = self.build_summarizer();
         let cancel = self.cancellation_token.clone();
+        let snapshot = self.registry.current();
+        let is_mutating = crate::pruning::mutating_oracle(&snapshot);
         self.pruner
-            .prune(&mut self.context, summarizer.as_ref(), &cancel)
+            .prune(
+                &mut self.context,
+                summarizer.as_ref(),
+                &cancel,
+                &is_mutating,
+            )
             .await
     }
 
@@ -379,9 +386,16 @@ impl ReActAgentLoop {
             // Keeps message prefix 100% byte-identical until `estimated > window - reserve`.
             if self.pruner.should_compact(self.context.estimated_tokens()) {
                 let summarizer = self.build_summarizer();
+                // Which tools mutate is declared by the plugin, not guessed from names.
+                let is_mutating = crate::pruning::mutating_oracle(&turn_snapshot);
                 let prune_res = self
                     .pruner
-                    .prune(&mut self.context, summarizer.as_ref(), &cancel)
+                    .prune(
+                        &mut self.context,
+                        summarizer.as_ref(),
+                        &cancel,
+                        &is_mutating,
+                    )
                     .await;
                 if prune_res.pruned {
                     compactions_triggered += 1;
@@ -416,9 +430,16 @@ impl ReActAgentLoop {
                         self.pruner.update_max_tokens(halved);
                     }
                     let summarizer = self.build_summarizer();
+                    let snapshot = self.registry.current();
+                    let is_mutating = crate::pruning::mutating_oracle(&snapshot);
                     let prune_res = self
                         .pruner
-                        .prune(&mut self.context, summarizer.as_ref(), &cancel)
+                        .prune(
+                            &mut self.context,
+                            summarizer.as_ref(),
+                            &cancel,
+                            &is_mutating,
+                        )
                         .await;
                     if !prune_res.pruned {
                         self.pruner.emergency_trim(&mut self.context);
@@ -920,7 +941,10 @@ impl ReActAgentLoop {
     /// than warmed over a dead prefix.
     async fn context_reset(&mut self, turn: usize, reason: &str, detail: &str) -> usize {
         let messages = self.context.get_messages();
-        let (read_files, modified_files) = crate::pruning::extract_file_lists(&messages);
+        let snapshot = self.registry.current();
+        let is_mutating = crate::pruning::mutating_oracle(&snapshot);
+        let (read_files, modified_files) =
+            crate::pruning::extract_file_lists(&messages, &is_mutating);
         let region = crate::pruning::serialize_region(&messages);
         let cancel = self.cancellation_token.clone();
 

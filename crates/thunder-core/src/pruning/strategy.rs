@@ -45,6 +45,7 @@ impl ContextPruner {
         context: &mut ContextBuffer,
         summarizer: Option<&Summarizer>,
         cancel: &CancellationToken,
+        is_mutating: &(dyn Fn(&str) -> bool + Send + Sync),
     ) -> PruneResult {
         let tokens_before = context.estimated_tokens();
         if !self.should_compact(tokens_before) {
@@ -69,7 +70,8 @@ impl ContextPruner {
                     .collect();
 
                 let serialized = checkpoint::serialize_region(&region);
-                let (read_files, modified_files) = checkpoint::extract_file_lists(&region);
+                let (read_files, modified_files) =
+                    checkpoint::extract_file_lists(&region, is_mutating);
                 let prev = previous
                     .as_ref()
                     .map(|(text, _)| text.as_str())

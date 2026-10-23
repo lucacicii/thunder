@@ -75,11 +75,17 @@ cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
 
 ---
 
-## KI-4 core 用工具名嗅探「是不是写工具」 `open` `P2`
+## KI-4 core 用工具名嗅探「是不是写工具」 `fixed` `P2`
 
 `crates/thunder-core/src/pruning/checkpoint.rs:249` 的 `is_mutating_tool_name()` 靠名字里是否含 `write/edit/delete/remove/patch/update/create` 来判断工具会不会改文件，违反微内核边界，对第三方 MCP 与脚本工具全部失效。
 
-`ProgressKind`（Phase B 已落地）提供了正解，但 `extract_file_lists(messages)` 目前只拿得到消息、拿不到 registry 快照，需要把谓词一路传进 `ContextPruner::prune`。属于重构，未纳入当前 PR。
+`ProgressKind`（Phase B 已落地）提供了正解，但 `extract_file_lists(messages)` 只拿得到消息、拿不到 registry 快照。
+
+修复：
+- 新增 `pruning::mutating_oracle(&CatalogSnapshot)` —— 从冻结快照的 `descriptor.progress` 构造判定谓词。
+- `ContextPruner::prune(..., is_mutating: &(dyn Fn(&str) -> bool + Send + Sync))` 与 `extract_file_lists(messages, is_mutating)` 接收谓词；四个调用点（`compact_now` / 轮首压缩 / 溢出重试 / `context_reset`）各自从 `registry.current()` 构造。
+- `is_mutating_tool_name` 降级为 `looks_mutating_by_name`，只在名字不在快照里时兜底。
+- 测试：声明优先于名字（`declared_progress_kind_beats_the_name_heuristic`）、oracle 的兜底行为、以及一条端到端断言——工具名不像写工具但声明 `Mutating` 时，恢复用的 handoff 必须把它列进「已修改」而不是「已读」。
 
 ---
 

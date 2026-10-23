@@ -311,6 +311,7 @@ async fn checkpoint_compaction_and_overflow_self_healing_preserve_tool_pairing()
             &mut ctx,
             Some(&summarizer),
             &tokio_util::sync::CancellationToken::new(),
+            &|_: &str| true,
         )
         .await;
     assert!(prune_res.pruned);

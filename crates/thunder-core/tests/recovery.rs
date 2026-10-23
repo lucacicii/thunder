@@ -350,3 +350,102 @@ async fn reset_counters_keep_the_run_budget_honest() {
         "three stalled turns plus the recovered turn"
     );
 }
+
+/// Same tool name as [`Provider`], but the plugin declares it as a writer.
+struct MutatingProvider;
+
+#[async_trait]
+impl ToolProvider for MutatingProvider {
+    fn provider_id(&self) -> &str {
+        "p"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<ToolDescriptor>, ToolExecutionError> {
+        Ok(vec![ToolDescriptor::new_mcp(
+            "p",
+            "t",
+            "t",
+            json!({ "type": "object" }),
+        )
+        .with_progress(ProgressKind::Mutating)])
+    }
+
+    async fn call_tool(
+        &self,
+        _name: &str,
+        _arguments: Value,
+        _ctx: &ExecutionContext,
+    ) -> Result<String, ToolExecutionError> {
+        Ok("constant".to_string())
+    }
+}
+
+#[tokio::test]
+async fn the_handoff_uses_the_declared_progress_kind_not_the_tool_name() {
+    // `mcp__p__t` looks nothing like a write tool, but the plugin declares Mutating. The
+    // recovery handoff must list its path under "already modified" — the previous
+    // name-sniffing heuristic would have filed it as a read.
+    let ws = tempdir().unwrap();
+    let sink = Arc::new(Sink::default());
+
+    let mut steps: Vec<LlmTurnResponse> = (0..3)
+        .map(|n| {
+            LlmTurnResponse::simple(
+                "spinning",
+                vec![ToolCallRequest {
+                    id: format!("c{n}"),
+                    name: "mcp__p__t".to_string(),
+                    arguments: json!({ "path": "src/x.rs" }),
+                }],
+            )
+        })
+        .collect();
+    steps.push(LlmTurnResponse::simple("done", vec![]));
+
+    let driver = Arc::new(ScriptedMockDriver::new(steps));
+    let mut agent = ReActAgentLoop::new(
+        config(
+            ws.path(),
+            LoopBudget {
+                max_turns: 20,
+                wall_clock: None,
+                max_total_tokens: 0,
+                max_context_resets: 1,
+                ..LoopBudget::default()
+            },
+            StallConfig {
+                mutation_free_turns: 100,
+                no_novel_turns: 2,
+            },
+        ),
+        {
+            let registry = ToolRegistry::new();
+            registry
+                .register_provider(Arc::new(MutatingProvider))
+                .await
+                .unwrap();
+            registry
+        },
+        driver,
+    )
+    .with_event_sink(sink.clone());
+
+    agent.run("edit src/x.rs").await.expect("run completes");
+
+    let handoff = agent
+        .context()
+        .get_messages()
+        .iter()
+        .filter_map(|m| m.content_str())
+        .find(|c| c.contains("<handoff>"))
+        .expect("handoff present")
+        .to_string();
+    let modified_section = handoff
+        .split("Files already modified")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        modified_section.contains("src/x.rs"),
+        "declared Mutating must land in the modified list, handoff was:\n{handoff}"
+    );
+}
