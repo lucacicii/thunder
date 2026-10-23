@@ -70,6 +70,17 @@ thunder-memory synthesize             # 手动触发一次小模型认知提炼
 thunder-memory query "SQLite WAL"     # 按四维认知评分检索长期记忆与 Agent 指南
 thunder-memory list-memories 10       # 罗列最近 10 条长期记忆
 
+# 3.1 进程内模型直连（OpenAI 兼容 endpoint / 一次性提问）
+thunder-memory ask "用一句话解释 WAL"        # 单次 prompt，直接打到内置 Qwen2.5（Metal）
+thunder-memory ask "..." --greedy --max-tokens 64
+thunder-memory serve                        # 起 OpenAI 兼容 HTTP 服务，默认 127.0.0.1:8787
+thunder-memory serve --port 9000 --host 0.0.0.0
+curl -s localhost:8787/v1/models            # {"data":[{"id":"qwen2.5-0.5b-instruct-q4_k_m",...}]}
+curl -s localhost:8787/v1/chat/completions   -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":64,"temperature":0.3}'
+# 让 thunder-memory 自己的兜底档指向这个 endpoint：
+#   THUNDER_MEMORY_LLM_ENDPOINT=http://127.0.0.1:8787/v1
+
 # 4. 偏好规则与反向约束管理
 thunder-memory preferences            # 显示当前全局约束与开发偏好
 thunder-memory preferences /path/to   # 显示指定工作区的针对性约束

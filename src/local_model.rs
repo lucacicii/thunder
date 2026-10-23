@@ -16,11 +16,103 @@ const REPETITION_WINDOW: usize = 64;
 const MAX_PROMPT_CHARS: usize = 1200;
 const MAX_LINE_CHARS: usize = 120;
 
+/// Decoding options for one generation request.
+#[derive(Debug, Clone)]
+pub struct GenOptions {
+    /// `0.0` = greedy argmax; `> 0.0` = temperature sampling.
+    pub temperature: f32,
+    pub top_p: f32,
+    pub repetition_penalty: f32,
+    pub repetition_window: usize,
+    /// Stop as soon as a top-level JSON object is closed (used by insight synthesis).
+    pub stop_on_json_close: bool,
+    /// RNG seed for temperature sampling (`0` = derive from the clock).
+    pub seed: u64,
+}
+
+impl Default for GenOptions {
+    fn default() -> Self {
+        Self {
+            temperature: 0.0,
+            top_p: 0.95,
+            repetition_penalty: REPETITION_PENALTY,
+            repetition_window: REPETITION_WINDOW,
+            stop_on_json_close: false,
+            seed: 0,
+        }
+    }
+}
+
+impl GenOptions {
+    /// Deterministic JSON-extraction profile used by `extract_insight`.
+    pub fn synthesis() -> Self {
+        Self {
+            stop_on_json_close: true,
+            ..Self::default()
+        }
+    }
+
+    /// General-purpose chat profile (sampled, no JSON early-stop).
+    pub fn chat(temperature: f32, top_p: f32) -> Self {
+        Self {
+            temperature,
+            top_p,
+            ..Self::default()
+        }
+    }
+}
+
+/// Tiny xorshift64* PRNG so sampling needs no extra dependency.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        let seed = if seed == 0 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x2545_F491_4F6C_DD1D)
+        } else {
+            seed
+        };
+        Self(seed | 1)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Uniform in [0, 1).
+    fn next_f32(&mut self) -> f32 {
+        ((self.next_u64() >> 40) as f32) / (1u32 << 24) as f32
+    }
+}
+
+/// Render OpenAI-style chat messages into Qwen2.5's ChatML prompt format.
+pub fn render_chatml(messages: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (role, content) in messages {
+        out.push_str("<|im_start|>");
+        out.push_str(role);
+        out.push('\n');
+        out.push_str(content.trim());
+        out.push_str("<|im_end|>\n");
+    }
+    out.push_str("<|im_start|>assistant\n");
+    out
+}
+
 pub struct LocalModelEngine {
     model: Arc<Mutex<ModelWeights>>,
     tokenizer: Arc<Tokenizer>,
     device: Device,
     eos_token_id: u32,
+    model_id: String,
 }
 
 impl LocalModelEngine {
@@ -71,6 +163,12 @@ impl LocalModelEngine {
             .token_to_id("<|im_end|>")
             .unwrap_or(151645);
 
+        let model_id = gguf_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("local-model")
+            .to_string();
+
         info!("Local in-process model successfully initialized and ready");
 
         Ok(Self {
@@ -78,11 +176,35 @@ impl LocalModelEngine {
             tokenizer: Arc::new(tokenizer),
             device,
             eos_token_id,
+            model_id,
         })
     }
 
-    /// Run autoregressive text generation with greedy sampling.
+    /// Number of tokens the model's tokenizer produces for `text`.
+    pub fn count_tokens(&self, text: &str) -> usize {
+        self.tokenizer
+            .encode(text, false)
+            .map(|e| e.get_ids().len())
+            .unwrap_or(0)
+    }
+
+    /// Identifier of the loaded model file, e.g. `qwen2.5-0.5b-instruct-q4_k_m`.
+    pub fn model_id(&self) -> String {
+        self.model_id.clone()
+    }
+
+    /// Greedy JSON-extraction generation (synthesis profile).
     pub fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String, MemoryError> {
+        self.generate_with(prompt, max_tokens, &GenOptions::synthesis())
+    }
+
+    /// Run autoregressive text generation with the given decoding options.
+    pub fn generate_with(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        opts: &GenOptions,
+    ) -> Result<String, MemoryError> {
         let mut model = self.model.lock();
         model.clear_kv_cache();
 
@@ -108,12 +230,13 @@ impl LocalModelEngine {
             .forward(&input, 0)
             .map_err(|e| MemoryError::Inference(format!("Model forward failed: {e}")))?;
 
+        let mut rng = Rng::new(opts.seed);
         let mut next_token = sample_token(
             &logits,
             prompt_tokens.len().saturating_sub(1),
             &all_tokens,
-            REPETITION_PENALTY,
-            REPETITION_WINDOW,
+            opts,
+            &mut rng,
         )?;
 
         // 2. Autoregressive decoding
@@ -136,15 +259,17 @@ impl LocalModelEngine {
 
             // Stop as soon as the JSON object is closed. Without this a 0.5B model keeps
             // rambling up to max_tokens and the trailing garbage breaks JSON parsing.
-            if let Ok(partial) = self.tokenizer.decode(&generated, false) {
-                let open_braces = partial.matches('{').count();
-                let close_braces = partial.matches('}').count();
-                if close_braces > 0 && close_braces >= open_braces {
-                    break;
+            if opts.stop_on_json_close {
+                if let Ok(partial) = self.tokenizer.decode(&generated, false) {
+                    let open_braces = partial.matches('{').count();
+                    let close_braces = partial.matches('}').count();
+                    if close_braces > 0 && close_braces >= open_braces {
+                        break;
+                    }
                 }
             }
 
-            next_token = sample_token(&logits, 0, &all_tokens, REPETITION_PENALTY, REPETITION_WINDOW)?;
+            next_token = sample_token(&logits, 0, &all_tokens, opts, &mut rng)?;
         }
 
         let output = self
@@ -212,8 +337,8 @@ fn sample_token(
     logits: &Tensor,
     pos: usize,
     history: &[u32],
-    repetition_penalty: f32,
-    repetition_window: usize,
+    opts: &GenOptions,
+    rng: &mut Rng,
 ) -> Result<u32, MemoryError> {
     let logits = logits
         .squeeze(0)
@@ -233,32 +358,89 @@ fn sample_token(
 
     // Greedy decoding degenerates into loops on small quantized models ("…重复同一句…").
     // Apply the standard CTRL-style repetition penalty over the recent token window.
-    if repetition_penalty > 1.0 && !history.is_empty() {
-        let start = history.len().saturating_sub(repetition_window);
+    if opts.repetition_penalty > 1.0 && !history.is_empty() {
+        let start = history.len().saturating_sub(opts.repetition_window);
         for &tok in &history[start..] {
             let idx = tok as usize;
             if idx < logits_v.len() {
                 let v = logits_v[idx];
                 logits_v[idx] = if v > 0.0 {
-                    v / repetition_penalty
+                    v / opts.repetition_penalty
                 } else {
-                    v * repetition_penalty
+                    v * opts.repetition_penalty
                 };
             }
         }
     }
 
-    // Greedy argmax
-    let mut max_idx = 0;
-    let mut max_val = f32::NEG_INFINITY;
-    for (i, &v) in logits_v.iter().enumerate() {
-        if v > max_val {
-            max_val = v;
-            max_idx = i;
+    // Greedy path (temperature 0): plain argmax.
+    if opts.temperature <= 0.0 {
+        let mut max_idx = 0;
+        let mut max_val = f32::NEG_INFINITY;
+        for (i, &v) in logits_v.iter().enumerate() {
+            if v > max_val {
+                max_val = v;
+                max_idx = i;
+            }
+        }
+        return Ok(max_idx as u32);
+    }
+
+    // Temperature + nucleus (top-p) sampling.
+    let inv_t = 1.0 / opts.temperature.clamp(1e-3, 100.0);
+    let max_logit = logits_v
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut candidates: Vec<(usize, f32)> = logits_v
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i, ((v - max_logit) * inv_t).exp()))
+        .collect();
+    let total: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if !(total > 0.0) || !total.is_finite() {
+        // Degenerate distribution: fall back to argmax.
+        let mut max_idx = 0;
+        let mut max_val = f32::NEG_INFINITY;
+        for (i, &v) in logits_v.iter().enumerate() {
+            if v > max_val {
+                max_val = v;
+                max_idx = i;
+            }
+        }
+        return Ok(max_idx as u32);
+    }
+    for (_, p) in candidates.iter_mut() {
+        *p /= total;
+    }
+
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let top_p = if opts.top_p > 0.0 && opts.top_p <= 1.0 {
+        opts.top_p
+    } else {
+        1.0
+    };
+    let mut nucleus_mass = 0.0f32;
+    let mut cutoff = candidates.len();
+    for (i, (_, p)) in candidates.iter().enumerate() {
+        nucleus_mass += *p;
+        if nucleus_mass >= top_p {
+            cutoff = i + 1;
+            break;
         }
     }
 
-    Ok(max_idx as u32)
+    let nucleus = &candidates[..cutoff.max(1)];
+    let nucleus_mass: f32 = nucleus.iter().map(|(_, p)| *p).sum();
+    let mut pick = rng.next_f32() * nucleus_mass;
+    for (idx, p) in nucleus {
+        pick -= *p;
+        if pick <= 0.0 {
+            return Ok(*idx as u32);
+        }
+    }
+    Ok(nucleus.last().map(|(idx, _)| *idx as u32).unwrap_or(0))
 }
 
 /// Robust JSON extractor from generated text.
