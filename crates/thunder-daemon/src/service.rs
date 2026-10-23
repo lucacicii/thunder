@@ -540,11 +540,6 @@ impl DaemonService {
                 }
                 self.reply_ok(id, json!({ "reloaded": true })).await;
             }
-            DaemonRequest::GetTrace { id, session_id, .. }
-            | DaemonRequest::ListTraces { id, session_id } => {
-                self.reply_ok(id, json!({ "session_id": session_id, "traces": [] }))
-                    .await;
-            }
             DaemonRequest::GetMetrics { id, session_id } => {
                 let summary = self
                     .store
@@ -578,9 +573,6 @@ impl DaemonService {
                     false
                 };
                 self.reply_ok(id, json!({ "delivered": delivered })).await;
-            }
-            DaemonRequest::AnswerUi { id, .. } => {
-                self.reply_ok(id, json!({ "delivered": true })).await;
             }
             DaemonRequest::RunTask {
                 id,

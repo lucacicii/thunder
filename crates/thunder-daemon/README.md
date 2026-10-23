@@ -9,11 +9,14 @@
 ## 协议与功能特性
 
 1. **基础指令**：
-   * `ping`：心跳检测，返回 `status: "pong"`, `protocol_version: 3`。
+   * `ping`：心跳检测，返回 `status: "pong"`, `protocol_version: 4`。
    * `list_models`：读取 `thunder-providers` 目录并上报可用模型。
    * `list_conversations` / `get_conversation`：读取持久化的会话。
    * `set_conversation_title` / `generate_title`：手动设置或 AI 生成会话标题。
    * `reload_integrations`：重载本地配置。
+   * **v4 删除**：`answer_ui`（没有待答复的对话框，它只会对空无回 `delivered: true`）、
+     `get_trace` / `list_traces`（trace 存储随插件框架一起没了，永远回 `traces: []`），
+     以及从未发出过的 `suggested_questions` 帧。
 
 2. **任务与运行控制**：
    * `run_task`：启动 Agent 任务，实时向客户端推送 `observed_event` 帧，并在结束时发出 `task_completed` 或 `task_failed`。
@@ -28,6 +31,8 @@
 4. **人机互动（问答气泡）**：
    * 集成 `thunder-ask`：当模型调用 `core__ask_user_question` 时，向桌面端推送 `user_question` 气泡；
    * 客户端发送 `answer_question` 指令后，精确唤醒被挂起的目标任务。
+   * `headless: true` 的 run **不注册**这个工具：没有界面可以答复时，让它出现在
+     工具目录里只会让模型白问一轮。
 
 ---
 
@@ -58,7 +63,7 @@ cargo run -p thunder-daemon --bin thunder-daemon -- --workspace /path/to/project
   "pid": 86390,
   "exe": "/Users/you/.cargo/bin/thunder-daemon",
   "version": "0.1.0",
-  "protocol_version": 3,
+  "protocol_version": 4,
   "hot_reload": true,
   "started_at_ms": 1792671257555,
   "config_dir": "/Users/you/.thunder"

@@ -4,7 +4,17 @@ use thunder_protocol::ObservedEvent;
 use thunder_providers::ModelDescriptor;
 
 /// Revision of the NDJSON protocol on stdin/stdout expected by `agent-resume-panel`.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// 4 — removed the commands that could not succeed: `answer_ui` (no pending dialog
+///     exists, so it answered `delivered: true` to nobody), `get_trace` /
+///     `list_traces` (the trace store died with the plugin framework, so they
+///     answered `success: true` with `traces: []` forever), and the never-emitted
+///     `suggested_questions` frame. Also dropped the dead `use_mock` field.
+///
+/// A bump is the only way a client can tell: the payload shapes above were never
+/// self-describing, and every one of those removals left the old version string in
+/// place, so an app pinned to an older daemon had no way to notice.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderCapabilities {
@@ -117,16 +127,6 @@ pub enum DaemonRequest {
         #[serde(default)]
         cancelled: bool,
     },
-    AnswerUi {
-        id: Option<String>,
-        request_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        confirmed: Option<bool>,
-        #[serde(default)]
-        cancelled: bool,
-    },
     GetPermissionState {
         id: Option<String>,
         session_id: String,
@@ -142,15 +142,6 @@ pub enum DaemonRequest {
     },
     ReloadIntegrations {
         id: Option<String>,
-    },
-    GetTrace {
-        id: Option<String>,
-        session_id: String,
-        task_id: Option<String>,
-    },
-    ListTraces {
-        id: Option<String>,
-        session_id: String,
     },
     GenerateTitle {
         id: Option<String>,
@@ -193,11 +184,6 @@ pub enum DaemonResponse {
         active_plugins: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         suggested_questions: Vec<String>,
-    },
-    SuggestedQuestions {
-        task_id: String,
-        session_id: Option<String>,
-        questions: Vec<String>,
     },
     TaskFailed {
         task_id: String,
