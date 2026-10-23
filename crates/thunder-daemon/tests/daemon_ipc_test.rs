@@ -526,3 +526,217 @@ async fn run_task_runs_in_the_workspace_the_host_named_whatever_the_prompt_says(
         "the run must not follow the prompt into another directory"
     );
 }
+
+/// `headless` used to be swallowed by `RunTask`'s `..`, so a scheduled run could ask a
+/// question nobody was there to answer: the model spent a turn, waited out
+/// `tool_timeout`, and got an error. A tool the host cannot answer must not be in the
+/// catalogue at all.
+#[tokio::test]
+async fn headless_runs_are_not_offered_a_question_tool_they_cannot_answer() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "done",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-headless",
+        "task_id": "task-headless",
+        "session_id": "sess-headless",
+        "prompt": "summarise yesterday",
+        "workspace_dir": ws.path().to_string_lossy(),
+        "headless": true
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let catalogues = driver.recorded_tool_prefixes();
+    assert!(!catalogues.is_empty(), "the driver must have been called");
+    for catalogue in &catalogues {
+        assert!(
+            !catalogue.contains("ask_user_question"),
+            "a headless run must not be offered the question tool: {catalogue}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_headless_run_still_offers_the_question_tool() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "done",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-interactive",
+        "task_id": "task-interactive",
+        "session_id": "sess-interactive",
+        "prompt": "do the thing",
+        "workspace_dir": ws.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let catalogue = driver.recorded_tool_prefixes().join("\n");
+    assert!(
+        catalogue.contains("ask_user_question"),
+        "an interactive run must still be able to ask: {catalogue}"
+    );
+}
+
+/// `extra_workspace_dirs` was declared and ignored, so a second repository in scope was
+/// invisible to every search. This drives the real `thunder-std` with no `path` argument
+/// and insists the file in the additional directory comes back.
+#[tokio::test]
+async fn extra_workspace_dirs_put_a_second_directory_in_search_scope() {
+    let primary = tempdir().unwrap();
+    let extra = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+    std::fs::write(
+        extra.path().join("shared-note.txt"),
+        "hidden_in_the_extra_root",
+    )
+    .unwrap();
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![
+        LlmTurnResponse::simple(
+            "searching both roots",
+            vec![ToolCallRequest {
+                id: "call-grep".into(),
+                name: "core__grep".into(),
+                arguments: json!({ "pattern": "hidden_in_the_extra_root" }),
+            }],
+        ),
+        LlmTurnResponse::simple("found it", vec![]),
+    ]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(primary.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-extra",
+        "task_id": "task-extra",
+        "session_id": "sess-extra",
+        "prompt": "find the shared note",
+        "workspace_dir": primary.path().to_string_lossy(),
+        "extra_workspace_dirs": [extra.path().to_string_lossy()]
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let tool_outputs: String = driver
+        .recorded_messages()
+        .iter()
+        .flatten()
+        .filter_map(|message| match message {
+            thunder_protocol::ChatMessage::Tool { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        tool_outputs.contains("shared-note.txt"),
+        "the additional root must be searched: {tool_outputs}"
+    );
+}
+
+#[tokio::test]
+async fn an_extra_workspace_dir_that_does_not_exist_rejects_the_run() {
+    let ws = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "should never be reached",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-missing",
+        "task_id": "task-missing",
+        "session_id": "sess-missing",
+        "prompt": "do the thing",
+        "workspace_dir": ws.path().to_string_lossy(),
+        "extra_workspace_dirs": ["/definitely/not/a/real/directory/here"]
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    let frame: DaemonResponse = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+    match frame {
+        DaemonResponse::Response {
+            id, success, error, ..
+        } => {
+            assert_eq!(id.as_deref(), Some("r-missing"));
+            assert!(!success);
+            let error = error.expect("the rejection must say why");
+            assert!(error.contains("extra_workspace_dirs"), "{error}");
+        }
+        other => panic!("expected a failed response, got {other:?}"),
+    }
+}

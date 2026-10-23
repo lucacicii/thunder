@@ -592,6 +592,8 @@ impl DaemonService {
                 mode,
                 thinking_level,
                 attachments: run_attachments,
+                extra_workspace_dirs: run_extra_dirs,
+                headless,
                 ..
             } => {
                 let sid = session_id.unwrap_or_else(|| format!("sess-{}", now_ms()));
@@ -614,6 +616,21 @@ impl DaemonService {
                 let ws_path = workspace_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.default_workspace.clone());
+
+                // Additional directories are search scope, not a second working
+                // directory. A host that names one that does not exist is told so:
+                // silently dropping it is how `extra_workspace_dirs` came to be
+                // implemented without ever taking effect.
+                let extra_workspace_dirs = match resolve_extra_workspace_dirs(
+                    run_extra_dirs.as_deref().unwrap_or_default(),
+                    &ws_path,
+                ) {
+                    Ok(dirs) => dirs,
+                    Err(err) => {
+                        self.reply_err(id, err).await;
+                        return;
+                    }
+                };
 
                 if let Some(ref m) = mode {
                     if let Some(normalized) = normalize_mode(m) {
@@ -702,6 +719,8 @@ impl DaemonService {
                         pause_gate,
                         steer_queues,
                         content_parts,
+                        extra_workspace_dirs,
+                        headless,
                     )
                     .await;
                 });
@@ -771,6 +790,8 @@ impl DaemonService {
         pause_gate: Arc<PauseGate>,
         steer_queues: Arc<SteerQueues>,
         attachment_parts: Vec<ContentPart>,
+        extra_workspace_dirs: Vec<PathBuf>,
+        headless: bool,
     ) {
         let cfg = ThunderConfig::load_from_workspace(&workspace_cwd).await;
         let registry = self.build_workspace_registry(&workspace_cwd, &cfg).await;
@@ -799,7 +820,7 @@ impl DaemonService {
         let loop_cfg = AgentLoopConfig {
             session_id: session_id.clone(),
             workspace_cwd: workspace_cwd.clone(),
-            system_prompt: "You are Thunder Agent, a microkernel coding assistant.".to_string(),
+            system_prompt: system_prompt_for(&extra_workspace_dirs),
             model: model_label,
             budget: cfg.agent.to_budget(),
             stall: thunder_core::StallConfig {
@@ -845,14 +866,21 @@ impl DaemonService {
             mw = mw.with_middleware(Arc::new(thunder_plan::PlanModeMiddleware));
         }
 
-        // Register human-in-the-loop interactive question tool (thunder-ask)
-        let ask_handler = Arc::new(DaemonQuestionHandler {
-            output_tx: self.output_tx.clone(),
-            pending: Arc::clone(&self.pending_questions),
-        });
-        let _ = registry
-            .register_provider(thunder_ask::AskUserToolProvider::shared(ask_handler))
-            .await;
+        // Register human-in-the-loop interactive question tool (thunder-ask).
+        //
+        // A headless run has no surface to answer on: registering the tool anyway only
+        // lets the model spend a turn asking, wait out `tool_timeout`, and get an error
+        // back. Leaving it out of the catalogue is the difference between "cannot ask"
+        // and "asks and fails".
+        if !headless {
+            let ask_handler = Arc::new(DaemonQuestionHandler {
+                output_tx: self.output_tx.clone(),
+                pending: Arc::clone(&self.pending_questions),
+            });
+            let _ = registry
+                .register_provider(thunder_ask::AskUserToolProvider::shared(ask_handler))
+                .await;
+        }
 
         let bridge = Arc::new(TaskEventBridge {
             task_id: task_id.clone(),
@@ -865,6 +893,7 @@ impl DaemonService {
             .with_cancellation_token(cancel)
             .with_pause_gate(pause_gate)
             .with_steer_queues(steer_queues)
+            .with_extra_workspace_dirs(extra_workspace_dirs)
             .with_middleware(mw)
             .with_event_sink(bridge);
 
@@ -958,6 +987,65 @@ impl DaemonService {
         })
         .await;
     }
+}
+
+/// Validate the host's additional directories.
+///
+/// `workspace_cwd` is never duplicated: the primary root is already in scope, and a
+/// host that passes it again is not asking for it twice.
+fn resolve_extra_workspace_dirs(
+    raw: &[String],
+    workspace_cwd: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let primary = workspace_cwd
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_cwd.to_path_buf());
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for entry in raw {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(trimmed);
+        if !path.is_absolute() {
+            return Err(format!(
+                "extra_workspace_dirs: '{trimmed}' is not absolute, and a relative path means \
+                 something different in every workspace"
+            ));
+        }
+        if !path.is_dir() {
+            return Err(format!(
+                "extra_workspace_dirs: '{trimmed}' is not an existing directory"
+            ));
+        }
+        let canonical = path.canonicalize().unwrap_or(path);
+        if canonical == primary || dirs.contains(&canonical) {
+            continue;
+        }
+        dirs.push(canonical);
+    }
+    Ok(dirs)
+}
+
+/// The system prompt, extended with the directories the host put in scope.
+///
+/// A search root the model is never told about is a root it never uses: the tools
+/// would happily walk it, but nothing in the prompt hints that it exists.
+fn system_prompt_for(extra_workspace_dirs: &[PathBuf]) -> String {
+    const BASE: &str = "You are Thunder Agent, a microkernel coding assistant.";
+    if extra_workspace_dirs.is_empty() {
+        return BASE.to_string();
+    }
+    let mut prompt = BASE.to_string();
+    prompt.push_str(
+        "\n\nAdditional directories are in scope for this task, beyond the working \
+         directory. Relative paths and commands still resolve against the working \
+         directory; these are additional places to read and search:\n",
+    );
+    for dir in extra_workspace_dirs {
+        prompt.push_str(&format!("- {}\n", dir.display()));
+    }
+    prompt
 }
 
 fn locate_thunder_std_binary() -> Option<PathBuf> {

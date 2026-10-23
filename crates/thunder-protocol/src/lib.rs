@@ -75,6 +75,44 @@ mod tests {
         assert_eq!(val["_meta"]["session_id"], "sess-6f3b");
         assert_eq!(val["_meta"]["workspace_cwd"], "/workspace/project");
         assert_eq!(val["_meta"]["timeout_ms"], 30000);
+        // Absent, not empty: a server that predates the field must not see one.
+        assert!(val["_meta"].get("workspace_dirs").is_none());
+    }
+
+    #[test]
+    fn the_context_envelope_carries_additional_workspace_dirs() {
+        let ctx = ExecutionContext::new(
+            "sess-6f3b",
+            PathBuf::from("/workspace/project"),
+            Duration::from_secs(30),
+        )
+        .with_extra_workspace_dirs([PathBuf::from("/workspace/shared")]);
+
+        assert_eq!(
+            ctx.search_roots(),
+            vec![
+                PathBuf::from("/workspace/project"),
+                PathBuf::from("/workspace/shared")
+            ]
+        );
+
+        let meta = ContextEnvelopeMeta::from(&ctx);
+        let val = serde_json::to_value(meta).unwrap();
+        assert_eq!(val["workspace_dirs"][0], "/workspace/shared");
+    }
+
+    #[test]
+    fn the_primary_root_is_never_listed_twice() {
+        let ctx = ExecutionContext::new(
+            "sess-6f3b",
+            PathBuf::from("/workspace/project"),
+            Duration::from_secs(30),
+        )
+        .with_extra_workspace_dirs([
+            PathBuf::from("/workspace/project"),
+            PathBuf::from("/workspace/shared"),
+        ]);
+        assert_eq!(ctx.search_roots().len(), 2);
     }
 
     #[test]
