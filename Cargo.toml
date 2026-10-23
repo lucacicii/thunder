@@ -12,7 +12,6 @@ members = [
     "crates/thunder-suggest",
     "crates/thunder-mermaid",
     "crates/thunder-markdown",
-    "crates/thunder-locator",
     "crates/thunder-cli",
     "crates/thunder-daemon",
     "crates/thunder-tui",
@@ -39,7 +38,6 @@ thunder-ask = { path = "crates/thunder-ask" }
 thunder-suggest = { path = "crates/thunder-suggest" }
 thunder-mermaid = { path = "crates/thunder-mermaid" }
 thunder-markdown = { path = "crates/thunder-markdown" }
-thunder-locator = { path = "crates/thunder-locator" }
 thunder-cli = { path = "crates/thunder-cli" }
 
 # Third-party crates

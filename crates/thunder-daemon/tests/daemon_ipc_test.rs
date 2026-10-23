@@ -226,99 +226,6 @@ async fn daemon_handles_user_question_and_answer_cycle() {
     assert!(completed, "task must complete after question is answered");
 }
 
-#[tokio::test]
-async fn daemon_workspace_locator_api_and_auto_routing() {
-    let ws = tempdir().unwrap();
-    let store_dir = tempdir().unwrap();
-    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
-
-    let (service, mut rx) = DaemonService::with_store(Some(ws.path().to_path_buf()), store)
-        .await
-        .unwrap();
-    let service = Arc::new(service);
-
-    // 1. BindWorkspace
-    let target_dir = ws.path().join("sub_anfeng");
-    std::fs::create_dir_all(&target_dir).unwrap();
-
-    let bind_req: DaemonRequest = serde_json::from_value(json!({
-        "method": "bind_workspace",
-        "id": "b-1",
-        "path": target_dir.to_string_lossy(),
-        "name": "sub_anfeng",
-        "aliases": ["安丰子系统"],
-        "keywords": ["运单"]
-    }))
-    .unwrap();
-    service.handle_request(bind_req).await;
-
-    let bind_frame: DaemonResponse = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
-    match bind_frame {
-        DaemonResponse::Response {
-            id,
-            success,
-            data: Some(d),
-            ..
-        } => {
-            assert_eq!(id.as_deref(), Some("b-1"));
-            assert!(success);
-            assert_eq!(d["name"], "sub_anfeng");
-        }
-        other => panic!("unexpected bind response: {other:?}"),
-    }
-
-    // 2. ListWorkspaces
-    let list_req: DaemonRequest = serde_json::from_value(json!({
-        "method": "list_workspaces",
-        "id": "l-1"
-    }))
-    .unwrap();
-    service.handle_request(list_req).await;
-    let list_frame: DaemonResponse = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
-    match list_frame {
-        DaemonResponse::Response {
-            id,
-            success,
-            data: Some(d),
-            ..
-        } => {
-            assert_eq!(id.as_deref(), Some("l-1"));
-            assert!(success);
-            assert!(!d.as_array().unwrap().is_empty());
-        }
-        other => panic!("unexpected list response: {other:?}"),
-    }
-
-    // 3. LocateWorkspace
-    let locate_req: DaemonRequest = serde_json::from_value(json!({
-        "method": "locate_workspace",
-        "id": "loc-1",
-        "prompt": "修改安丰子系统的运单报表"
-    }))
-    .unwrap();
-    service.handle_request(locate_req).await;
-    let loc_frame: DaemonResponse = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
-    match loc_frame {
-        DaemonResponse::Response {
-            id,
-            success,
-            data: Some(d),
-            ..
-        } => {
-            assert_eq!(id.as_deref(), Some("loc-1"));
-            assert!(success);
-            assert_eq!(d["type"], "direct_match");
-            assert_eq!(
-                std::path::PathBuf::from(d["target_path"].as_str().unwrap())
-                    .canonicalize()
-                    .unwrap(),
-                target_dir.canonicalize().unwrap()
-            );
-        }
-        other => panic!("unexpected locate response: {other:?}"),
-    }
-}
-
 /// `attachments` used to be swallowed by `RunTask`'s `..`: the app sent an image,
 /// got `{"started": true}`, and the model received plain text. This is the
 /// acceptance test for the fix — the image has to survive the whole way to the
@@ -547,5 +454,75 @@ async fn steer_task_attachments_are_queued_as_parts() {
             .next()
             .and_then(|part| part.as_image()),
         Some(("image/png", "d29ybGQ="))
+    );
+}
+
+/// The host's `workspace_dir` is authoritative.
+///
+/// This used to be re-derived from the prompt by `thunder-locator`: a prompt that
+/// merely *mentioned* a registered project name — including the absolute path a
+/// host prepends to its own prompt — moved the whole run into that directory, with
+/// no frame telling anyone. The registry is gone; this test is what keeps it gone.
+#[tokio::test]
+async fn run_task_runs_in_the_workspace_the_host_named_whatever_the_prompt_says() {
+    let named = tempdir().unwrap();
+    let other = tempdir().unwrap();
+    let store_dir = tempdir().unwrap();
+    let store = Arc::new(FsConversationStore::new(store_dir.path()).await.unwrap());
+
+    let driver = Arc::new(ScriptedMockDriver::new(vec![LlmTurnResponse::simple(
+        "done",
+        vec![],
+    )]));
+    let drv = Arc::clone(&driver);
+    let (service, mut rx) = DaemonService::with_store(Some(named.path().to_path_buf()), store)
+        .await
+        .unwrap();
+    let service = Arc::new(service.with_driver_factory(Arc::new(move |_| {
+        Some(Arc::clone(&drv) as Arc<dyn thunder_core::LlmDriver>)
+    })));
+
+    // The prompt points somewhere else entirely, in the shape both desktop hosts use.
+    let prompt = format!(
+        "[Active Workspace: {}]\n\n把 {} 这个目录里的报表改成分页",
+        named.path().display(),
+        other.path().display()
+    );
+    let run_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "run_task",
+        "id": "r-ws",
+        "task_id": "task-ws",
+        "session_id": "sess-ws",
+        "prompt": prompt,
+        "workspace_dir": named.path().to_string_lossy()
+    }))
+    .unwrap();
+    service.handle_request(run_req).await;
+
+    while let Some(line) = rx.recv().await {
+        let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
+        match frame {
+            DaemonResponse::TaskCompleted { .. } => break,
+            DaemonResponse::TaskFailed { error, .. } => panic!("task failed: {error}"),
+            _ => {}
+        }
+    }
+
+    let get_req: DaemonRequest = serde_json::from_value(json!({
+        "method": "get_conversation",
+        "id": "g-ws",
+        "session_id": "sess-ws"
+    }))
+    .unwrap();
+    service.handle_request(get_req).await;
+    let conv: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+
+    let recorded = conv["data"]["workspace"]
+        .as_str()
+        .expect("the conversation must record the workspace it ran in");
+    assert_eq!(
+        std::path::PathBuf::from(recorded).canonicalize().unwrap(),
+        named.path().canonicalize().unwrap(),
+        "the run must not follow the prompt into another directory"
     );
 }
