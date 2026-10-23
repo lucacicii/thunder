@@ -6,7 +6,7 @@ use thunder_core::{
 };
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_providers::prelude::{client_for_selection, ProviderRegistry};
-use thunder_registry::{start_hot_reload_watcher, ToolRegistry};
+use thunder_registry::ToolRegistry;
 
 #[tokio::main]
 async fn main() {
@@ -62,11 +62,17 @@ async fn main() {
         }
     }
 
-    // 3. Start `.thunder/tools/` 200ms hot-reload watcher.
+    // 3. Start the `.thunder/tools/` hot-reload poller.
     let tools_dir = workspace_cwd.join(".thunder").join("tools");
-    let _watcher = start_hot_reload_watcher(registry.clone(), tools_dir, None)
-        .await
-        .ok();
+    let poll = Duration::from_millis(config.sandbox.debounce_ms.max(50));
+    let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
+        registry.clone(),
+        tools_dir,
+        None,
+        poll,
+    )
+    .await
+    .ok();
 
     if args.is_empty() || args[0] == "--list-tools" {
         let snap = registry.current();

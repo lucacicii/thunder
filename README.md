@@ -76,7 +76,8 @@ max_restarts = 0
 [sandbox]
 timeout_ms = 30000
 max_output_bytes = 65536
-debounce_ms = 200
+# `.thunder/tools/` 的轮询间隔（ms）。0 用内置默认；改大省 IO，改小更快热重载。
+debounce_ms = 500
 ```
 
 ### 2. 交互式终端 TUI

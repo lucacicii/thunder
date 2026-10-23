@@ -54,7 +54,6 @@ toml = "0.8"
 schemars = "0.8"
 arc-swap = "1.7"
 notify = "6.1"
-notify-debouncer-mini = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 tempfile = "3.10"

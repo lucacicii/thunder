@@ -95,6 +95,10 @@ pub struct SandboxSection {
     pub timeout_ms: u64,
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
+    /// How often `.thunder/tools/` is polled for changes, in milliseconds.
+    ///
+    /// The name predates the poller (it was a debounce window on a native file watcher,
+    /// whose macOS latency measured up to 8 s). `0` falls back to the built-in default.
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
 }
@@ -151,7 +155,7 @@ fn default_max_output_bytes() -> usize {
     65_536
 }
 fn default_debounce_ms() -> u64 {
-    200
+    thunder_registry::DEFAULT_POLL_INTERVAL_MS
 }
 
 impl ThunderConfig {

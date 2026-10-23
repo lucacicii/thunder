@@ -14,7 +14,7 @@ use thunder_core::{
 use thunder_executor::{McpServerConfig, McpToolProvider};
 use thunder_protocol::{AgentEvent, ChatMessage, EventSink, ObservedEvent, ThunderEvent};
 use thunder_providers::prelude::{clamp_title, generate_title, ProviderRegistry, RpiAiClient};
-use thunder_registry::{start_hot_reload_watcher, ToolRegistry};
+use thunder_registry::ToolRegistry;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -834,9 +834,15 @@ impl DaemonService {
         let cfg = ThunderConfig::load_from_workspace(&workspace_cwd).await;
         let registry = self.build_workspace_registry(&workspace_cwd, &cfg).await;
         let tools_dir = workspace_cwd.join(".thunder").join("tools");
-        let _watcher = start_hot_reload_watcher(registry.clone(), tools_dir, None)
-            .await
-            .ok();
+        let poll = std::time::Duration::from_millis(cfg.sandbox.debounce_ms.max(50));
+        let _watcher = thunder_registry::start_hot_reload_watcher_with_interval(
+            registry.clone(),
+            tools_dir,
+            None,
+            poll,
+        )
+        .await
+        .ok();
 
         let existing_conv = self.store.load(&session_id).await.ok().flatten();
 

@@ -9,45 +9,55 @@
 
 ---
 
-## KI-1 `.thunder/tools/` 热重载基本不工作（macOS）`open` `P0`
+## KI-1 `.thunder/tools/` 热重载基本不工作（macOS）`fixed` `P0`
 
 ### 现象
 
-文件监控启动后，写入 `.thunder/tools/*.sh` 不会触发 `CatalogSnapshot` 刷新。两个既有测试因此长期红：
+文件监控启动后，写入 `.thunder/tools/*.sh` 不会触发 `CatalogSnapshot` 刷新，两个既有测试长期红：
 
-| 测试 | 位置 | 断言 |
-|---|---|---|
-| `watcher_hot_reloads_new_script_into_arc_swap_snapshot` | `crates/thunder-registry/src/lib.rs:152` | 1.5s 内版本号前进且出现 `script__git_squash_feature` |
-| `e2e_self_evolving_agent_hot_loads_script_with_100_percent_kv_cache_shield` | `crates/thunder-core/tests/e2e_microkernel.rs:111` | 2s 内快照更新 |
+| 测试 | 位置 |
+|---|---|
+| `watcher_hot_reloads_new_script_into_arc_swap_snapshot` | `crates/thunder-registry/src/lib.rs` |
+| `e2e_self_evolving_agent_hot_loads_script_with_100_percent_kv_cache_shield` | `crates/thunder-core/tests/e2e_microkernel.rs` |
 
-失败信息：`ArcSwap<CatalogSnapshot> must hot-reload new script without restart` / `Watcher must update CatalogSnapshot within 2s`。
+### 根因（已定位）
 
-### 证据
+`notify` 6.1 的 **macOS FSEvents 后端投递延迟无界且不可预测**。同一台机器连测三轮，写入后首个 `Modify(Data)` 事件的到达时间：
 
-1. **不是本次改造引入的**：`git stash push --include-untracked` 清空工作区改动后，`cargo test -p thunder-core --test e2e_microkernel` 连跑 4 次，**4/4 全红**。
-2. **不是注册竞态**：临时探针（已删除）在写入脚本前先 `sleep(500ms)` 让 watcher 稳定，仍然失败。
-3. **同进程多 watcher 时 100% 失败**：两个探针测试跑在一个进程里，两条全红；单条单独跑 3 次是 1 过 2 挂。
-4. 失败时 `tracing::info!` 的 `CatalogSnapshot hot-reloaded via ArcSwap` 一次都不打印，说明 `notify` 的回调从未到达 actor，而不是 `reload_scripts_dir` 出错。
+```
+round 0: 910ms
+round 1: 8424ms
+round 2: 5427ms
+```
 
-### 可疑根因（未定论）
+而测试窗口是 1.5s / 2s，所以表现为「随机红」；延迟落在窗口内那次就是「偶尔绿」。用户侧感受就是「热重载坏了」。
 
-- `notify 6.1` 的 macOS FSEvents 后端 + `notify-debouncer-mini 0.4` 组合在同进程多实例时互相干扰。
-- `crates/thunder-registry/src/watcher.rs:52` 把 `debouncer` move 进 `tokio::spawn` 的 async block，`let _keep_debouncer_alive = debouncer;` 只有在 future 第一次被 poll 时才绑定；在 current-thread runtime 下（`#[tokio::test]` 默认）这个窗口期内 watcher 的所有权状态值得怀疑。
-- `RecursiveMode::NonRecursive` 在 FSEvents 后端语义与预期不符。
+排除了两个替代解释：
 
-### 影响面
+1. **不是本次改造引入的**：`git stash push --include-untracked` 清空改动后连跑 4 次，4/4 全红。
+2. **不是注册竞态**：写入前先 `sleep(500ms)` 让 watcher 稳定，仍然失败；同进程双 watcher 时 100% 失败只是放大了延迟。
 
-- 产品能力：脚本工具热挂载（`.thunder/tools/`）、`ThunderEvent::RegistryUpdated` 事件、daemon/TUI 的动态工具发现全部依赖它。
-- CI：上面两个测试永久红/随机红，会掩盖真实回归。
-- 与本次改造无关，但会让「测试全绿」这个验收条件失效。
+对照实验：同一目录、同一写入方式，`notify::poll::PollWatcher`（500ms 间隔 + `compare_contents`）**300ms 内稳定投递**。
 
-### 建议动作
+### 修复
 
-1. 先加一条**不依赖文件系统通知**的测试（直接调 `registry.reload_scripts_dir()`）保住 `reload` 路径的回归覆盖。
-2. 热重载本身改为 **watch + 轮询兜底**（例如 1s 一次目录 mtime/digest 检查），不要单押 FSEvents。
-3. 排查 `watcher.rs` 的 debouncer 所有权与生命周期，或改用 `notify` 的 `RecommendedWatcher` + 手动 debounce。
+`crates/thunder-registry/src/watcher.rs` 改用 `PollWatcher`：
 
----
+- `poll_interval` 默认 500ms（`DEFAULT_POLL_INTERVAL_MS`），延迟上界 ≤ 一个间隔，可预测。
+- `with_compare_contents(true)`：按内容哈希比较，编辑器「写临时文件再 rename」的保存方式不会被漏掉。
+- 去掉 `notify-debouncer-mini` 依赖：轮询本身每区间最多一批，debounce 只会再叠一层延迟。工作区依赖同步移除。
+- 回调不再静默吞掉错误（`res.is_err()` 原先是空操作），改为 `warn!`。
+- 新增 `start_hot_reload_watcher_with_interval`，并把早已存在但从未生效的 `sandbox.debounce_ms` 配置真正接上（daemon / TUI / CLI 三个入口），默认值改为 500。
+
+### 验证
+
+```
+cargo test -p thunder-registry --lib       → 5 连跑全绿，0.52s（原 1.58s 且随机红）
+cargo test -p thunder-core --test e2e_microkernel → 5 连跑全绿，0.66s
+cargo test --workspace --no-fail-fast      → 57 个 suite 全绿
+```
+
+代价：轮询有固定 IO（每个间隔读一遍 tools 目录的文件内容）。该目录常态只有几个小脚本，可接受；若将来承载大量脚本，应改回事件驱动并给 FSEvents 延迟加上界。
 
 ## KI-2 `max_turns` 撞限直接返回 `Err`，产出丢失 `fixed`
 
@@ -98,7 +108,7 @@
 
 ---
 
-## KI-8 e2e 测试依赖 workspace 构建顺序 `open` `P2`
+## KI-8 e2e 测试依赖 workspace 构建顺序 `open` `P3`
 
 `crates/thunder-core/tests/e2e_microkernel.rs:16` 的 `find_or_build_thunder_std()` 直接 panic 要求 `target/debug/thunder-std` 已存在。因此 `cargo test -p thunder-core` 在干净 checkout 上会因为「只编译了 thunder-core 及其依赖」而直接失败，必须 `cargo test --workspace` 或先 `cargo build --workspace`。
 
@@ -143,5 +153,5 @@ cargo clippy --workspace --all-targets
 cargo test -p thunder-core --lib
 cargo test -p thunder-core --test loop_guard_context_balance   # Phase A 回归
 cargo test -p thunder-core --test progress_observation         # Phase B 观察
-cargo test --workspace --no-fail-fast                          # 已知仅 KI-1 两条失败
+cargo test --workspace --no-fail-fast                          # 57 个 suite 全绿
 ```
