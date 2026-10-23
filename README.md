@@ -109,6 +109,84 @@ thunder-memory uninstall-launchagent  # 卸载 macOS LaunchAgent
 
 ---
 
+## 🔐 构建、安装与 macOS 屏幕录制授权
+
+> 这一节解释了“系统设置里屏幕录制开关明明是开的，却每次截图都弹授权框”的根本原因，以及日常开发怎么装。
+
+### 根因：ad-hoc 签名的 designated requirement 就是 cdhash
+
+`cargo build` 产出的二进制只有 ld 的 ad-hoc 签名（`codesign -dvvv` 显示 `adhoc,linker-signed`、`Internal requirements=none`），
+它的 code signing identifier 与 cdhash **都由二进制内容派生，每次编译都会变**。
+而 macOS TCC 是按 **designated requirement（DR）** 匹配授权条目的，ad-hoc 的 DR 实质就是 cdhash —— 于是内容一变，
+设置里那条已经打开的授权就不再匹配，采集时重新弹框（截图本身其实仍然成功）：
+
+```bash
+# 判定症状（关键一行）
+log show --predicate 'process == "tccd"' --last 10m | grep -i "Failed to match existing code requirement"
+# → Failed to match existing code requirement for subject
+#   /Users/lucas/.cargo/bin/thunder-memory and service kTCCServiceScreenCapture
+```
+
+另一个容易被误导的点：真正截图的是 `~/.thunder/bin/thunder-vision-ocr`（swiftc 现编译）→ `/usr/sbin/screencapture`，
+但 TCC 把请求归因给 **responsible process**，即 `thunder-memory` 本体，所以弹框和设置项显示的都是 `thunder-memory`，
+跟当前终端（Terminal / iTerm / Cursor）无关。
+
+修法：用一张**固定的本地自签名证书**重签，让 DR 变成与内容无关的稳定值：
+
+```
+designated => identifier "com.lucas.thunder-memory" and certificate root = H"5e51243d716a28872f77d1d53e57108e3ac5748c"
+```
+
+这样无论重编译多少次，授权都不会失效。
+
+### 安装命令
+
+```bash
+cd ~/wz/GitHub/thunder-memory
+
+# 正式常驻版：构建 → 停 launchd → 覆盖安装 → 重签名 → 重启 → 校验
+./scripts/install-release.sh
+
+# 日常开发（推荐）：cargo build → 重签名 → 重启守护进程，一次搞定
+alias tmd=~/wz/GitHub/thunder-memory/scripts/dev.sh   # 建议写进 ~/.zshrc
+tmd                 # debug 构建，最快迭代
+tmd --release       # 让常驻进程跑 release
+tmd --no-restart    # 只编译+签名，不动守护进程
+```
+
+重签一次只要 ~70ms，所以开发时每编译一次都签一次完全无感。
+
+### 三条必须知道的规矩
+
+1. **别手工 `cp` / `ln -sf` 替换二进制**：拷出去的是 ad-hoc 产物，cdhash 一换授权立刻失效，弹框回来。
+2. **`cargo run` 是另一个 TCC 主体**：`target/debug/thunder-memory` 与 `~/.cargo/bin/thunder-memory` 路径不同，各需授权一次；
+   但两者签名身份相同，所以各授权一次后就与编译无关了。
+3. **旧记录必须手动删**：已经装过 ad-hoc 版本、列表里残留的 `thunder-memory` 条目存的还是老 cdhash，`tccutil reset`
+   清不掉（path 型 client 未注册 bundle id，报 `-10814`）。在 **系统设置 → 隐私与安全性 → 屏幕与系统音频录制** 里点 **「−」删掉**，
+   等 ≤5 秒守护进程再请求一次，把开关打开即可；此时写进去的就是固定 DR。
+
+### 自签名证书（一次性）
+
+```bash
+mkdir -p /tmp/thunder-sign && cd /tmp/thunder-sign
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 3650 \
+  -subj "/CN=Thunder Local Signing/O=Local" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning" \
+  -addext "basicConstraints=critical,CA:false"
+openssl pkcs12 -export -inkey key.pem -in cert.pem -out id.p12 -passout pass:thunder -name "Thunder Local Signing"
+security import id.p12 -k ~/Library/Keychains/login.keychain-db -P thunder -T /usr/bin/codesign -A
+```
+
+证书在 `security find-identity -p codesigning` 里显示 `CSSMERR_TP_NOT_TRUSTED` 是**正常**的，codesign 与 TCC 都不要求它被信任。
+
+```bash
+# 随时自检：DR 里不应出现 cdhash
+codesign -d -r- -vv ~/.cargo/bin/thunder-memory 2>&1 | grep designated
+```
+
+---
+
 ## 🔌 接入各类 Agent 客户端
 
 ### 1. 接入 Thunder
@@ -143,4 +221,5 @@ thunder-memory uninstall-launchagent  # 卸载 macOS LaunchAgent
 
 - **核心算法设计白皮书**：[docs/architecture.md](docs/architecture.md)（深度调研对比 Mem0、Screenpipe、Letta、Stanford Generative Agents 等，并阐述三层混合认知架构）。
 - **开发者指南与隔离规范**：[docs/development.md](docs/development.md)（本地开发与系统正式常驻版本的隔离、双轨工作流与升级发布说明）。
+- **构建与授权脚本**：`scripts/install-release.sh`（正式版安装）、`scripts/dev.sh`（日常开发热装），详见上文 [构建、安装与 macOS 屏幕录制授权](#-构建安装与-macos-屏幕录制授权)。
 - **本地模型使用与集成**：[docs/local-model.md](docs/local-model.md)（内置 Qwen2.5 的安装、`ask` 直连、OpenAI 兼容 endpoint、采样行为、性能基线与非金属/Metal 踩坑排查）。
