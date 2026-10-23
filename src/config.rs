@@ -19,26 +19,17 @@ pub struct MemoryConfig {
     /// Path to agent-resume-panel desktop database containing workbench_composer_sends
     pub composer_db_path: PathBuf,
 
-    /// Local or remote OpenAI-compatible LLM endpoint URL (e.g. http://localhost:11434/v1)
-    #[serde(alias = "edge_endpoint")]
+    /// OpenAI-compatible LLM endpoint (e.g. Ollama's http://127.0.0.1:11434/v1).
+    ///
+    /// Thunder-memory runs no inference itself: without an endpoint the synthesis
+    /// tier falls back to the deterministic rule extractor.
     pub llm_endpoint: Option<String>,
 
-    /// Small model name to use for memory synthesis (e.g. qwen2.5-coder, llama3.2, etc.)
-    #[serde(alias = "edge_model")]
+    /// Model name served by `llm_endpoint` (e.g. `qwen2.5-coder:0.5b` on Ollama)
     pub llm_model: String,
 
     /// Optional API key for LLM endpoint
-    #[serde(alias = "edge_api_key")]
     pub llm_api_key: Option<String>,
-
-    /// Cloud frontier model endpoint URL for nightly deep consolidation (e.g. https://api.openai.com/v1)
-    pub cloud_endpoint: Option<String>,
-
-    /// Cloud model name (e.g. gpt-4o, claude-3-7-sonnet, deepseek-chat)
-    pub cloud_model: Option<String>,
-
-    /// Optional API key for cloud frontier model endpoint
-    pub cloud_api_key: Option<String>,
 
     /// Minimum average OCR confidence (0.0 .. 1.0) required to record a screen capture
     pub min_confidence: f32,
@@ -57,18 +48,6 @@ pub struct MemoryConfig {
 
     /// Path to cold archive SQLite database (default: ~/.thunder/memory_archive.db)
     pub archive_db_path: PathBuf,
-
-    /// Directory for in-process local models (default: ~/.thunder/models)
-    pub model_dir: PathBuf,
-
-    /// Local GGUF quantized model filename (default: qwen2.5-0.5b-instruct-q4_k_m.gguf)
-    pub local_model_file: String,
-
-    /// Local tokenizer filename (default: tokenizer.json)
-    pub local_tokenizer_file: String,
-
-    /// Whether to enable in-process local model inference (default: true)
-    pub enable_local_model: bool,
 }
 
 impl Default for MemoryConfig {
@@ -87,40 +66,19 @@ impl Default for MemoryConfig {
             synthesis_batch_size: 50,
             composer_db_path: default_composer_db,
             llm_endpoint: None,
-            llm_model: "qwen2.5-coder".to_string(),
+            llm_model: "qwen2.5-coder:0.5b".to_string(),
             llm_api_key: None,
-            cloud_endpoint: None,
-            cloud_model: None,
-            cloud_api_key: None,
             min_confidence: 0.1,
             raw_capture_retention_days: 2,
             memory_archive_days: 30,
             min_capture_interval_secs: 2,
             max_capture_interval_secs: 60,
             archive_db_path: thunder_dir.join("memory_archive.db"),
-            model_dir: thunder_dir.join("models"),
-            local_model_file: "qwen2.5-0.5b-instruct-q4_k_m.gguf".to_string(),
-            local_tokenizer_file: "tokenizer.json".to_string(),
-            enable_local_model: true,
         }
     }
 }
 
 impl MemoryConfig {
-    pub fn local_gguf_path(&self) -> PathBuf {
-        self.model_dir.join(&self.local_model_file)
-    }
-
-    pub fn local_tokenizer_path(&self) -> PathBuf {
-        self.model_dir.join(&self.local_tokenizer_file)
-    }
-
-    pub fn is_local_model_ready(&self) -> bool {
-        self.enable_local_model
-            && self.local_gguf_path().is_file()
-            && self.local_tokenizer_path().is_file()
-    }
-
     /// Load configuration from ~/.thunder/memory.toml or ~/.thunder/config.toml, falling back to defaults
     pub fn load() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -162,15 +120,6 @@ impl MemoryConfig {
         if let Ok(key) = std::env::var("THUNDER_MEMORY_LLM_KEY") {
             cfg.llm_api_key = Some(key);
         }
-        if let Ok(endpoint) = std::env::var("THUNDER_MEMORY_CLOUD_ENDPOINT") {
-            cfg.cloud_endpoint = Some(endpoint);
-        }
-        if let Ok(model) = std::env::var("THUNDER_MEMORY_CLOUD_MODEL") {
-            cfg.cloud_model = Some(model);
-        }
-        if let Ok(key) = std::env::var("THUNDER_MEMORY_CLOUD_KEY") {
-            cfg.cloud_api_key = Some(key);
-        }
 
         cfg
     }
@@ -211,11 +160,8 @@ mod tests {
         let toml_str = r#"
             capture_interval_secs = 10
             min_capture_interval_secs = 3
-            edge_endpoint = "http://localhost:11434/v1"
-            edge_model = "qwen2.5-coder:7b"
-            cloud_endpoint = "https://api.openai.com/v1"
-            cloud_model = "gpt-4o"
-            cloud_api_key = "sk-test"
+            llm_endpoint = "http://localhost:11434/v1"
+            llm_model = "qwen2.5-coder:7b"
         "#;
 
         let cfg: MemoryConfig = toml::from_str(toml_str).unwrap();
@@ -223,9 +169,6 @@ mod tests {
         assert_eq!(cfg.min_capture_interval_secs, 3);
         assert_eq!(cfg.llm_endpoint, Some("http://localhost:11434/v1".to_string()));
         assert_eq!(cfg.llm_model, "qwen2.5-coder:7b");
-        assert_eq!(cfg.cloud_endpoint, Some("https://api.openai.com/v1".to_string()));
-        assert_eq!(cfg.cloud_model, Some("gpt-4o".to_string()));
-        assert_eq!(cfg.cloud_api_key, Some("sk-test".to_string()));
         // Defaults preserved
         assert_eq!(cfg.raw_capture_retention_days, 2);
         assert_eq!(cfg.memory_archive_days, 30);

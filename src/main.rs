@@ -5,8 +5,6 @@ use thunder_memory::config::MemoryConfig;
 use thunder_memory::daemon::MemoryDaemon;
 use thunder_memory::db::Database;
 use thunder_memory::search::MemorySearchEngine;
-use thunder_memory::local_model::{GenOptions, LocalModelEngine};
-use thunder_memory::server::{serve, ServeOptions};
 use thunder_memory::synthesis::SynthesisEngine;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -83,30 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  📂 Database:     {:?}", config.db_path);
             println!("  📋 Composer DB:  {:?}", config.resolve_composer_db_path().unwrap_or_else(|| PathBuf::from("not found")));
             println!("  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s", config.capture_interval_secs, config.min_capture_interval_secs, config.max_capture_interval_secs, config.synthesis_interval_secs);
-            // The edge tier resolves in this order in SynthesisEngine::extract_insight:
-            // in-process local model -> configured small-model endpoint -> heuristics.
-            let edge_info = if config.is_local_model_ready() {
-                format!(
-                    "In-Process {} [Candle Metal] (local)",
-                    config.local_model_file
-                )
-            } else if let Some(e) = &config.llm_endpoint {
-                format!("{} ({})", config.llm_model, e)
-            } else {
-                "Heuristic Rule Engine (Offline / Zero-Cost)".to_string()
+            // Thunder-memory infers nothing itself: the synthesis tier is the
+            // configured OpenAI-compatible endpoint, or the rule extractor when
+            // there is none. So a stopped Ollama is worth saying out loud —
+            // otherwise synthesis quietly degrades to heuristics.
+            let edge_info = match &config.llm_endpoint {
+                Some(endpoint) => format!(
+                    "{} ({}) — {}",
+                    config.llm_model,
+                    endpoint,
+                    probe_llm_endpoint(endpoint, &config.llm_model).await
+                ),
+                None => "No endpoint configured — Heuristic Rule Engine (Offline / Zero-Cost)".to_string(),
             };
-            let cloud_info = match &config.cloud_endpoint {
-                Some(e) => format!("{} ({})", config.cloud_model.as_deref().unwrap_or("default"), e),
-                None => "Agent-side Reasoning via MCP".to_string(),
-            };
-            let inprocess_info = if config.is_local_model_ready() {
-                format!("Ready [Candle Metal GPU] ({})", config.local_gguf_path().display())
-            } else {
-                format!("Not ready (run `thunder-memory download-model` to setup in {:?})", config.model_dir)
-            };
-            println!("  🧠 In-Process Local AI: {}", inprocess_info);
-            println!("  🔬 Edge Small Model:   {}", edge_info);
-            println!("  ☁️  Cloud Large Model:  {}", cloud_info);
+            println!("  🔬 Synthesis Model:    {}", edge_info);
 
             if config.db_path.exists() {
                 let db = Database::open(&config.db_path)?;
@@ -471,103 +459,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        "serve" => {
-            let mut serve_opts = ServeOptions::default();
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--port" if i + 1 < args.len() => {
-                        serve_opts.port = args[i + 1].parse().unwrap_or(serve_opts.port);
-                        i += 2;
-                    }
-                    "--host" if i + 1 < args.len() => {
-                        serve_opts.host = args[i + 1].clone();
-                        i += 2;
-                    }
-                    "--max-tokens-cap" if i + 1 < args.len() => {
-                        serve_opts.max_tokens_cap = args[i + 1].parse().unwrap_or(serve_opts.max_tokens_cap);
-                        i += 2;
-                    }
-                    "--max-prompt-tokens" if i + 1 < args.len() => {
-                        serve_opts.max_prompt_tokens = args[i + 1].parse().unwrap_or(serve_opts.max_prompt_tokens);
-                        i += 2;
-                    }
-                    other => {
-                        eprintln!("Unknown argument for `serve`: {other}");
-                        eprintln!("Usage: thunder-memory serve [--host 127.0.0.1] [--port 8787] [--max-tokens-cap 1024] [--max-prompt-tokens 8192]");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            serve(config, serve_opts).await?;
-        }
-
-        "ask" => {
-            let mut prompt_parts: Vec<String> = Vec::new();
-            let mut max_tokens = 256usize;
-            let mut temperature = 0.7f32;
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--max-tokens" if i + 1 < args.len() => {
-                        max_tokens = args[i + 1].parse().unwrap_or(max_tokens);
-                        i += 2;
-                    }
-                    "--temperature" if i + 1 < args.len() => {
-                        temperature = args[i + 1].parse().unwrap_or(temperature);
-                        i += 2;
-                    }
-                    "--greedy" => {
-                        temperature = 0.0;
-                        i += 1;
-                    }
-                    other => {
-                        prompt_parts.push(other.to_string());
-                        i += 1;
-                    }
-                }
-            }
-            let prompt = prompt_parts.join(" ");
-            if prompt.trim().is_empty() {
-                eprintln!("Usage: thunder-memory ask <prompt> [--max-tokens 256] [--temperature 0.7] [--greedy]");
-                std::process::exit(1);
-            }
-            if !config.is_local_model_ready() {
-                eprintln!(
-                    "❌ Local model not found in {:?}. Run `thunder-memory download-model` first.",
-                    config.model_dir
-                );
-                std::process::exit(1);
-            }
-
-            let gguf = config.local_gguf_path();
-            let tokenizer = config.local_tokenizer_path();
-            let engine = tokio::task::spawn_blocking(move || LocalModelEngine::load(&gguf, &tokenizer))
-                .await??;
-
-            let chatml = thunder_memory::local_model::render_chatml(&[(
-                "user".to_string(),
-                prompt.clone(),
-            )]);
-            let opts = GenOptions::chat(temperature, 0.95);
-            let answer = tokio::task::spawn_blocking(move || engine.generate_with(&chatml, max_tokens, &opts))
-                .await??;
-            println!("{}", answer.trim());
-        }
-
-        "download-model" => {
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("  ⬇️  Downloading In-Process Local Model for thunder-memory");
-            println!("  Model: Qwen2.5-0.5B-Instruct-Q4_K_M (~350MB)");
-            println!("  Target Directory: {:?}", config.model_dir);
-            println!("══════════════════════════════════════════════════════════════════");
-            if let Err(e) = thunder_memory::local_model::download_default_model(&config).await {
-                eprintln!("❌ Download failed: {e}");
-                std::process::exit(1);
-            }
-            println!("🎉 In-process model ready! Thunder-memory will now use native Metal GPU inference.");
-        }
-
         "mcp" => {
             config.ensure_dirs()?;
             let db = Database::open(&config.db_path)?;
@@ -582,9 +473,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  start                   Start daemon in background detached");
             println!("  stop                    Stop running background daemon");
             println!("  status                  Show daemon and database status");
-            println!("  serve                   Run an OpenAI-compatible HTTP endpoint for the local model");
-            println!("  ask <prompt>            One-shot prompt against the in-process local model");
-            println!("  download-model          Download in-process Qwen2.5 small model (~350MB)");
             println!("  ocr-once                Run instant screen capture & OCR test");
             println!("  synthesize              Trigger manual memory synthesis cycle");
             println!("  sync-composer           Sync workbench_composer_sends from desktop.db");
@@ -603,4 +491,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Ask an OpenAI-compatible endpoint what it serves, so `status` can say whether
+/// the synthesis model is actually there.
+///
+/// A stopped Ollama is invisible otherwise: synthesis logs one warning per cycle
+/// and quietly falls back to the rule extractor, which looks like "the model is
+/// just not very good" rather than "nothing is answering".
+async fn probe_llm_endpoint(endpoint: &str, model: &str) -> String {
+    let url = format!("{}/models", endpoint.trim_end_matches('/'));
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+    else {
+        return "probe failed".to_string();
+    };
+
+    let resp = match client.get(&url).send().await {
+        Ok(resp) => resp,
+        Err(e) => return format!("unreachable ({e})"),
+    };
+    if !resp.status().is_success() {
+        return format!("HTTP {} from /models", resp.status());
+    }
+
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    let served: Vec<String> = body["data"]
+        .as_array()
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Ollama lists names with their tag (`qwen2.5-coder:0.5b`); a config that
+    // names only the family still resolves to the tag Ollama would default to.
+    let wanted = model.trim();
+    if served
+        .iter()
+        .any(|id| id == wanted || id.split(':').next() == Some(wanted))
+    {
+        "reachable".to_string()
+    } else if served.is_empty() {
+        "endpoint up, serves no models".to_string()
+    } else {
+        format!("endpoint up but '{wanted}' is not pulled (has: {})", served.join(", "))
+    }
 }

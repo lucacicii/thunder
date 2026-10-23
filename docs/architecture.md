@@ -90,7 +90,7 @@ $$\text{Score}(m) = w_{\text{recency}} \cdot \text{Recency}(m) + w_{\text{import
                                   ▼
        ┌─────────────────────────────────────────────────────┐
        │ Tier 2: 小模型认知提炼引擎 (Synthesis Engine)       │
-       │  0. 进程内 Qwen2.5-0.5B (Candle Metal, 可暴露 API)  │
+       │  0. 外部 LLM 端点 (Ollama / OpenAI 兼容，可换可共享)│
        │  1. 时间窗会话聚类 (Episode Clustering)             │
        │  2. 小模型提炼任务意图、关键技术实体、重要度打分    │
        │  3. 记忆状态决断 (ADD 开启新任务 vs UPDATE 续写进度)│
@@ -123,7 +123,7 @@ $$\text{Score}(m) = w_{\text{recency}} \cdot \text{Recency}(m) + w_{\text{import
 
 ### 2. 小模型认知合成算法（Synthesis Algorithm）
 
-> 推理后端优先级：**进程内 Qwen2.5-0.5B-Instruct (GGUF + Candle Metal)** → 配置的 OpenAI 兼容端点 (`llm_endpoint`) → 纯规则启发式。进程内引擎可通过 `thunder-memory serve` 暴露为 OpenAI 兼容 HTTP 服务，也可用 `thunder-memory ask` 单次调用。模型原生上下文 32K token，但 candle 的 prefill 是 `O(seq²)` 显存开销，因此 prompt 按 512 token 分块 prefill（峰值降到 `O(chunk²)`），`serve` 侧另有 prompt 预算与上下文窗口两级保护。详见 [local-model.md](local-model.md)。
+> 推理后端：**配置的 OpenAI 兼容端点 (`llm_endpoint`，推荐 Ollama)** → 纯规则启发式。thunder-memory 自身不加载任何模型：早期内置的进程内 Qwen2.5-0.5B（Candle Metal）及其 `serve` / `ask` 入口已整体移除，模型进程由外部服务持有，可随时换模型、与其他 Agent 共享同一实例。
 1. **聚类提取**：从 `screen_captures` 查询 `processed = 0` 的连续样本（按应用和时间间隙聚类，同应用且间隔 < 5 分钟划归为一个 Episode）。
 2. **提示词工程与认知抽取**：
    - 输入：时间段、焦点应用、窗口标题、主要文本段落。

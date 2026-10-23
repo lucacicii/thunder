@@ -27,7 +27,7 @@ Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Compose
    - 自动将会话按时间窗口与应用聚类（Episode Clustering）。
    - 提取活动类别（`code_development`, `debugging`, `research`, `documentation`, `communication` 等）。
    - Mem0 状态更新机制：连续任务触发 `UPDATE` 续写进展；切换场景或关键突破触发 `ADD` 生成新记忆。
-   - 支持配置本地 Ollama、Apple MLX 或 OpenAI 兼容端点，离线状态下无缝回退至内置启发式规则抽取器。
+   - 支持配置本地 Ollama、Apple MLX 或任意 OpenAI 兼容端点；未配置端点时无缝回退至内置启发式规则抽取器（thunder-memory 自身不再加载任何模型）。
 5. **用户交互训练数据同步与导出 (Training Data Pipeline)**：
    - 自动检测并对接 `~/.agent-resume-panel/.desktop/desktop.db` 中的 `workbench_composer_sends` 表。
    - 自动根据增量水印（Watermark）同步用户真实提示词。
@@ -70,16 +70,14 @@ thunder-memory synthesize             # 手动触发一次小模型认知提炼
 thunder-memory query "SQLite WAL"     # 按四维认知评分检索长期记忆与 Agent 指南
 thunder-memory list-memories 10       # 罗列最近 10 条长期记忆
 
-# 3.1 进程内模型直连（OpenAI 兼容 endpoint / 一次性提问）
-thunder-memory ask "用一句话解释 WAL"        # 单次 prompt，直接打到内置 Qwen2.5（Metal）
-thunder-memory ask "..." --greedy --max-tokens 64
-thunder-memory serve                        # 起 OpenAI 兼容 HTTP 服务，默认 127.0.0.1:8787
-thunder-memory serve --port 9000 --host 0.0.0.0
-curl -s localhost:8787/v1/models            # {"data":[{"id":"qwen2.5-0.5b-instruct-q4_k_m",...}]}
-curl -s localhost:8787/v1/chat/completions   -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":64,"temperature":0.3}'
-# 让 thunder-memory 自己的兜底档指向这个 endpoint：
-#   THUNDER_MEMORY_LLM_ENDPOINT=http://127.0.0.1:8787/v1
+# 3.1 推理后端（外部模型，thunder-memory 不内置任何模型）
+# 提炼与反思走 OpenAI 兼容端点，推荐 Ollama：
+#   ollama pull qwen2.5-coder:0.5b
+#   ~/.thunder/memory.toml:
+#     llm_endpoint = "http://127.0.0.1:11434/v1"
+#     llm_model    = "qwen2.5-coder:0.5b"
+# 也可以用环境变量：THUNDER_MEMORY_LLM_ENDPOINT / THUNDER_MEMORY_LLM_MODEL / THUNDER_MEMORY_LLM_KEY
+# `thunder-memory status` 会探测端点并报告模型是否已 pull。
 
 # 4. 偏好规则与反向约束管理
 thunder-memory preferences            # 显示当前全局约束与开发偏好
@@ -222,4 +220,4 @@ codesign -d -r- -vv ~/.cargo/bin/thunder-memory 2>&1 | grep designated
 - **核心算法设计白皮书**：[docs/architecture.md](docs/architecture.md)（深度调研对比 Mem0、Screenpipe、Letta、Stanford Generative Agents 等，并阐述三层混合认知架构）。
 - **开发者指南与隔离规范**：[docs/development.md](docs/development.md)（本地开发与系统正式常驻版本的隔离、双轨工作流与升级发布说明）。
 - **构建与授权脚本**：`scripts/install-release.sh`（正式版安装）、`scripts/dev.sh`（日常开发热装），详见上文 [构建、安装与 macOS 屏幕录制授权](#-构建安装与-macos-屏幕录制授权)。
-- **本地模型使用与集成**：[docs/local-model.md](docs/local-model.md)（内置 Qwen2.5 的安装、`ask` 直连、OpenAI 兼容 endpoint、采样行为、性能基线与非金属/Metal 踩坑排查）。
+- **推理后端**：thunder-memory 不再内置模型，提炼统一走 `llm_endpoint` 指向的 OpenAI 兼容服务（推荐 Ollama），配置见上文 [CLI 命令一览](#-cli-命令一览) 的 3.1 节。
