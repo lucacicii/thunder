@@ -190,6 +190,7 @@ thunder-memory status
      `codesign -d -r- -vv ~/.cargo/bin/thunder-memory 2>&1 | grep designated`，
      稳定版本输出里只有 `identifier` + `certificate root`，**不应出现 cdhash**。
 2. **PID 锁残留**：
-   - 若异常崩溃导致 `thunder-memory start` 报错已有实例运行，可检查并清理 PID 文件：`rm -f ~/.thunder/thunder-memory.pid`。
+   - `run`（LaunchAgent 的入口）启动时会自己写入 `~/.thunder/thunder-memory.pid`、退出时清理，所以 `status` / `stop` 现在总能定位真实进程；若检测到另一个存活的 daemon，日志里会出现 `WARN Another thunder-memory daemon is already running`。
+   - 若异常崩溃（SIGKILL / 断电）导致文件残留且旧进程已不存在，`thunder-memory start` 自会覆盖它；实在异常时手动清理：`rm -f ~/.thunder/thunder-memory.pid`。
 3. **SQLite 锁冲突**：
    - 本项目已默认开启 `PRAGMA journal_mode = WAL;`，支持高并发读写，但多个进程尽量避免对同一文件执行长耗时排他事务。

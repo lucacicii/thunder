@@ -143,3 +143,4 @@ thunder-memory uninstall-launchagent  # 卸载 macOS LaunchAgent
 
 - **核心算法设计白皮书**：[docs/architecture.md](docs/architecture.md)（深度调研对比 Mem0、Screenpipe、Letta、Stanford Generative Agents 等，并阐述三层混合认知架构）。
 - **开发者指南与隔离规范**：[docs/development.md](docs/development.md)（本地开发与系统正式常驻版本的隔离、双轨工作流与升级发布说明）。
+- **本地模型使用与集成**：[docs/local-model.md](docs/local-model.md)（内置 Qwen2.5 的安装、`ask` 直连、OpenAI 兼容 endpoint、采样行为、性能基线与非金属/Metal 踩坑排查）。
