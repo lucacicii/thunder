@@ -51,13 +51,18 @@ impl SynthesisEngine {
 
     /// Run one synthesis cycle: cluster unprocessed screen captures, extract insights, and commit to long-term memory
     pub async fn run_synthesis_cycle(&self) -> Result<usize, MemoryError> {
-        let captures = self.db.get_unprocessed_captures(self.config.synthesis_batch_size)?;
+        let captures = self
+            .db
+            .get_unprocessed_captures(self.config.synthesis_batch_size)?;
         if captures.is_empty() {
             debug!("No unprocessed screen captures for synthesis");
             return Ok(0);
         }
 
-        info!("Synthesizing insights from {} screen captures...", captures.len());
+        info!(
+            "Synthesizing insights from {} screen captures...",
+            captures.len()
+        );
 
         let episodes = Self::cluster_into_episodes(captures);
         let mut synthesized_count = 0;
@@ -70,14 +75,17 @@ impl SynthesisEngine {
             let should_update = if let Some(ref active) = latest_active {
                 // If within 15 minutes and same or overlapping topic/app
                 let gap_ms = episode.start_ms - active.time_window_end_ms;
-                gap_ms >= 0 && gap_ms <= 15 * 60 * 1000 && active.status == "active"
+                (0..=15 * 60 * 1000).contains(&gap_ms) && active.status == "active"
             } else {
                 false
             };
 
             if should_update {
                 if let Some(active) = latest_active {
-                    info!("Updating ongoing long-term memory #{} with new episode", active.id);
+                    info!(
+                        "Updating ongoing long-term memory #{} with new episode",
+                        active.id
+                    );
                     self.db.update_long_term_memory(
                         active.id,
                         episode.end_ms,
@@ -87,7 +95,10 @@ impl SynthesisEngine {
                     )?;
                 }
             } else {
-                info!("Adding new long-term memory: '{}' (score: {:.1})", insight.title, insight.importance_score);
+                info!(
+                    "Adding new long-term memory: '{}' (score: {:.1})",
+                    insight.title, insight.importance_score
+                );
                 let new_mem = NewLongTermMemory {
                     category: insight.category,
                     title: insight.title,
@@ -163,7 +174,10 @@ impl SynthesisEngine {
 
     /// Extract structured insight from an episode using the configured LLM endpoint,
     /// falling back to the deterministic rule extractor.
-    pub async fn extract_insight(&self, episode: &CaptureEpisode) -> Result<SynthesizedInsight, MemoryError> {
+    pub async fn extract_insight(
+        &self,
+        episode: &CaptureEpisode,
+    ) -> Result<SynthesizedInsight, MemoryError> {
         // 1. The configured small-model endpoint (Ollama, MLX, a gateway — anything
         //    OpenAI-compatible). This is the only model-backed path there is: the
         //    in-process Candle engine was retired so that the model lives outside
@@ -172,7 +186,10 @@ impl SynthesisEngine {
             match self.call_llm_endpoint(endpoint, episode).await {
                 Ok(insight) => return Ok(insight),
                 Err(e) => {
-                    warn!("LLM endpoint {} failed: {}, falling back to heuristic extraction", endpoint, e);
+                    warn!(
+                        "LLM endpoint {} failed: {}, falling back to heuristic extraction",
+                        endpoint, e
+                    );
                 }
             }
         }
@@ -248,7 +265,10 @@ Respond ONLY with a valid JSON object matching this schema:
             .ok_or_else(|| MemoryError::Synthesis("Invalid LLM response format".to_string()))?;
 
         let insight: SynthesizedInsight = serde_json::from_str(content).map_err(|e| {
-            MemoryError::Synthesis(format!("Failed to parse JSON insight from LLM: {} (raw: {})", e, content))
+            MemoryError::Synthesis(format!(
+                "Failed to parse JSON insight from LLM: {} (raw: {})",
+                e, content
+            ))
         })?;
 
         Ok(insight)
@@ -271,13 +291,22 @@ Respond ONLY with a valid JSON object matching this schema:
             || title_lower.ends_with(".py")
             || title_lower.ends_with(".java")
         {
-            if text_lower.contains("error:") || text_lower.contains("failed") || text_lower.contains("panic") {
+            if text_lower.contains("error:")
+                || text_lower.contains("failed")
+                || text_lower.contains("panic")
+            {
                 "debugging".to_string()
             } else {
                 "code_development".to_string()
             }
-        } else if app_lower.contains("terminal") || app_lower.contains("warp") || app_lower.contains("iterm") {
-            if text_lower.contains("git commit") || text_lower.contains("cargo build") || text_lower.contains("docker") {
+        } else if app_lower.contains("terminal")
+            || app_lower.contains("warp")
+            || app_lower.contains("iterm")
+        {
+            if text_lower.contains("git commit")
+                || text_lower.contains("cargo build")
+                || text_lower.contains("docker")
+            {
                 "code_development".to_string()
             } else {
                 "task_progress".to_string()
@@ -287,7 +316,10 @@ Respond ONLY with a valid JSON object matching this schema:
             || app_lower.contains("firefox")
             || app_lower.contains("edge")
         {
-            if text_lower.contains("github.com") || text_lower.contains("stackoverflow") || text_lower.contains("docs.") {
+            if text_lower.contains("github.com")
+                || text_lower.contains("stackoverflow")
+                || text_lower.contains("docs.")
+            {
                 "documentation".to_string()
             } else {
                 "research".to_string()
@@ -307,7 +339,9 @@ Respond ONLY with a valid JSON object matching this schema:
         entities.push(episode.app_name.clone());
 
         for word in episode.combined_text.split_whitespace() {
-            let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-');
+            let cleaned = word.trim_matches(|c: char| {
+                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+            });
             if (cleaned.contains('.') || cleaned.contains('/'))
                 && (cleaned.ends_with(".rs")
                     || cleaned.ends_with(".ts")
@@ -330,7 +364,10 @@ Respond ONLY with a valid JSON object matching this schema:
         if category == "code_development" {
             importance += 1.5;
         }
-        if text_lower.contains("git commit") || text_lower.contains("pr") || text_lower.contains("merge") {
+        if text_lower.contains("git commit")
+            || text_lower.contains("pr")
+            || text_lower.contains("merge")
+        {
             importance += 1.5;
         }
         if importance > 10.0 {
@@ -414,7 +451,11 @@ mod tests {
         ];
 
         let episodes = SynthesisEngine::cluster_into_episodes(captures);
-        assert_eq!(episodes.len(), 2, "Should cluster into 2 episodes (Cursor vs Chrome)");
+        assert_eq!(
+            episodes.len(),
+            2,
+            "Should cluster into 2 episodes (Cursor vs Chrome)"
+        );
         assert_eq!(episodes[0].capture_ids, vec![1, 2]);
         assert_eq!(episodes[1].capture_ids, vec![3]);
     }

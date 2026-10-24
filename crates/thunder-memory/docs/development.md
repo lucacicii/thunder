@@ -27,7 +27,7 @@
 适用于：开发全新感知模块、修改 SQLite 表结构、调整小模型 Prompt 算法等场景。此模式下**完全不影响**正在后台跑着的正式常驻进程。
 
 ```bash
-cd /Users/lucas/wz/GitHub/thunder-memory
+cd /Users/lucas/wz/GitHub/thunder/crates/thunder-memory
 
 # 1. 运行所有单元测试（全部在内存中进行，100% 隔离）
 cargo test
@@ -53,7 +53,7 @@ cargo run -- status
 thunder-memory stop
 
 # 将系统路径软链接到源码的 debug 产物
-ln -sf /Users/lucas/wz/GitHub/thunder-memory/target/debug/thunder-memory ~/.cargo/bin/thunder-memory
+ln -sf /Users/lucas/wz/GitHub/thunder/target/debug/thunder-memory ~/.cargo/bin/thunder-memory
 ```
 
 #### 2. 日常修改与热生效
@@ -73,7 +73,7 @@ ln -sf /Users/lucas/wz/GitHub/thunder-memory/target/debug/thunder-memory ~/.carg
 >
 > 建议加个别名，防止忘了走脚本：
 > ```bash
-> echo "alias tmd='/Users/lucas/wz/GitHub/thunder-memory/scripts/dev.sh'" >> ~/.zshrc
+> echo "alias tmd='/Users/lucas/wz/GitHub/thunder/crates/thunder-memory/scripts/dev.sh'" >> ~/.zshrc
 > ```
 > 另：用 `cargo run` 直接跑源码（`target/debug/thunder-memory`）与
 > `~/.cargo/bin/thunder-memory` 是**两个不同的 TCC 主体（路径）**，两边都要各自授权一次；
@@ -153,11 +153,11 @@ macOS 的屏幕录制授权是按 designated requirement 匹配的，内容一�
 thunder-memory stop
 
 # 2. 编译最高优化的 Release 二进制
-cd /Users/lucas/wz/GitHub/thunder-memory
+cd /Users/lucas/wz/GitHub/thunder/crates/thunder-memory
 cargo build --release
 
 # 3. 替换系统正式二进制并用固定身份重签名
-cp target/release/thunder-memory ~/.cargo/bin/thunder-memory
+cp ../../target/release/thunder-memory ~/.cargo/bin/thunder-memory
 codesign --force --sign "Thunder Local Signing" \
   --identifier com.lucas.thunder-memory --timestamp=none ~/.cargo/bin/thunder-memory
 

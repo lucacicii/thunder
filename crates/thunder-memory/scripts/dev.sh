@@ -48,10 +48,10 @@ cd "$REPO_ROOT"
 info "cargo build ($PROFILE)"
 if [ "$PROFILE" = "release" ]; then
   cargo build --release
-  BIN="target/release/thunder-memory"
+  BIN="$REPO_ROOT/../../target/release/thunder-memory"
 else
   cargo build
-  BIN="target/debug/thunder-memory"
+  BIN="$REPO_ROOT/../../target/debug/thunder-memory"
 fi
 [ -f "$BIN" ] || die "构建产物不存在: $BIN"
 

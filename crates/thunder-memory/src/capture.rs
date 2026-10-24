@@ -174,7 +174,10 @@ impl OcrEngine {
     fn parse_output(&self, stdout: &[u8]) -> Result<ScreenCaptureRecord, MemoryError> {
         let raw: RawCaptureJson = serde_json::from_slice(stdout).map_err(|e| {
             let text = String::from_utf8_lossy(stdout);
-            MemoryError::Ocr(format!("Failed to parse OCR helper JSON: {} (raw: {})", e, text))
+            MemoryError::Ocr(format!(
+                "Failed to parse OCR helper JSON: {} (raw: {})",
+                e, text
+            ))
         })?;
 
         let content_hash = Self::compute_hash(&raw.app_name, &raw.window_title, &raw.full_text);
@@ -218,10 +221,7 @@ impl OcrEngine {
         hasher.update(title.as_bytes());
         hasher.update(b"|");
         // Normalize whitespace in text for perceptual stability
-        let normalized: String = text
-            .split_whitespace()
-            .collect::<Vec<&str>>()
-            .join(" ");
+        let normalized: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
         hasher.update(normalized.as_bytes());
         format!("{:x}", hasher.finalize())
     }
@@ -241,11 +241,20 @@ mod tests {
 
     #[test]
     fn test_compute_hash_stability() {
-        let h1 = OcrEngine::compute_hash("Cursor", "main.rs", "fn main() {   println!(\"hello\"); }");
-        let h2 = OcrEngine::compute_hash("Cursor", "main.rs", "fn main() {\n  println!(\"hello\");\n}");
-        assert_eq!(h1, h2, "Whitespace differences should normalize to same hash");
+        let h1 =
+            OcrEngine::compute_hash("Cursor", "main.rs", "fn main() {   println!(\"hello\"); }");
+        let h2 = OcrEngine::compute_hash(
+            "Cursor",
+            "main.rs",
+            "fn main() {\n  println!(\"hello\");\n}",
+        );
+        assert_eq!(
+            h1, h2,
+            "Whitespace differences should normalize to same hash"
+        );
 
-        let h3 = OcrEngine::compute_hash("Cursor", "main.rs", "fn main() {   println!(\"world\"); }");
+        let h3 =
+            OcrEngine::compute_hash("Cursor", "main.rs", "fn main() {   println!(\"world\"); }");
         assert_ne!(h1, h3, "Text changes must produce different hashes");
     }
 

@@ -4,6 +4,8 @@ Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Compose
 
 `thunder-memory` 是一个独立常驻运行的系统级后台认知底座（Cognitive Substrate Daemon），24/7 默默在 macOS 后台收集全桌面屏幕感知流、本地离线 OCR 识别、提取长期结构化情境记忆，并自动采集、清洗和导出用户真实交互指令作为模型微调（SFT / DPO）训练集。
 
+> 📦 本项目已并入 [thunder](https://github.com/lucacicii/thunder) monorepo，作为 workspace 成员 `crates/thunder-memory` 维护；二进制名、`~/.cargo/bin` 安装位、`~/.thunder` 数据目录均不变，消费方（MCP 配置、LaunchAgent）无需任何改动。
+
 它通过标准 **Model Context Protocol (MCP)** 以及本地 SQLite 为各类 AI Agent（如 Thunder、Agent Resume Panel、Cursor、Claude Desktop）提供外部海马体级别的长期记忆能力。
 
 ---
@@ -154,13 +156,13 @@ designated => identifier "com.lucas.thunder-memory" and certificate root = H"5e5
 ### 安装命令
 
 ```bash
-cd ~/wz/GitHub/thunder-memory
+cd ~/wz/GitHub/thunder
 
 # 正式常驻版：构建 → 停 launchd → 覆盖安装 → 重签名 → 重启 → 校验
 ./scripts/install-release.sh
 
 # 日常开发（推荐）：cargo build → 重签名 → 重启守护进程，一次搞定
-alias tmd=~/wz/GitHub/thunder-memory/scripts/dev.sh   # 建议写进 ~/.zshrc
+alias tmd=~/wz/GitHub/thunder/crates/thunder-memory/scripts/dev.sh   # 建议写进 ~/.zshrc
 tmd                 # debug 构建，最快迭代
 tmd --release       # 让常驻进程跑 release
 tmd --no-restart    # 只编译+签名，不动守护进程

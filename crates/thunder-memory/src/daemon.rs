@@ -70,7 +70,10 @@ impl MemoryDaemon {
             self.config.min_capture_interval_secs,
             self.config.max_capture_interval_secs
         );
-        info!("Synthesis interval: {}s", self.config.synthesis_interval_secs);
+        info!(
+            "Synthesis interval: {}s",
+            self.config.synthesis_interval_secs
+        );
         if self.consolidation.is_enabled() {
             info!(
                 "Deep consolidation: {} when idle {}min, at most every {}s",
@@ -245,7 +248,9 @@ impl MemoryDaemon {
 
     pub fn pid_file_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".thunder").join("thunder-memory.pid")
+        PathBuf::from(home)
+            .join(".thunder")
+            .join("thunder-memory.pid")
     }
 
     pub fn log_file_path() -> PathBuf {
@@ -330,7 +335,11 @@ impl MemoryDaemon {
 
     fn read_pid(path: &Path) -> Option<u32> {
         if path.exists() {
-            std::fs::read_to_string(path).ok()?.trim().parse::<u32>().ok()
+            std::fs::read_to_string(path)
+                .ok()?
+                .trim()
+                .parse::<u32>()
+                .ok()
         } else {
             None
         }
@@ -355,8 +364,7 @@ impl MemoryDaemon {
                     "Another thunder-memory daemon is already running (PID {}). Two capture \
                      loops would write duplicate captures to the same database - stop the \
                      stale one with `kill {}`.",
-                    existing,
-                    existing
+                    existing, existing
                 );
             }
         }

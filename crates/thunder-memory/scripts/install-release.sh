@@ -78,7 +78,7 @@ sleep 1
 
 info "安装到 $INSTALL_DIR/thunder-memory"
 mkdir -p "$INSTALL_DIR"
-cp target/release/thunder-memory "$INSTALL_DIR/thunder-memory"
+cp "$REPO_ROOT/../../target/release/thunder-memory" "$INSTALL_DIR/thunder-memory"
 sign "$INSTALL_DIR/thunder-memory" "$MAIN_ID"
 
 # 助手由 thunder-memory 首次运行时用 swiftc 现编译，签名同样会随内容变化。

@@ -1,38 +1,35 @@
 [package]
 name = "thunder-memory"
-version = "0.1.0"
-edition = "2021"
-authors = ["lucas"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "Autonomous Screen OCR Ingestion, Episodic & Long-Term Memory Engine, and Composer Training Data Pipeline"
-license = "Apache-2.0"
-repository = "https://github.com/lucacicii/thunder-memory"
-homepage = "https://github.com/lucacicii/thunder-memory"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "thunder-memory"
 path = "src/main.rs"
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
-sha2 = "0.10"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.43", features = ["full"] }
-tokio-util = "0.7"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
-thiserror = "2.0"
-parking_lot = "0.12"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
-libc = "0.2"
-toml = "0.8"
-futures-util = "0.3"
+rusqlite.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+libc.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile.workspace = true
 
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = true
+[lints]
+workspace = true

@@ -103,7 +103,16 @@ impl ComposerSyncEngine {
         })?;
 
         for r in rows {
-            let (id, created_at_ms, pane_key, project_path, _session_key, provider, agent_session_id, text) = r?;
+            let (
+                id,
+                created_at_ms,
+                pane_key,
+                project_path,
+                _session_key,
+                provider,
+                agent_session_id,
+                text,
+            ) = r?;
 
             if created_at_ms > max_synced_ms {
                 max_synced_ms = created_at_ms;
@@ -139,14 +148,20 @@ impl ComposerSyncEngine {
                 count, max_synced_ms
             );
         } else {
-            debug!("No new composer sends found since watermark {}", last_watermark_ms);
+            debug!(
+                "No new composer sends found since watermark {}",
+                last_watermark_ms
+            );
         }
 
         Ok(count)
     }
 
     /// Analyze a user composer send: classify intent, compute training quality, extract entities, format prompt
-    pub fn analyze_composer_send(text: &str, project_path: &str) -> (String, f32, Vec<String>, String) {
+    pub fn analyze_composer_send(
+        text: &str,
+        project_path: &str,
+    ) -> (String, f32, Vec<String>, String) {
         let trimmed = text.trim();
         let lower = trimmed.to_lowercase();
 
@@ -162,25 +177,57 @@ impl ComposerSyncEngine {
             quality += 0.2;
         }
 
-        if trimmed.contains("```") || trimmed.contains("fn ") || trimmed.contains("def ") || trimmed.contains("class ") {
+        if trimmed.contains("```")
+            || trimmed.contains("fn ")
+            || trimmed.contains("def ")
+            || trimmed.contains("class ")
+        {
             quality += 0.2;
         }
-        if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(".rs") || trimmed.contains(".ts") {
+        if trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed.contains(".rs")
+            || trimmed.contains(".ts")
+        {
             quality += 0.1;
         }
 
         // 2. Intent classification
-        let intent = if lower.starts_with("git ") || lower.contains("commit") || lower.contains("push") || lower.contains("rebase") {
+        let intent = if lower.starts_with("git ")
+            || lower.contains("commit")
+            || lower.contains("push")
+            || lower.contains("rebase")
+        {
             "git_ops".to_string()
-        } else if lower.starts_with("不要") || lower.starts_with("别") || lower.starts_with("禁止") || lower.contains("never") {
+        } else if lower.starts_with("不要")
+            || lower.starts_with("别")
+            || lower.starts_with("禁止")
+            || lower.contains("never")
+        {
             "constraint_steer".to_string()
-        } else if lower.ends_with('?') || lower.ends_with('？') || lower.contains("如何") || lower.contains("怎么") || lower.contains("是什么") {
+        } else if lower.ends_with('?')
+            || lower.ends_with('？')
+            || lower.contains("如何")
+            || lower.contains("怎么")
+            || lower.contains("是什么")
+        {
             "architectural_inquiry".to_string()
-        } else if lower.contains("error") || lower.contains("bug") || lower.contains("修复") || lower.contains("报错") || lower.contains("fix") {
+        } else if lower.contains("error")
+            || lower.contains("bug")
+            || lower.contains("修复")
+            || lower.contains("报错")
+            || lower.contains("fix")
+        {
             "bug_fix".to_string()
-        } else if lower.contains("重构") || lower.contains("优化") || lower.contains("refactor") {
+        } else if lower.contains("重构") || lower.contains("优化") || lower.contains("refactor")
+        {
             "refactoring".to_string()
-        } else if lower == "执行" || lower == "继续" || lower == "确认" || lower == "yes" || lower == "ok" {
+        } else if lower == "执行"
+            || lower == "继续"
+            || lower == "确认"
+            || lower == "yes"
+            || lower == "ok"
+        {
             "action_execution".to_string()
         } else {
             "feature_development".to_string()
@@ -189,7 +236,9 @@ impl ComposerSyncEngine {
         // 3. Extract entities (paths, files, tools)
         let mut entities = Vec::new();
         for word in trimmed.split_whitespace() {
-            let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-');
+            let clean = word.trim_matches(|c: char| {
+                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+            });
             if (clean.contains('/') || clean.contains('.')) && clean.len() > 3 {
                 entities.push(clean.to_string());
             }
@@ -198,8 +247,7 @@ impl ComposerSyncEngine {
         // 4. Normalized training instruction prompt
         let formatted_prompt = format!(
             "[Project Context: {}]\n[User Instruction]: {}",
-            project_path,
-            trimmed
+            project_path, trimmed
         );
 
         if quality > 1.0 {
@@ -241,7 +289,8 @@ impl ComposerSyncEngine {
                         conversations: vec![
                             ShareGptMessage {
                                 from: "system".into(),
-                                value: "You are an expert AI software development assistant.".into(),
+                                value: "You are an expert AI software development assistant."
+                                    .into(),
                             },
                             ShareGptMessage {
                                 from: "human".into(),

@@ -159,9 +159,7 @@ impl ConsolidationEngine {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let window_start_ms = now_ms - (self.config.consolidation_window_days as i64) * 86_400_000;
-        let candidates = self
-            .db
-            .list_active_memories_since(window_start_ms, 500)?;
+        let candidates = self.db.list_active_memories_since(window_start_ms, 500)?;
 
         let mut report = ConsolidationReport {
             candidates: candidates.len(),
@@ -202,7 +200,8 @@ impl ConsolidationEngine {
                 source_captures.sort_unstable();
                 source_captures.dedup();
                 if source_captures.len() > MAX_SOURCE_CAPTURES {
-                    source_captures = source_captures.split_off(source_captures.len() - MAX_SOURCE_CAPTURES);
+                    source_captures =
+                        source_captures.split_off(source_captures.len() - MAX_SOURCE_CAPTURES);
                 }
                 let new_memory = NewLongTermMemory {
                     category: memory.category.clone(),
@@ -513,10 +512,16 @@ mod tests {
     #[test]
     fn parses_an_answer_wrapped_in_a_fence_or_prose() {
         let fenced = "```json\n{\"memories\":[{\"category\":\"c\",\"title\":\"t\",\"summary\":\"s\",\"importance_score\":5}]}\n```";
-        assert_eq!(ConsolidationEngine::parse_response(fenced).unwrap().len(), 1);
+        assert_eq!(
+            ConsolidationEngine::parse_response(fenced).unwrap().len(),
+            1
+        );
 
         let chatty = "Sure! Here is the JSON:\n{\"memories\":[{\"category\":\"c\",\"title\":\"t\",\"summary\":\"s\",\"importance_score\":5}]}\nHope that helps.";
-        assert_eq!(ConsolidationEngine::parse_response(chatty).unwrap().len(), 1);
+        assert_eq!(
+            ConsolidationEngine::parse_response(chatty).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -566,7 +571,11 @@ mod tests {
             group.push(m);
         }
         let prompt = ConsolidationEngine::build_prompt("coding", &group);
-        assert!(prompt.len() < MAX_ENTRY_BYTES + 2_000, "prompt was {} bytes", prompt.len());
+        assert!(
+            prompt.len() < MAX_ENTRY_BYTES + 2_000,
+            "prompt was {} bytes",
+            prompt.len()
+        );
         // Whole entries only: every numbered line is followed by its body line.
         let numbered = prompt.matches("\n   x").count();
         assert!(numbered >= 1);

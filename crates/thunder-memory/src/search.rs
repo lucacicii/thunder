@@ -23,11 +23,7 @@ impl MemorySearchEngine {
 
     /// Retrieve memories ranked by Stanford Generative Agents retrieval score:
     /// Score = w_recency * Recency + w_importance * Importance + w_relevance * Relevance
-    pub fn query(
-        &self,
-        query_text: &str,
-        limit: usize,
-    ) -> Result<Vec<ScoredMemory>, MemoryError> {
+    pub fn query(&self, query_text: &str, limit: usize) -> Result<Vec<ScoredMemory>, MemoryError> {
         // Superseded memories were folded into a consolidated one; scoring them
         // again would cite the same work twice.
         let candidates = self.db.list_recent_active_memories(limit * 3)?;
@@ -146,7 +142,10 @@ mod tests {
         let results = search.query("Rust SQLite", 5).unwrap();
 
         assert!(!results.is_empty());
-        assert_eq!(results[0].memory.title, "Developing thunder-memory module in Rust");
+        assert_eq!(
+            results[0].memory.title,
+            "Developing thunder-memory module in Rust"
+        );
         assert!(results[0].total_score > results[1].total_score);
     }
 

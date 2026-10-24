@@ -39,34 +39,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             daemon.run_foreground(cancel).await?;
         }
 
-        "start" => {
-            match MemoryDaemon::start_background() {
-                Ok(pid) => {
-                    println!("🚀 thunder-memory daemon started in background (PID: {})", pid);
-                    println!("   Log file: {:?}", MemoryDaemon::log_file_path());
-                    println!("   PID file: {:?}", MemoryDaemon::pid_file_path());
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to start background daemon: {}", e);
-                    std::process::exit(1);
-                }
+        "start" => match MemoryDaemon::start_background() {
+            Ok(pid) => {
+                println!(
+                    "🚀 thunder-memory daemon started in background (PID: {})",
+                    pid
+                );
+                println!("   Log file: {:?}", MemoryDaemon::log_file_path());
+                println!("   PID file: {:?}", MemoryDaemon::pid_file_path());
             }
-        }
+            Err(e) => {
+                eprintln!("❌ Failed to start background daemon: {}", e);
+                std::process::exit(1);
+            }
+        },
 
-        "stop" => {
-            match MemoryDaemon::stop_background() {
-                Ok(true) => {
-                    println!("🛑 thunder-memory daemon stopped successfully.");
-                }
-                Ok(false) => {
-                    println!("ℹ️  thunder-memory daemon was not running.");
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to stop daemon: {}", e);
-                    std::process::exit(1);
-                }
+        "stop" => match MemoryDaemon::stop_background() {
+            Ok(true) => {
+                println!("🛑 thunder-memory daemon stopped successfully.");
             }
-        }
+            Ok(false) => {
+                println!("ℹ️  thunder-memory daemon was not running.");
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to stop daemon: {}", e);
+                std::process::exit(1);
+            }
+        },
 
         "status" => {
             println!("══════════════════════════════════════════════════════════════════");
@@ -80,8 +79,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("  📂 Database:     {:?}", config.db_path);
-            println!("  📋 Composer DB:  {:?}", config.resolve_composer_db_path().unwrap_or_else(|| PathBuf::from("not found")));
-            println!("  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s", config.capture_interval_secs, config.min_capture_interval_secs, config.max_capture_interval_secs, config.synthesis_interval_secs);
+            println!(
+                "  📋 Composer DB:  {:?}",
+                config
+                    .resolve_composer_db_path()
+                    .unwrap_or_else(|| PathBuf::from("not found"))
+            );
+            println!(
+                "  ⏱️  Perception:   Base={}s, Min={}s, Max={}s | Synthesis={}s",
+                config.capture_interval_secs,
+                config.min_capture_interval_secs,
+                config.max_capture_interval_secs,
+                config.synthesis_interval_secs
+            );
             // Thunder-memory infers nothing itself: the synthesis tier is the
             // configured OpenAI-compatible endpoint, or the rule extractor when
             // there is none. So a stopped Ollama is worth saying out loud —
@@ -91,9 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "{} ({}) — {}",
                     config.llm_model,
                     endpoint,
-                    probe_llm_endpoint(endpoint, &config.llm_model, config.llm_api_key.as_deref()).await
+                    probe_llm_endpoint(endpoint, &config.llm_model, config.llm_api_key.as_deref())
+                        .await
                 ),
-                None => "No endpoint configured — Heuristic Rule Engine (Offline / Zero-Cost)".to_string(),
+                None => "No endpoint configured — Heuristic Rule Engine (Offline / Zero-Cost)"
+                    .to_string(),
             };
             println!("  🔬 Synthesis Model:    {}", edge_info);
             // Second tier: the big model that merges what the small one wrote,
@@ -121,27 +133,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stats = db.get_stats()?;
                 println!("──────────────────────────────────────────────────────────────────");
                 println!("  📊 Total Screen Captures:      {}", stats.total_captures);
-                println!("  ⏳ Unprocessed Captures:       {}", stats.unprocessed_captures);
-                println!("  🌟 Long-Term Memories:         {}", stats.long_term_memories);
-                println!("  🤖 Agent Rules / Guidelines:   {}", stats.agent_interactions);
-                println!("  🎓 Composer Training Samples:  {}", stats.training_samples);
-                println!("  🛡️  Noise Suppression Hits:     {}", stats.suppression_mask_hits);
+                println!(
+                    "  ⏳ Unprocessed Captures:       {}",
+                    stats.unprocessed_captures
+                );
+                println!(
+                    "  🌟 Long-Term Memories:         {}",
+                    stats.long_term_memories
+                );
+                println!(
+                    "  🤖 Agent Rules / Guidelines:   {}",
+                    stats.agent_interactions
+                );
+                println!(
+                    "  🎓 Composer Training Samples:  {}",
+                    stats.training_samples
+                );
+                println!(
+                    "  🛡️  Noise Suppression Hits:     {}",
+                    stats.suppression_mask_hits
+                );
                 if let Some(ms) = stats.last_capture_ms {
                     let secs_ago = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
-                        .as_millis() as i64 - ms) / 1000;
+                        .as_millis() as i64
+                        - ms)
+                        / 1000;
                     println!("  🕒 Last Screen Capture:        {}s ago", secs_ago.max(0));
                 }
             } else {
-                println!("  ℹ️  Database has not been created yet. Run `thunder-memory run` to start.");
+                println!(
+                    "  ℹ️  Database has not been created yet. Run `thunder-memory run` to start."
+                );
             }
             println!("══════════════════════════════════════════════════════════════════");
         }
 
         "ocr-once" => {
             let save_to_db = args.iter().any(|a| a == "--save");
-            println!("📸 Capturing screen and running Apple Vision OCR (save={})...", save_to_db);
+            println!(
+                "📸 Capturing screen and running Apple Vision OCR (save={})...",
+                save_to_db
+            );
             let ocr = OcrEngine::new()?;
             let rec = ocr.capture_screen()?;
             println!("──────────────────────────────────────────────────────────────────");
@@ -152,11 +186,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Hash:       {}", rec.content_hash);
             println!("Characters: {}", rec.full_text.len());
             println!("──────────────────────────────────────────────────────────────────");
-            println!("Sample Text:\n{}", if rec.full_text.len() > 500 {
-                format!("{}...", thunder_memory::safe_truncate_str(&rec.full_text, 500))
-            } else {
-                rec.full_text.clone()
-            });
+            println!(
+                "Sample Text:\n{}",
+                if rec.full_text.len() > 500 {
+                    format!(
+                        "{}...",
+                        thunder_memory::safe_truncate_str(&rec.full_text, 500)
+                    )
+                } else {
+                    rec.full_text.clone()
+                }
+            );
 
             if save_to_db {
                 config.ensure_dirs()?;
@@ -182,21 +222,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let syncer = ComposerSyncEngine::new(db.clone(), config);
             let count = syncer.sync_composer_sends()?;
             let stats = db.get_stats()?;
-            println!("✅ Synced {} new sends. Total training samples: {}.", count, stats.training_samples);
+            println!(
+                "✅ Synced {} new sends. Total training samples: {}.",
+                count, stats.training_samples
+            );
         }
 
         "export-training" => {
             let format = args.get(2).map(|s| s.as_str()).unwrap_or("openai");
             let output_path = args.get(3).map(PathBuf::from).unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".thunder").join("training_dataset.jsonl")
+                PathBuf::from(home)
+                    .join(".thunder")
+                    .join("training_dataset.jsonl")
             });
 
             config.ensure_dirs()?;
             let db = Database::open(&config.db_path)?;
             let syncer = ComposerSyncEngine::new(db, config);
             let count = syncer.export_dataset(&output_path, format, 0.4, None)?;
-            println!("✅ Exported {} training records to {:?}", count, output_path);
+            println!(
+                "✅ Exported {} training records to {:?}",
+                count, output_path
+            );
         }
 
         "query" => {
@@ -216,12 +264,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("══════════════════════════════════════════════════════════════════");
 
             if !agent_records.is_empty() {
-                println!("  🤖 Agent Cognitive Records & Guidelines (Found {}):", agent_records.len());
+                println!(
+                    "  🤖 Agent Cognitive Records & Guidelines (Found {}):",
+                    agent_records.len()
+                );
                 for (idx, r) in agent_records.iter().enumerate() {
                     let scope_badge = if r.scope == "global" {
                         "[GLOBAL]".to_string()
                     } else {
-                        format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                        format!(
+                            "[PROJECT: {}]",
+                            r.project_path.as_deref().unwrap_or("current")
+                        )
                     };
                     println!(
                         "  [{}] {} [{}] {} ({})",
@@ -240,7 +294,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if !results.is_empty() {
-                println!("  🖥️ Desktop & Screen History Insights (Found {}):", results.len());
+                println!(
+                    "  🖥️ Desktop & Screen History Insights (Found {}):",
+                    results.len()
+                );
                 for (idx, item) in results.iter().enumerate() {
                     let m = &item.memory;
                     println!(
@@ -284,7 +341,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let scope_badge = if p.scope == "global" {
                         "[GLOBAL]".to_string()
                     } else {
-                        format!("[PROJECT: {}]", p.project_path.as_deref().unwrap_or("current"))
+                        format!(
+                            "[PROJECT: {}]",
+                            p.project_path.as_deref().unwrap_or("current")
+                        )
                     };
                     println!(
                         "  [{}] {} [{}] {} (by {})",
@@ -364,7 +424,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         "list-memories" => {
-            let limit = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
+            let limit = args
+                .get(2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(10);
             let db = Database::open(&config.db_path)?;
             let memories = db.list_recent_memories(limit)?;
 
@@ -386,37 +449,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        "install-launchagent" => {
-            match MemoryDaemon::install_launchagent() {
-                Ok(path) => {
-                    println!("✅ Successfully installed and loaded LaunchAgent at {:?}", path);
-                    println!("   thunder-memory will now automatically start on login and run 24/7.");
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to install LaunchAgent: {}", e);
-                }
+        "install-launchagent" => match MemoryDaemon::install_launchagent() {
+            Ok(path) => {
+                println!(
+                    "✅ Successfully installed and loaded LaunchAgent at {:?}",
+                    path
+                );
+                println!("   thunder-memory will now automatically start on login and run 24/7.");
             }
-        }
+            Err(e) => {
+                eprintln!("❌ Failed to install LaunchAgent: {}", e);
+            }
+        },
 
-        "uninstall-launchagent" => {
-            match MemoryDaemon::uninstall_launchagent() {
-                Ok(true) => {
-                    println!("✅ Successfully unloaded and removed LaunchAgent.");
-                }
-                Ok(false) => {
-                    println!("ℹ️  LaunchAgent plist was not found.");
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to uninstall LaunchAgent: {}", e);
-                }
+        "uninstall-launchagent" => match MemoryDaemon::uninstall_launchagent() {
+            Ok(true) => {
+                println!("✅ Successfully unloaded and removed LaunchAgent.");
             }
-        }
+            Ok(false) => {
+                println!("ℹ️  LaunchAgent plist was not found.");
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to uninstall LaunchAgent: {}", e);
+            }
+        },
 
         "masks" => {
             let db = Database::open(&config.db_path)?;
             let masks = db.get_active_suppression_masks()?;
             println!("══════════════════════════════════════════════════════════════════");
-            println!("  🛡️  Active Cognitive Noise Suppression Masks ({})", masks.len());
+            println!(
+                "  🛡️  Active Cognitive Noise Suppression Masks ({})",
+                masks.len()
+            );
             println!("══════════════════════════════════════════════════════════════════");
             for m in masks {
                 println!("  ● Bundle:   {}", m.bundle_id);
@@ -429,7 +494,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         "mask" => {
             if args.len() < 4 || args[1] != "add" {
-                println!("Usage: thunder-memory mask add <bundle_id> <window_title_pattern> <reason>");
+                println!(
+                    "Usage: thunder-memory mask add <bundle_id> <window_title_pattern> <reason>"
+                );
                 return Ok(());
             }
             let db = Database::open(&config.db_path)?;
@@ -441,7 +508,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "User defined noise mask".to_string()
             };
             db.add_suppression_mask(bundle, pattern, &reason)?;
-            println!("✅ Added suppression mask: bundle='{}', pattern='{}'", bundle, pattern);
+            println!(
+                "✅ Added suppression mask: bundle='{}', pattern='{}'",
+                bundle, pattern
+            );
         }
 
         "compact" => {
@@ -467,7 +537,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Archive destination: {:?}", config.archive_db_path);
 
             let db = Database::open(&config.db_path)?;
-            let res = db.compact_and_archive(&config.archive_db_path, capture_days, archive_days)?;
+            let res =
+                db.compact_and_archive(&config.archive_db_path, capture_days, archive_days)?;
 
             println!("✅ Compaction complete!");
             println!("   - Pruned L1 captures:        {}", res.pruned_captures);
@@ -475,7 +546,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if res.active_db_bytes_before > 0 {
                 let kb_before = res.active_db_bytes_before as f64 / 1024.0;
                 let kb_after = res.active_db_bytes_after as f64 / 1024.0;
-                println!("   - Active DB size:            {:.1} KB -> {:.1} KB", kb_before, kb_after);
+                println!(
+                    "   - Active DB size:            {:.1} KB -> {:.1} KB",
+                    kb_before, kb_after
+                );
             }
         }
 
@@ -485,7 +559,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = Database::open(&config.db_path)?;
             let engine = ConsolidationEngine::new(db, config);
             if !engine.is_enabled() {
-                eprintln!("❌ No `consolidation_endpoint` configured (see ~/.thunder/memory.toml).");
+                eprintln!(
+                    "❌ No `consolidation_endpoint` configured (see ~/.thunder/memory.toml)."
+                );
                 std::process::exit(1);
             }
             println!(
@@ -499,7 +575,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 report.groups,
                 report.produced,
                 report.superseded,
-                if dry_run { " (dry run, nothing written)" } else { "" }
+                if dry_run {
+                    " (dry run, nothing written)"
+                } else {
+                    ""
+                }
             );
         }
 
@@ -521,13 +601,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  synthesize              Trigger manual memory synthesis cycle");
             println!("  consolidate [--dry-run] Merge recent memories with the big model");
             println!("  sync-composer           Sync workbench_composer_sends from desktop.db");
-            println!("  export-training [fmt]   Export training dataset (openai | alpaca | sharegpt)");
+            println!(
+                "  export-training [fmt]   Export training dataset (openai | alpaca | sharegpt)"
+            );
             println!("  query <search terms>    Query memory with Generative Agents scoring");
             println!("  preferences [project]   Show active user preferences & constraints");
             println!("  record <cat> <title>    Record explicit memory/preference rule");
             println!("  compact                 Run aggressive compaction and cold archiving");
-            println!("  masks                   List active noise suppression masks and hit statistics");
-            println!("  mask add <bundle> <pat> Add an autonomous cognitive noise suppression mask");
+            println!(
+                "  masks                   List active noise suppression masks and hit statistics"
+            );
+            println!(
+                "  mask add <bundle> <pat> Add an autonomous cognitive noise suppression mask"
+            );
             println!("  list-memories [limit]   List recent long-term memories");
             println!("  mcp                     Run standard JSON-RPC 2.0 MCP server over stdio");
             println!("  install-launchagent     Install macOS LaunchAgent for autostart");
@@ -588,6 +674,9 @@ async fn probe_llm_endpoint(endpoint: &str, model: &str, api_key: Option<&str>) 
     } else if served.is_empty() {
         "endpoint up, serves no models".to_string()
     } else {
-        format!("endpoint up but '{wanted}' is not pulled (has: {})", served.join(", "))
+        format!(
+            "endpoint up but '{wanted}' is not pulled (has: {})",
+            served.join(", ")
+        )
     }
 }

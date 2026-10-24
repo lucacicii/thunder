@@ -300,12 +300,24 @@ impl Database {
         )?;
 
         // Safe additive column migrations for existing databases
-        let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;", []);
-        let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;", []);
+        let _ = conn.execute(
+            "ALTER TABLE long_term_memories ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE long_term_memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE long_term_memories ADD COLUMN last_accessed_at_ms INTEGER NOT NULL DEFAULT 0;", []);
 
-        let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;", []);
-        let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;", []);
+        let _ = conn.execute(
+            "ALTER TABLE agent_interactions ADD COLUMN utility_score REAL NOT NULL DEFAULT 1.0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE agent_interactions ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE agent_interactions ADD COLUMN last_accessed_at_ms INTEGER NOT NULL DEFAULT 0;", []);
 
         let _ = conn.execute(
@@ -328,10 +340,26 @@ impl Database {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let default_masks = [
-                ("com.apple.Music", "*", "Apple Music player window has no cognitive development value"),
-                ("com.spotify.client", "*", "Spotify music player window has no cognitive development value"),
-                ("com.apple.QuickTimePlayerX", "*", "Video playback window has no text development value"),
-                ("com.netease.163music", "*", "NetEase Music player window has no development value"),
+                (
+                    "com.apple.Music",
+                    "*",
+                    "Apple Music player window has no cognitive development value",
+                ),
+                (
+                    "com.spotify.client",
+                    "*",
+                    "Spotify music player window has no cognitive development value",
+                ),
+                (
+                    "com.apple.QuickTimePlayerX",
+                    "*",
+                    "Video playback window has no text development value",
+                ),
+                (
+                    "com.netease.163music",
+                    "*",
+                    "NetEase Music player window has no development value",
+                ),
             ];
             for (bundle, pattern, reason) in default_masks {
                 let _ = conn.execute(
@@ -386,7 +414,10 @@ impl Database {
     }
 
     /// Retrieve unprocessed captures for synthesis
-    pub fn get_unprocessed_captures(&self, limit: usize) -> Result<Vec<RawCaptureRow>, MemoryError> {
+    pub fn get_unprocessed_captures(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RawCaptureRow>, MemoryError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             r#"
@@ -449,8 +480,10 @@ impl Database {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let entities_json = serde_json::to_string(&memory.key_entities).unwrap_or_else(|_| "[]".to_string());
-        let sources_json = serde_json::to_string(&memory.source_capture_ids).unwrap_or_else(|_| "[]".to_string());
+        let entities_json =
+            serde_json::to_string(&memory.key_entities).unwrap_or_else(|_| "[]".to_string());
+        let sources_json =
+            serde_json::to_string(&memory.source_capture_ids).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
             r#"
@@ -504,12 +537,16 @@ impl Database {
                     entities.push(ent.clone());
                 }
             }
-            let merged_entities = serde_json::to_string(&entities).unwrap_or_else(|_| "[]".to_string());
+            let merged_entities =
+                serde_json::to_string(&entities).unwrap_or_else(|_| "[]".to_string());
 
             let updated_summary = if additional_summary.is_empty() {
                 curr_summary
             } else {
-                format!("{}\n\n[Progress Update]: {}", curr_summary, additional_summary)
+                format!(
+                    "{}\n\n[Progress Update]: {}",
+                    curr_summary, additional_summary
+                )
             };
 
             conn.execute(
@@ -592,7 +629,10 @@ impl Database {
     /// Retrieval never comes through here: a memory folded into a later
     /// consolidation pass is still true historically, but re-serving it beside
     /// the consolidated one is how an agent ends up citing the same fact twice.
-    pub fn list_recent_memories(&self, limit: usize) -> Result<Vec<LongTermMemoryRow>, MemoryError> {
+    pub fn list_recent_memories(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<LongTermMemoryRow>, MemoryError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             r#"
@@ -730,7 +770,8 @@ impl Database {
         sample: &ComposerTrainingSample,
     ) -> Result<(), MemoryError> {
         let conn = self.conn.lock();
-        let entities_json = serde_json::to_string(&sample.extracted_entities).unwrap_or_else(|_| "[]".to_string());
+        let entities_json =
+            serde_json::to_string(&sample.extracted_entities).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
             r#"
@@ -853,7 +894,11 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM screen_captures", [], |r| r.get(0))
             .unwrap_or(0);
         let unprocessed_captures: i64 = conn
-            .query_row("SELECT COUNT(*) FROM screen_captures WHERE processed = 0", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM screen_captures WHERE processed = 0",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
         let long_term_memories: i64 = conn
             .query_row("SELECT COUNT(*) FROM long_term_memories", [], |r| r.get(0))
@@ -862,10 +907,16 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM agent_interactions", [], |r| r.get(0))
             .unwrap_or(0);
         let training_samples: i64 = conn
-            .query_row("SELECT COUNT(*) FROM composer_training_samples", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM composer_training_samples", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         let suppression_mask_hits: i64 = conn
-            .query_row("SELECT COALESCE(SUM(hit_count), 0) FROM suppression_masks", [], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(SUM(hit_count), 0) FROM suppression_masks",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
 
         let last_capture_ms: Option<i64> = conn
@@ -898,17 +949,15 @@ impl Database {
 
     /// Insert a structured cognitive memory recorded by an agent.
     /// If the same title exists in the same scope and project, supersedes the previous active record.
-    pub fn insert_agent_interaction(
-        &self,
-        item: &NewAgentInteraction,
-    ) -> Result<i64, MemoryError> {
+    pub fn insert_agent_interaction(&self, item: &NewAgentInteraction) -> Result<i64, MemoryError> {
         let conn = self.conn.lock();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let entities_json = serde_json::to_string(&item.entities).unwrap_or_else(|_| "[]".to_string());
+        let entities_json =
+            serde_json::to_string(&item.entities).unwrap_or_else(|_| "[]".to_string());
         let meta = item.metadata.clone().unwrap_or_default();
 
         // Check if there is an active record with same scope, project_path, and title
@@ -1027,7 +1076,10 @@ impl Database {
             "#,
         )?;
 
-        let rows = stmt.query_map(params![pattern, limit as i64], Self::map_agent_interaction_row)?;
+        let rows = stmt.query_map(
+            params![pattern, limit as i64],
+            Self::map_agent_interaction_row,
+        )?;
         let mut results = Vec::new();
         for r in rows {
             results.push(r?);
@@ -1132,7 +1184,12 @@ impl Database {
                     params![now_ms, utility_delta, id],
                 )?;
             }
-            _ => return Err(MemoryError::Other(format!("Unknown memory target: {}", target))),
+            _ => {
+                return Err(MemoryError::Other(format!(
+                    "Unknown memory target: {}",
+                    target
+                )))
+            }
         }
         Ok(())
     }
@@ -1182,14 +1239,18 @@ impl Database {
     }
 
     /// Check if a given application bundle ID and window title matches an active suppression mask
-    pub fn is_window_suppressed(&self, bundle_id: &str, window_title: &str) -> Result<bool, MemoryError> {
+    pub fn is_window_suppressed(
+        &self,
+        bundle_id: &str,
+        window_title: &str,
+    ) -> Result<bool, MemoryError> {
         let masks = self.get_active_suppression_masks()?;
         for m in masks {
-            if m.bundle_id == bundle_id || m.bundle_id == "*" {
-                if m.window_title_pattern == "*" || window_title.contains(&m.window_title_pattern) {
-                    let _ = self.record_suppression_hit(m.id);
-                    return Ok(true);
-                }
+            if (m.bundle_id == bundle_id || m.bundle_id == "*")
+                && (m.window_title_pattern == "*" || window_title.contains(&m.window_title_pattern))
+            {
+                let _ = self.record_suppression_hit(m.id);
+                return Ok(true);
             }
         }
         Ok(false)
@@ -1396,7 +1457,10 @@ impl Database {
 
             // Delete from main database
             for row in &rows {
-                conn.execute("DELETE FROM long_term_memories WHERE id = ?1", params![row.id])?;
+                conn.execute(
+                    "DELETE FROM long_term_memories WHERE id = ?1",
+                    params![row.id],
+                )?;
             }
         }
 
@@ -1505,17 +1569,19 @@ mod tests {
         assert_eq!(id1, 1);
 
         // 2. Insert project-specific constraint for /repo/A
-        let id2 = db.insert_agent_interaction(&NewAgentInteraction {
-            agent_name: "pi".into(),
-            scope: "project".into(),
-            project_path: Some("/repo/A".into()),
-            category: "constraint".into(),
-            title: "Pinned to JDK 8".into(),
-            content: "Spring Boot 2.2.7 breaks on JDK 17+; stay on JDK 8".into(),
-            entities: vec!["JDK8".into()],
-            suggested_importance: 9.5,
-            metadata: None,
-        }).unwrap();
+        let id2 = db
+            .insert_agent_interaction(&NewAgentInteraction {
+                agent_name: "pi".into(),
+                scope: "project".into(),
+                project_path: Some("/repo/A".into()),
+                category: "constraint".into(),
+                title: "Pinned to JDK 8".into(),
+                content: "Spring Boot 2.2.7 breaks on JDK 17+; stay on JDK 8".into(),
+                entities: vec!["JDK8".into()],
+                suggested_importance: 9.5,
+                metadata: None,
+            })
+            .unwrap();
         assert_eq!(id2, 2);
 
         // 3. Insert project-specific constraint for /repo/B
@@ -1529,12 +1595,15 @@ mod tests {
             entities: vec!["pnpm".into()],
             suggested_importance: 8.0,
             metadata: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Query preferences for /repo/A: should get global + /repo/A, but NOT /repo/B
         let prefs_a = db.get_active_preferences(Some("/repo/A")).unwrap();
         assert_eq!(prefs_a.len(), 2);
-        assert!(prefs_a.iter().any(|p| p.title == "Never modify Java build files"));
+        assert!(prefs_a
+            .iter()
+            .any(|p| p.title == "Never modify Java build files"));
         assert!(prefs_a.iter().any(|p| p.title == "Pinned to JDK 8"));
         assert!(!prefs_a.iter().any(|p| p.title == "Use pnpm only"));
 
@@ -1544,17 +1613,19 @@ mod tests {
         assert_eq!(prefs_global[0].title, "Never modify Java build files");
 
         // 4. Test superseding old rule: update "Never modify Java build files"
-        let id4 = db.insert_agent_interaction(&NewAgentInteraction {
-            agent_name: "thunder".into(),
-            scope: "global".into(),
-            project_path: None,
-            category: "constraint".into(),
-            title: "Never modify Java build files".into(),
-            content: "Updated: allow modification in test subprojects only".into(),
-            entities: vec!["build.gradle".into()],
-            suggested_importance: 9.0,
-            metadata: None,
-        }).unwrap();
+        let id4 = db
+            .insert_agent_interaction(&NewAgentInteraction {
+                agent_name: "thunder".into(),
+                scope: "global".into(),
+                project_path: None,
+                category: "constraint".into(),
+                title: "Never modify Java build files".into(),
+                content: "Updated: allow modification in test subprojects only".into(),
+                entities: vec!["build.gradle".into()],
+                suggested_importance: 9.0,
+                metadata: None,
+            })
+            .unwrap();
         assert_eq!(id4, 4);
 
         let prefs_updated = db.get_active_preferences(None).unwrap();
@@ -1574,29 +1645,38 @@ mod tests {
         assert!(masks.iter().any(|m| m.bundle_id == "com.spotify.client"));
 
         // 2. Test is_window_suppressed on default mask
-        let suppressed = db.is_window_suppressed("com.spotify.client", "Daily Mix 1").unwrap();
+        let suppressed = db
+            .is_window_suppressed("com.spotify.client", "Daily Mix 1")
+            .unwrap();
         assert!(suppressed);
 
         // Not suppressed
-        let not_suppressed = db.is_window_suppressed("com.microsoft.VSCode", "src/main.rs").unwrap();
+        let not_suppressed = db
+            .is_window_suppressed("com.microsoft.VSCode", "src/main.rs")
+            .unwrap();
         assert!(!not_suppressed);
 
         // 3. Add custom suppression mask
-        db.add_suppression_mask("com.tencent.xinWeChat", "微信", "Chat window").unwrap();
-        let wechat_suppressed = db.is_window_suppressed("com.tencent.xinWeChat", "微信 (3条新消息)").unwrap();
+        db.add_suppression_mask("com.tencent.xinWeChat", "微信", "Chat window")
+            .unwrap();
+        let wechat_suppressed = db
+            .is_window_suppressed("com.tencent.xinWeChat", "微信 (3条新消息)")
+            .unwrap();
         assert!(wechat_suppressed);
 
         // 4. Test memory access tracking and utility scoring
-        let mem_id = db.insert_long_term_memory(&NewLongTermMemory {
-            category: "test".into(),
-            title: "Test Memory".into(),
-            summary: "Summary".into(),
-            key_entities: vec![],
-            importance_score: 5.0,
-            time_window_start_ms: 100,
-            time_window_end_ms: 200,
-            source_capture_ids: vec![],
-        }).unwrap();
+        let mem_id = db
+            .insert_long_term_memory(&NewLongTermMemory {
+                category: "test".into(),
+                title: "Test Memory".into(),
+                summary: "Summary".into(),
+                key_entities: vec![],
+                importance_score: 5.0,
+                time_window_start_ms: 100,
+                time_window_end_ms: 200,
+                source_capture_ids: vec![],
+            })
+            .unwrap();
 
         // Initial utility_score is 1.0, access_count is 0
         let recent = db.list_recent_memories(1).unwrap();
@@ -1626,70 +1706,80 @@ mod tests {
 
         // 1. Insert old processed capture (3 days ago > 48h TTL)
         let old_capture_ms = now_ms - (3 * 86_400_000);
-        let id1 = db.insert_capture(&ScreenCaptureRecord {
-            timestamp_ms: old_capture_ms,
-            app_name: "OldApp".into(),
-            bundle_id: "com.old".into(),
-            window_title: "OldWin".into(),
-            full_text: "old content".into(),
-            avg_confidence: 0.9,
-            content_hash: "hash_old".into(),
-            metadata_json: "[]".into(),
-        }).unwrap();
+        let id1 = db
+            .insert_capture(&ScreenCaptureRecord {
+                timestamp_ms: old_capture_ms,
+                app_name: "OldApp".into(),
+                bundle_id: "com.old".into(),
+                window_title: "OldWin".into(),
+                full_text: "old content".into(),
+                avg_confidence: 0.9,
+                content_hash: "hash_old".into(),
+                metadata_json: "[]".into(),
+            })
+            .unwrap();
         db.mark_captures_processed(&[id1]).unwrap();
 
         // 2. Insert recent processed capture (1 hour ago < 48h TTL)
         let recent_capture_ms = now_ms - 3_600_000;
-        let id2 = db.insert_capture(&ScreenCaptureRecord {
-            timestamp_ms: recent_capture_ms,
-            app_name: "RecentApp".into(),
-            bundle_id: "com.recent".into(),
-            window_title: "RecentWin".into(),
-            full_text: "recent content".into(),
-            avg_confidence: 0.9,
-            content_hash: "hash_recent".into(),
-            metadata_json: "[]".into(),
-        }).unwrap();
+        let id2 = db
+            .insert_capture(&ScreenCaptureRecord {
+                timestamp_ms: recent_capture_ms,
+                app_name: "RecentApp".into(),
+                bundle_id: "com.recent".into(),
+                window_title: "RecentWin".into(),
+                full_text: "recent content".into(),
+                avg_confidence: 0.9,
+                content_hash: "hash_recent".into(),
+                metadata_json: "[]".into(),
+            })
+            .unwrap();
         db.mark_captures_processed(&[id2]).unwrap();
 
         // 3. Insert old inactive L2 memory (40 days ago, never accessed)
         let old_mem_end_ms = now_ms - (40 * 86_400_000);
-        let mem1 = db.insert_long_term_memory(&NewLongTermMemory {
-            category: "task".into(),
-            title: "Old Inactive Task".into(),
-            summary: "Archivable task".into(),
-            key_entities: vec!["OldEntity".into()],
-            importance_score: 5.0,
-            time_window_start_ms: old_mem_end_ms - 1000,
-            time_window_end_ms: old_mem_end_ms,
-            source_capture_ids: vec![],
-        }).unwrap();
+        let mem1 = db
+            .insert_long_term_memory(&NewLongTermMemory {
+                category: "task".into(),
+                title: "Old Inactive Task".into(),
+                summary: "Archivable task".into(),
+                key_entities: vec!["OldEntity".into()],
+                importance_score: 5.0,
+                time_window_start_ms: old_mem_end_ms - 1000,
+                time_window_end_ms: old_mem_end_ms,
+                source_capture_ids: vec![],
+            })
+            .unwrap();
 
         // 4. Insert old ACTIVE L2 memory (40 days ago, accessed recently)
-        let mem2 = db.insert_long_term_memory(&NewLongTermMemory {
-            category: "task".into(),
-            title: "Old Active Task".into(),
-            summary: "Frequently retrieved task".into(),
-            key_entities: vec!["ActiveEntity".into()],
-            importance_score: 8.0,
-            time_window_start_ms: old_mem_end_ms - 1000,
-            time_window_end_ms: old_mem_end_ms,
-            source_capture_ids: vec![],
-        }).unwrap();
+        let mem2 = db
+            .insert_long_term_memory(&NewLongTermMemory {
+                category: "task".into(),
+                title: "Old Active Task".into(),
+                summary: "Frequently retrieved task".into(),
+                key_entities: vec!["ActiveEntity".into()],
+                importance_score: 8.0,
+                time_window_start_ms: old_mem_end_ms - 1000,
+                time_window_end_ms: old_mem_end_ms,
+                source_capture_ids: vec![],
+            })
+            .unwrap();
         db.track_memory_access("long_term", mem2, 1.0).unwrap();
 
         // 5. Insert recent L2 memory (5 days ago < 30 days)
         let recent_mem_end_ms = now_ms - (5 * 86_400_000);
-        let mem3 = db.insert_long_term_memory(&NewLongTermMemory {
-            category: "task".into(),
-            title: "Recent Task".into(),
-            summary: "Recent task summary".into(),
-            key_entities: vec!["RecentEntity".into()],
-            importance_score: 7.0,
-            time_window_start_ms: recent_mem_end_ms - 1000,
-            time_window_end_ms: recent_mem_end_ms,
-            source_capture_ids: vec![],
-        }).unwrap();
+        let mem3 = db
+            .insert_long_term_memory(&NewLongTermMemory {
+                category: "task".into(),
+                title: "Recent Task".into(),
+                summary: "Recent task summary".into(),
+                key_entities: vec!["RecentEntity".into()],
+                importance_score: 7.0,
+                time_window_start_ms: recent_mem_end_ms - 1000,
+                time_window_end_ms: recent_mem_end_ms,
+                source_capture_ids: vec![],
+            })
+            .unwrap();
 
         // Run compact_and_archive: retention 2 days, archive 30 days
         let res = db.compact_and_archive(&archive_db_path, 2, 30).unwrap();
@@ -1707,7 +1797,9 @@ mod tests {
         // Verify archive DB: contains mem1
         let archive_conn = Connection::open(&archive_db_path).unwrap();
         let mut stmt = archive_conn
-            .prepare("SELECT title, access_count, archived_at_ms FROM long_term_memories WHERE id = ?1")
+            .prepare(
+                "SELECT title, access_count, archived_at_ms FROM long_term_memories WHERE id = ?1",
+            )
             .unwrap();
         let row = stmt
             .query_row(params![mem1], |r| {

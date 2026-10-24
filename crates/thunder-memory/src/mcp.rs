@@ -77,18 +77,14 @@ pub struct McpCallToolResult {
 impl McpCallToolResult {
     pub fn success_text(text: impl Into<String>) -> Self {
         Self {
-            content: vec![McpContent::Text {
-                text: text.into(),
-            }],
+            content: vec![McpContent::Text { text: text.into() }],
             is_error: false,
         }
     }
 
     pub fn error_text(text: impl Into<String>) -> Self {
         Self {
-            content: vec![McpContent::Text {
-                text: text.into(),
-            }],
+            content: vec![McpContent::Text { text: text.into() }],
             is_error: true,
         }
     }
@@ -342,9 +338,7 @@ impl MemoryMcpServer {
             }
 
             "memory_get_preferences" => {
-                let project_path = arguments
-                    .get("project_path")
-                    .and_then(|v| v.as_str());
+                let project_path = arguments.get("project_path").and_then(|v| v.as_str());
 
                 let items = self
                     .db
@@ -352,7 +346,9 @@ impl MemoryMcpServer {
                     .map_err(|e| format!("Failed to get preferences: {e}"))?;
 
                 for item in &items {
-                    let _ = self.db.track_memory_access("agent_interaction", item.id, 0.05);
+                    let _ = self
+                        .db
+                        .track_memory_access("agent_interaction", item.id, 0.05);
                 }
 
                 Ok(format_preferences(&items, project_path))
@@ -363,15 +359,10 @@ impl MemoryMcpServer {
                     .get("query")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing 'query' parameter".to_string())?;
-                let limit = arguments
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(5) as usize;
+                let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
                 let searcher = MemorySearchEngine::new(self.db.clone());
-                let scored = searcher
-                    .query(query, limit)
-                    .map_err(|e| e.to_string())?;
+                let scored = searcher.query(query, limit).map_err(|e| e.to_string())?;
 
                 let agent_records = self
                     .db
@@ -382,11 +373,16 @@ impl MemoryMcpServer {
                     let _ = self.db.track_memory_access("agent_interaction", r.id, 0.1);
                 }
                 for item in &scored {
-                    let _ = self.db.track_memory_access("long_term", item.memory.id, 0.1);
+                    let _ = self
+                        .db
+                        .track_memory_access("long_term", item.memory.id, 0.1);
                 }
 
                 if scored.is_empty() && agent_records.is_empty() {
-                    return Ok(format!("No long-term memories or agent records found matching '{}'.", query));
+                    return Ok(format!(
+                        "No long-term memories or agent records found matching '{}'.",
+                        query
+                    ));
                 }
 
                 let mut out = format!("### Memory Search Results for `{}`:\n\n", query);
@@ -397,7 +393,10 @@ impl MemoryMcpServer {
                         let scope_badge = if r.scope == "global" {
                             "[GLOBAL]".to_string()
                         } else {
-                            format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                            format!(
+                                "[PROJECT: {}]",
+                                r.project_path.as_deref().unwrap_or("current")
+                            )
                         };
                         out.push_str(&format!(
                             "{}. **{} [{}] {}** ({})\n   {}\n",
@@ -429,7 +428,10 @@ impl MemoryMcpServer {
                         ));
                         out.push_str(&format!("   - **Summary**: {}\n", m.summary));
                         if !m.key_entities.is_empty() {
-                            out.push_str(&format!("   - **Entities**: {}\n", m.key_entities.join(", ")));
+                            out.push_str(&format!(
+                                "   - **Entities**: {}\n",
+                                m.key_entities.join(", ")
+                            ));
                         }
                     }
                     out.push('\n');
@@ -439,10 +441,7 @@ impl MemoryMcpServer {
             }
 
             "memory_recent" => {
-                let limit = arguments
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(5) as usize;
+                let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
                 // Retrieval only: a superseded memory was folded into a
                 // consolidated one, and an agent reading both would treat one
@@ -469,7 +468,10 @@ impl MemoryMcpServer {
                         let scope_badge = if r.scope == "global" {
                             "[GLOBAL]".to_string()
                         } else {
-                            format!("[PROJECT: {}]", r.project_path.as_deref().unwrap_or("current"))
+                            format!(
+                                "[PROJECT: {}]",
+                                r.project_path.as_deref().unwrap_or("current")
+                            )
                         };
                         out.push_str(&format!(
                             "{}. **{} [{}] {}**\n   {}\n",
@@ -495,7 +497,10 @@ impl MemoryMcpServer {
                         ));
                         out.push_str(&format!("   - {}\n", m.summary));
                         if !m.key_entities.is_empty() {
-                            out.push_str(&format!("   - **Entities**: {}\n", m.key_entities.join(", ")));
+                            out.push_str(&format!(
+                                "   - **Entities**: {}\n",
+                                m.key_entities.join(", ")
+                            ));
                         }
                     }
                     out.push('\n');
@@ -511,7 +516,7 @@ impl MemoryMcpServer {
                     .map_err(|e| e.to_string())?;
 
                 if let Some(c) = captures.first() {
-                    let mut out = format!("### Current Desktop Perception Context:\n");
+                    let mut out = String::from("### Current Desktop Perception Context:\n");
                     out.push_str(&format!("- **Active App**: `{}`\n", c.app_name));
                     out.push_str(&format!("- **Window Title**: `{}`\n", c.window_title));
                     let excerpt = if c.ocr_text.len() > 1000 {
@@ -519,7 +524,10 @@ impl MemoryMcpServer {
                     } else {
                         c.ocr_text.clone()
                     };
-                    out.push_str(&format!("- **Screen Text Excerpt**:\n```\n{}\n```\n", excerpt));
+                    out.push_str(&format!(
+                        "- **Screen Text Excerpt**:\n```\n{}\n```\n",
+                        excerpt
+                    ));
                     Ok(out)
                 } else {
                     let stats = self.db.get_stats().map_err(|e| e.to_string())?;
@@ -579,8 +587,9 @@ impl MemoryMcpServer {
                     .unwrap_or(30) as u32;
 
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                let archive_path =
-                    std::path::PathBuf::from(home).join(".thunder").join("memory_archive.db");
+                let archive_path = std::path::PathBuf::from(home)
+                    .join(".thunder")
+                    .join("memory_archive.db");
 
                 let res = self
                     .db
@@ -641,9 +650,15 @@ fn format_preferences(items: &[AgentInteractionRow], project_path: Option<&str>)
             let scope_badge = if c.scope == "global" {
                 "[GLOBAL]".to_string()
             } else {
-                format!("[PROJECT: {}]", c.project_path.as_deref().unwrap_or("current"))
+                format!(
+                    "[PROJECT: {}]",
+                    c.project_path.as_deref().unwrap_or("current")
+                )
             };
-            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, c.title, c.content));
+            out.push_str(&format!(
+                "- **{} {}**\n  {}\n",
+                scope_badge, c.title, c.content
+            ));
             if !c.entities.is_empty() {
                 out.push_str(&format!("  *Entities: {}*\n", c.entities.join(", ")));
             }
@@ -657,9 +672,15 @@ fn format_preferences(items: &[AgentInteractionRow], project_path: Option<&str>)
             let scope_badge = if p.scope == "global" {
                 "[GLOBAL]".to_string()
             } else {
-                format!("[PROJECT: {}]", p.project_path.as_deref().unwrap_or("current"))
+                format!(
+                    "[PROJECT: {}]",
+                    p.project_path.as_deref().unwrap_or("current")
+                )
             };
-            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, p.title, p.content));
+            out.push_str(&format!(
+                "- **{} {}**\n  {}\n",
+                scope_badge, p.title, p.content
+            ));
             if !p.entities.is_empty() {
                 out.push_str(&format!("  *Entities: {}*\n", p.entities.join(", ")));
             }
@@ -673,9 +694,15 @@ fn format_preferences(items: &[AgentInteractionRow], project_path: Option<&str>)
             let scope_badge = if a.scope == "global" {
                 "[GLOBAL]".to_string()
             } else {
-                format!("[PROJECT: {}]", a.project_path.as_deref().unwrap_or("current"))
+                format!(
+                    "[PROJECT: {}]",
+                    a.project_path.as_deref().unwrap_or("current")
+                )
             };
-            out.push_str(&format!("- **{} {}**\n  {}\n", scope_badge, a.title, a.content));
+            out.push_str(&format!(
+                "- **{} {}**\n  {}\n",
+                scope_badge, a.title, a.content
+            ));
             if !a.entities.is_empty() {
                 out.push_str(&format!("  *Entities: {}*\n", a.entities.join(", ")));
             }
@@ -686,7 +713,10 @@ fn format_preferences(items: &[AgentInteractionRow], project_path: Option<&str>)
     if !others.is_empty() {
         out.push_str("### 📌 Other Active Guidelines:\n\n");
         for o in others {
-            out.push_str(&format!("- **[{}] {}**\n  {}\n", o.category, o.title, o.content));
+            out.push_str(&format!(
+                "- **[{}] {}**\n  {}\n",
+                o.category, o.title, o.content
+            ));
         }
         out.push('\n');
     }
@@ -739,9 +769,7 @@ async fn handle_rpc_frame(line: &str, server: &MemoryMcpServer) -> Option<JsonRp
         }
     };
 
-    let Some(id) = raw_val.get("id").cloned() else {
-        return None;
-    };
+    let id = raw_val.get("id").cloned()?;
 
     let req: JsonRpcRequest = match serde_json::from_value(raw_val) {
         Ok(r) => r,
@@ -797,7 +825,10 @@ async fn handle_rpc_frame(line: &str, server: &MemoryMcpServer) -> Option<JsonRp
                 }
             };
 
-            match server.call_tool(&call_params.name, call_params.arguments).await {
+            match server
+                .call_tool(&call_params.name, call_params.arguments)
+                .await
+            {
                 Ok(text_content) => {
                     let result = McpCallToolResult::success_text(text_content);
                     Some(JsonRpcResponse::success(
@@ -927,10 +958,7 @@ mod tests {
         assert!(feedback_res.contains("utility delta +0.50"));
 
         // 7. Test memory_stats
-        let stats_res = server
-            .call_tool("memory_stats", json!({}))
-            .await
-            .unwrap();
+        let stats_res = server.call_tool("memory_stats", json!({})).await.unwrap();
         assert!(stats_res.contains("Thunder Memory Statistics"));
         assert!(stats_res.contains("Cognitive Noise Suppression Hits"));
 
@@ -962,7 +990,15 @@ mod tests {
         let list_req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = handle_rpc_frame(list_req, &server).await.unwrap();
         assert_eq!(resp.id, json!(2));
-        assert!(resp.result.unwrap().get("tools").unwrap().as_array().unwrap().len() >= 8);
+        assert!(
+            resp.result
+                .unwrap()
+                .get("tools")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len()
+                >= 8
+        );
     }
 }
-

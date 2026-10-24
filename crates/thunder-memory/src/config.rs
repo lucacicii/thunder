@@ -206,7 +206,10 @@ mod tests {
         let cfg: MemoryConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.capture_interval_secs, 10);
         assert_eq!(cfg.min_capture_interval_secs, 3);
-        assert_eq!(cfg.llm_endpoint, Some("http://localhost:11434/v1".to_string()));
+        assert_eq!(
+            cfg.llm_endpoint,
+            Some("http://localhost:11434/v1".to_string())
+        );
         assert_eq!(cfg.llm_model, "qwen2.5-coder:7b");
         // Defaults preserved
         assert_eq!(cfg.raw_capture_retention_days, 2);
