@@ -170,6 +170,14 @@ tmd --no-restart    # 只编译+签名，不动守护进程
 
 重签一次只要 ~70ms，所以开发时每编译一次都签一次完全无感。
 
+> ⚠️ **守护进程的父进程决定 TCC 屏幕录制授权的归因**。首次安装后先执行一次
+> `thunder-memory install-launchagent`，让 launchd 托管守护进程（开机自启 + 崩溃自动重启）。
+> **绝不要从 Agent Resume 面板内置终端/Agent 会话里启动守护进程**（`thunder-memory start`，
+> 或首次 `install-release.sh` 走的非 launchd 分支）：守护进程会继承面板的 TCC 责任归因
+> （adhoc 签名的 Electron，cdhash 不稳），屏幕录制授权永远落不了盘，实测会每 5 秒
+> 无限弹「Agent Resume 要记录屏幕」的授权框。launchd 托管后归因干净、签名身份稳定，
+> 点一次允许即永久生效。日常 `tmd` 在普通 Terminal/iTerm 里跑没有此问题。
+
 ### 三条必须知道的规矩
 
 1. **别手工 `cp` / `ln -sf` 替换二进制**：拷出去的是 ad-hoc 产物，cdhash 一换授权立刻失效，弹框回来。
