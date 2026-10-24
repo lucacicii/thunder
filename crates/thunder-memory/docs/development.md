@@ -65,6 +65,11 @@ ln -sf /Users/lucas/wz/GitHub/thunder/target/debug/thunder-memory ~/.cargo/bin/t
 ```
 几秒后，系统中的 `thunder-memory`、Thunder Agent 的 MCP 工具调用，都会**自动跑在你刚刚编译出来的最新代码上**。
 
+> ⚠️ `tmd` 请在普通 Terminal/iTerm 里跑。若在 Agent Resume 面板内置终端里执行，守护进程会继承
+> 面板的 TCC 责任归因，屏幕录制授权无法落盘，会无限弹「要记录屏幕」的授权框
+> （详见 README 安装节）。已用 `install-launchagent` 托管时，`tmd --no-restart` 编译签名后
+> 由 launchd 自动拉起，不受此影响。
+
 > ⚠️ **不要直接 `cargo build` 之后手工拷贝/重链**。cargo 产出的二进制只有 ad-hoc 签名，
 > cdhash 由内容派生，内容一变 TCC 就判定“不是同一个程序”，屏幕录制授权失效并开始弹框。
 > `dev.sh` 每次编译后都会用固定证书重签一次（耗时 ~70ms），DR 恒为
