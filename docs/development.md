@@ -1,6 +1,6 @@
 # 🛠️ Thunder 开发者指南 (Development Guide)
 
-本文档面向 `thunder` 的功能开发者，说明**本地开发版本**与**正式安装版本**之间的切换机制、日常开发工作流、热重启、发布固化，以及与姊妹项目 `thunder-memory` 的刻意差异。
+本文档面向 `thunder` 的功能开发者，说明**本地开发版本**与**正式安装版本**之间的切换机制、日常开发工作流、热重启、发布固化，以及与同仓库 crate `crates/thunder-memory` 的刻意差异。
 
 > 一句话：**`thunderctl` 管三种运行态** —— `dev`（跑仓库里刚编译的代码）、`prod`（跑 `~/.cargo/bin` 里固化的安装版）、`bundled`（交还给 Agent Resume 自带版）。改完代码想立刻生效，用 `thunderctl reload`，不用重启 App。
 
@@ -192,7 +192,7 @@ THUNDER_CONFIG_DIR=$PWD/target/dev-home cargo run -p thunder-daemon --bin thunde
 
 ## 七、与 `thunder-memory` 的对齐与刻意差异
 
-两个项目的开发模式共享同一套心智模型（**双轨：隔离开发 + 边改边用**），但落地手段因为形态不同而不同。
+`thunder-memory`（屏幕感知 + 记忆引擎，MCP server）已作为 `crates/thunder-memory` 并入本仓库 workspace，历史完整保留；其独立仓库已退役。两个 crate 的开发模式共享同一套心智模型（**双轨：隔离开发 + 边改边用**），但落地手段因为形态不同而不同。
 
 ### 对齐的部分
 
@@ -202,7 +202,7 @@ THUNDER_CONFIG_DIR=$PWD/target/dev-home cargo run -p thunder-daemon --bin thunde
 | 正式安装位 | `~/.cargo/bin/thunder-memory` | `~/.cargo/bin/thunder-{daemon,tui,std}` + `thunder` |
 | 数据隔离开关 | 单元测试走内存 SQLite；可重定向数据库 | 单元测试全临时目录；`THUNDER_CONFIG_DIR` 重定向整个数据根 |
 | 一键切换 / 状态诊断 | 手工 `stop` / `start` / `status` | `thunderctl dev/prod/bundled` + `status`（多一个解析链诊断） |
-| 质量门禁 | 本地 `cargo test` | `scripts/ci.sh` + GitHub Actions（fmt / clippy -D warnings / test） |
+| 质量门禁 | 同一套 CI（`--workspace` 自动覆盖，含 fmt / clippy -D warnings / test） | 同左（`scripts/ci.sh` + GitHub Actions） |
 
 ### 刻意不一样的部分
 
