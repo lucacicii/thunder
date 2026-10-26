@@ -19,7 +19,6 @@
      pub trait UserQuestionHandler: Send + Sync {
          async fn ask(
              &self,
-             task_id: &str,
              session_id: &str,
              question_id: &str,
              questions: &[QuestionItem],
@@ -27,6 +26,7 @@
          ) -> Result<QuestionOutcome, String>;
      }
      ```
+   * 契约里**没有** `task_id`：`ExecutionContext` 不携带任务 id，提供者只能凭空编造一个，而宿主的在途任务表是按它自己请求的 task id 索引的——编造的 id 会让宿主认不出这笔提问，界面不弹窗、Agent 白等到超时。任务 id 属于「这次运行」的知识，由运行它的宿主 Handler 自己持有（`DaemonQuestionHandler` 即如此）。
    * `ChannelQuestionHandler`：基于 `tokio::sync::mpsc` 与 `oneshot`，适用于长周期运行的 Desktop Sidecar 或 TUI。
    * `MockQuestionHandler`：支持自定义闭包或静态答案，用于端到端自动化测试。
 

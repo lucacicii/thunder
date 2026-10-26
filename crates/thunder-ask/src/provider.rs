@@ -99,11 +99,13 @@ impl ToolProvider for AskUserToolProvider {
 
         let seq = self.counter.fetch_add(1, Ordering::Relaxed);
         let question_id = format!("q-{seq}");
-        let task_id = format!("task-{}", ctx.session_id);
 
+        // The task id is the handler's business, not the provider's: the only id in
+        // scope here is the session id, and deriving a task id from it names a task no
+        // host has ever started.
         let outcome = self
             .handler
-            .ask(&task_id, &ctx.session_id, &question_id, &questions, ctx)
+            .ask(&ctx.session_id, &question_id, &questions, ctx)
             .await
             .map_err(|e| ToolExecutionError::NonZeroExit { code: 1, stderr: e })?;
 

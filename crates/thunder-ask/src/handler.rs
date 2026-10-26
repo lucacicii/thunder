@@ -31,7 +31,6 @@ impl QuestionOutcome {
 /// Prompt package sent to an interactive host handler.
 #[derive(Debug)]
 pub struct QuestionPrompt {
-    pub task_id: String,
     pub session_id: String,
     pub question_id: String,
     pub questions: Vec<QuestionItem>,
@@ -39,11 +38,14 @@ pub struct QuestionPrompt {
 }
 
 /// Abstract handler contract for presenting questions to a human and awaiting the answer.
+///
+/// No task id crosses this boundary on purpose: `ExecutionContext` carries none, so a
+/// provider can only invent one — and a host keys its in-flight runs by the task id it
+/// requested. A handler that belongs to a run already knows which run it is.
 #[async_trait]
 pub trait UserQuestionHandler: Send + Sync {
     async fn ask(
         &self,
-        task_id: &str,
         session_id: &str,
         question_id: &str,
         questions: &[QuestionItem],
@@ -75,7 +77,6 @@ impl MockQuestionHandler {
 impl UserQuestionHandler for MockQuestionHandler {
     async fn ask(
         &self,
-        _task_id: &str,
         _session_id: &str,
         question_id: &str,
         questions: &[QuestionItem],
@@ -100,7 +101,6 @@ impl ChannelQuestionHandler {
 impl UserQuestionHandler for ChannelQuestionHandler {
     async fn ask(
         &self,
-        task_id: &str,
         session_id: &str,
         question_id: &str,
         questions: &[QuestionItem],
@@ -108,7 +108,6 @@ impl UserQuestionHandler for ChannelQuestionHandler {
     ) -> Result<QuestionOutcome, String> {
         let (tx, rx) = oneshot::channel();
         let prompt = QuestionPrompt {
-            task_id: task_id.to_string(),
             session_id: session_id.to_string(),
             question_id: question_id.to_string(),
             questions: questions.to_vec(),
