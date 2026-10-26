@@ -60,6 +60,12 @@ impl EventSink for TaskEventBridge {
 }
 
 struct DaemonQuestionHandler {
+    /// The run this handler asks for.
+    ///
+    /// Taken from the `run_task` request, never from the tool provider: hosts key their
+    /// in-flight runs by the task id they asked for, so a frame carrying any other id is
+    /// dropped by the very host that is blocked on the answer.
+    task_id: String,
     output_tx: mpsc::Sender<String>,
     pending:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<thunder_ask::QuestionOutcome>>>>,
@@ -69,7 +75,6 @@ struct DaemonQuestionHandler {
 impl thunder_ask::UserQuestionHandler for DaemonQuestionHandler {
     async fn ask(
         &self,
-        task_id: &str,
         session_id: &str,
         question_id: &str,
         questions: &[thunder_ask::QuestionItem],
@@ -99,7 +104,7 @@ impl thunder_ask::UserQuestionHandler for DaemonQuestionHandler {
             .collect();
 
         let frame = DaemonResponse::UserQuestion {
-            task_id: task_id.to_string(),
+            task_id: self.task_id.clone(),
             session_id: Some(session_id.to_string()),
             question_id: question_id.to_string(),
             questions: protocol_questions,
@@ -867,6 +872,7 @@ impl DaemonService {
         // and "asks and fails".
         if !headless {
             let ask_handler = Arc::new(DaemonQuestionHandler {
+                task_id: task_id.clone(),
                 output_tx: self.output_tx.clone(),
                 pending: Arc::clone(&self.pending_questions),
             });

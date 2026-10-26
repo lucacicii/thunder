@@ -187,11 +187,21 @@ async fn daemon_handles_user_question_and_answer_cycle() {
     while let Some(line) = rx.recv().await {
         let frame: DaemonResponse = serde_json::from_str(&line).unwrap();
         if let DaemonResponse::UserQuestion {
+            task_id,
+            session_id,
             question_id,
             questions,
             ..
         } = frame
         {
+            // The host answers by question id, but finds the run to dock the bubble on
+            // by the task id it requested — an invented id leaves it with nothing to
+            // show and a run parked until the request timeout.
+            assert_eq!(
+                task_id, "task-ask-1",
+                "the frame must name the requesting run"
+            );
+            assert_eq!(session_id.as_deref(), Some("sess-ask-1"));
             assert_eq!(questions[0].question, "Choose architecture");
             captured_qid = Some(question_id);
             break;
